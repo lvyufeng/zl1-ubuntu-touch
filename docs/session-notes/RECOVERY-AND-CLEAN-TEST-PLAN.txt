@@ -1,0 +1,108 @@
+Device Recovery and Clean Test Plan
+====================================
+
+CURRENT SITUATION:
+------------------
+Device state corrupted by repeated fastboot boot tests.
+Device in unknown/unstable state - may be stuck or in stock Android.
+
+RECOVERY OPTIONS (in order of preference):
+-------------------------------------------
+
+OPTION A: Fastboot Factory Reset (if device reaches fastboot)
+--------------------------------------------------------------
+Commands:
+```bash
+fastboot -s 33e80afe erase userdata
+fastboot -s 33e80afe erase cache
+fastboot -s 33e80afe reboot
+```
+
+Wait for stock Android to boot and initialize fresh userdata.
+Then proceed to clean V64 test.
+
+OPTION B: TWRP Recovery Wipe (if accessible)
+---------------------------------------------
+Boot to TWRP:
+```bash
+fastboot -s 33e80afe boot twrp.img  # if TWRP image available
+```
+
+In TWRP:
+- Wipe → Advanced Wipe → Select Data, Cache
+- Format Data (type "yes")
+- Reboot System
+
+OPTION C: Manual Reboot to Stock Recovery
+------------------------------------------
+If device is in stock Android:
+```bash
+adb -s 33e80afe reboot recovery
+```
+
+In stock recovery:
+- Use volume keys to navigate
+- Select "Wipe data/factory reset"
+- Confirm
+- Reboot
+
+OPTION D: Power Button Force (last resort)
+-------------------------------------------
+If device is completely unresponsive:
+- Hold Power button for 10+ seconds to force shutdown
+- Wait 10 seconds
+- Hold Power + Volume Down to enter fastboot
+- Proceed with Option A
+
+CLEAN TEST PROTOCOL (after recovery):
+--------------------------------------
+
+1. Confirm device in known good state:
+   - Stock Android booted and stable
+   - ADB accessible: `adb -s 33e80afe shell getprop ro.build.version.release`
+
+2. Test V63 first (known working baseline):
+   ```bash
+   adb -s 33e80afe reboot bootloader
+   fastboot -s 33e80afe boot halium-boot-zl1-v63-usbd-disabled.img
+   ```
+   Expected: RNDIS appears, reachable for ~7 samples, then lost
+
+   If V63 FAILS → device still corrupted, repeat recovery
+
+3. Test V64 again (if V63 succeeds):
+   ```bash
+   # Reboot to stock Android first
+   adb -s 33e80afe reboot
+   # Wait for full boot
+   sleep 60
+   # Then test V64
+   adb -s 33e80afe reboot bootloader
+   fastboot -s 33e80afe boot halium-boot-zl1-v64-production-no-android.img
+   ```
+   Expected: RNDIS appears, reachable for ~4 samples
+
+   If V64 NOW works → confirms device state was the issue
+
+IMPORTANT NOTES:
+----------------
+- DO NOT run multiple fastboot boot tests back-to-back
+- Reboot to stock Android and wait 60s between each test
+- If RNDIS loss persists on V63/V64 → that's the REAL problem to solve
+- If they work after cleaning → device state was the blocker
+
+NEXT PHASE (if clean tests confirm V63/V64 work):
+--------------------------------------------------
+The RNDIS loss issue (V63: 7 samples, V64: 4 samples) is REAL.
+Solution requires:
+- Either: proper Ubuntu Touch system image flash (not just boot testing)
+- Or: identify what corrupts USB gadget after initial success
+- Or: accept fastboot boot has inherent limitations
+
+ESTIMATED TIME:
+---------------
+- Recovery: 5-10 minutes
+- V63 test: 2 minutes
+- Stock Android reboot wait: 1 minute
+- V64 test: 2 minutes
+Total: ~15 minutes for clean baseline

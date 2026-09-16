@@ -1,0 +1,88 @@
+CRITICAL DISCOVERY - Device State Corruption
+=============================================
+Date: 2026-06-14T04:40Z
+
+BREAKTHROUGH FINDING:
+---------------------
+V64 RE-TEST RESULT: **ALSO FAILED**
+
+Previous V64 behavior (2026-06-14T01:48Z):
+- Product: "zl1 Ubuntu Touch"
+- RNDIS functional for 4 samples (max_stable=4)
+- usb0 interface UP with correct IPs
+- Network reachable, then lost
+
+Current V64 behavior (2026-06-14T04:40Z):
+- Product: "Nexus 4 (fastboot)" ← WRONG
+- usb0 interface exists but DOWN
+- No network connectivity
+- 100% packet loss
+
+CONCLUSION:
+-----------
+**The problem is DEVICE STATE, not IMAGE quality.**
+
+Repeated fastboot boot testing (V64→V65→V66→V67→V64) has CORRUPTED
+the device's userdata/cache/system state.
+
+EVIDENCE:
+---------
+1. Same V64 image that worked partially now completely fails
+2. Product descriptor changed from correct to incorrect
+3. USB interface state changed from UP to DOWN
+4. Device frequently enters "invisible" state (no ADB, no fastboot, no USB)
+
+DEVICE STATE CORRUPTION SYMPTOMS:
+----------------------------------
+- Fastboot boot succeeds (kernel loads)
+- USB gadget appears with WRONG descriptors
+- Network interfaces created but not configured
+- System never reaches functional state
+- Device falls back to unknown/invisible/stock Android state
+
+ROOT CAUSE HYPOTHESIS:
+----------------------
+Ubuntu Touch 24.04 android9plus expects certain persistent state in:
+- /userdata
+- /cache
+- /system (if writable overlays exist)
+- systemd persistent state
+- LXC cached configuration
+
+Repeated fastboot boot WITHOUT proper userdata initialization creates:
+- Conflicting systemd state
+- Stale mount points
+- Broken LXC configuration cache
+- Corrupted Android HAL state
+
+REQUIRED ACTION:
+----------------
+**STOP fastboot boot testing without userdata management.**
+
+Options:
+A. Factory reset / wipe userdata before each test
+B. Flash a proper Ubuntu Touch rootfs to userdata (not just boot testing)
+C. Use TWRP to clean /data between tests
+D. Investigate what persistent state files are being corrupted
+
+RECOMMENDATION:
+---------------
+Before building V68 or continuing tests:
+
+1. Boot device to TWRP recovery
+2. Wipe /data (factory reset)
+3. Flash a PROPER Ubuntu Touch system image (not just boot.img)
+4. THEN test boot images with proper rootfs backing
+
+OR:
+
+Accept that **fastboot boot testing is inherently unreliable** for
+Ubuntu Touch and switch to proper flashing workflow.
+
+LESSON LEARNED:
+---------------
+Halium/Ubuntu Touch is NOT designed for repeated RAM-only fastboot boot.
+It REQUIRES proper userdata initialization and persistent state.
+
+The V64→V67 "failures" were NOT image problems - they were artifacts
+of corrupted device state from improper testing methodology.

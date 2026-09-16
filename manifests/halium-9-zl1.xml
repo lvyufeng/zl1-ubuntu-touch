@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <remote name="halium-leeco" fetch="https://github.com/" />
+
+  <project name="halium-leeco/android_device_leeco_zl1"
+           path="device/leeco/zl1"
+           remote="halium-leeco"
+           revision="halium-9.0" />
+
+  <project name="halium-leeco/android_device_leeco_msm8996-common"
+           path="device/leeco/msm8996-common"
+           remote="halium-leeco"
+           revision="halium-9.0" />
+
+  <project name="halium-leeco/android_kernel_leeco_msm8996"
+           path="kernel/leeco/msm8996"
+           remote="halium-leeco"
+           revision="halium-9.0" />
+
+  <project name="halium-leeco/proprietary_vendor_leeco"
+           path="vendor/leeco"
+           remote="halium-leeco"
+           revision="halium-9.0" />
+</manifest>

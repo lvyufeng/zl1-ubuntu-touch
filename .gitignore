@@ -1,0 +1,35 @@
+# ============================================================
+# zl1 porting repo — working scratch is NOT tracked
+# ============================================================
+# This repo tracks notes, manifests and tooling. Everything below is
+# derived data: unpacked boot images, device status dumps, boot logs and
+# per-iteration capture directories. They are cheap to regenerate and
+# far too large to keep in git. See README.md "Repository layout".
+
+# Vendor / upstream reference clones (third-party trees, own .git dirs)
+references/
+
+# Scratch working directories (unpacked boot images, ramdisks, dtb dumps)
+tmp-*/
+tmp-*.txt
+tmp-*.py
+
+# Per-iteration capture and experiment directories at repo root
+/v[0-9]*/
+
+# Device diagnostic dumps
+recovery-diagnostics-*/
+
+# Boot logs and status dumps
+*.log
+*.err
+v[0-9]*-current-status-*.txt
+
+# Build outputs
+*.img
+out/
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store

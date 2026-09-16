@@ -1,0 +1,2 @@
+Connection timed out during banner exchange
+Connection to 10.15.19.82 port 22 timed out

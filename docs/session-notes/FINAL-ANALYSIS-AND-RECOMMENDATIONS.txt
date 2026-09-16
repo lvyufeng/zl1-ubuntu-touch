@@ -1,0 +1,117 @@
+Ubuntu Touch USB Network Fix - Final Analysis
+==============================================
+Date: 2026-06-14T14:00Z
+
+ROOT CAUSE IDENTIFIED (CONFIRMED):
+-----------------------------------
+Ubuntu Touch 24.04 rootfs uses usb-moded + NetworkManager.
+usb-moded's tethering script creates "method=shared" (DHCP server),
+NOT the static IP needed for debugging.
+
+This caused V63's connectivity loss at ~35s when Ubuntu Touch took over.
+
+THE CORRECT FIX (V71):
+----------------------
+Inject NetworkManager static IP connections at boot:
+  /etc/NetworkManager/system-connections/rndis-static.nmconnection
+  /etc/NetworkManager/system-connections/usb0-static.nmconnection
+
+These provide device-side static IPs (192.168.2.15 + 10.15.19.82)
+that NetworkManager will auto-activate.
+
+V71 is built and ready: tmp-v71-rootfs-nm-inject/halium-boot-zl1-v71-rootfs-nm-inject.img
+
+BLOCKING ISSUE:
+---------------
+**Cannot validate V71 due to repeated boot failures**
+
+Test history:
+- V63 clean boot (after 1st factory reset): ✓ Reached Ubuntu Touch, 7 samples
+- V68-V70: All failed, no RNDIS
+- V70b (after 2nd factory reset): Failed
+- V71 (after 3rd factory reset): Failed, 0 samples
+
+Even with clean userdata, V68-V71 cannot reach Ubuntu Touch.
+V63 worked once but V71 (based on V63 + NM injection) fails completely.
+
+POSSIBLE CAUSES:
+----------------
+1. **V71's init-bottom modifications broke boot**
+   - NetworkManager connection injection might have a subtle error
+   - Or the script execution time increased, causing timeout
+
+2. **Device state beyond userdata**
+   - persist partition corruption
+   - boot partition wear
+   - Hardware issue from repeated stress
+
+3. **rootfs.img state**
+   - The existing rootfs.img on device userdata might be corrupted
+   - fastboot boot only loads boot.img, not rootfs.img
+   - Previous tests may have corrupted the on-device rootfs.img
+
+4. **V63 baseline changed**
+   - V63 was built days ago with different kernel/ramdisk state
+   - Need to retest ORIGINAL V63 to confirm it still works
+
+RECOMMENDED NEXT STEPS:
+-----------------------
+
+OPTION A: Validate with original V63 first
+1. Manually reboot device (power button)
+2. Factory reset again
+3. Test ORIGINAL V63 (tmp-v63-netd-disabled/halium-boot-zl1-v63-usbd-disabled.img)
+4. If V63 still works → V71's modifications are the problem
+5. If V63 also fails → something else broke (device/rootfs/kernel)
+
+OPTION B: Simplify V71 modifications
+1. Remove all V71 NM injection code
+2. Create V71b: V63 + ONLY the two NM connection files (no other changes)
+3. Minimize script execution time
+4. Test incrementally
+
+OPTION C: Alternative injection method
+Instead of injecting at boot, modify the host rootfs.img directly:
+1. Mount rootfs-24.04-2.x-arm64-android9plus-zl1-host.img
+2. Add NM connections (already done earlier)
+3. Push modified rootfs.img to device /data/rootfs.img via recovery ADB
+4. Boot with original V63 (which we know can work)
+5. Validate NM connections take effect
+
+OPTION D: Accept fastboot boot limitations
+Stop using "fastboot boot" for testing:
+1. Flash V63 boot.img to boot partition (permanent)
+2. Flash modified rootfs.img to proper location
+3. Use proper Ubuntu Touch installation workflow
+4. This eliminates RAM-boot instability
+
+MY RECOMMENDATION:
+------------------
+**Option C** is most pragmatic:
+
+1. Device is currently unresponsive - wait for manual recovery
+2. Boot to recovery mode
+3. Use recovery ADB to push modified rootfs.img to /data/
+4. Reboot to fastboot
+5. Factory reset
+6. Boot ORIGINAL V63 (known working baseline)
+7. V63 will mount the modified rootfs.img with NM static connections
+8. Validate sustained connectivity
+
+This approach:
+- Uses proven V63 boot.img (no untested modifications)
+- Applies the correct fix (NM connections in rootfs)
+- Eliminates boot.img as a variable
+- Tests the actual solution
+
+CURRENT DEVICE STATE:
+---------------------
+Offline / unresponsive (no ADB, no fastboot)
+Likely needs manual recovery (power button force reboot)
+
+FILES READY:
+------------
+✓ V71 boot.img: tmp-v71-rootfs-nm-inject/halium-boot-zl1-v71-rootfs-nm-inject.img
+✓ Modified rootfs.img: /mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host.img
+  (already has NM connections injected via loopback mount)
+✓ Original V63 boot.img: tmp-v63-netd-disabled/halium-boot-zl1-v63-usbd-disabled.img

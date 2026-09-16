@@ -1,0 +1,103 @@
+Critical Failure Pattern Analysis - V64 through V67
+======================================================
+
+OBSERVATIONS:
+-------------
+V63 (netd-disabled): SUCCESS
+- RNDIS appeared (product "zl1 V63 usbd-disabled RNDIS")
+- Network reachable for 7 samples (~30s)
+- Eventually lost RNDIS but SYSTEM BOOTED SUCCESSFULLY
+
+V64 (production no-android): PARTIAL SUCCESS
+- RNDIS appeared (product "zl1 Ubuntu Touch")
+- Network reachable for 4 samples (~20s)
+- max_stable=4, then lost
+- SYSTEM BOOTED, USB gadget worked initially
+
+V65 (production with keeper): COMPLETE FAILURE
+- fastboot boot rc=0
+- NO RNDIS ever appeared
+- Device fell back to stock Android
+- SYSTEM DID NOT BOOT
+
+V66 (continuous guardian): COMPLETE FAILURE
+- fastboot boot rc=0
+- NO RNDIS ever appeared
+- Device fell back to stock Android
+- SYSTEM DID NOT BOOT
+
+V67 (from V63, LXC masked): COMPLETE FAILURE
+- fastboot boot rc=0
+- NO RNDIS ever appeared
+- Device in unknown state (no ADB, no RNDIS)
+- SYSTEM DID NOT BOOT
+
+ROOT CAUSE HYPOTHESIS:
+----------------------
+The failure is NOT about USB configuration mechanism (oneshot vs guardian vs keeper).
+The failure is about SYSTEM BOOT ITSELF.
+
+V64 through V67 all share one critical fact:
+**fastboot boot succeeds (rc=0) but the system never reaches a point where USB/RNDIS is configured**
+
+This suggests:
+1. Kernel boots successfully (fastboot reports OKAY)
+2. Initrd runs (no kernel panic visible)
+3. Switch_root happens (or attempts to happen)
+4. SOMETHING FAILS after switch_root, preventing init-bottom scripts from running
+
+Possible causes:
+- Rootfs corruption or incompatibility
+- systemd fails to start
+- Critical service dependency failure
+- init binary or systemd missing/broken
+- SELinux/AppArmor blocking execution
+
+KEY DIFFERENCE V63 vs V64:
+---------------------------
+V63 init-bottom script: 1638 lines
+V64 init-bottom script: 164 lines
+
+V63 did EXTENSIVE system setup:
+- LXC rootfs preparation (even if not starting LXC)
+- Device node creation
+- SELinux stub files
+- Python patches to /android/init
+- Mount hooks
+- Status server setup
+
+V64 REMOVED all of this, assuming "no Android = don't need Android setup"
+
+But: Ubuntu Touch 24.04 android9plus STILL EXPECTS certain system state.
+Removing all LXC/Android setup may have broken REQUIRED infrastructure.
+
+CRITICAL MISSING PIECE:
+-----------------------
+None of V64/V65/V66/V67 tested whether **systemd actually started**.
+
+Without console access or serial, we're blind to:
+- Whether switch_root succeeded
+- Whether systemd PID 1 launched
+- Which services failed
+- What errors occurred
+
+RECOMMENDED NEXT STEP:
+----------------------
+DO NOT build V68 yet.
+
+Instead: REBOOT device to stock Android, then connect via ADB and check:
+1. Can we enable console on USB? (g_serial function)
+2. Can we add systemd.log_level=debug to cmdline?
+3. Can we make initrd write status to /dev/kmsg before switch_root?
+4. Can we add a fallback that keeps initrd busybox shell alive if switch_root fails?
+
+The blind iteration V64→V65→V66→V67 is not productive without visibility.
+We need DIAGNOSTIC VISIBILITY before the next build attempt.
+
+ALTERNATIVE HYPOTHESIS:
+-----------------------
+V64 worked PARTIALLY (4 samples) because it ACCIDENTALLY inherited working state from V63.
+When I built V65/V66/V67, the device's userdata/cache state diverged, breaking boot.
+
+Test: Try re-running V64 image RIGHT NOW (without changing device state).
+If V64 now ALSO fails to boot, it confirms the problem is DEVICE STATE, not IMAGE.

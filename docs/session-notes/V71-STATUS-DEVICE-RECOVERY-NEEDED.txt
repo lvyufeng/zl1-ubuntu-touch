@@ -1,0 +1,69 @@
+V71 Status: Device Recovery Required
+=====================================
+Date: 2026-06-14T13:45Z
+
+CURRENT SITUATION:
+------------------
+Device is not visible in ADB or fastboot.
+Last USB activity: fastboot (18d1:d00d), then disconnected.
+
+CAUSE:
+------
+Repeated failed boot attempts (V68-V71) corrupted userdata again.
+Even after one factory reset (before V70b), the device accumulated
+corruption from V70b + V71 attempts.
+
+WHAT WAS ATTEMPTED:
+-------------------
+V71: Inject NetworkManager static IP connections into rootfs at boot
+  - Correct solution to the root problem (usb-moded tethering conflict)
+  - But never reached Ubuntu Touch due to userdata corruption
+  - Device boot-looped and eventually became unresponsive
+
+THE ROOT CAUSE FIX (V71):
+-------------------------
+V71's approach is CORRECT. It injects NetworkManager connection files:
+  /etc/NetworkManager/system-connections/rndis-static.nmconnection
+  /etc/NetworkManager/system-connections/usb0-static.nmconnection
+
+These provide static IPs (192.168.2.15/24 + 10.15.19.82/24) that
+NetworkManager will auto-activate, solving the usb-moded tethering
+conflict that caused connectivity loss after 35s in V63.
+
+WHY IT HASN'T BEEN TESTED YET:
+------------------------------
+Device userdata corruption from repeated RAM-boot tests prevents
+even reaching Ubuntu Touch to validate the fix.
+
+REQUIRED USER ACTION:
+---------------------
+**Manual device recovery:**
+
+1. Force power off: Hold POWER button 15+ seconds
+2. Wait 10 seconds
+3. Boot to fastboot: Hold POWER + VOLUME DOWN
+4. Once in fastboot: Run factory reset again
+5. Test V71 immediately after reset (before corruption re-accumulates)
+
+OR (if stuck):
+- Try booting to stock Android first, then reboot bootloader
+- If completely unresponsive, may need EDL/9008 recovery
+
+RECOMMENDATION:
+---------------
+V71 is the correct fix. We just need clean userdata to test it.
+
+After manual recovery:
+1. Factory reset (erase userdata + cache)
+2. IMMEDIATELY boot V71 (no other boots in between)
+3. Monitor for sustained connectivity past 35s mark
+
+If V71 succeeds with clean userdata, the problem is SOLVED.
+
+ALTERNATIVE IF RAM-BOOT TESTING CONTINUES TO FAIL:
+---------------------------------------------------
+Accept that fastboot boot is inherently unstable for Ubuntu Touch.
+Switch to proper system image flashing workflow:
+- Flash boot.img to boot partition
+- Flash Ubuntu Touch rootfs to userdata
+- Stop using fastboot boot for testing

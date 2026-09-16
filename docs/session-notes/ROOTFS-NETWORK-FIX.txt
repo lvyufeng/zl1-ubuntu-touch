@@ -1,0 +1,86 @@
+ROOT CAUSE: Ubuntu Touch Rootfs Missing RNDIS Network Configuration
+=====================================================================
+Date: 2026-06-14T13:30Z
+
+PROBLEM REFRAMED:
+-----------------
+Previous attempts (V63-V70b) tried to fix USB networking in the boot.img.
+The real issue is in the Ubuntu Touch ROOTFS itself.
+
+ROOT CAUSE DISCOVERED:
+----------------------
+Ubuntu Touch 24.04 rootfs uses usb-moded to manage USB modes.
+When RNDIS mode is active, usb-moded runs:
+  /usr/libexec/usb-moded/tethering enable
+
+This script creates a NetworkManager connection with:
+  method=shared  (DHCP server mode, NOT static IP)
+
+Expected behavior:
+  - Device runs DHCP server
+  - Host gets IP via DHCP
+
+Actual need (for our debugging use case):
+  - Device has STATIC IP: 192.168.2.15/24 and 10.15.19.82/24
+  - Host has STATIC IP: 192.168.2.100/24 and 10.15.19.100/24
+
+WHY V63 "WORKED" INITIALLY:
+---------------------------
+V63's initrd keeper configured USB gadget and device IP.
+This worked for ~35 seconds until Ubuntu Touch userspace booted and:
+1. usb-moded took over USB gadget control
+2. NetworkManager activated the "tethering" connection (method=shared)
+3. Device-side IP was removed/reconfigured for DHCP server mode
+4. Connectivity lost
+
+THE SOLUTION:
+-------------
+Add NetworkManager static IP connections directly to the rootfs:
+
+/etc/NetworkManager/system-connections/rndis-static.nmconnection:
+  [connection]
+  id=rndis-static
+  interface-name=rndis0
+  autoconnect=priority=100
+  
+  [ipv4]
+  method=manual
+  address1=192.168.2.15/24
+  address2=10.15.19.82/24
+
+/etc/NetworkManager/system-connections/usb0-static.nmconnection:
+  (same but interface-name=usb0)
+
+These connections will auto-activate when rndis0/usb0 appears,
+providing static IPs BEFORE usb-moded's tethering can interfere.
+
+IMPLEMENTATION:
+---------------
+1. Loopback-mount host rootfs.img read-write
+2. Install two NetworkManager connection files
+3. Unmount and push modified rootfs.img to device /data/rootfs.img
+4. Boot with V63 (known-working boot.img that enumerates RNDIS)
+5. NetworkManager should now configure device-side IPs properly
+
+EXPECTED RESULT:
+----------------
+- Device boots Ubuntu Touch
+- USB gadget enumerates as RNDIS (via V63 boot.img)
+- NetworkManager activates rndis-static or usb0-static connection
+- Device has 192.168.2.15/24 and 10.15.19.82/24
+- Host can reach device persistently (no loss after 35s)
+
+FILES MODIFIED:
+---------------
+- /mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host.img
+  Added:
+    /etc/NetworkManager/system-connections/rndis-static.nmconnection
+    /etc/NetworkManager/system-connections/usb0-static.nmconnection
+
+NEXT TEST:
+----------
+After rootfs.img push completes:
+1. Reboot device to fastboot
+2. Boot V63 (halium-boot-zl1-v63-usbd-disabled.img)
+3. Monitor USB and network reachability
+4. Expect: sustained connectivity beyond 35s mark

@@ -1,0 +1,39 @@
+# V72 Boot Failure — Fallback to V63
+
+## What Happened (2026-06-15 10:03 UTC)
+
+Attempted to boot V72 persistent image (24-hour timeout version):
+- File: tmp-v72-production-persistent/halium-boot-zl1-v72-persistent.img
+- Change: monitoring loop 420 ticks → 86400 ticks
+- Result: **COMPLETE FAILURE** — device disappeared from USB, no recovery
+
+Device did not:
+- Reach RNDIS stage (no usb0 interface)
+- Return to fastboot/recovery
+- Reappear on USB after 90s wait
+
+## Root Cause Analysis
+
+Possible issues with V72 modification:
+1. The sed replacement `s/while \[ "$i" -lt 420 \];/while [ "$i" -lt 86400 ];/` may have broken shell syntax
+2. Updating all v63→v72 strings may have broken internal logic that depends on exact strings
+3. 24-hour timeout value might exceed some resource limit
+
+## Fallback Strategy
+
+**Use V63 (known working, 7-15 min runtime)** for peripheral investigation:
+- Short windows, but proven stable
+- Can repeatedly reboot as needed
+- Each session: boot V63 → configure RNDIS → SSH → investigate → device drops → repeat
+
+## Action Required
+
+Device needs manual power button press to boot into fastboot/recovery again.
+Once available, boot V63 instead of V72.
+
+## V63 Boot Command
+```bash
+fastboot boot tmp-v63-netd-disabled/halium-boot-zl1-v63-usbd-disabled.img
+```
+
+Then follow standard RNDIS setup + SSH access procedure.

@@ -1,0 +1,87 @@
+BREAKTHROUGH: Clean Userdata Changes Everything
+================================================
+Date: 2026-06-14T05:00Z
+
+TEST: V63 boot after factory reset (clean userdata/cache)
+
+RESULT: FUNDAMENTALLY DIFFERENT BEHAVIOR
+=========================================
+
+Timeline:
+- [10-30s] Product: "zl1 V63 usbd-disabled RNDIS" (initrd keeper active)
+- [35s+]   Product: "zl1 Ubuntu Touch" (Ubuntu Touch userspace TOOK OVER)
+- [stable] Product stays "zl1 Ubuntu Touch" - NO LOSS, NO FLAPPING
+
+KEY OBSERVATIONS:
+-----------------
+1. USB gadget is now STABLE as "zl1 Ubuntu Touch" (was flapping/lost before)
+2. The product name TRANSITION (V63 keeper → Ubuntu Touch) proves:
+   **Ubuntu Touch rootfs BOOTED SUCCESSFULLY and took over USB**
+3. initrd diagnostic services (telnet 23) are CLOSED
+   → Because Ubuntu Touch userspace replaced the initrd environment
+4. Physical USB layer: PERFECT (UP, LOWER_UP, RNDIS interface classes correct)
+
+THE REAL PROBLEM (REFRAMED):
+-----------------------------
+NOT "RNDIS loss" (that was a symptom of dirty state + initrd-only env)
+
+ACTUAL ISSUE: Ubuntu Touch rootfs does NOT configure the USB network DATA PLANE
+- Host usb0: UP with IP 192.168.2.100 (manually configured)
+- Device gadget: "zl1 Ubuntu Touch" RNDIS (correct USB descriptors)
+- ARP to 192.168.2.15: FAILED
+- Device side rndis0 has NO IP / not brought up by Ubuntu Touch
+
+WHY PREVIOUS TESTS WERE MISLEADING:
+------------------------------------
+- Dirty userdata caused boot failures / fallback to Android
+- This made it LOOK like "RNDIS loss"
+- Actually: system wasn't booting to Ubuntu Touch at all
+- With CLEAN userdata: Ubuntu Touch DOES boot, but lacks USB net config
+
+COMPARISON TO EARLIER "SUCCESS":
+---------------------------------
+The original V54/V63 "reachable" samples came from the INITRD KEEPER
+(product "zl1 V54/V63 RNDIS"), NOT from Ubuntu Touch.
+
+The keeper configured device-side rndis0 IP (192.168.2.15) in initrd.
+When Ubuntu Touch took over (~35s), it removed the keeper's config
+and replaced it with its own (incomplete) USB network setup.
+
+So the "loss at 35s" was actually:
+**initrd keeper → Ubuntu Touch handover, where UT fails to configure rndis0**
+
+CORRECT SOLUTION DIRECTION:
+----------------------------
+The fix must be in the UBUNTU TOUCH ROOTFS, not the boot image:
+1. Configure rndis0 with 192.168.2.15 in Ubuntu Touch
+2. Either via:
+   - systemd-networkd config
+   - /etc/network/interfaces.d/
+   - usb-moded configuration
+   - NetworkManager connection
+3. OR keep the initrd keeper running INTO the Ubuntu Touch session
+   (don't let UT's usb-moded take over)
+
+CURRENT DEVICE STATE:
+---------------------
+- Running Ubuntu Touch (RAM boot via fastboot)
+- USB gadget stable "zl1 Ubuntu Touch"
+- Device-side rndis0 NOT configured (no IP, ARP fails)
+- No telnet/http/ssh access (no network data plane)
+
+NEXT STEPS:
+-----------
+1. Need access to Ubuntu Touch to fix USB networking
+2. Options:
+   a. Add USB net config to the ROOTFS (requires rootfs modification)
+   b. Boot with a debug init that configures rndis0 AND lets UT continue
+   c. Check if SSH works once we figure out device IP
+
+CRITICAL INSIGHT:
+-----------------
+We've been fixing the WRONG layer (boot image USB keeper).
+The boot/initrd USB works fine. The problem is the Ubuntu Touch
+ROOTFS doesn't set up its USB network interface.
+
+This is GOOD NEWS: the system boots, Halium works, USB gadget works.
+We just need to configure networking inside Ubuntu Touch.
