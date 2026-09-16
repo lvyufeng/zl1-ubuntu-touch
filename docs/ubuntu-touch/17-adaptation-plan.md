@@ -92,13 +92,19 @@ NetworkManager 连接，把设备侧静态 IP 覆盖掉。修复方式是在 roo
 | 密钥/校准 | `keymaster(±bak)` `cmnlib(±bak)` `cmnlib64(±bak)` `modemst1` `modemst2` `fsg` `fsc` `persist` |
 | 系统 | `boot` `recovery` `system` `vendor` `modem` `dsp` `bluetooth` `splash` |
 
-**仍然缺失**：`userdata`（`/dev/block/sda10`）与 `cache`。
-`userdata` 恰恰是所有实验反复写入的分区，也是"设备状态污染"的发生地。
-补备份应作为 Phase 0 的第一步。
+~~**仍然缺失**：`userdata`（`/dev/block/sda10`）与 `cache`。~~
+**已于 2026-09-16 补齐**（见 [`18-stage0-backup-record-2026-09-16.md`](18-stage0-backup-record-2026-09-16.md)）：
+`cache.img`（256 MiB 原始镜像）、`userdata-excluding-rootfs.tar`（275 MB，1048 项，全部文件内容）、
+`userdata.img`（26.1 GB 原始镜像，分块读 + 设备端 SHA256 交叉校验），
+存放于 `/mnt/data/zl1-backups/2026-09-16-recovery-supplement/`。
+同时复核了 31 个备份分区与设备当前分区表：`checked=31 mismatches=0`。
 
 因此 [`00-safety.md`](00-safety.md) 中"备份完成后才允许 flash"的前置条件
-**基本满足**，缺的只有 userdata。这意味着计划可以从"只敢 `fastboot boot`"
+**已完全满足**。这意味着计划可以从"只敢 `fastboot boot`"
 升级为"可以正规 `fastboot flash boot` + 有回滚路径"。
+
+回滚锚点：设备当前 boot 分区 SHA256 `a06d6508…5778ef`，
+与 2026-06-07 备份的 `boot.img` 逐字节相同——即之前所有 session 都从未真正写入过 boot 分区。
 
 ### 1.5 `fastboot boot` 是本次适配最大的方法论障碍
 
@@ -120,17 +126,20 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 `192.168.2.100/24` 与 `10.15.19.100/24`。这一步目前是人工的，是每次实验的
 "人为不确定源"。
 
-### 1.7 当前物理状态
+### 1.7 当前物理状态（2026-09-16 更新）
 
-- 目标设备 `33e80afe` **未连接**；总线上只有无关的 Xiaomi `4a2fe00b`（**必须忽略**）
-- 上次已知状态：Qualcomm EDL `05c6:9008`，需人工断电退出
+- 目标设备 `33e80afe` **在 TWRP recovery 中**（`omni_zl1` 3.3.1-0，`adb state=recovery`）
+- 总线上同时有无关的 Xiaomi `4a2fe00b`（**必须忽略**，所有脚本按 serial 过滤）
+- boot 分区未被改动，SHA256 `a06d6508…5778ef` == 2026-06-07 备份，回滚路径完整
 - 构建树产物在位：`/mnt/data/halium-zl1-build/out/target/product/zl1/halium-boot.img`
   = 17,997,824 字节，SHA256 `cd5cf3c1a715821eb6d63e390abcde4d64bb9f844c52c77ef055c2017fbab109`
   （即 filtered-DTB 版本）
-- `/mnt/data/halium-zl1-candidates/` 保有 v2–v73 全部镜像，含已知可用的
-  `halium-boot-zl1-v63-usbd-disabled.img`（18,022,400 字节）
-  - 已知坏件：`halium-boot-zl1-v65-production-with-keeper.img` 为 **0 字节**，应从清单中剔除
-- `/mnt/data` 剩余空间 369 GB
+- `/mnt/data/halium-zl1-candidates/` 保有 v2–v73 全部镜像共 84 张，清单见
+  [`manifests/halium-boot-candidates.md`](../../manifests/halium-boot-candidates.md)
+  - 已知可用的 `halium-boot-zl1-v63-usbd-disabled.img`（18,022,400 字节）
+    SHA256 `ab574bd3…e57576`
+  - 已知坏件 `halium-boot-zl1-v65-production-with-keeper.img`（0 字节）**已删除**
+- `/mnt/data` 剩余空间 368 GB，备份目录已含 26.1 GB 的 `userdata.img`
 
 ---
 
@@ -154,13 +163,17 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 前置：需要人工物理操作让设备退出 EDL（长按电源 15–20 秒断电，再开机）。
 
-| 步骤 | 动作 | 验收标准 |
-| --- | --- | --- |
-| 0.1 | 物理退出 EDL，确认设备以 `33e80afe` 出现 | `adb devices` / `fastboot devices` 中 `33e80afe` 在位；**忽略 `4a2fe00b`** |
-| 0.2 | 补备份 `userdata` 与 `cache` | 追加镜像进入 `2026-06-07-adb-root-staged/` 同级新目录，`sha256sum -c` 全 OK |
-| 0.3 | 复核现有 31 个备份与设备当前分区表一致 | `partition-sizes.txt` 与新读取的 `by-name` 逐项大小一致 |
-| 0.4 | 记录一次原生 Android 冷启动基线 | 完整 `getprop`、`/proc/cmdline`、`dmesg`、`mount` 存档，作为"正常"参照 |
-| 0.5 | 确认备份的 `boot.img` 可回刷（dry-run，不实际刷） | 用 `unpack_bootimg` 校验 `boot.img` 结构有效、page size 4096 |
+> **状态（2026-09-16）：0.1–0.3、0.5、0.6 已完成，0.4 待做。**
+> 完整证据见 [`18-stage0-backup-record-2026-09-16.md`](18-stage0-backup-record-2026-09-16.md)。
+
+| 步骤 | 动作 | 验收标准 | 状态 |
+| --- | --- | --- | --- |
+| 0.1 | 物理退出 EDL，确认设备以 `33e80afe` 出现 | `adb devices` / `fastboot devices` 中 `33e80afe` 在位；**忽略 `4a2fe00b`** | ✅ |
+| 0.2 | 补备份 `userdata` 与 `cache` | `sha256sum -c` 全 OK；`userdata` 副本与设备端 SHA256 一致 | ✅ |
+| 0.3 | 复核现有 31 个备份与设备当前分区表一致 | `partition-sizes.txt` 与新读取的 `by-name` 逐项大小一致（`mismatches=0`） | ✅ |
+| 0.4 | 记录一次原生 Android 冷启动基线 | 完整 `getprop`、`/proc/cmdline`、`dmesg`、`mount` 存档，作为"正常"参照 | ⏳ |
+| 0.5 | 确认备份的 `boot.img` 可回刷（dry-run，不实际刷） | 用 `unpack_bootimg` 校验 `boot.img` 结构有效、page size 4096 | ✅ |
+| 0.6 | 候选镜像清单 | 0 字节坏件删除；`manifests/halium-boot-candidates.md` 生成 | ✅ |
 
 > 0.2 的目的不是"再多一份备份"，而是让唯一的写入分区也有回滚点。
 > 在此之前，任何对 userdata 的写入都是不可回退的。
@@ -172,13 +185,16 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 | 步骤 | 动作 | 验收标准 |
 | --- | --- | --- |
-| 1.1 | manifest 冻结到具体 commit | `manifests/halium-9-zl1.xml` 中 6 个仓全部 pin 到 revision（`device/leeco/zl1 c430cb9`、`device/leeco/msm8996-common 9ff1910`、`kernel/leeco/msm8996 c2f6e859`、`vendor/leeco 084763d`、`halium/halium-boot 8656205`、`build/make 1bfc37a`） |
-| 1.2 | 把 5 个补丁脚本化并可重复执行 | `scripts/patch-halium9-build-tree.sh` 在干净树上重复执行两次结果一致（幂等） |
-| 1.3 | DTB 过滤配方固化进构建流程 | `CONFIG_PRODUCT_LE_ZL1=y`、`CONFIG_PRODUCT_LE_X2` 关闭、`CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES` 五个 zl1 DTB 显式列出，不再手工改 |
-| 1.4 | 一次干净重建并比对 | 产物 SHA256 == `cd5cf3c1…fbab109`（17,997,824 字节）。不一致则先查清原因，不进入 Phase 2 |
-| 1.5 | 清理候选目录清单 | 删除 0 字节镜像；`/mnt/data/halium-zl1-candidates/` 生成 `MANIFEST.md`（文件名 → SHA256 → 用途 → 已知结果） |
+| 1.1 | manifest 冻结到具体 commit | `manifests/halium-9-zl1.xml` 中 6 个仓全部 pin 到 revision（`device/leeco/zl1 c430cb9`、`device/leeco/msm8996-common 9ff1910`、`kernel/leeco/msm8996 c2f6e859`、`vendor/leeco 084763d`、`halium/halium-boot 8656205`、`build/make 1bfc37a`） | ✅ 2026-09-16 |
+| 1.2 | 把补丁脚本化并可重复执行 | `scripts/patch-halium9-build-tree.sh` 在干净树上重复执行两次结果一致（幂等） | ✅ 沙箱三次执行 `diff -r` 无差异 |
+| 1.3 | DTB 过滤配方固化进构建流程 | `CONFIG_PRODUCT_LE_ZL1=y`、`CONFIG_PRODUCT_LE_X2` 关闭、`CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES` 五个 zl1 DTB 显式列出，不再手工改 | ✅ |
+| 1.4 | 一次干净重建并比对 | 产物 SHA256 稳定可复现 | ✅ **`a29c18db…c0b1a3`**（两次 `rm -rf out/` 重建一致）。原定的 `cd5cf3c1…` 经查不可达——参照镜像自带的 initramfs cpio mtime 是陈旧值，见 [`19-phase1-reproducible-build.md`](19-phase1-reproducible-build.md) §2 |
+| 1.5 | 清理候选目录清单 | 删除 0 字节镜像；`manifests/halium-boot-candidates.md` 生成（文件名 → SHA256 → 用途 → 已知结果） | ✅ 85 张镜像，v68–v73 已从 `tmp-*/` 归集 |
 
 **1.4 是 Phase 1 的硬门禁。** 构建不可复现，后面所有结论都不可比。
+**门禁已于 2026-09-16 通过**，记录见 [`19-phase1-reproducible-build.md`](19-phase1-reproducible-build.md)。
+关键修复：`scripts/build-halium-boot.sh` 固定 `KBUILD_BUILD_TIMESTAMP` 等四个变量，
+未固定时重建与参照镜像差 99 字节。
 
 ### Phase 2 — 持久化安装与回滚路径
 

@@ -20,12 +20,14 @@ The recommended first approach is to reproduce the historical community Halium 9
 Start here:
 
 - [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) — **the current adaptation plan**
+- [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — Stage 0: what is now backed up and how it was verified
 - [`docs/ubuntu-touch/00-safety.md`](docs/ubuntu-touch/00-safety.md)
 - [`docs/ubuntu-touch/05-build-strategy.md`](docs/ubuntu-touch/05-build-strategy.md)
 - [`docs/ubuntu-touch/16-noble-systemd-lxc.md`](docs/ubuntu-touch/16-noble-systemd-lxc.md)
 - [`docs/ubuntu-touch/V63-OPTIONC-CONFIRMED-WORKING.md`](docs/ubuntu-touch/V63-OPTIONC-CONFIRMED-WORKING.md) — the boot configuration that works
 - [`scripts/README.md`](scripts/README.md) — host-side tooling
-- [`manifests/halium-9-zl1.xml`](manifests/halium-9-zl1.xml)
+- [`manifests/halium-9-zl1.xml`](manifests/halium-9-zl1.xml) — pinned to exact commits
+- [`manifests/halium-boot-candidates.md`](manifests/halium-boot-candidates.md) — every boot image built so far, by SHA256
 
 ## Repository layout
 
@@ -67,11 +69,14 @@ Two earlier conclusions have been corrected and are recorded in that document:
 - The 2026-06-07 partition backup is complete for everything except `userdata`, and all
   31 images re-verified against `SHA256SUMS` (31/31 OK).
 
-The device (serial `33e80afe`) is currently **not connected**; it was last left in
-Qualcomm EDL after the v73 `fastboot boot` attempt and needs a physical power-cycle.
-See [`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md)
-for the recovery steps. Do not flash `system`, `vendor`, or `userdata` before the
-`userdata` backup is taken.
+The device (serial `33e80afe`) is currently **in TWRP recovery**. Stage 0 of the plan is
+done: `userdata` and `cache` are now backed up too
+([`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md)),
+and the boot partition was confirmed byte-identical to the 2026-06-07 backup, so
+`fastboot flash boot` has a verified rollback. The earlier EDL incident is resolved; see
+[`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md)
+for what happened. Every script filters on serial `33e80afe` — the unrelated Xiaomi
+`4a2fe00b` shares the USB bus and must be ignored.
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 
@@ -89,4 +94,13 @@ Earlier notes evaluated whether BlackBerry 10 / QNX or BlackBerry Android could 
 - Do not flash anything until critical partitions are backed up and checksummed.
 - Do not write to modem/EFS/persist-related partitions during experiments.
 - Prefer `fastboot boot` over `fastboot flash` when the bootloader supports it.
+
+  *Superseded 2026-09-16.* `fastboot boot` was the main testing method through v2–v73 and
+  it is the reason those sessions produced so little: it does not persist, it leaves
+  dirty state, and it twice dropped the device into EDL. Write `boot` with
+  `fastboot flash boot` instead, and rely on the verified rollback image plus a known way
+  into fastboot/TWRP. See
+  [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) §1.5.
+  `system`, `vendor`, `userdata`, and the modem/EFS partitions still must not be flashed
+  until the restore procedure is written down.
 - Keep the Android restore path documented before testing Ubuntu Touch images.

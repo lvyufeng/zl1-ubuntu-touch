@@ -1,24 +1,63 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  zl1 (LeEco Pro3 / le_zl1 / LEX727) Halium 9 source pin.
+
+  This is a .repo/local_manifests file. It both adds the four halium-leeco
+  projects that the Halium default.xml does not know about, and pins every
+  project the port actually builds against to an exact commit.
+
+  Why commits and not branches: the earlier v2-v73 sessions synced
+  revision="halium-9.0" on all four halium-leeco projects. Those branches are
+  long dead upstream, so a fresh sync today can produce a different tree than
+  the one that built the known-good v63 image. The SHAs below are the exact
+  commits that tree was at on 2026-09-16, so the build is reproducible.
+
+  Branch each SHA was on, for reference:
+     device/leeco/zl1                    c430cb9  halium-9.0  2021-02-07
+     device/leeco/msm8996-common         9ff1910  halium-9.0  2021-02-07
+     kernel/leeco/msm8996                c2f6e859 halium-9.0  2021-02-07
+     vendor/leeco                        084763d  halium-9.0  2021-02-08
+     halium/halium-boot                  8656205  halium-9.0  2022-02-26
+     build/make                          1bfc37a  lineage-16.0 2022-01-19
+
+  The two upstream projects (halium-boot, build/make) are also listed here so
+  the pin overrides the floating revision in default.xml. Repo merges a
+  local_manifests <project> onto the default one when path matches, so the
+  remote/fetch settings come from default.xml and only revision is overridden.
+-->
 <manifest>
   <remote name="halium-leeco" fetch="https://github.com/" />
 
+  <!-- halium-leeco device tree -->
   <project name="halium-leeco/android_device_leeco_zl1"
            path="device/leeco/zl1"
            remote="halium-leeco"
-           revision="halium-9.0" />
+           revision="c430cb9be65269cba1b1be4020efbc99729f034f" />
 
   <project name="halium-leeco/android_device_leeco_msm8996-common"
            path="device/leeco/msm8996-common"
            remote="halium-leeco"
-           revision="halium-9.0" />
+           revision="9ff19109679bdcafb0df34d1291e009186c110b1" />
 
   <project name="halium-leeco/android_kernel_leeco_msm8996"
            path="kernel/leeco/msm8996"
            remote="halium-leeco"
-           revision="halium-9.0" />
+           revision="c2f6e859f3965d0845ad978829237574e4c3de83" />
 
   <project name="halium-leeco/proprietary_vendor_leeco"
            path="vendor/leeco"
            remote="halium-leeco"
-           revision="halium-9.0" />
+           revision="084763d71bf601fa7d8f659abc2a23d40d6ee17d" />
+
+  <!-- Upstream Halium: the boot-image template the port's boot.img is built
+       from. Pinned because the halium-9.0 branch has moved since. -->
+  <project path="halium/halium-boot"
+           name="Halium/halium-boot"
+           revision="8656205f5fe4cd5a34cc12b9c1bf0d02945586e4" />
+
+  <!-- Upstream LineageOS 16 build system: supplies the make rules the product
+       inherits. Pinned to the last lineage-16.0 commit the working tree had. -->
+  <project path="build/make"
+           name="LineageOS/android_build"
+           revision="1bfc37a3258f1129411e934abc341de9a60e7aaf" />
 </manifest>

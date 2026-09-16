@@ -1,8 +1,10 @@
 # scripts/ — zl1 Halium / Ubuntu Touch tooling
 
 Every script here is written to be run from the host against the `zl1`
-(LeEco Pro3, MSM8996). None of them embed flash commands where a read-only or
-`fastboot boot` (non-persistent) operation is sufficient — see
+(LeEco Pro3, MSM8996). Scripts that write to the device are named `stage*`,
+require an explicit `--yes`, verify image hashes before touching anything, and
+refuse to run unless the target serial `33e80afe` is present — the unrelated
+Xiaomi `4a2fe00b` shares the USB bus. Everything else is read-only. See
 [`../docs/ubuntu-touch/00-safety.md`](../docs/ubuntu-touch/00-safety.md).
 
 ## Device inspection and backup
@@ -13,6 +15,14 @@ Every script here is written to be run from the host against the `zl1`
 | `backup-partitions-adb.sh` | Back up allowlisted partitions by streaming reads over `adb exec-out`. |
 | `backup-partitions-adb-staged.sh` | Same, but stages each image in `/data/local/tmp` first. Works around Magisk/ADB stdout corruption seen when streaming large block devices directly. |
 | `backup-partitions-twrp.sh` | Partition backup via TWRP instead of a booted Android. |
+| `stage0-backup-userdata-cache.sh` | Stage 0. Images `userdata` (26.1 GB) in resumable 512 MiB chunks and cross-checks it against a device-side SHA256. Read-only. |
+
+## Stage 2 — the only scripts that write to the device
+
+| Script | Purpose |
+| --- | --- |
+| `stage2-flash-boot-and-verify.sh` | Flash the known-good v63 boot image with `fastboot flash boot`, then bring up host RNDIS and verify both device IPs plus the HTTP status server. Enforces the rollback and v63 image hashes first. |
+| `stage2-rollback-boot.sh` | Put the original Android `boot.img` back. This is the undo for the script above. |
 
 ## Halium 9 build tree
 
@@ -23,6 +33,7 @@ Every script here is written to be run from the host against the `zl1`
 | `patch-halium9-build-tree.sh` | Reproducible local fixes needed by the historical `halium-leeco` zl1 tree. Touches only the external tree, never the phone. |
 | `verify-halium-kernel-config.sh` | Check Halium-relevant kernel config options. Read-only. |
 | `build-halium-boot.sh` | Build the Halium boot artifact. |
+| `gen-candidate-manifest.sh` | Regenerate `../manifests/halium-boot-candidates.md` from `/mnt/data/halium-zl1-candidates/`. |
 | `make-halium-diagnostic-boot-images.sh` | Build host-side diagnostic Android boot images from existing images. |
 | `make-halium-nonblocking-usb-debug-boot.sh` | Diagnostic boot image that brings up initramfs USB RNDIS/telnet early but still continues the normal boot path. |
 | `make-halium-postswitch-debug-boot.sh` | Diagnostic boot image that also installs `/tmp/zl1-debug-init` in the Ubuntu rootfs just before `switch_root`. |
