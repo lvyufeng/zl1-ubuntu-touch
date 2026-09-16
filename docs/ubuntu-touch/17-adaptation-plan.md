@@ -132,8 +132,9 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 - 总线上同时有无关的 Xiaomi `4a2fe00b`（**必须忽略**，所有脚本按 serial 过滤）
 - boot 分区未被改动，SHA256 `a06d6508…5778ef` == 2026-06-07 备份，回滚路径完整
 - 构建树产物在位：`/mnt/data/halium-zl1-build/out/target/product/zl1/halium-boot.img`
-  = 17,997,824 字节，SHA256 `cd5cf3c1a715821eb6d63e390abcde4d64bb9f844c52c77ef055c2017fbab109`
-  （即 filtered-DTB 版本）
+  = 17,997,824 字节，SHA256 `a29c18db3525e9fdeb4bfcf43053ab305f5e7263dbf743b0380cd1e231c0b1a3`
+  （Phase 1 的可复现基线，见 [`19-phase1-reproducible-build.md`](19-phase1-reproducible-build.md)。
+  旧的 filtered-DTB 参照件 `cd5cf3c1…` 已被证明不可复现——是那张镜像自己的陈旧 initramfs 时间戳）
 - `/mnt/data/halium-zl1-candidates/` 保有 v2–v73 全部镜像共 84 张，清单见
   [`manifests/halium-boot-candidates.md`](../../manifests/halium-boot-candidates.md)
   - 已知可用的 `halium-boot-zl1-v63-usbd-disabled.img`（18,022,400 字节）

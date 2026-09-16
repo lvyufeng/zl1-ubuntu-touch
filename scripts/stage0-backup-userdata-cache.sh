@@ -78,14 +78,16 @@ copy_partition() {
   for (( i = 0; i < chunks; i++ )); do
     expected=$(( (i + 1) * chunk_bytes ))
     (( expected > total )) && expected=$total
-    want_mib=$(( ${CHUNK_MIB} ))
-    if (( (i + 1) * chunk_bytes > total )); then
-      want_mib=$(( (total - i * chunk_bytes) / 1048576 ))
-    fi
+    # Round the per-chunk count UP. The last chunk is rarely a whole number of
+    # MiB (here it is 357.7 MiB), and asking dd for 357 MiB silently loses the
+    # tail: reading past the end of the block device just returns a short read,
+    # so asking for one extra MiB is free.
+    want_mib=$(( (expected - i * chunk_bytes + 1048576 - 1) / 1048576 ))
 
     for attempt in 1 2 3 4 5; do
       adb -s "$SER" exec-out "dd if=$blk bs=1048576 skip=$(( i * CHUNK_MIB )) count=$want_mib 2>/dev/null" >> "$out" || true
       have="$(stat -c%s "$out")"
+      if (( have > expected )); then truncate -s "$expected" "$out"; have="$expected"; fi
       [[ "$have" == "$expected" ]] && break
       log "  chunk $((i+1))/$chunks attempt $attempt: got $have, want $expected — retrying"
       truncate -s $(( i * chunk_bytes )) "$out"

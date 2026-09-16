@@ -95,8 +95,10 @@ timeout 60 fastboot -s "$SER" reboot >>"$LOG" 2>&1 || true
 
 # ------------------------------------------------------- host RNDIS plumbing --
 log "=== waiting for the device RNDIS gadget ==="
+# v63's cmdline carries zl1_init_delay=30, so allow well past that before
+# deciding the boot failed.
 found=""
-for i in $(seq 1 90); do
+for i in $(seq 1 150); do
   if lsusb -d "$RNDIS_VIDPID" >/dev/null 2>&1; then found=1; break; fi
   sleep 2
 done

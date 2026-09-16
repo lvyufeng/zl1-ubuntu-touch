@@ -75,14 +75,17 @@ checked=31  mismatches=0  missing=0
 目录：`/mnt/data/zl1-backups/2026-09-16-recovery-supplement/`
 校验：`cd` 到该目录后 `sha256sum -c SHA256SUMS`
 
-| 文件 | 字节 | 内容 |
-| --- | ---: | --- |
-| `cache.img` | 268435456 | `cache` 分区原始镜像（`/dev/block/sda3`），与设备端 `sha256sum` 一致 |
-| `userdata-excluding-rootfs.tar` | 275565056 | `userdata` 的**全部文件内容**，1048 项，排除 `rootfs.img` |
-| `zl1-v63-monitor.log` | 7238012 | 设备端 v63 监控日志（40447 行），比仓库里那份 4025 行的副本完整 |
-| `rootfs-head-device.bin` | 4096 | 设备 `/data/rootfs.img` 前 4 KiB |
-| `rootfs-head-host.bin` | 4096 | 主机 rootfs 镜像前 4 KiB（对照用） |
-| `userdata.img` | 26144878592 | `userdata` 分区原始镜像，见 §7（分块写入中，设备端交叉校验结果在完成后追加） |
+| 文件 | 字节 | 内容 | 设备端 SHA256 交叉校验 |
+| --- | ---: | --- | --- |
+| `cache.img` | 268435456 | `cache` 分区原始镜像（`/dev/block/sda3`） | ✅ `374e4cce…f6514` |
+| `userdata.img` | 26144878592 | `userdata` 分区原始镜像（`/dev/block/sda10`），见 §7 | ✅ `8a5d2ee8…5ca07` |
+| `userdata-excluding-rootfs.tar` | 275565056 | `userdata` 的**全部文件内容**，1048 项，排除 `rootfs.img` | `tar -tf` 通过，1048 项 |
+| `zl1-v63-monitor.log` | 7238012 | 设备端 v63 监控日志（40447 行），比仓库里那份 4025 行的副本完整 | — |
+| `rootfs-head-device.bin` | 4096 | 设备 `/data/rootfs.img` 前 4 KiB | — |
+| `rootfs-head-host.bin` | 4096 | 主机 rootfs 镜像前 4 KiB（对照用） | — |
+
+两个原始镜像的 SHA256 都是**在设备上对分区本体算一遍、再和主机副本比一遍**，
+两边完全一致——静默短读无法蒙混过关。
 
 `cache` 是单块 256 MiB 分区，`cache.img` 就是它的完整原始镜像。
 `recovery`/`boot`/`system`/`vendor` 等其余 30 个分区在 2026-06-07 已备份。
@@ -128,6 +131,20 @@ checked=31  mismatches=0  missing=0
 收尾时在**设备端**对分区本身算一次 SHA256 作为基准，
 与主机副本的 SHA256 比对——这样"静默短读"无法蒙混过关。
 
+结果：设备端与主机端 `8a5d2ee841d17514be74328ac77edac271a8f9900c1a7b44a766121905a5ca07`，一致。
+设备端算 26 GB 用了 3 分 21 秒，主机端 3 分 8 秒。
+
+**第一个版本的分块脚本有个 bug，值得记下来**：最后一块按 MiB 向下取整了。
+`userdata` 是 26,144,878,592 字节，第 49 块需要 357.7 MiB，
+脚本却只请求了 357 MiB，于是整整少读 733,184 字节（716 KiB），
+而且五次重试全部"失败"——因为目标值本身算错了。
+修正是把每块的 MiB 数**向上取整**：越界读块设备只会得到短读，多要 1 MiB 是免费的。
+
+### 7.1 一条走不通的路
+
+`adb exec-out cat` 这条路也不可用：8 GB 的 `rootfs.img` 试过两次，
+分别拷到 343 MB 和 359 MB 时中断，而 `adb` 仍然返回 **exit 0**。
+
 > `dd` 用 `bs=1048576` 而不是 `bs=1M`：这台 TWRP 的 toybox `dd` 不接受 `1M` 后缀，
 > 会报 `block size '1M': illegal number`。
 
@@ -136,7 +153,7 @@ checked=31  mismatches=0  missing=0
 | 计划步骤 | 状态 | 证据 |
 | --- | --- | --- |
 | 0.1 设备以 `33e80afe` 出现 | ✅ | 全程按 serial 过滤；`4a2fe00b`（小米）被显式忽略 |
-| 0.2 补备份 `userdata` 与 `cache` | ✅ | §5 表格，`sha256sum -c` 全 OK |
+| 0.2 补备份 `userdata` 与 `cache` | ✅ | §5 表格，两个原始镜像均与设备端 SHA256 一致，`sha256sum -c` 全 OK |
 | 0.3 复核 31 个备份与分区表一致 | ✅ | §4，`checked=31 mismatches=0` |
 | 0.4 记录原生 Android 冷启动基线 | ⏳ 未做 | 需要离开 recovery 启动 Android，会中断本次备份；放到 Stage 2 之前做 |
 | 0.5 校验备份的 `boot.img` 可回刷 | ✅ | §3，`unpack_bootimg` 校验通过 |
