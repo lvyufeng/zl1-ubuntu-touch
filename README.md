@@ -19,6 +19,7 @@ The recommended first approach is to reproduce the historical community Halium 9
 
 Start here:
 
+- [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) — **the current adaptation plan**
 - [`docs/ubuntu-touch/00-safety.md`](docs/ubuntu-touch/00-safety.md)
 - [`docs/ubuntu-touch/05-build-strategy.md`](docs/ubuntu-touch/05-build-strategy.md)
 - [`docs/ubuntu-touch/16-noble-systemd-lxc.md`](docs/ubuntu-touch/16-noble-systemd-lxc.md)
@@ -50,20 +51,27 @@ Large or derived material is deliberately **not** tracked (see
 
 These regenerate from the scripts plus the device, so they stay out of history.
 
-## Current status (2026-06-17)
+## Current status (2026-09-16)
 
-The device boots and reaches a working state under the v63 boot image, which is
-the first configuration that gave stable RNDIS network access over USB from the
-host. The v73 image (same kernel, ramdisk with an HTTP command endpoint) was
-built and validated but left the device in Qualcomm EDL after a `fastboot boot`
-attempt. The device needs a manual power-cycle to leave EDL, then can either be
-retested with v73 or fell back to v63.
+The v63 boot image is a genuinely working configuration: under it the device runs
+systemd as PID 1, the Android LXC container comes up with the full set of HALs, and
+RNDIS networking stays up for ~9 minutes with both static IPs. See
+[`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md)
+for the evidence and for the plan that replaces the earlier boot-image trial-and-error
+approach.
 
+Two earlier conclusions have been corrected and are recorded in that document:
+
+- `lxc-ls` reporting the android container as `STOPPED` is an artifact of
+  `lxc-start -F` (foreground mode) and does **not** mean the container failed to start.
+- The 2026-06-07 partition backup is complete for everything except `userdata`, and all
+  31 images re-verified against `SHA256SUMS` (31/31 OK).
+
+The device (serial `33e80afe`) is currently **not connected**; it was last left in
+Qualcomm EDL after the v73 `fastboot boot` attempt and needs a physical power-cycle.
 See [`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md)
-for the recovery steps, and
-[`docs/session-notes/STRATEGIC-ANALYSIS-NEXT-STEPS.md`](docs/session-notes/STRATEGIC-ANALYSIS-NEXT-STEPS.md)
-for the plan after that. Critical partitions are still **not** backed up, so no
-flashing should happen before that is done.
+for the recovery steps. Do not flash `system`, `vendor`, or `userdata` before the
+`userdata` backup is taken.
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 

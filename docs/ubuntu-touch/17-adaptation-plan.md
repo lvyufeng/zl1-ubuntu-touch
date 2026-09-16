@@ -1,0 +1,280 @@
+# 17 — Ubuntu Touch / Halium 9 适配计划（重制版）
+
+**日期**: 2026-09-16
+**目标设备**: LeEco Pro3 `zl1` / `le_zl1` / MSM8996 (Snapdragon 821)，ADB serial `33e80afe`
+**上一版本状态**: 参考 [`V63-OPTIONC-CONFIRMED-WORKING.md`](V63-OPTIONC-CONFIRMED-WORKING.md)、
+[`docs/session-notes/STRATEGIC-ANALYSIS-NEXT-STEPS.md`](../session-notes/STRATEGIC-ANALYSIS-NEXT-STEPS.md)
+
+本计划取代之前"逐个镜像试错（v2 → v73）"的做法。它基于对已有证据的重新核对，
+其中包含若干对早期结论的**修正**——这些修正直接改变了下一步该做什么。
+
+---
+
+## 1. 证据基线（本次重新核对的结果）
+
+### 1.1 已确认可用：v63 配置是"Ubuntu Touch + Android 容器同时运行"的工作状态
+
+之前多个 session 记录把 V63 描述成"只是能进 systemd、Android 没起来"的状态。
+本次直接读取设备端状态转储，结论相反：
+
+`v63-usbd-disabled-boot-20260613T195322Z/status-008-192.txt`（最后一次采样）中，
+进程表里有完整的 Android 用户空间：
+
+```
+34212  ppid=1      lxc-start  /usr/bin/lxc-start -n android -F -- /system/bin/env -i PATH=... INIT_SECOND_STAGE=true /init
+34782  ppid=34212  init       /init
+36591  ppid=34782  ueventd    /sbin/ueventd
+36868  ppid=34782  hwservicemanager
+36869  ppid=34782  qseecomd
+39867  ppid=34782  logd
+39868  ppid=34782  servicemanager
+39869  ppid=34782  vndservicemanager /dev/vndbinder
+39878+ ppid=34782  android.hardware.{keymaster,audio,bluetooth,camera,cas,
+                   configstore,drm,gatekeeper,graphics,health,light,memtrack,
+                   power,sensors,thermal,vibrator,vr,wifi}@* 全套 HAL
+```
+
+同一时刻 USB/RNDIS 侧：
+
+```
+/sys/class/android_usb/android0/state=CONFIGURED
+/sys/class/android_usb/android0/functions=rndis
+/sys/class/android_usb/android0/iProduct=zl1 V63 usbd-disabled RNDIS
+rndis0(addr=...,carrier=1,op=up,idx=6)
+```
+
+对应的设备端 monitor 日志 `zl1-v63-monitor-from-device.log` 有 419 个 tick、
+跨度 `uptime 3.99s → 537.94s`（约 9 分钟），全程 `rndis0 up`、`carrier=1`。
+
+**结论：V63 配置下，Ubuntu Touch（systemd PID 1）、Android LXC 容器（Android init + HAL 全套）、
+USB RNDIS 网络三者可以同时稳定运行近 9 分钟。** 这不是"半成品"状态，
+而是一个真正可用的调试平台。
+
+### 1.2 修正：`lxc-ls` 报 `STOPPED` 是假象，不能作为判据
+
+`zl1-v63-monitor-from-device.log` 里 829/831 个采样都是
+`lxc=[Name: android State: STOPPED ]`，早期 session 据此判断"Android 容器从未启动"。
+
+这个判断是错的。同一个 monitor 脚本在 **v61** 上也报 `STOPPED`，而 v61 的状态转储
+（`v61-postinit-monitor-boot-20260613T073058Z/status-008-192.txt`）里同样有
+`lxc-start` → `/init` → `zygote64` / `zygote` / `surfaceflinger` 在跑。
+
+原因是 `lxc-start -F`（前台模式）不写 `/run/lxc/*/state` 那类状态文件，`lxc-ls` 于是报 `STOPPED`。
+
+**行动项**：所有"容器在不在跑"的判断改用 `lxc-info -n android`、
+`pgrep -f lxc-start`、或直接看 `logd`/`servicemanager` 进程是否存在。
+`lxc-ls` 的输出在本项目的文档中一律作废。
+
+### 1.3 已定根的故障：35 秒断网
+
+根因不是镜像、不是内核、不是 usbd。是 Ubuntu Touch rootfs 里
+`usb-moded` 的 tethering 逻辑生成了一条 `method=shared`（内置 DHCP server）的
+NetworkManager 连接，把设备侧静态 IP 覆盖掉。修复方式是在 rootfs 内预置：
+
+- `/etc/NetworkManager/system-connections/rndis-static.nmconnection`
+- `/etc/NetworkManager/system-connections/usb0-static.nmconnection`
+
+（mode 0600，`autoconnect-priority=100`）
+
+已注入该修复的 `rootfs.img`：`/mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host.img`
+（8,589,934,592 字节，2026-06-14 13:35）。V63 的 9 分钟稳定窗口就是在这个 rootfs 上取得的。
+
+### 1.4 修正：分区备份已经完成并校验通过
+
+之前 README 与 `DEVICE-IN-EDL-2026-06-17.md` 写的是"关键分区尚未备份"，**这条已过期**。
+
+`/mnt/data/zl1-backups/2026-06-07-adb-root-staged/` 有 31 个镜像 + `partition-sizes.txt` + `SHA256SUMS`。
+本次重新执行 `sha256sum -c SHA256SUMS`：**31/31 OK**。覆盖：
+
+| 类别 | 分区 |
+| --- | --- |
+| 启动链 | `xbl` `xblbak` `aboot` `abootbak` `tz` `tzbak` `rpm` `rpmbak` `hyp` `hypbak` `devcfg` `devcfgbak` |
+| 密钥/校准 | `keymaster(±bak)` `cmnlib(±bak)` `cmnlib64(±bak)` `modemst1` `modemst2` `fsg` `fsc` `persist` |
+| 系统 | `boot` `recovery` `system` `vendor` `modem` `dsp` `bluetooth` `splash` |
+
+**仍然缺失**：`userdata`（`/dev/block/sda10`）与 `cache`。
+`userdata` 恰恰是所有实验反复写入的分区，也是"设备状态污染"的发生地。
+补备份应作为 Phase 0 的第一步。
+
+因此 [`00-safety.md`](00-safety.md) 中"备份完成后才允许 flash"的前置条件
+**基本满足**，缺的只有 userdata。这意味着计划可以从"只敢 `fastboot boot`"
+升级为"可以正规 `fastboot flash boot` + 有回滚路径"。
+
+### 1.5 `fastboot boot` 是本次适配最大的方法论障碍
+
+`fastboot boot`（RAM boot，不写分区）看起来安全，但实测：
+
+- 非持久：每次都要重来，无法验证"重启后还能不能用"这一最基本的可用性要求
+- 会污染状态：反复执行后 userdata/cache/system 累积脏状态
+  （见 [`DEVICE-STATE-CORRUPTION-DISCOVERED.txt`](../session-notes/DEVICE-STATE-CORRUPTION-DISCOVERED.txt)，
+  同一张 V64 镜像重测时 USB 描述符变成了 "Nexus 4 (fastboot)"）
+- 失败时可能掉进 EDL，需要人工断电才能恢复
+
+v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物，而不是镜像本身的问题。
+**新版计划的核心改变：停止把 `fastboot boot` 当主力测试手段。**
+
+### 1.6 主机侧 USB 绑定需要人工介入（可自动化）
+
+设备端 gadget 宣告 `bInterfaceClass = 255 (Vendor Specific)`，主机的 `rndis_host`
+不会自动 probe，必须手动写 sysfs `new_id` / `bind`，并在有限窗口内配上
+`192.168.2.100/24` 与 `10.15.19.100/24`。这一步目前是人工的，是每次实验的
+"人为不确定源"。
+
+### 1.7 当前物理状态
+
+- 目标设备 `33e80afe` **未连接**；总线上只有无关的 Xiaomi `4a2fe00b`（**必须忽略**）
+- 上次已知状态：Qualcomm EDL `05c6:9008`，需人工断电退出
+- 构建树产物在位：`/mnt/data/halium-zl1-build/out/target/product/zl1/halium-boot.img`
+  = 17,997,824 字节，SHA256 `cd5cf3c1a715821eb6d63e390abcde4d64bb9f844c52c77ef055c2017fbab109`
+  （即 filtered-DTB 版本）
+- `/mnt/data/halium-zl1-candidates/` 保有 v2–v73 全部镜像，含已知可用的
+  `halium-boot-zl1-v63-usbd-disabled.img`（18,022,400 字节）
+  - 已知坏件：`halium-boot-zl1-v65-production-with-keeper.img` 为 **0 字节**，应从清单中剔除
+- `/mnt/data` 剩余空间 369 GB
+
+---
+
+## 2. 策略：从"试错"改为"可复现的三件事"
+
+旧计划在问："哪一版镜像能开机？"
+新计划要回答的是另外三件事，按依赖顺序：
+
+1. **可复现的构建** — 同一份源码 + 同一组补丁 → 逐字节相同的 `halium-boot.img`
+2. **可复现的环境** — 每次实验开始前，设备与主机都回到同一个已知状态
+3. **可持久化的安装** — 一次 `flash` 之后，冷启动能直接进入目标状态，不需要 `fastboot boot`
+
+在这三件事落地之前，任何外设（显示、触摸、modem、Wi-Fi、音频、传感器、摄像头）
+的调试结果都不可信——因为无法区分"外设没配好"和"这次开机本身就不正常"。
+
+---
+
+## 3. 分阶段计划
+
+### Phase 0 — 设备恢复与基线固化（无风险，先做）
+
+前置：需要人工物理操作让设备退出 EDL（长按电源 15–20 秒断电，再开机）。
+
+| 步骤 | 动作 | 验收标准 |
+| --- | --- | --- |
+| 0.1 | 物理退出 EDL，确认设备以 `33e80afe` 出现 | `adb devices` / `fastboot devices` 中 `33e80afe` 在位；**忽略 `4a2fe00b`** |
+| 0.2 | 补备份 `userdata` 与 `cache` | 追加镜像进入 `2026-06-07-adb-root-staged/` 同级新目录，`sha256sum -c` 全 OK |
+| 0.3 | 复核现有 31 个备份与设备当前分区表一致 | `partition-sizes.txt` 与新读取的 `by-name` 逐项大小一致 |
+| 0.4 | 记录一次原生 Android 冷启动基线 | 完整 `getprop`、`/proc/cmdline`、`dmesg`、`mount` 存档，作为"正常"参照 |
+| 0.5 | 确认备份的 `boot.img` 可回刷（dry-run，不实际刷） | 用 `unpack_bootimg` 校验 `boot.img` 结构有效、page size 4096 |
+
+> 0.2 的目的不是"再多一份备份"，而是让唯一的写入分区也有回滚点。
+> 在此之前，任何对 userdata 的写入都是不可回退的。
+
+### Phase 1 — 构建可复现化
+
+现有构建已经成功（见 [`07-build-log-index.md`](07-build-log-index.md)），
+但五个 host 侧补丁是手工打的、源码 revision 写在文档里而不是锁在文件里。
+
+| 步骤 | 动作 | 验收标准 |
+| --- | --- | --- |
+| 1.1 | manifest 冻结到具体 commit | `manifests/halium-9-zl1.xml` 中 6 个仓全部 pin 到 revision（`device/leeco/zl1 c430cb9`、`device/leeco/msm8996-common 9ff1910`、`kernel/leeco/msm8996 c2f6e859`、`vendor/leeco 084763d`、`halium/halium-boot 8656205`、`build/make 1bfc37a`） |
+| 1.2 | 把 5 个补丁脚本化并可重复执行 | `scripts/patch-halium9-build-tree.sh` 在干净树上重复执行两次结果一致（幂等） |
+| 1.3 | DTB 过滤配方固化进构建流程 | `CONFIG_PRODUCT_LE_ZL1=y`、`CONFIG_PRODUCT_LE_X2` 关闭、`CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES` 五个 zl1 DTB 显式列出，不再手工改 |
+| 1.4 | 一次干净重建并比对 | 产物 SHA256 == `cd5cf3c1…fbab109`（17,997,824 字节）。不一致则先查清原因，不进入 Phase 2 |
+| 1.5 | 清理候选目录清单 | 删除 0 字节镜像；`/mnt/data/halium-zl1-candidates/` 生成 `MANIFEST.md`（文件名 → SHA256 → 用途 → 已知结果） |
+
+**1.4 是 Phase 1 的硬门禁。** 构建不可复现，后面所有结论都不可比。
+
+### Phase 2 — 持久化安装与回滚路径
+
+这是本计划与旧计划最大的分歧点：**从这里开始用 `fastboot flash boot`，不再用 `fastboot boot`。**
+
+| 步骤 | 动作 | 验收标准 |
+| --- | --- | --- |
+| 2.1 | 确认回滚路径可用 | 备份 `boot.img`（2026-06-07）SHA256 校验通过；记录 `fastboot flash boot` 回刷命令；确认进入 fastboot 的方式（电源+音量减） |
+| 2.2 | `fastboot flash boot halium-boot-zl1-v63-usbd-disabled.img` | flash 成功，`fastboot reboot` 后**冷启动**直接进入 V63 状态 |
+| 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） |
+| 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） |
+| 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android |
+
+2.3/2.4 通过，才可以说"zl1 能跑 Ubuntu Touch"。
+2.5 通过，才可以说"这条路线是安全的"。
+
+### Phase 3 — 主机侧 USB/RNDIS 自动化
+
+| 步骤 | 动作 | 验收标准 |
+| --- | --- | --- |
+| 3.1 | 写 udev 规则自动 bind `rndis_host` | 插线后 `usb0` 自动出现，无需手工 sysfs 写入 |
+| 3.2 | 自动配置主机侧 IP | `usb0` 自动获得 `192.168.2.100/24` 与 `10.15.19.100/24` |
+| 3.3 | 写一个"等待并验证连通"脚本，替代各版 `watch-and-boot` | 一条命令完成：等待设备 → 等 `usb0` → 配 IP → 探测 `10.15.19.82` HTTP/SSH → 输出 PASS/FAIL |
+| 3.4 | 明确"必须忽略 `4a2fe00b`"写进脚本 | 所有设备操作前按 serial 过滤，脚本拒绝在 serial 不匹配时继续 |
+
+3.3 之后，每次实验的"环境"就固定了，才有资格比较镜像差异。
+
+### Phase 4 — Halium 运行时与 Android 容器
+
+| 步骤 | 动作 | 验收标准 |
+| --- | --- | --- |
+| 4.1 | 统一容器状态判据 | 文档与脚本中不再使用 `lxc-ls`，改用 `lxc-info -n android` |
+| 4.2 | 确认 Android 容器在冷启动下的启动时序 | 记录 `lxc-android-config.service` → `start-android-container` → `lxc-start` 的时间线，明确从冷启动到容器 READY 的耗时 |
+| 4.3 | 复核 usb-moded 与 NM 静态连接的交互 | 冷启动后 `rndis0` 的 IP 在 10 分钟内不丢；NM 中不存在 `method=shared` 的活动连接 |
+| 4.4 | 用 `pre-start.d` 钩子承载实验性改动 | 所有容器侧实验通过 `/var/lib/lxc/android/pre-start.d/` 注入，不改 rootfs 主体（对应 [`16-noble-systemd-lxc.md`](16-noble-systemd-lxc.md)） |
+| 4.5 | 复核 netd / IPA / rmnet 的真实影响 | 用「一次只改一个变量 + 冷启动复现 3 次」的方式重测，取代 v64–v67 的快速试错 |
+
+4.5 优先级重新排定：既然 V63 已经能带 Android 容器跑 9 分钟，
+"netd 是不是元凶"这个问题已经从"阻塞项"降级为"稳定性优化项"。
+
+### Phase 5 — 基础可用性（能用的最小集合）
+
+按依赖顺序，每一项都要"冷启动后仍成立"：
+
+| 项 | 验收标准 |
+| --- | --- |
+| SSH | 主机 `ssh root@10.15.19.82` 免密登录成功；冷启动后仍成功（注意 `/root`、`/etc/ssh` 是从 userdata bind-mount 进来的） |
+| 显示 | 屏幕点亮，有可见输出（framebuffer 有内容） |
+| 触摸 | `evtest` 能看到触摸事件，坐标可用 |
+| Wi-Fi | `wlan0` 扫描出 AP 列表 |
+| 稳定性 | 连续运行 1 小时不掉网、不重启 |
+
+### Phase 6 — 外设
+
+顺序与优先级沿用 [`NEXT-STEPS-PERIPHERALS-V72.md`](../session-notes/NEXT-STEPS-PERIPHERALS-V72.md)，
+但在 Phase 5 完成前不启动：
+
+cellular modem（`rmnet_ipa0` / `qmi`）→ 音频 → 传感器 → 摄像头 → 蓝牙 → GPS
+
+---
+
+## 4. 与旧计划的关键差异
+
+|  | 旧计划（v2–v73） | 新计划 |
+| --- | --- | --- |
+| 测试手段 | 主力 `fastboot boot`（RAM boot） | 主力 `fastboot flash boot` + 备份回滚 |
+| 成功判据 | 某次开机没失败 | 连续 3 次冷启动结果一致 |
+| 变量控制 | 一次改多项（usbd + netd + keeper + packaging） | 一次一个变量，冷启动复现 3 次 |
+| 容器判据 | `lxc-ls` 显示 `STOPPED` | `lxc-info` / 进程存在性 |
+| 环境 | 手工 bind USB、手工配 IP | udev + 脚本自动化 |
+| 上游 | 文档里写 revision | manifest 里 pin revision + 幂等补丁脚本 |
+| 结论可靠性 | 每轮结论被下一轮推翻 | 构建可复现 + 环境可复现 → 结论可累积 |
+
+v64–v67 尝试的"持久化"方向是对的，失败原因是**在没有可复现环境和可复现构建的前提下**
+同时改了太多变量。新计划把这两件事前置到 Phase 1–3，再回到 Android 容器调优。
+
+---
+
+## 5. 安全约束（沿用 [`00-safety.md`](00-safety.md)，仍然有效）
+
+- 不写 `modemst1` `modemst2` `fsg` `fsc` `persist` `modem` `dsp` `bluetooth`
+- 任何设备操作前确认目标是 serial `33e80afe`；**`4a2fe00b` 是无关的 Xiaomi 设备，必须忽略**
+- Phase 2 允许 `flash boot`（有已校验的备份可回滚），但**不允许** `flash system` / `flash vendor`
+- 设备在 EDL 时不要用 QFIL/qfil 类工具刷机
+- 大体积源码树与备份留在 notes 仓库之外（见 [`.gitignore`](../../.gitignore)）
+
+---
+
+## 6. 立即要做的下一步
+
+按顺序，前三项都不依赖设备在线：
+
+1. **补 `userdata` 备份**（需要设备在线；Phase 0.2）
+2. **冻结 manifest 到具体 revision，把 5 个补丁脚本幂等化**（纯主机侧；Phase 1.1–1.2）
+3. **跑一次干净重建，比对 SHA256**（纯主机侧；Phase 1.4）
+4. **写 udev 规则 + 统一等待脚本**（Phase 3.1–3.3）
+5. 设备恢复到 fastboot 后，执行 Phase 2.2 首次 `flash boot` + 连续 3 次冷启动验收
+
+第 2、3、4 项现在就可以开始，不需要设备。

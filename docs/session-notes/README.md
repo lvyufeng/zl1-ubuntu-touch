@@ -8,9 +8,16 @@ the middle of a debugging run and supersede each other.
 For the stable conclusions, read the documents under
 [`../ubuntu-touch/`](../ubuntu-touch/) first — in particular:
 
+- [`../ubuntu-touch/17-adaptation-plan.md`](../ubuntu-touch/17-adaptation-plan.md)
 - [`../ubuntu-touch/00-safety.md`](../ubuntu-touch/00-safety.md)
 - [`../ubuntu-touch/V63-OPTIONC-CONFIRMED-WORKING.md`](../ubuntu-touch/V63-OPTIONC-CONFIRMED-WORKING.md)
 - [`../ubuntu-touch/SSH-FINAL-STATUS.md`](../ubuntu-touch/SSH-FINAL-STATUS.md)
+
+> **Known bad conclusion in these notes.** Several entries read the Android container
+> state from `lxc-ls`, which reports `STOPPED` even while the container is running,
+> because `lxc-start` is invoked with `-F` (foreground). The Android container did in
+> fact start under both v61 and v63. Use `lxc-info -n android` or process existence
+> instead. See [`../ubuntu-touch/17-adaptation-plan.md`](../ubuntu-touch/17-adaptation-plan.md) §1.2.
 
 ## Root-cause write-ups (still current)
 
