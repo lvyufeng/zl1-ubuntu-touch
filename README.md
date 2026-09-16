@@ -23,6 +23,7 @@ Start here:
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — Stage 0: what is now backed up and how it was verified
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — Phase 1: the build is now byte-for-byte reproducible, and why the old target SHA was wrong
 - [`docs/ubuntu-touch/20-stage2-runbook.md`](docs/ubuntu-touch/20-stage2-runbook.md) — Stage 2: how to flash boot, how to verify, how to roll back
+- [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — Stage 2 result: the flash+cold-boot works, and why the container does not
 - [`docs/ubuntu-touch/00-safety.md`](docs/ubuntu-touch/00-safety.md)
 - [`docs/ubuntu-touch/05-build-strategy.md`](docs/ubuntu-touch/05-build-strategy.md)
 - [`docs/ubuntu-touch/16-noble-systemd-lxc.md`](docs/ubuntu-touch/16-noble-systemd-lxc.md)
@@ -58,27 +59,35 @@ These regenerate from the scripts plus the device, so they stay out of history.
 ## Current status (2026-09-16)
 
 The v63 boot image is a genuinely working configuration: under it the device runs
-systemd as PID 1, the Android LXC container comes up with the full set of HALs, and
-RNDIS networking stays up for ~9 minutes with both static IPs. See
+systemd as PID 1, RNDIS networking stays up with both static IPs, and — on the
+2026-06-13 boot — the Android LXC container came up with the full set of HALs. See
 [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md)
 for the evidence and for the plan that replaces the earlier boot-image trial-and-error
 approach.
 
-Two earlier conclusions have been corrected and are recorded in that document:
+Three earlier conclusions have been corrected and are recorded in that document:
 
 - `lxc-ls` reporting the android container as `STOPPED` is an artifact of
   `lxc-start -F` (foreground mode) and does **not** mean the container failed to start.
 - The 2026-06-07 partition backup is complete for everything except `userdata`, and all
   31 images re-verified against `SHA256SUMS` (31/31 OK).
+- `fastboot boot` is not the safe option it looks like; see the safety notes below.
 
-The device (serial `33e80afe`) is currently **in TWRP recovery**. Stage 0 of the plan is
-done: `userdata` and `cache` are now backed up too
-([`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md)),
-and the boot partition was confirmed byte-identical to the 2026-06-07 backup, so
-`fastboot flash boot` has a verified rollback. The earlier EDL incident is resolved; see
-[`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md)
-for what happened. Every script filters on serial `33e80afe` — the unrelated Xiaomi
-`4a2fe00b` shares the USB bus and must be ignored.
+The device (serial `33e80afe`) is now **running Ubuntu Touch from a flashed boot
+partition** — the first time this port has survived a real cold boot. Stage 0 and
+Stage 1 of the plan are done:
+
+- [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — `userdata` and `cache` are now backed up and byte-verified against the device
+- [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — two clean rebuilds produce an identical `halium-boot.img`
+- [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — `fastboot flash boot` + cold boot works: systemd as PID 1, RNDIS up with no drops across 71 samples. The Android container does not start, because `/data/system.img` is missing from the device.
+
+The earlier EDL incident is resolved; see
+[`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md).
+Every script filters on serial `33e80afe` — the unrelated Xiaomi `4a2fe00b` shares the
+USB bus and must be ignored.
+
+**The device now exposes only RNDIS, not adb.** Changing the boot image needs a physical
+key combination first: Volume Down + Power for fastboot, Volume Up + Power for TWRP.
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 

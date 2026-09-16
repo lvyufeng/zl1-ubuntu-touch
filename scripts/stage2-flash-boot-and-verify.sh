@@ -155,8 +155,22 @@ for _ in $(seq 1 10); do
   sleep 3
 done
 if [[ -n "$http" ]]; then
-  log "HTTP 8080 responded"
-  printf '%s\n' "$http" | head -20 | tee -a "$LOG"
+  log "HTTP 8080 responded ($(printf '%s' "$http" | wc -c) bytes)"
+  # Save the whole page rather than piping through `head`: on 2026-09-16 the
+  # head|tee pipeline closed early, raised SIGPIPE, and — with pipefail — killed
+  # the script with exit 141 *after* every check had already passed. A truncated
+  # capture is also more useful than the first 20 lines.
+  STATUS_OUT="/mnt/data/zl1-bb10/tmp-stage2-status-${STAMP}.txt"
+  printf '%s\n' "$http" > "$STATUS_OUT"
+  log "status page saved: $STATUS_OUT"
+
+  # The status page carries the process summary. Check the markers that mean the
+  # container is really up — never `lxc-ls`, which reports STOPPED here even
+  # while the container runs (see docs/ubuntu-touch/17-adaptation-plan.md 1.2).
+  for pat in 'lxc-start' 'systemd' 'logd' 'servicemanager'; do
+    if printf '%s' "$http" | grep -q "$pat"; then log "status page mentions: $pat"
+    else log "status page does NOT mention: $pat"; fi
+  done
 else
   log "HTTP 8080 did not respond"
 fi

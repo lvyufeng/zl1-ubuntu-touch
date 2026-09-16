@@ -1,0 +1,128 @@
+# Stage 2 cold boot #1 — key sections of the device status page
+# Source: curl http://10.15.19.82:8080/ at 2026-09-16T20:11:22Z
+# PID 1, network, and the monitor ticks (one line per tick, deduplicated).
+
+== uptime ==
+363.55 998.75
+
+== pid 1 ==
+1	ppid=0	state=S (sleeping)	name=systemd	cmd=/sbin/init
+/sbin/init
+
+== selected processes ==
+1	ppid=0	state=S (sleeping)	name=systemd	cmd=/sbin/init
+181	ppid=2	state=S (sleeping)	name=DIAG_USB_diag	cmd=
+264	ppid=2	state=S (sleeping)	name=usbnet	cmd=
+268	ppid=2	state=S (sleeping)	name=k_sm_usb	cmd=
+273	ppid=2	state=S (sleeping)	name=k_ipa_usb	cmd=
+352	ppid=2	state=S (sleeping)	name=k_sm_usb	cmd=
+357	ppid=2	state=S (sleeping)	name=usb_bam_wq	cmd=
+372	ppid=2	state=S (sleeping)	name=irq/118-usbin-u	cmd=
+373	ppid=2	state=S (sleeping)	name=irq/119-usbin-o	cmd=
+374	ppid=2	state=S (sleeping)	name=irq/120-usbin-s	cmd=
+378	ppid=2	state=S (sleeping)	name=irq/124-usbid-c	cmd=
+4391	ppid=820	state=S (sleeping)	name=python3	cmd=/usr/bin/python3 /usr/local/sbin/zl1-status-server.py
+32108	ppid=1	state=S (sleeping)	name=systemd-journal	cmd=/usr/lib/systemd/systemd-journald
+32258	ppid=1	state=S (sleeping)	name=systemd-udevd	cmd=/usr/lib/systemd/systemd-udevd
+33523	ppid=1	state=S (sleeping)	name=systemd-timesyn	cmd=/usr/lib/systemd/systemd-timesyncd
+33939	ppid=1	state=S (sleeping)	name=dbus-daemon	cmd=@dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+34118	ppid=1	state=S (sleeping)	name=systemd-logind	cmd=/usr/lib/systemd/systemd-logind
+36782	ppid=1	state=S (sleeping)	name=lxc-monitord	cmd=/usr/libexec/lxc/lxc-monitord --daemon
+230827	ppid=1	state=S (sleeping)	name=sensorfwd	cmd=/usr/sbin/sensorfwd --systemd --device-info --log-level=warning
+
+== sys class net ==
+bond0 address=ce:9c:9b:85:47:82 operstate=down ifindex=2
+bonding_masters 
+dummy0 address=de:cf:b0:fe:ed:ce operstate=down ifindex=3
+lo address=00:00:00:00:00:00 operstate=unknown carrier=1 ifindex=1
+rmnet_ipa0 address= operstate=down ifindex=5
+rndis0 address=36:4d:67:f0:34:f9 operstate=up carrier=1 ifindex=6
+sit0 address=00:00:00:00 operstate=down ifindex=4
+
+== android usb summary ==
+android_usb
+/sys/class/android_usb/android0/state=CONFIGURED
+/sys/class/android_usb/android0/functions=rndis
+/sys/class/android_usb/android0/enable=1
+/sys/class/android_usb/android0/idVendor=18d1
+/sys/class/android_usb/android0/idProduct=d001
+/sys/class/android_usb/android0/iManufacturer=Halium
+/sys/class/android_usb/android0/iProduct=zl1 V63 usbd-disabled RNDIS
+/sys/class/android_usb/android0/iSerial=33e80afe-v63-usbd-disabled-rndis
+/sys/class/android_usb/android0/f_rndis/ethaddr=02:15:19:82:00:01
+/sys/class/android_usb/android0/f_rndis/vendorID=18d1
+/sys/class/android_usb/android0/f_rndis/manufacturer=Halium
+/sys/class/android_usb/android0/f_rndis/wceis=1
+
+== monitor ticks (deduplicated; 71 unique, 0 without carrier=1,op=up) ==
+tick=211 uptime=275.16 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=212 uptime=276.19 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=213 uptime=277.25 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=214 uptime=278.30 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=215 uptime=279.34 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=216 uptime=280.39 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=217 uptime=281.43 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=218 uptime=282.47 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=219 uptime=283.50 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=220 uptime=284.55 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=221 uptime=287.62 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=222 uptime=288.65 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=223 uptime=289.73 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=224 uptime=290.77 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=225 uptime=291.81 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=226 uptime=292.85 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=227 uptime=293.91 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=228 uptime=294.95 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=229 uptime=295.99 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=230 uptime=297.05 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=231 uptime=299.99 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=232 uptime=301.03 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=233 uptime=302.06 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=234 uptime=303.10 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=235 uptime=304.15 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=236 uptime=305.20 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=237 uptime=306.24 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=238 uptime=307.28 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=239 uptime=308.31 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=240 uptime=309.36 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=241 uptime=312.33 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=242 uptime=313.39 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=243 uptime=314.43 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=244 uptime=315.46 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=245 uptime=316.51 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=246 uptime=317.56 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=247 uptime=318.60 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=248 uptime=319.64 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=249 uptime=320.68 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=250 uptime=321.72 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=251 uptime=324.99 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=252 uptime=326.03 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=253 uptime=327.07 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=254 uptime=328.11 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=255 uptime=329.16 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=256 uptime=330.21 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=257 uptime=331.25 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=258 uptime=332.30 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=259 uptime=333.35 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=260 uptime=334.39 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=261 uptime=337.74 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=262 uptime=338.77 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=263 uptime=339.84 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=264 uptime=340.90 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=265 uptime=341.94 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=266 uptime=342.99 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=267 uptime=344.03 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=268 uptime=345.07 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=269 uptime=346.10 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=270 uptime=347.14 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=271 uptime=350.44 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=272 uptime=351.48 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=273 uptime=352.52 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=274 uptime=353.56 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=275 uptime=354.59 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=276 uptime=355.64 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=277 uptime=356.68 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=278 uptime=357.72 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=279 uptime=358.79 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=280 uptime=359.82 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]
+tick=281 uptime=362.83 pid1=[systemd|/sbin/init ] usb=[state=CONFIGURED functions=rndis enable=1 product=zl1 V63 usbd-disabled RNDIS serial=33e80afe-v63-usbd-disabled-rndis rndis0(addr=36:4d:67:f0:34:f9,carrier=1,op=up,idx=6) ] lxc=[Name:           android State:          STOPPED ]

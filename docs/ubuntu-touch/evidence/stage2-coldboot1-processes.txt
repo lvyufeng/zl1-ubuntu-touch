@@ -1,0 +1,20 @@
+1	ppid=0	state=S (sleeping)	name=systemd	cmd=/sbin/init
+181	ppid=2	state=S (sleeping)	name=DIAG_USB_diag	cmd=
+264	ppid=2	state=S (sleeping)	name=usbnet	cmd=
+268	ppid=2	state=S (sleeping)	name=k_sm_usb	cmd=
+273	ppid=2	state=S (sleeping)	name=k_ipa_usb	cmd=
+352	ppid=2	state=S (sleeping)	name=k_sm_usb	cmd=
+357	ppid=2	state=S (sleeping)	name=usb_bam_wq	cmd=
+372	ppid=2	state=S (sleeping)	name=irq/118-usbin-u	cmd=
+373	ppid=2	state=S (sleeping)	name=irq/119-usbin-o	cmd=
+374	ppid=2	state=S (sleeping)	name=irq/120-usbin-s	cmd=
+378	ppid=2	state=S (sleeping)	name=irq/124-usbid-c	cmd=
+4391	ppid=820	state=S (sleeping)	name=python3	cmd=/usr/bin/python3 /usr/local/sbin/zl1-status-server.py
+32108	ppid=1	state=S (sleeping)	name=systemd-journal	cmd=/usr/lib/systemd/systemd-journald
+32258	ppid=1	state=S (sleeping)	name=systemd-udevd	cmd=/usr/lib/systemd/systemd-udevd
+33523	ppid=1	state=S (sleeping)	name=systemd-timesyn	cmd=/usr/lib/systemd/systemd-timesyncd
+33939	ppid=1	state=S (sleeping)	name=dbus-daemon	cmd=@dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+34064	ppid=1	state=S (sleeping)	name=sensorfwd	cmd=/usr/sbin/sensorfwd --systemd --device-info --log-level=warning
+34118	ppid=1	state=S (sleeping)	name=systemd-logind	cmd=/usr/lib/systemd/systemd-logind
+36782	ppid=1	state=S (sleeping)	name=lxc-monitord	cmd=/usr/libexec/lxc/lxc-monitord --daemon
+47912	ppid=1	state=S (sleeping)	name=display-powersa	cmd=/usr/bin/python3 /usr/libexec/ubuntu-touch-session/display-powersave-blocker --timeout=300

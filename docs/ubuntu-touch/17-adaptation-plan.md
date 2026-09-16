@@ -128,9 +128,13 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 ### 1.7 当前物理状态（2026-09-16 更新）
 
-- 目标设备 `33e80afe` **在 TWRP recovery 中**（`omni_zl1` 3.3.1-0，`adb state=recovery`）
+- 目标设备 `33e80afe` **正在运行 Ubuntu Touch**：boot 分区已刷入 v63
+  （`ab574bd3…e57576`），冷启动后 systemd PID1 + RNDIS 稳定 6 分钟以上
+- **USB gadget 只有 RNDIS，没有 adb**，所以从主机无法让它重启到 fastboot/recovery；
+  要换镜像必须先做一次人工按键（音量下+电源 = fastboot，音量上+电源 = TWRP）
 - 总线上同时有无关的 Xiaomi `4a2fe00b`（**必须忽略**，所有脚本按 serial 过滤）
-- boot 分区未被改动，SHA256 `a06d6508…5778ef` == 2026-06-07 备份，回滚路径完整
+- 回滚镜像（原厂 `boot.img`，SHA256 `a06d6508…5778ef`）校验通过，回刷命令见
+  [`scripts/stage2-rollback-boot.sh`](../../scripts/stage2-rollback-boot.sh)
 - 构建树产物在位：`/mnt/data/halium-zl1-build/out/target/product/zl1/halium-boot.img`
   = 17,997,824 字节，SHA256 `a29c18db3525e9fdeb4bfcf43053ab305f5e7263dbf743b0380cd1e231c0b1a3`
   （Phase 1 的可复现基线，见 [`19-phase1-reproducible-build.md`](19-phase1-reproducible-build.md)。
@@ -201,16 +205,25 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 这是本计划与旧计划最大的分歧点：**从这里开始用 `fastboot flash boot`，不再用 `fastboot boot`。**
 
-| 步骤 | 动作 | 验收标准 |
-| --- | --- | --- |
-| 2.1 | 确认回滚路径可用 | 备份 `boot.img`（2026-06-07）SHA256 校验通过；记录 `fastboot flash boot` 回刷命令；确认进入 fastboot 的方式（电源+音量减） |
-| 2.2 | `fastboot flash boot halium-boot-zl1-v63-usbd-disabled.img` | flash 成功，`fastboot reboot` 后**冷启动**直接进入 V63 状态 |
-| 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） |
-| 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） |
-| 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android |
+> **状态（2026-09-16）**：2.1 / 2.2 完成，2.3 部分完成（容器未起），2.4 待做。
+> 完整结果与诊断见 [`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md)。
+
+| 步骤 | 动作 | 验收标准 | 状态 |
+| --- | --- | --- | --- |
+| 2.1 | 确认回滚路径可用 | 备份 `boot.img`（2026-06-07）SHA256 校验通过；记录 `fastboot flash boot` 回刷命令；确认进入 fastboot 的方式（电源+音量减） | ✅ |
+| 2.2 | `fastboot flash boot halium-boot-zl1-v63-usbd-disabled.img` | flash 成功，`fastboot reboot` 后**冷启动**直接进入 V63 状态 | ✅ |
+| 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） | ⚠️ 前两项 ✅（71 个采样点 0 掉线），容器 ❌ — `/data/system.img` 缺失，见下 |
+| 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） | ⏳ 需要一次人工按键才能重启设备 |
+| 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android | ⏳ |
 
 2.3/2.4 通过，才可以说"zl1 能跑 Ubuntu Touch"。
 2.5 通过，才可以说"这条路线是安全的"。
+
+> **2.3 的容器缺口不是镜像问题，是设备数据问题。**
+> v63 的 initramfs 需要 `/data/system.img`（或 `/data/android-rootfs.img`）来建立
+> `/android` 这个 tmpfs；两个都没有时它退化成"在只读 rootfs 上 mkdir"，全部失败。
+> 这份 system image 在设备上已经不存在了（2026-06-13 那次启动时还在）。
+> 补回去即可，镜像本身不用改：见 [`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md) §4.1。
 
 ### Phase 3 — 主机侧 USB/RNDIS 自动化
 
