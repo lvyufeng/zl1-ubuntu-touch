@@ -24,6 +24,7 @@ Xiaomi `4a2fe00b` shares the USB bus. Everything else is read-only. See
 | `stage2-flash-boot-and-verify.sh` | Flash the known-good v63 boot image with `fastboot flash boot`, then bring up host RNDIS and verify both device IPs plus the HTTP status server. Enforces the rollback and v63 image hashes first. |
 | `stage2-rollback-boot.sh` | Put the original Android `boot.img` back. This is the undo for the script above. |
 | `verify-device-online.sh` | Wait for the device gadget, set up host RNDIS, ping both device IPs and fetch the status page. Read-only; use it for cold-boot repeats 2 and 3. |
+| `stage2b-restore-android-system.sh` | Put the 4 GB Android system image back at `/data/system.img`. Without it the initramfs cannot build `/android` and the LXC container never starts. Writes a regular file onto userdata; no partition is touched. |
 
 ## Halium 9 build tree
 
