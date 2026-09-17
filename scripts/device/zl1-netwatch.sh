@@ -46,10 +46,13 @@ MAX_HEALS=8               # per boot
 HEAL_ENABLED=1
 [ -r /userdata/zl1-netwatch-noheal ] && HEAL_ENABLED=0
 
-# Optional: after this many seconds, ask the bootloader to reboot into recovery, so the
-# log can be read without anyone holding a button. Off unless the marker file exists.
-# Writing "boot-recovery" into misc is exactly what Android's own `reboot recovery`
-# does; the bootloader ignores anything it does not recognise.
+# Optional, and off unless the marker file exists: after this many seconds, ask the
+# bootloader for recovery so the log can be read without anyone holding a button. The
+# command is written into misc, which is what Android's own `reboot recovery` does.
+#
+# It reboots ONLY if the command was written and read back correctly. There is no plain
+# reboot fallback: on 2026-09-17 the write failed, the fallback fired, and the device sat
+# in a reboot-every-900-seconds loop that I mistook for a property of the system.
 RECOVERY_AFTER_FILE=/userdata/zl1-netwatch-reboot-recovery
 RECOVERY_AFTER=0
 [ -r "$RECOVERY_AFTER_FILE" ] && RECOVERY_AFTER=$(cat "$RECOVERY_AFTER_FILE" 2>/dev/null || echo 0)
@@ -305,27 +308,34 @@ while :; do
 
     if [ "$RECOVERY_AFTER" -gt 0 ] && [ "${uptime_s:-0}" -ge "$RECOVERY_AFTER" ]; then
         log "RECOVERY: uptime ${uptime_s}s >= ${RECOVERY_AFTER}s — asking the bootloader for recovery"
+        wrote=0
         for blk in /dev/block/bootdevice/by-name/misc /dev/block/sda4; do
             [ -e "$blk" ] || continue
             if printf 'boot-recovery' > "$blk" 2>/dev/null; then
                 sync
-                # Read it back. Whether the device actually lands in recovery is the one
-                # thing about this mechanism that has never been confirmed — on
-                # 2026-09-17 the device vanished for 9.4 minutes around the expected
-                # moment and came back into Ubuntu Touch, which is consistent with either
-                # a slow system boot or a trip through recovery. Recording whether the
-                # command is really in misc separates the two: if it is there and the
-                # device still boots the system, the bootloader is not acting on it.
+                # Read it back. On 2026-09-17 every attempt logged "could not write the
+                # bootloader command", so the reboot never reached recovery — and because
+                # the fallback was a PLAIN reboot, the device just booted the system again
+                # and repeated the whole cycle at the next 900 s mark. Five times. A plain
+                # reboot is not a degraded version of this feature; it is a reboot loop,
+                # so it is gone.
                 back="$(dd if="$blk" bs=1 count=16 2>/dev/null | tr -d '\000')"
-                log "RECOVERY: wrote boot-recovery to $blk; read back [$back]"
-                reboot
-                sleep 300
+                if [ "$back" = "boot-recovery" ]; then
+                    log "RECOVERY: wrote and verified boot-recovery in $blk; rebooting"
+                    wrote=1
+                    break
+                fi
+                log "RECOVERY: wrote to $blk but read back [$back] — not rebooting"
+            else
+                log "RECOVERY: cannot write $blk"
             fi
         done
-        log "RECOVERY: could not write the bootloader command; doing a plain reboot"
-        sync
-        reboot
-        sleep 300
+        if [ "$wrote" = "0" ]; then
+            log "RECOVERY: could not set the bootloader command anywhere; staying up."
+            log "RECOVERY: the device will stay in this state — read the log from TWRP by hand."
+            # Stop asking; one attempt per boot is enough.
+            RECOVERY_AFTER=0
+        fi
     fi
 
     sleep "$SAMPLE_INTERVAL"
