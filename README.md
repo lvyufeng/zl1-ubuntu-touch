@@ -26,6 +26,7 @@ Start here:
 - [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — Stage 2 result: the flash+cold-boot works, and why the container does not
 - [`docs/ubuntu-touch/22-stage2-coldboot-results.md`](docs/ubuntu-touch/22-stage2-coldboot-results.md) — Stage 2 result: with `/data/system.img` restored the Android container runs too; the remaining flakiness is on the host side
 - [`docs/ubuntu-touch/23-uether-tx-wakeup-patch.md`](docs/ubuntu-touch/23-uether-tx-wakeup-patch.md) — a kernel-side mitigation candidate for the intermittent transmit stall, and what it does and does not prove
+- [`docs/ubuntu-touch/24-reproducible-working-image.md`](docs/ubuntu-touch/24-reproducible-working-image.md) — the known-good v63 image is now rebuildable from tracked source, and verified against the binary
 - [`docs/ubuntu-touch/00-safety.md`](docs/ubuntu-touch/00-safety.md)
 - [`docs/ubuntu-touch/05-build-strategy.md`](docs/ubuntu-touch/05-build-strategy.md)
 - [`docs/ubuntu-touch/16-noble-systemd-lxc.md`](docs/ubuntu-touch/16-noble-systemd-lxc.md)
@@ -88,6 +89,10 @@ The earlier EDL incident is resolved; see
 [`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md).
 Every script filters on serial `33e80afe` — the unrelated Xiaomi `4a2fe00b` shares the
 USB bus and must be ignored.
+
+The known-good v63 image is now rebuildable from tracked source rather than existing only
+as a binary, and every rebuild is content-verified against it:
+[`docs/ubuntu-touch/24-reproducible-working-image.md`](docs/ubuntu-touch/24-reproducible-working-image.md).
 
 A kernel-side mitigation candidate for the stall is built and reproducible:
 [`docs/ubuntu-touch/23-uether-tx-wakeup-patch.md`](docs/ubuntu-touch/23-uether-tx-wakeup-patch.md).

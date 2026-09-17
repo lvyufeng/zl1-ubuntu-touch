@@ -1,0 +1,6 @@
+--- a/scripts/init-bottom/ORDER
++++ b/scripts/init-bottom/ORDER
+@@ -1,2 +1,3 @@
+ /scripts/init-bottom/udev "$@"
+ [ -e /conf/param.conf ] && . /conf/param.conf
++/scripts/init-bottom/zl1-postswitch-debug-init "$@"

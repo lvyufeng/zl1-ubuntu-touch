@@ -1,0 +1,1638 @@
+#!/bin/sh
+case "$1" in prereqs) exit 0 ;; esac
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+ROOT="${rootmnt:-/root}"
+log() { echo "zl1-postswitch-debug: $*" >/dev/kmsg 2>/dev/null || true; }
+[ -d "$ROOT" ] || { log "missing rootmnt $ROOT"; exit 0; }
+log "installing /tmp/zl1-debug-init into $ROOT"
+mount -o remount,rw "$ROOT" 2>/dev/null || log "remount rw failed; trying to continue"
+mkdir -p "$ROOT/tmp" "$ROOT/usr/local/sbin" "$ROOT/etc/systemd/system/sysinit.target.wants" "$ROOT/etc/systemd/system/multi-user.target.wants" 2>/dev/null || true
+chmod 1777 "$ROOT/tmp" 2>/dev/null || true
+cp /bin/busybox "$ROOT/tmp/busybox" 2>/dev/null || log "copy busybox to /tmp failed"
+chmod 0755 "$ROOT/tmp/busybox" 2>/dev/null || true
+cp /bin/busybox "$ROOT/usr/local/sbin/zl1-busybox" 2>/dev/null || log "copy busybox to /usr/local/sbin failed"
+chmod 0755 "$ROOT/usr/local/sbin/zl1-busybox" 2>/dev/null || true
+cat > "$ROOT/usr/local/sbin/zl1-status-login.sh" <<'EOF_ZL1_STATUS_LOGIN'
+#!/bin/sh
+PATH=/usr/local/sbin:/sbin:/usr/sbin:/bin:/usr/bin:/tmp
+echo "zl1 status endpoint"
+date 2>/dev/null || true
+echo "--- cmdline ---"
+cat /proc/cmdline 2>/dev/null || true
+echo "--- uptime ---"
+cat /proc/uptime 2>/dev/null || true
+echo "--- mounts ---"
+mount 2>/dev/null || true
+echo "--- ip ---"
+ip -br addr show 2>/dev/null || ifconfig -a 2>/dev/null || true
+echo "--- routes ---"
+ip route show 2>/dev/null || route -n 2>/dev/null || true
+echo "--- listeners ---"
+ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null || true
+echo "--- debug net log ---"
+cat /run/zl1-debug-net.log 2>/dev/null || true
+echo "--- debug init log ---"
+cat /run/zl1-debug-init.log 2>/dev/null || true
+echo "--- lxc logs ---"
+cat /run/zl1-lxc-ready.log 2>/dev/null || true
+cat /var/log/lxc/android.log 2>/dev/null || true
+echo "--- processes ---"
+ps wwax 2>/dev/null || ps 2>/dev/null || true
+echo "zl1 status endpoint done"
+sleep 1
+EOF_ZL1_STATUS_LOGIN
+chmod 0755 "$ROOT/usr/local/sbin/zl1-status-login.sh" 2>/dev/null || true
+cat > "$ROOT/usr/local/sbin/zl1-status-server.py" <<'EOF_ZL1_STATUS_SERVER'
+#!/usr/bin/python3
+import os, socket, threading, time, subprocess
+LOG = "/run/zl1-debug-net.log"
+PORTS = (8081, 8080)
+def read_file(path, limit=65536):
+    try:
+        with open(path, "rb") as f:
+            data = f.read(limit)
+        return data.decode("utf-8", "replace")
+    except Exception as e:
+        return "<cannot read %s: %s>\n" % (path, e)
+def read_tail(path, limit=131072):
+    try:
+        with open(path, "rb") as f:
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - limit), os.SEEK_SET)
+            except Exception:
+                pass
+            data = f.read(limit)
+        prefix = ""
+        if len(data) >= limit:
+            prefix = "<tail last %d bytes of %s>\n" % (limit, path)
+        return prefix + data.decode("utf-8", "replace")
+    except Exception as e:
+        return "<cannot tail %s: %s>\n" % (path, e)
+def list_dir(path, limit=200):
+    try:
+        names = sorted(os.listdir(path))[:limit]
+        return "\n".join(names) + ("\n" if names else "")
+    except Exception as e:
+        return "<cannot list %s: %s>\n" % (path, e)
+def read_cmdline(pid):
+    try:
+        data = open("/proc/%s/cmdline" % pid, "rb").read(4096)
+        data = data.replace(bytes([0]), b" ").strip()
+        return data.decode("utf-8", "replace")
+    except Exception:
+        return ""
+def proc_summary():
+    rows = []
+    try:
+        pids = sorted([x for x in os.listdir("/proc") if x.isdigit()], key=lambda x: int(x))
+    except Exception as e:
+        return "<cannot list /proc: %s>\n" % e
+    keywords = ("init", "systemd", "lxc", "android", "zygote", "surface", "hwservice", "qsee", "servicemanager", "usb", "python", "getprop", "setprop", "logd", "ueventd", "vold")
+    for pid in pids:
+        try:
+            status = read_file("/proc/%s/status" % pid, 8192)
+            vals = {}
+            for line in status.splitlines():
+                if line.startswith(("Name:", "State:", "PPid:")):
+                    k, v = line.split(":", 1)
+                    vals[k] = v.strip()
+            cmd = read_cmdline(pid)
+            hay = (vals.get("Name", "") + " " + cmd).lower()
+            if pid == "1" or any(k in hay for k in keywords):
+                rows.append("%s\tppid=%s\tstate=%s\tname=%s\tcmd=%s" % (pid, vals.get("PPid", "?"), vals.get("State", "?"), vals.get("Name", "?"), cmd))
+        except Exception:
+            continue
+    return "\n".join(rows[:260]) + ("\n" if rows else "")
+def net_class_summary():
+    out = []
+    try:
+        ifaces = sorted(os.listdir("/sys/class/net"))
+    except Exception:
+        ifaces = []
+    for ifname in ifaces:
+        base = "/sys/class/net/%s" % ifname
+        vals = []
+        for key in ("address", "operstate", "carrier", "ifindex"):
+            try:
+                vals.append("%s=%s" % (key, open("%s/%s" % (base, key)).read().strip()))
+            except Exception:
+                pass
+        out.append(ifname + " " + " ".join(vals))
+    return "\n".join(out) + ("\n" if out else "")
+def read_one(path):
+    try:
+        return open(path, "rb").read(4096).decode("utf-8", "replace").strip()
+    except Exception as e:
+        return "<%s>" % e
+def named_paths_summary(title, paths):
+    out = [title]
+    for path in paths:
+        out.append("%s=%s" % (path, read_one(path)))
+    return "\n".join(out) + "\n"
+def android_usb_summary():
+    base = "/sys/class/android_usb/android0"
+    rels = ("state", "functions", "enable", "idVendor", "idProduct", "iManufacturer", "iProduct", "iSerial",
+            "f_rndis/ethaddr", "f_rndis/vendorID", "f_rndis/manufacturer", "f_rndis/wceis")
+    return named_paths_summary("android_usb", [base + "/" + r for r in rels])
+def configfs_usb_summary():
+    out = []
+    roots = ("/sys/kernel/config/usb_gadget", "/config/usb_gadget")
+    for root in roots:
+        try:
+            gadgets = sorted(os.listdir(root))
+        except Exception as e:
+            out.append("%s=<cannot list: %s>" % (root, e))
+            continue
+        out.append("%s gadgets=%s" % (root, ",".join(gadgets)))
+        for g in gadgets[:4]:
+            gb = root + "/" + g
+            for rel in ("UDC", "idVendor", "idProduct", "strings/0x409/serialnumber", "strings/0x409/manufacturer", "strings/0x409/product"):
+                out.append("%s/%s=%s" % (gb, rel, read_one(gb + "/" + rel)))
+    return "\n".join(out) + ("\n" if out else "")
+def systemd_runtime_summary():
+    out = []
+    for path in ("/run/systemd/system/usb-moded.service", "/run/systemd/system/zl1-debug-net.service",
+                 "/run/systemd/system/sysinit.target.wants/zl1-debug-net.service",
+                 "/run/systemd/system/multi-user.target.wants/zl1-debug-net.service",
+                 "/etc/systemd/system/zl1-debug-net.service",
+                 "/etc/systemd/system/usb-moded.service", "/lib/systemd/system/usb-moded.service",
+                 "/usr/lib/systemd/system/usb-moded.service"):
+        try:
+            if os.path.islink(path):
+                out.append("%s -> %s" % (path, os.readlink(path)))
+            elif os.path.exists(path):
+                out.append("%s exists" % path)
+            else:
+                out.append("%s missing" % path)
+        except Exception as e:
+            out.append("%s error=%s" % (path, e))
+    try:
+        names = sorted(n for n in os.listdir("/run/systemd/system") if "usb" in n.lower() or "zl1" in n.lower())
+        out.append("/run/systemd/system filtered=" + ",".join(names))
+    except Exception as e:
+        out.append("/run/systemd/system list error=%s" % e)
+    return "\n".join(out) + "\n"
+def command_summary(cmd, limit=65536, timeout=1.5):
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        data = p.stdout[:limit].decode("utf-8", "replace")
+        return "$ %s\nrc=%s\n%s" % (" ".join(cmd), p.returncode, data)
+    except Exception as e:
+        return "$ %s\n<%s: %s>\n" % (" ".join(cmd), type(e).__name__, e)
+def append_log(msg):
+    line = "zl1-python-status-v63: %s\n" % msg
+    try:
+        os.makedirs("/run", exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(line)
+    except Exception:
+        pass
+    try:
+        with open("/dev/kmsg", "w") as k:
+            k.write(line)
+    except Exception:
+        pass
+def status_text():
+    parts = [
+        "zl1 python status endpoint v63\n",
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n",
+        "--- cmdline ---\n", read_file("/proc/cmdline"),
+        "--- uptime ---\n", read_file("/proc/uptime"),
+        "--- proc 1 status ---\n", read_file("/proc/1/status", 16384),
+        "--- proc 1 cmdline ---\n", read_cmdline("1") + "\n",
+        "--- selected processes ---\n", proc_summary(),
+        "--- sys class net ---\n", net_class_summary(),
+        "--- android usb summary ---\n", android_usb_summary(),
+        "--- configfs usb summary ---\n", configfs_usb_summary(),
+        "--- systemd runtime usb masks ---\n", systemd_runtime_summary(),
+        "--- zl1 debug net lock ---\n", named_paths_summary("debug_net_lock", ["/run/zl1-debug-net.lock/pid", "/run/zl1-debug-net.lock/ppid", "/run/zl1-debug-net.lock/start_uptime", "/run/zl1-debug-net.lock/ppid_comm", "/run/zl1-debug-net.lock/ppid_cmdline", "/run/zl1-debug-net.lock/pid1_comm", "/run/zl1-debug-net.lock/pid1_cmdline"]),
+        "--- zl1 debug net systemd show ---\n", command_summary(["systemctl", "show", "zl1-debug-net.service", "-p", "MainPID", "-p", "NRestarts", "-p", "Result", "-p", "ExecMainStatus", "-p", "ExecMainCode", "-p", "ActiveState", "-p", "SubState"], 65536, 1.5),
+        "--- zl1 debug net systemd status ---\n", command_summary(["systemctl", "status", "--no-pager", "-l", "zl1-debug-net.service"], 65536, 1.5),
+        "--- zl1 debug net journal ---\n", command_summary(["journalctl", "-b", "-u", "zl1-debug-net.service", "--no-pager", "-n", "80"], 65536, 1.5),
+        "--- usb android state ---\n", read_file("/sys/class/android_usb/android0/state", 4096),
+        "--- usb android functions ---\n", read_file("/sys/class/android_usb/android0/functions", 4096),
+        "--- usb android enable ---\n", read_file("/sys/class/android_usb/android0/enable", 4096),
+        "--- proc net dev ---\n", read_file("/proc/net/dev"),
+        "--- proc net route ---\n", read_file("/proc/net/route"),
+        "--- proc net tcp ---\n", read_file("/proc/net/tcp"),
+        "--- proc mounts ---\n", read_file("/proc/mounts", 65536),
+        "--- dev socket listing ---\n", list_dir("/dev/socket", 200),
+        "--- dev properties listing ---\n", list_dir("/dev/__properties__", 240),
+        "--- run zl1 files ---\n", list_dir("/run", 400),
+        "--- debug net log tail ---\n", read_tail(LOG, 65536),
+        "--- v63 monitor log tail ---\n", read_tail("/userdata/zl1-v63-monitor.log", 131072),
+        "--- v63 monitor run log tail ---\n", read_tail("/run/zl1-v63-monitor.log", 131072),
+        "--- debug init log ---\n", read_file("/run/zl1-debug-init.log", 65536),
+        "--- lxc ready log ---\n", read_tail("/run/zl1-lxc-ready.log", 65536),
+        "--- prop wrapper log ---\n", read_tail("/run/zl1-prop-wrapper.log", 65536),
+        "--- hwservicemanager patch log ---\n", read_tail("/run/zl1-hwservicemanager-patch.log", 65536),
+        "--- qseecomd patch log ---\n", read_tail("/run/zl1-qseecomd-patch.log", 65536),
+        "--- libc property socket patch log ---\n", read_tail("/run/zl1-libc-prop-socket-patch.log", 65536),
+        "--- rc seclabel patch log ---\n", read_tail("/run/zl1-rc-seclabel.log", 65536),
+        "--- usb hal stub log ---\n", read_tail("/run/zl1-usb-hal-stub.log", 65536),
+        "--- usb hal rc patch log ---\n", read_tail("/run/zl1-usb-hal-rc-patch.log", 65536),
+        "--- v63 usb fakebind log ---\n", read_tail("/run/zl1-v63-usb-fakebind.log", 65536),
+        "--- v63 fake android_usb tree ---\n", named_paths_summary("v63_fake_android_usb", ["/run/zl1-v63-fake-sys/class/android_usb/android0/" + r for r in ("enable", "functions", "state", "idVendor", "idProduct", "iProduct", "iSerial", "f_rndis/ethaddr", "f_rndis/wceis")]),
+        "--- lxc config runtime /run ---\n", read_file("/run/zl1-lxc-config-noble", 65536),
+        "--- lxc config active ---\n", read_file("/var/lib/lxc/android/config", 65536),
+        "--- lxc android log tail ---\n", read_tail("/var/log/lxc/android.log", 131072),
+        "--- pstore listing ---\n", list_dir("/sys/fs/pstore", 200),
+        "--- status done ---\n",
+    ]
+    return "".join(parts)
+def drain_request(conn):
+    conn.settimeout(0.4)
+    data = b""
+    end = time.time() + 1.0
+    while time.time() < end and len(data) < 4096:
+        try:
+            chunk = conn.recv(1024)
+        except socket.timeout:
+            break
+        except Exception:
+            break
+        if not chunk:
+            break
+        data += chunk
+        if b"\r\n\r\n" in data or b"\n\n" in data:
+            break
+    return data
+def handle(conn, addr):
+    try:
+        append_log("client %s accepted" % (addr,))
+        drain_request(conn)
+        body = status_text().encode("utf-8", "replace")
+        header = ("HTTP/1.0 200 OK\r\n"
+                  "Content-Type: text/plain; charset=utf-8\r\n"
+                  "Content-Length: %d\r\n"
+                  "Connection: close\r\n\r\n" % len(body)).encode("ascii")
+        conn.settimeout(8.0)
+        conn.sendall(header)
+        conn.sendall(body)
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except Exception:
+            pass
+        time.sleep(0.1)
+        append_log("client %s sent %d bytes" % (addr, len(body)))
+    except Exception as e:
+        append_log("client %s error %s: %s" % (addr, type(e).__name__, e))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+def serve(port):
+    while True:
+        s = None
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", port))
+            s.listen(8)
+            append_log("listening on 0.0.0.0:%d" % port)
+            while True:
+                conn, addr = s.accept()
+                threading.Thread(target=handle, args=(conn, addr), daemon=True).start()
+        except Exception as e:
+            append_log("server port %d restart after %s: %s" % (port, type(e).__name__, e))
+            try:
+                if s:
+                    s.close()
+            except Exception:
+                pass
+            time.sleep(1)
+for port in PORTS:
+    threading.Thread(target=serve, args=(port,), daemon=True).start()
+while True:
+    time.sleep(60)
+EOF_ZL1_STATUS_SERVER
+chmod 0755 "$ROOT/usr/local/sbin/zl1-status-server.py" 2>/dev/null || true
+cat > "$ROOT/usr/local/sbin/zl1-debug-net.sh" <<'EOF_ZL1_DEBUG_NET'
+#!/bin/sh
+PATH=/usr/local/sbin:/sbin:/usr/sbin:/bin:/usr/bin:/tmp
+BB=/usr/local/sbin/zl1-busybox
+[ -x "$BB" ] || BB=/tmp/busybox
+LOG=/run/zl1-debug-net.log
+ANDROID_USB=/sys/class/android_usb/android0
+mkdir -p /run 2>/dev/null || true
+log() {
+    msg="zl1-debug-net-v63: $*"
+    echo "$msg" >> "$LOG" 2>/dev/null || true
+    echo "$msg" > /dev/kmsg 2>/dev/null || true
+}
+uptime_now() { cat /proc/uptime 2>/dev/null | { read a b; printf '%s' "$a"; }; }
+proc_comm() { [ -r "/proc/$1/comm" ] && tr -d '\r\n' < "/proc/$1/comm" 2>/dev/null || printf '?'; }
+proc_cmdline() { [ -r "/proc/$1/cmdline" ] && tr '\000' ' ' < "/proc/$1/cmdline" 2>/dev/null | tr -d '\r\n' || printf '?'; }
+LOCKDIR=/run/zl1-debug-net.lock
+LOCKPID="$LOCKDIR/pid"
+record_primary_lock() {
+    echo "$$" > "$LOCKPID" 2>/dev/null || true
+    echo "$PPID" > "$LOCKDIR/ppid" 2>/dev/null || true
+    echo "$(uptime_now)" > "$LOCKDIR/start_uptime" 2>/dev/null || true
+    proc_comm "$PPID" > "$LOCKDIR/ppid_comm" 2>/dev/null || true
+    proc_cmdline "$PPID" > "$LOCKDIR/ppid_cmdline" 2>/dev/null || true
+    proc_comm 1 > "$LOCKDIR/pid1_comm" 2>/dev/null || true
+    proc_cmdline 1 > "$LOCKDIR/pid1_cmdline" 2>/dev/null || true
+}
+cleanup_primary() {
+    rc=$?
+    trap - EXIT HUP INT TERM
+    log "keeper exit v63 pid=$$ rc=$rc uptime=$(uptime_now)"
+    rm -rf "$LOCKDIR" 2>/dev/null || true
+    exit "$rc"
+}
+if mkdir "$LOCKDIR" 2>/dev/null; then
+    record_primary_lock
+    log "keeper primary start v63 pid=$$ ppid=$PPID pcomm=$(proc_comm "$PPID") pcmd=$(proc_cmdline "$PPID") pid1=$(proc_comm 1)|$(proc_cmdline 1) uptime=$(uptime_now)"
+    trap cleanup_primary EXIT HUP INT TERM
+else
+    primary="$(cat "$LOCKPID" 2>/dev/null || true)"
+    if [ -n "$primary" ] && kill -0 "$primary" 2>/dev/null; then
+        log "keeper duplicate exit v63 pid=$$ ppid=$PPID primary=$primary pcomm=$(proc_comm "$PPID") pcmd=$(proc_cmdline "$PPID") pid1=$(proc_comm 1)|$(proc_cmdline 1) uptime=$(uptime_now)"
+        exit 0
+    fi
+    log "keeper stale lock v63 pid=$$ ppid=$PPID old_primary=$primary uptime=$(uptime_now); replacing"
+    rm -rf "$LOCKDIR" 2>/dev/null || true
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        record_primary_lock
+        log "keeper primary start after stale lock v63 pid=$$ ppid=$PPID pcomm=$(proc_comm "$PPID") pcmd=$(proc_cmdline "$PPID") pid1=$(proc_comm 1)|$(proc_cmdline 1) uptime=$(uptime_now)"
+        trap cleanup_primary EXIT HUP INT TERM
+    else
+        log "keeper duplicate exit v63 pid=$$ ppid=$PPID reason=lock-reacquire-failed uptime=$(uptime_now)"
+        exit 0
+    fi
+fi
+read_one() { cat "$1" 2>/dev/null | tr -d '\r\n'; }
+write_file() { [ -e "$1" ] && echo -n "$2" > "$1" 2>/dev/null || true; }
+ensure_ttys() {
+    mkdir -p /dev/pts 2>/dev/null || true
+    grep -q ' /dev/pts ' /proc/mounts 2>/dev/null || mount -t devpts devpts /dev/pts 2>/dev/null || true
+    [ -e /dev/ptmx ] || mknod -m 666 /dev/ptmx c 5 2 2>/dev/null || true
+    chmod 666 /dev/ptmx 2>/dev/null || true
+}
+have_listener() {
+    port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | grep -Eq "[.:]$port[[:space:]]" && return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ltn 2>/dev/null | grep -Eq "[.:]$port[[:space:]]" && return 0
+    fi
+    hexport="$(printf '%04X' "$port" 2>/dev/null || true)"
+    if [ -n "$hexport" ] && awk -v p=":$hexport" 'NR>1 && index($2,p) && $4=="0A" {found=1} END{exit found?0:1}' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+debug_shell_enabled() {
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" zl1_debug_shell=1 "*) return 0 ;;
+    esac
+    return 1
+}
+process_alive() {
+    pidfile="$1"
+    [ -s "$pidfile" ] || return 1
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+write_runtime_systemd_units() {
+    mkdir -p /run/systemd/system/sysinit.target.wants /run/systemd/system/multi-user.target.wants 2>/dev/null || true
+    ln -sfn /dev/null /run/systemd/system/usb-moded.service 2>/dev/null || true
+    cat > /run/systemd/system/zl1-debug-net.service <<'EOF_ZL1_RUNTIME_UNIT'
+[Unit]
+Description=zl1 V63 single-keeper USB diagnostic network keeper
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=sysinit.target basic.target usb-moded.service
+Conflicts=usb-moded.service
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/zl1-debug-net.sh
+Restart=on-failure
+RestartSec=1
+[Install]
+WantedBy=sysinit.target multi-user.target
+EOF_ZL1_RUNTIME_UNIT
+    ln -sf ../zl1-debug-net.service /run/systemd/system/sysinit.target.wants/zl1-debug-net.service 2>/dev/null || true
+    ln -sf ../zl1-debug-net.service /run/systemd/system/multi-user.target.wants/zl1-debug-net.service 2>/dev/null || true
+}
+maybe_systemctl_mask_usb() {
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl mask --runtime usb-moded.service >/dev/null 2>&1 || true
+        systemctl stop usb-moded.service >/dev/null 2>&1 || true
+    fi
+}
+kill_usb_managers() {
+    killed=0
+    for d in /proc/[0-9]*; do
+        [ -d "$d" ] || continue
+        pid="${d##*/}"
+        [ "$pid" = "$$" ] && continue
+        cmd="$(tr '\000' ' ' < "$d/cmdline" 2>/dev/null || true)"
+        name="$(cat "$d/comm" 2>/dev/null || true)"
+        case "$cmd $name" in
+            *usb_moded*|*usb-moded*)
+                log "killing USB gadget manager pid=$pid name=$name cmd=$cmd"
+                kill "$pid" 2>/dev/null || true
+                killed=1
+                ;;
+            *'/run/usb-moded/udhcpd.conf'*)
+                log "killing usb-moded udhcpd pid=$pid name=$name cmd=$cmd"
+                kill "$pid" 2>/dev/null || true
+                killed=1
+                ;;
+        esac
+    done
+    [ "$killed" = 1 ] && return 0
+    return 1
+}
+start_python_status() {
+    PY=""
+    for cand in /usr/bin/python3 /bin/python3 /usr/local/bin/python3; do
+        [ -x "$cand" ] && { PY="$cand"; break; }
+    done
+    [ -n "$PY" ] || { log "no rootfs python3 for status server"; return 1; }
+    if process_alive /run/zl1-pystatus.pid; then
+        return 0
+    fi
+    "$PY" /usr/local/sbin/zl1-status-server.py >>"$LOG" 2>&1 &
+    echo "$!" > /run/zl1-pystatus.pid 2>/dev/null || true
+    log "started python3 status server pid=$! ($PY) on 0.0.0.0:8081/8080"
+    return 0
+}
+write_http_status() {
+    mkdir -p /run/zl1-http 2>/dev/null || true
+    {
+        echo "zl1 debug status v63"
+        date 2>/dev/null || true
+        echo "--- cmdline ---"
+        cat /proc/cmdline 2>/dev/null || true
+        echo "--- ip ---"
+        ip -br addr show 2>/dev/null || ifconfig -a 2>/dev/null || true
+        echo "--- android_usb ---"
+        dump_android_usb
+        echo "--- systemd runtime masks ---"
+        ls -l /run/systemd/system/usb-moded.service /run/systemd/system/zl1-debug-net.service 2>/dev/null || true
+        echo "--- listeners ---"
+        ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true
+        echo "--- debug net log ---"
+        cat "$LOG" 2>/dev/null || true
+        echo "--- debug init log ---"
+        cat /run/zl1-debug-init.log 2>/dev/null || true
+        echo "--- ps ---"
+        ps wwax 2>/dev/null || ps 2>/dev/null || true
+    } > /run/zl1-http/index.txt 2>/dev/null || true
+}
+start_debug_servers() {
+    ensure_ttys
+    write_http_status
+    start_python_status || true
+    if ! debug_shell_enabled; then
+        return 0
+    fi
+    [ -x "$BB" ] || return 0
+    if ! have_listener 23; then
+        ( "$BB" telnetd -F -b 0.0.0.0:23 -l /bin/sh >>"$LOG" 2>&1; log "shell telnetd 23 exited rc=$?" ) &
+        log "spawned shell telnetd 23 pid=$!"
+    fi
+}
+add_addr() {
+    ifname="$1"
+    cidr="$2"
+    addr="${cidr%/*}"
+    if command -v ip >/dev/null 2>&1; then
+        ip addr show dev "$ifname" 2>/dev/null | grep -q " $addr/" || ip addr add "$cidr" dev "$ifname" 2>/dev/null || true
+    fi
+}
+configure_iface() {
+    ifname="$1"
+    [ -e "/sys/class/net/$ifname" ] || return 1
+    if command -v ip >/dev/null 2>&1; then
+        ip link set "$ifname" up 2>/dev/null || true
+        add_addr "$ifname" 192.168.2.15/24
+        add_addr "$ifname" 10.15.19.82/24
+        ip route replace 192.168.2.0/24 dev "$ifname" src 192.168.2.15 2>/dev/null || true
+        ip route replace 10.15.19.0/24 dev "$ifname" src 10.15.19.82 2>/dev/null || true
+    elif [ -x "$BB" ]; then
+        "$BB" ifconfig "$ifname" 192.168.2.15 netmask 255.255.255.0 up 2>/dev/null || true
+        "$BB" ifconfig "${ifname}:1" 10.15.19.82 netmask 255.255.255.0 up 2>/dev/null || true
+    else
+        ifconfig "$ifname" 192.168.2.15 netmask 255.255.255.0 up 2>/dev/null || true
+    fi
+    if command -v arping >/dev/null 2>&1; then
+        arping -q -c 1 -A -I "$ifname" 192.168.2.15 2>/dev/null || true
+        arping -q -c 1 -A -I "$ifname" 10.15.19.82 2>/dev/null || true
+    fi
+    return 0
+}
+force_android_usb_rndis() {
+    reason="$1"
+    [ -d "$ANDROID_USB" ] || return 1
+    state="$(read_one "$ANDROID_USB/state")"
+    functions="$(read_one "$ANDROID_USB/functions")"
+    enable="$(read_one "$ANDROID_USB/enable")"
+    sig="$state|$functions|$enable"
+    last="$(cat /run/zl1-usb-last-sig 2>/dev/null || true)"
+    if [ "$sig" != "$last" ]; then
+        log "android_usb sig $sig reason=$reason"
+        echo "$sig" > /run/zl1-usb-last-sig 2>/dev/null || true
+    fi
+    case "$reason:$functions:$enable" in
+        full:*|usb-manager-killed:*|*:rndis:1)
+            case "$reason" in full|usb-manager-killed) ;; *) return 0 ;; esac
+            ;;
+    esac
+    log "reasserting android_usb RNDIS reason=$reason state=$state functions=$functions enable=$enable"
+    write_file "$ANDROID_USB/enable" 0
+    sleep 0.2 2>/dev/null || true
+    write_file "$ANDROID_USB/functions" ""
+    write_file "$ANDROID_USB/idVendor" 18D1
+    write_file "$ANDROID_USB/idProduct" D001
+    write_file "$ANDROID_USB/iManufacturer" "Halium"
+    write_file "$ANDROID_USB/iProduct" "zl1 V63 usbd-disabled RNDIS"
+    write_file "$ANDROID_USB/iSerial" "33e80afe-v63-usbd-disabled-rndis"
+    write_file "$ANDROID_USB/f_rndis/ethaddr" "02:15:19:82:00:01"
+    write_file "$ANDROID_USB/f_rndis/vendorID" 18D1
+    write_file "$ANDROID_USB/f_rndis/manufacturer" "Halium"
+    write_file "$ANDROID_USB/f_rndis/wceis" 1
+    write_file "$ANDROID_USB/functions" rndis
+    sleep 0.2 2>/dev/null || true
+    write_file "$ANDROID_USB/enable" 1
+    return 0
+}
+dump_android_usb() {
+    if [ -d "$ANDROID_USB" ]; then
+        for f in state functions enable idVendor idProduct iManufacturer iProduct iSerial f_rndis/ethaddr f_rndis/vendorID f_rndis/manufacturer f_rndis/wceis; do
+            [ -e "$ANDROID_USB/$f" ] && printf '%s=%s\n' "$ANDROID_USB/$f" "$(read_one "$ANDROID_USB/$f")"
+        done
+    else
+        echo "android_usb missing"
+    fi
+    for ifname in usb0 rndis0; do
+        [ -e "/sys/class/net/$ifname" ] || continue
+        echo "iface=$ifname mac=$(cat /sys/class/net/$ifname/address 2>/dev/null) carrier=$(cat /sys/class/net/$ifname/carrier 2>/dev/null) operstate=$(cat /sys/class/net/$ifname/operstate 2>/dev/null)"
+    done
+}
+snapshot() {
+    {
+        echo "--- snapshot v63 ---"
+        date 2>/dev/null || true
+        cat /proc/cmdline 2>/dev/null || true
+        dump_android_usb
+        echo "--- runtime systemd ---"
+        ls -l /run/systemd/system/usb-moded.service /run/systemd/system/zl1-debug-net.service /run/systemd/system/sysinit.target.wants/zl1-debug-net.service 2>/dev/null || true
+        echo "--- debug-net lock ---"
+        ls -l /run/zl1-debug-net.lock 2>/dev/null || true
+        for f in pid ppid start_uptime ppid_comm ppid_cmdline pid1_comm pid1_cmdline; do [ -e "/run/zl1-debug-net.lock/$f" ] && printf '%s=%s\n' "$f" "$(cat "/run/zl1-debug-net.lock/$f" 2>/dev/null)"; done
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl show zl1-debug-net.service -p MainPID -p NRestarts -p Result -p ExecMainStatus -p ExecMainCode -p ActiveState -p SubState 2>/dev/null || true
+        fi
+        echo "--- usb manager processes ---"
+        for d in /proc/[0-9]*; do
+            [ -d "$d" ] || continue
+            cmd="$(tr '\000' ' ' < "$d/cmdline" 2>/dev/null || true)"
+            name="$(cat "$d/comm" 2>/dev/null || true)"
+            case "$cmd $name" in *usb*|*USB*) echo "${d##*/} name=$name cmd=$cmd" ;; esac
+        done
+        echo "--- net ---"
+        ip -br addr show 2>/dev/null || ifconfig -a 2>/dev/null || true
+        ip route show 2>/dev/null || route -n 2>/dev/null || true
+        ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true
+    } >> "$LOG" 2>&1 || true
+}
+log "keeper loop start v63 pid=$$ primary=$(cat /run/zl1-debug-net.lock/pid 2>/dev/null || true)"
+write_runtime_systemd_units
+force_android_usb_rndis full || true
+i=0
+while :; do
+    write_runtime_systemd_units
+    maybe_systemctl_mask_usb
+    if kill_usb_managers; then
+        force_android_usb_rndis usb-manager-killed || true
+    else
+        force_android_usb_rndis steady || true
+    fi
+    configured=0
+    configure_iface usb0 && configured=1
+    configure_iface rndis0 && configured=1
+    start_debug_servers
+    if [ $((i % 5)) -eq 0 ]; then
+        log "tick=$i configured=$configured"
+        snapshot
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+EOF_ZL1_DEBUG_NET
+chmod 0755 "$ROOT/usr/local/sbin/zl1-debug-net.sh" 2>/dev/null || true
+cat > "$ROOT/etc/systemd/system/zl1-debug-net.service" <<'EOF_ZL1_DEBUG_NET_UNIT'
+[Unit]
+Description=zl1 V63 single-keeper USB debug network keeper
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=basic.target usb-moded.service
+Conflicts=usb-moded.service
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/zl1-debug-net.sh
+Restart=on-failure
+RestartSec=2
+[Install]
+WantedBy=sysinit.target multi-user.target
+EOF_ZL1_DEBUG_NET_UNIT
+chmod 0644 "$ROOT/etc/systemd/system/zl1-debug-net.service" 2>/dev/null || true
+ln -sf ../zl1-debug-net.service "$ROOT/etc/systemd/system/sysinit.target.wants/zl1-debug-net.service" 2>/dev/null || true
+ln -sf ../zl1-debug-net.service "$ROOT/etc/systemd/system/multi-user.target.wants/zl1-debug-net.service" 2>/dev/null || true
+log "installed persistent debug network keeper"
+cat > "$ROOT/usr/local/sbin/zl1-v63-monitor.sh" <<'EOF_ZL1_V63_MONITOR'
+#!/bin/sh
+PATH=/usr/local/sbin:/sbin:/usr/sbin:/bin:/usr/bin:/tmp
+RUNLOG=/run/zl1-v63-monitor.log
+PERSIST=/userdata/zl1-v63-monitor.log
+mkdir -p /run 2>/dev/null || true
+if ! grep -q ' /userdata ' /proc/mounts 2>/dev/null; then
+    PERSIST=/run/zl1-v63-monitor-no-userdata.log
+else
+    mkdir -p /userdata 2>/dev/null || true
+fi
+read0() { tr '\000' ' ' < "$1" 2>/dev/null | tr -d '\r\n'; }
+read1() { [ -e "$1" ] && cat "$1" 2>/dev/null | tr -d '\r\n' || printf 'missing'; }
+append() {
+    line="$*"
+    printf '%s\n' "$line" >> "$RUNLOG" 2>/dev/null || true
+    printf '%s\n' "$line" >> "$PERSIST" 2>/dev/null || true
+    chmod 0644 "$RUNLOG" "$PERSIST" 2>/dev/null || true
+}
+kmsg() { echo "zl1-v63-monitor: $*" > /dev/kmsg 2>/dev/null || true; }
+pid1_summary() {
+    n="$(read1 /proc/1/comm)"
+    c="$(read0 /proc/1/cmdline)"
+    printf '%s|%s' "$n" "$c"
+}
+usb_summary() {
+    b=/sys/class/android_usb/android0
+    printf 'state=%s functions=%s enable=%s product=%s serial=%s ' \
+        "$(read1 "$b/state")" "$(read1 "$b/functions")" "$(read1 "$b/enable")" "$(read1 "$b/iProduct")" "$(read1 "$b/iSerial")"
+    for i in rndis0 usb0; do
+        if [ -e "/sys/class/net/$i" ]; then
+            printf '%s(addr=%s,carrier=%s,op=%s,idx=%s) ' "$i" \
+                "$(read1 "/sys/class/net/$i/address")" "$(read1 "/sys/class/net/$i/carrier")" "$(read1 "/sys/class/net/$i/operstate")" "$(read1 "/sys/class/net/$i/ifindex")"
+        fi
+    done
+}
+proc_hits() {
+    n=0
+    for d in /proc/[0-9]*; do
+        [ -d "$d" ] || continue
+        pid="${d##*/}"
+        name="$(read1 "$d/comm")"
+        cmd="$(read0 "$d/cmdline")"
+        hay="$name $cmd"
+        case "$hay" in
+            *lxc*|*LXC*|*android*|*Android*|*ueventd*|*hwservice*|*servicemanager*|*qsee*|*zygote*|*systemd*|*usb*|*USB*|*zl1*)
+                printf '%s:%s:%s;' "$pid" "$name" "$cmd"
+                n=$((n+1))
+                [ "$n" -ge 80 ] && break
+                ;;
+        esac
+    done
+}
+lxc_info_summary() {
+    if command -v lxc-info >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 1 lxc-info -n android 2>/dev/null | tr '\n' ' ' | tr -d '\r'
+        else
+            lxc-info -n android 2>/dev/null | tr '\n' ' ' | tr -d '\r'
+        fi
+    else
+        printf 'no-lxc-info'
+    fi
+}
+copy_debug_snapshot() {
+    tag="$1"
+    {
+        echo "--- snapshot $tag ---"
+        date -u 2>/dev/null || true
+        echo "uptime=$(cat /proc/uptime 2>/dev/null)"
+        echo "pid1=$(pid1_summary)"
+        echo "usb=$(usb_summary)"
+        echo "lxc=$(lxc_info_summary)"
+        echo "--- route ---"; ip route show 2>/dev/null || route -n 2>/dev/null || true
+        echo "--- addr ---"; ip -br addr show 2>/dev/null || ifconfig -a 2>/dev/null || true
+        echo "--- proc-net-dev ---"; cat /proc/net/dev 2>/dev/null || true
+        echo "--- processes ---"; proc_hits; echo
+        echo "--- lxc-log-tail ---"; tail -n 80 /var/log/lxc/android.log 2>/dev/null || true
+        echo "--- v63-fakebind-log-tail ---"; tail -n 80 /run/zl1-v63-usb-fakebind.log 2>/dev/null || true
+        echo "--- debug-net-tail ---"; tail -n 80 /run/zl1-debug-net.log 2>/dev/null || true
+        echo "--- dmesg-tail ---"; dmesg 2>/dev/null | tail -n 80 || true
+    } >> "$RUNLOG" 2>&1 || true
+    if [ "$PERSIST" != "$RUNLOG" ]; then
+        {
+            echo "--- snapshot $tag ---"
+            tail -n 260 "$RUNLOG" 2>/dev/null || true
+        } >> "$PERSIST" 2>/dev/null || true
+    fi
+    sync 2>/dev/null || true
+}
+append "START uptime=$(cat /proc/uptime 2>/dev/null) pid1=$(pid1_summary) persist=$PERSIST cmdline=$(cat /proc/cmdline 2>/dev/null)"
+kmsg "start persist=$PERSIST pid1=$(pid1_summary)"
+last_sig=""
+i=0
+while [ "$i" -lt 420 ]; do
+    up="$(cat /proc/uptime 2>/dev/null | { read a b; printf '%s' "$a"; })"
+    pid1="$(pid1_summary)"
+    usb="$(usb_summary)"
+    lxc="$(lxc_info_summary)"
+    sig="$pid1 | $usb | $lxc"
+    append "tick=$i uptime=$up pid1=[$pid1] usb=[$usb] lxc=[$lxc]"
+    if [ "$sig" != "$last_sig" ]; then
+        append "EVENT tick=$i uptime=$up sig_change=[$sig]"
+        kmsg "event tick=$i uptime=$up $sig"
+        last_sig="$sig"
+        copy_debug_snapshot "event-$i"
+    elif [ $((i % 10)) -eq 0 ]; then
+        copy_debug_snapshot "periodic-$i"
+    elif [ $((i % 5)) -eq 0 ]; then
+        sync 2>/dev/null || true
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+append "DONE uptime=$(cat /proc/uptime 2>/dev/null)"
+sync 2>/dev/null || true
+EOF_ZL1_V63_MONITOR
+chmod 0755 "$ROOT/usr/local/sbin/zl1-v63-monitor.sh" 2>/dev/null || true
+log "installed V63 post-init loss monitor"
+cat > "$ROOT/tmp/zl1-lxc-pre-start.sh" <<'EOF_LXC_PRESTART'
+#!/bin/sh
+if mountpoint -q /dev/__properties__ 2>/dev/null; then
+    umount /dev/__properties__ 2>/dev/null || true
+fi
+rm -rf /dev/__properties__ /dev/socket 2>/dev/null || true
+mkdir -p /dev/__properties__ /dev/socket
+mount -t tmpfs -o mode=0711 tmpfs /dev/__properties__ 2>/dev/null || true
+chmod 0711 /dev/__properties__ 2>/dev/null || true
+chmod 0755 /dev/socket 2>/dev/null || true
+if [ -n "$LXC_ROOTFS_PATH" ] && [ -d "$LXC_ROOTFS_PATH" ]; then
+    for mount_name in vendor firmware odm; do
+        target="$LXC_ROOTFS_PATH/$mount_name"
+        [ -L "$target" ] && rm "$target" 2>/dev/null || true
+        [ -d "$target" ] || mkdir -p "$target" 2>/dev/null || true
+    done
+fi
+if [ -n "$LXC_ROOTFS_PATH" ] && [ -d "$LXC_ROOTFS_PATH" ]; then
+    mkdir -p "$LXC_ROOTFS_PATH/dev" "$LXC_ROOTFS_PATH/dev/__properties__" "$LXC_ROOTFS_PATH/dev/socket" 2>/dev/null || true
+    [ -e "$LXC_ROOTFS_PATH/dev/null" ] || mknod -m 666 "$LXC_ROOTFS_PATH/dev/null" c 1 3 2>/dev/null || true
+    : > "$LXC_ROOTFS_PATH/selinux-null0000000" 2>/dev/null || true
+    chmod 666 "$LXC_ROOTFS_PATH/selinux-null0000000" 2>/dev/null || true
+    cat > "$LXC_ROOTFS_PATH/secilc-wrapper000" <<'EOF_SECILC_WRAPPER'
+#!/system/bin/sh
+args=""
+replace_next=0
+for arg in "$@"; do
+    if [ "$replace_next" = 1 ]; then
+        args="$args 30"
+        replace_next=0
+        continue
+    fi
+    args="$args $arg"
+    if [ "$arg" = "-c" ]; then
+        replace_next=1
+    fi
+done
+echo "zl1-secilc-wrapper:$args" > /dev/kmsg 2>/dev/null || true
+exec /system/bin/secilc $args
+EOF_SECILC_WRAPPER
+    chmod 755 "$LXC_ROOTFS_PATH/secilc-wrapper000" 2>/dev/null || true
+fi
+if [ -f "$LXC_ROOTFS_PATH/init" ]; then
+    python3 - <<'PY_PATCH' "$LXC_ROOTFS_PATH/init" 2>/dev/null || true
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+old = b'/sys/fs/selinux/null'
+legacy = b'/dev/zl1-selinuxnul0'
+devnull = b'/dev/null' + b'\0' * (len(old) - len(b'/dev/null'))
+new = b'/selinux-null0000000'
+secilc_old = b'/system/bin/secilc'
+secilc_new = b'/secilc-wrapper000'
+selinux_initialize_off = 0x1ada0
+selinux_initialize_prologue = bytes.fromhex('fc6fbaa9')
+selinux_initialize_ret = bytes.fromhex('c0035fd6')
+boottime_getenv_add_off = 0x4ab4
+boottime_getenv_selinux_took_add = bytes.fromhex('00100391')
+boottime_getenv_started_at_add = bytes.fromhex('003c0191')
+crash_signal_branch_off = 0xc6ec
+crash_signal_branch_to_reboot = bytes.fromhex('60010054')
+aarch64_nop = bytes.fromhex('1f2003d5')
+init_aborter_branch_off = 0x6df0
+init_aborter_branch_if_not_pid1 = bytes.fromhex('01020054')
+init_aborter_branch_to_default_aborter = bytes.fromhex('10000014')
+static_selinux_ret0 = bytes.fromhex('00008052c0035fd6')
+static_selinux_patch_sites = {
+    'is_selinux_enabled_static': (0xb0930, bytes.fromhex('680a00f0087d44f9')),
+    'setcon_like_1_static': (0xb22c0, bytes.fromhex('ffc300d1f44f01a9')),
+    'setcon_like_2_static': (0xb2338, bytes.fromhex('ffc300d1f44f01a9')),
+    'setcon_like_3_static': (0xb23b0, bytes.fromhex('ffc300d1f44f01a9')),
+    'setfilecon_like_static': (0xb14a4, bytes.fromhex('ffc300d1f44f01a9')),
+    'selinux_android_setcontext_static': (0xa9714, bytes.fromhex('ff8301d1f90b00f9')),
+    'selinux_android_restorecon_wrapper_static': (0xb46f8, bytes.fromhex('e803012a02008012')),
+}
+getpeercon_static_off = 0xb0dbc
+getpeercon_static_expected = bytes.fromhex('ff0301d1f65701a9f44f02a9fd7b03a9fdc30091')
+getpeercon_static_patch = bytes.fromhex('a20600f042cc1591220000f900008052c0035fd6')
+freecon_static_off = 0xacbdc
+freecon_static_expected = bytes.fromhex('f1680214')
+freecon_static_patch = bytes.fromhex('c0035fd6')
+if len(old) != len(legacy) or len(old) != len(devnull) or len(old) != len(new):
+    raise SystemExit('null replacement length mismatch')
+if len(secilc_old) != len(secilc_new):
+    raise SystemExit('secilc replacement length mismatch')
+data = p.read_bytes()
+old_before = data.count(old)
+legacy_before = data.count(legacy)
+devnull_before = data.count(devnull)
+new_before = data.count(new)
+secilc_old_before = data.count(secilc_old)
+secilc_new_before = data.count(secilc_new)
+selinux_skip_before = data[selinux_initialize_off:selinux_initialize_off + 4]
+boottime_getenv_before = data[boottime_getenv_add_off:boottime_getenv_add_off + 4]
+crash_signal_branch_before = data[crash_signal_branch_off:crash_signal_branch_off + 4]
+init_aborter_branch_before = data[init_aborter_branch_off:init_aborter_branch_off + 4]
+static_selinux_before = {name: data[off:off + len(static_selinux_ret0)] for name, (off, _expected) in static_selinux_patch_sites.items()}
+getpeercon_static_before = data[getpeercon_static_off:getpeercon_static_off + len(getpeercon_static_patch)]
+freecon_static_before = data[freecon_static_off:freecon_static_off + len(freecon_static_patch)]
+changed = False
+if old_before or legacy_before or devnull_before or secilc_old_before:
+    data = data.replace(old, new).replace(legacy, new).replace(devnull, new).replace(secilc_old, secilc_new)
+    changed = True
+if selinux_skip_before == selinux_initialize_prologue:
+    data = data[:selinux_initialize_off] + selinux_initialize_ret + data[selinux_initialize_off + 4:]
+    changed = True
+elif selinux_skip_before == selinux_initialize_ret:
+    pass
+else:
+    raise SystemExit('SelinuxInitialize prologue mismatch at 0x1ada0: %s' % selinux_skip_before.hex())
+if boottime_getenv_before == boottime_getenv_selinux_took_add:
+    data = data[:boottime_getenv_add_off] + boottime_getenv_started_at_add + data[boottime_getenv_add_off + 4:]
+    changed = True
+elif boottime_getenv_before == boottime_getenv_started_at_add:
+    pass
+else:
+    raise SystemExit('boottime getenv add mismatch at 0x4ab4: %s' % boottime_getenv_before.hex())
+if crash_signal_branch_before == crash_signal_branch_to_reboot:
+    data = data[:crash_signal_branch_off] + aarch64_nop + data[crash_signal_branch_off + 4:]
+    changed = True
+elif crash_signal_branch_before == aarch64_nop:
+    pass
+else:
+    raise SystemExit('crash signal branch mismatch at 0xc6ec: %s' % crash_signal_branch_before.hex())
+if init_aborter_branch_before == init_aborter_branch_if_not_pid1:
+    data = data[:init_aborter_branch_off] + init_aborter_branch_to_default_aborter + data[init_aborter_branch_off + 4:]
+    changed = True
+elif init_aborter_branch_before == init_aborter_branch_to_default_aborter:
+    pass
+else:
+    raise SystemExit('InitAborter branch mismatch at 0x6df0: %s' % init_aborter_branch_before.hex())
+for name, (off, expected) in static_selinux_patch_sites.items():
+    before = static_selinux_before[name]
+    if before == expected:
+        data = data[:off] + static_selinux_ret0 + data[off + len(static_selinux_ret0):]
+        changed = True
+    elif before == static_selinux_ret0:
+        pass
+    else:
+        raise SystemExit('static SELinux patch mismatch for %s at 0x%x: %s' % (name, off, before.hex()))
+if getpeercon_static_before.startswith(getpeercon_static_expected):
+    data = data[:getpeercon_static_off] + getpeercon_static_patch + data[getpeercon_static_off + len(getpeercon_static_patch):]
+    changed = True
+elif getpeercon_static_before == getpeercon_static_patch:
+    pass
+else:
+    raise SystemExit('static getpeercon patch mismatch at 0x%x: %s' % (getpeercon_static_off, getpeercon_static_before.hex()))
+if freecon_static_before == freecon_static_expected:
+    data = data[:freecon_static_off] + freecon_static_patch + data[freecon_static_off + len(freecon_static_patch):]
+    changed = True
+elif freecon_static_before == freecon_static_patch:
+    pass
+else:
+    raise SystemExit('static freecon patch mismatch at 0x%x: %s' % (freecon_static_off, freecon_static_before.hex()))
+if changed:
+    p.write_bytes(data)
+old_after = data.count(old)
+legacy_after = data.count(legacy)
+devnull_after = data.count(devnull)
+new_after = data.count(new)
+secilc_old_after = data.count(secilc_old)
+secilc_new_after = data.count(secilc_new)
+selinux_skip_after = data[selinux_initialize_off:selinux_initialize_off + 4]
+boottime_getenv_after = data[boottime_getenv_add_off:boottime_getenv_add_off + 4]
+crash_signal_branch_after = data[crash_signal_branch_off:crash_signal_branch_off + 4]
+init_aborter_branch_after = data[init_aborter_branch_off:init_aborter_branch_off + 4]
+static_selinux_after = {name: data[off:off + len(static_selinux_ret0)] for name, (off, _expected) in static_selinux_patch_sites.items()}
+getpeercon_static_after = data[getpeercon_static_off:getpeercon_static_off + len(getpeercon_static_patch)]
+freecon_static_after = data[freecon_static_off:freecon_static_off + len(freecon_static_patch)]
+static_selinux_summary = ','.join('%s:%s->%s' % (name, static_selinux_before[name].hex(), static_selinux_after[name].hex()) for name in sorted(static_selinux_patch_sites))
+try:
+    with open('/dev/kmsg', 'wb', buffering=0) as kmsg:
+        kmsg.write(('zl1-lxc-pre-start: init patch old_before=%d legacy_before=%d devnull_before=%d new_before=%d secilc_old_before=%d secilc_new_before=%d selinux_skip_before=%s boottime_before=%s crash_branch_before=%s aborter_branch_before=%s getpeercon_before=%s freecon_before=%s old_after=%d legacy_after=%d devnull_after=%d new_after=%d secilc_old_after=%d secilc_new_after=%d selinux_skip_after=%s boottime_after=%s crash_branch_after=%s aborter_branch_after=%s getpeercon_after=%s freecon_after=%s static_selinux=%s\n' % (old_before, legacy_before, devnull_before, new_before, secilc_old_before, secilc_new_before, selinux_skip_before.hex(), boottime_getenv_before.hex(), crash_signal_branch_before.hex(), init_aborter_branch_before.hex(), getpeercon_static_before.hex(), freecon_static_before.hex(), old_after, legacy_after, devnull_after, new_after, secilc_old_after, secilc_new_after, selinux_skip_after.hex(), boottime_getenv_after.hex(), crash_signal_branch_after.hex(), init_aborter_branch_after.hex(), getpeercon_static_after.hex(), freecon_static_after.hex(), static_selinux_summary)).encode())
+except Exception:
+    pass
+PY_PATCH
+fi
+exit 0
+EOF_LXC_PRESTART
+chmod 0755 "$ROOT/tmp/zl1-lxc-pre-start.sh" 2>/dev/null || true
+if [ -d "$ROOT/var/lib/lxc/android/pre-start.d" ]; then
+    cp "$ROOT/tmp/zl1-lxc-pre-start.sh" "$ROOT/var/lib/lxc/android/pre-start.d/90-zl1-debug-init-patch" 2>/dev/null \
+        && chmod 0755 "$ROOT/var/lib/lxc/android/pre-start.d/90-zl1-debug-init-patch" 2>/dev/null \
+        && log "installed Noble LXC pre-start.d zl1 init patch hook" \
+        || log "failed to install Noble LXC pre-start.d hook"
+else
+    log "Noble LXC pre-start.d directory not present; keeping legacy /tmp fallback hook"
+fi
+cat > "$ROOT/tmp/zl1-debug-init" <<'EOF_DEBUG_INIT'
+#!/bin/sh
+export PATH=/tmp:/sbin:/usr/sbin:/bin:/usr/bin
+BB=/tmp/busybox
+log() { echo "zl1-debug-init: $*" >/dev/kmsg 2>/dev/null || true; }
+log "entered post-switch-root debug init wrapper (V63 usbd-disabled + fakebind)"
+grep -q ' /proc ' /proc/mounts 2>/dev/null || mount -t proc proc /proc 2>/dev/null || true
+grep -q ' /sys ' /proc/mounts 2>/dev/null || mount -t sysfs sysfs /sys 2>/dev/null || true
+mkdir -p /dev/__properties__ /dev/socket /run /run/systemd/system /tmp 2>/dev/null || true
+LOG=/run/zl1-v63-usb-fakebind.log
+v63_log() { msg="zl1-v63-usb-fakebind: $*"; echo "$msg" >>"$LOG" 2>/dev/null || true; echo "$msg" >/dev/kmsg 2>/dev/null || true; }
+v63_log "Android LXC allowed; only Android-visible USB gadget paths will be fake-bound in LXC mount hook"
+if [ -x /usr/local/sbin/zl1-v63-monitor.sh ]; then
+    /usr/local/sbin/zl1-v63-monitor.sh >>/run/zl1-v63-monitor.launch.log 2>&1 &
+    log "started V63 post-init loss monitor pid=$!"
+else
+    log "V63 post-init monitor missing"
+fi
+if [ -d /var/lib/lxc/android/pre-start.d ]; then
+    if [ -x /var/lib/lxc/android/pre-start.d/90-zl1-debug-init-patch ]; then
+        log "using Noble LXC pre-start.d zl1 init patch hook"
+    else
+        log "Noble LXC pre-start.d exists but zl1 hook is missing or not executable"
+    fi
+    mount -o remount,rw / 2>/dev/null || true
+    mkdir -p /run /var/log/lxc 2>/dev/null || true
+    : > /var/log/lxc/android.log 2>/dev/null || true
+    if [ -x /usr/lib/lxc-android-config/lxc-android-ready ]; then
+        [ -e /usr/lib/lxc-android-config/lxc-android-ready.orig-zl1 ] \
+            || cp /usr/lib/lxc-android-config/lxc-android-ready /usr/lib/lxc-android-config/lxc-android-ready.orig-zl1 2>/dev/null \
+            || true
+        cat > /usr/lib/lxc-android-config/lxc-android-ready <<'EOF_ZL1_LXC_READY'
+#!/bin/sh
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+LOG=/run/zl1-lxc-ready.log
+mkdir -p /run 2>/dev/null || true
+log() {
+    msg="zl1-lxc-ready: $*"
+    echo "$msg" >> "$LOG" 2>/dev/null || true
+    echo "$msg" > /dev/kmsg 2>/dev/null || true
+    echo "$msg" >&2
+}
+wait_for_path() {
+    path="$1"
+    label="$2"
+    tries="$3"
+    i=0
+    while [ "$i" -lt "$tries" ]; do
+        if [ -e "$path" ]; then
+            log "$label present after $i ticks"
+            return 0
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    log "$label not present after $tries ticks"
+    return 1
+}
+log "wrapper start; avoiding Ubuntu-side getprop after observed segfault loop"
+err="$(lxc-wait -n android -s RUNNING -t 30 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    log "lxc-wait rc=$rc err=$err"
+    exit 0
+fi
+log "lxc-wait observed RUNNING"
+containerpid="$(lxc-info -n android -p -H 2>/dev/null || true)"
+log "container pid=${containerpid:-missing}"
+if [ -n "$containerpid" ] && [ -d "/proc/$containerpid/root" ]; then
+    wait_for_path "/proc/$containerpid/root/dev/.coldboot_done" "android coldboot marker" 200 || true
+else
+    log "container root not visible; skipping coldboot wait"
+fi
+wait_for_path /dev/socket/property_service "host property_service socket" 200 || true
+if [ -d /dev/__properties__ ]; then
+    prop_count="$(find /dev/__properties__ -maxdepth 1 -type f 2>/dev/null | wc -l 2>/dev/null || echo unknown)"
+    log "property area file count=$prop_count"
+fi
+log "exiting success so lxc-start stays available for diagnostics"
+exit 0
+EOF_ZL1_LXC_READY
+        chmod 0755 /usr/lib/lxc-android-config/lxc-android-ready 2>/dev/null || true
+        log "installed bounded Noble lxc-android-ready diagnostic wrapper"
+    else
+        log "Noble lxc-android-ready not found; cannot install ready wrapper"
+    fi
+    for tool_name in getprop setprop; do
+        tool_path="/usr/bin/$tool_name"
+        if [ -x "$tool_path" ]; then
+            [ -e "${tool_path}.orig-zl1" ] \
+                || cp "$tool_path" "${tool_path}.orig-zl1" 2>/dev/null \
+                || true
+            cat > "$tool_path" <<'EOF_ZL1_PROP_WRAPPER'
+#!/bin/sh
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+TOOL_NAME="$(basename "$0")"
+LOG=/run/zl1-prop-wrapper.log
+mkdir -p /run 2>/dev/null || true
+log() {
+    msg="zl1-${TOOL_NAME}-wrapper: $*"
+    echo "$msg" >> "$LOG" 2>/dev/null || true
+    echo "$msg" > /dev/kmsg 2>/dev/null || true
+}
+if [ "$TOOL_NAME" = setprop ]; then
+    log "no-attach diagnostic no-op setprop: $*"
+    exit 0
+fi
+prop="${1:-}"
+default="${2:-}"
+case "$prop" in
+    '')
+        exit 0
+        ;;
+    ro.build.version.sdk)
+        printf '%s\n' 28
+        ;;
+    ro.product.device|ro.product.vendor.device|ro.product.odm.device)
+        printf '%s\n' le_zl1
+        ;;
+    ro.product.name|ro.product.vendor.name|ro.product.odm.name)
+        printf '%s\n' ZL1_CN
+        ;;
+    ro.product.model|ro.product.vendor.model)
+        printf '%s\n' 'LeEco Pro3'
+        ;;
+    ro.hardware|ro.boot.hardware)
+        printf '%s\n' qcom
+        ;;
+    ro.treble.enabled)
+        printf '%s\n' true
+        ;;
+    ro.vndk.version)
+        printf '%s\n' 28
+        ;;
+    sys.boot_completed|dev.bootcomplete|service.bootanim.exit)
+        [ -n "$default" ] && printf '%s\n' "$default"
+        ;;
+    init.svc.*|vendor.*|persist.*|ctl.*|debug.*|test.*)
+        [ -n "$default" ] && printf '%s\n' "$default"
+        ;;
+    *)
+        [ -n "$default" ] && printf '%s\n' "$default"
+        ;;
+esac
+exit 0
+EOF_ZL1_PROP_WRAPPER
+            chmod 0755 "$tool_path" 2>/dev/null || true
+            log "installed ${tool_name} no-attach diagnostic stub"
+        else
+            log "$tool_path not found; cannot install ${tool_name} wrapper"
+        fi
+    done
+    cat > /var/lib/lxc/android/zl1-mount-hook.sh <<'EOF_ZL1_LXC_MOUNT'
+echo "zl1-lxc-mount-hook: start V63 usbd-disabled" > /dev/kmsg 2>/dev/null || true
+mknod -m 666 "${LXC_ROOTFS_MOUNT}/dev/null" c 1 3 2>/dev/null || true
+mknod -m 600 "${LXC_ROOTFS_MOUNT}/dev/kmsg" c 1 11 2>/dev/null || true
+mknod -m 666 "${LXC_ROOTFS_MOUNT}/dev/random" c 1 8 2>/dev/null || true
+mknod -m 666 "${LXC_ROOTFS_MOUNT}/dev/urandom" c 1 9 2>/dev/null || true
+chmod 666 "${LXC_ROOTFS_MOUNT}/dev/binder" "${LXC_ROOTFS_MOUNT}/dev/hwbinder" "${LXC_ROOTFS_MOUNT}/dev/vndbinder" "${LXC_ROOTFS_MOUNT}/dev/ashmem" 2>/dev/null || true
+# V63: Disable Android usbd service to test if it's the RNDIS killer
+V63_USBD_RC="${LXC_ROOTFS_MOUNT}/system/etc/init/usbd.rc"
+V63_USBD_OVERRIDE="/run/zl1-v63-usbd-disabled.rc"
+if [ -f "$V63_USBD_RC" ]; then
+    cat > "$V63_USBD_OVERRIDE" <<'EOF_V63_USBD'
+# V63: usbd disabled to isolate RNDIS failure cause
+# Original: service usbd /system/bin/usbd
+#              class late_start
+#              oneshot
+#              user root
+#              group root usb system
+service usbd /system/bin/usbd
+    class late_start
+    oneshot
+    user root
+    group root usb system
+    disabled
+EOF_V63_USBD
+    if mount --bind "$V63_USBD_OVERRIDE" "$V63_USBD_RC" 2>/dev/null; then
+        echo "zl1-lxc-mount-hook: V63 bind-masked usbd.rc with disabled flag" > /dev/kmsg 2>/dev/null || true
+    else
+        echo "zl1-lxc-mount-hook: V63 failed to bind-mask usbd.rc" > /dev/kmsg 2>/dev/null || true
+    fi
+else
+    echo "zl1-lxc-mount-hook: V63 usbd.rc not found at $V63_USBD_RC" > /dev/kmsg 2>/dev/null || true
+fi
+# V63: fake-bind only Android-visible USB gadget control paths. This lets Android
+# LXC start while preventing Android init/USB HAL from rewriting the real host
+# diagnostic RNDIS gadget. Writes to the fake tree are logged by later status pulls.
+V63_LOG=/run/zl1-v63-usb-fakebind.log
+v63_log() { msg="zl1-v63-lxc-mount: $*"; echo "$msg" >> "$V63_LOG" 2>/dev/null || true; echo "$msg" > /dev/kmsg 2>/dev/null || true; }
+v63_log "installing fake Android USB gadget views"
+FAKE=/run/zl1-v63-fake-sys
+AUSB="$FAKE/class/android_usb/android0"
+mkdir -p "$AUSB/f_rndis" "$FAKE/class/android_usb" "$FAKE/config/usb_gadget" "$FAKE/kernel/config/usb_gadget" 2>/dev/null || true
+v63_put() { f="$1"; v="$2"; [ -e "$f" ] || : > "$f" 2>/dev/null || true; chmod 666 "$f" 2>/dev/null || true; printf '%s' "$v" > "$f" 2>/dev/null || true; }
+v63_put "$AUSB/enable" 1
+v63_put "$AUSB/functions" rndis
+v63_put "$AUSB/state" CONFIGURED
+v63_put "$AUSB/idVendor" 18D1
+v63_put "$AUSB/idProduct" D001
+v63_put "$AUSB/iManufacturer" Halium
+v63_put "$AUSB/iProduct" 'zl1 V63 fake Android USB view'
+v63_put "$AUSB/iSerial" '33e80afe-v63-fake-android-usb'
+v63_put "$AUSB/f_rndis/ethaddr" '02:15:19:82:56:01'
+v63_put "$AUSB/f_rndis/vendorID" 18D1
+v63_put "$AUSB/f_rndis/manufacturer" Halium
+v63_put "$AUSB/f_rndis/wceis" 1
+for t in "${LXC_ROOTFS_MOUNT}/sys/class/android_usb/android0" "${LXC_ROOTFS_MOUNT}/sys/class/android_usb"; do
+    if [ -d "$t" ]; then
+        if [ "$(basename "$t")" = android0 ]; then src="$AUSB"; else src="$FAKE/class/android_usb"; fi
+        mount --bind "$src" "$t" 2>/dev/null && v63_log "bind-masked $t" || v63_log "failed bind-mask $t"
+    else
+        v63_log "missing android_usb target $t"
+    fi
+done
+mkdir -p "${LXC_ROOTFS_MOUNT}/config/usb_gadget" 2>/dev/null || true
+for t in "${LXC_ROOTFS_MOUNT}/config/usb_gadget" "${LXC_ROOTFS_MOUNT}/sys/kernel/config/usb_gadget"; do
+    if [ -d "$t" ]; then
+        mount --bind "$FAKE/config/usb_gadget" "$t" 2>/dev/null && v63_log "bind-masked $t" || v63_log "failed bind-mask $t"
+    else
+        v63_log "missing configfs target $t"
+    fi
+done
+chmod 440 "${LXC_ROOTFS_MOUNT}/proc/cmdline" 2>/dev/null || true
+if [ -w "${LXC_ROOTFS_MOUNT}" ]; then
+    [ -e "${LXC_ROOTFS_MOUNT}/socket" ] || [ -L "${LXC_ROOTFS_MOUNT}/socket" ] || ln -s /dev/socket "${LXC_ROOTFS_MOUNT}/socket" 2>/dev/null || true
+fi
+hwsm_bin="${LXC_ROOTFS_MOUNT}/system/bin/hwservicemanager"
+hwsm_exec_dir="/run/zl1-hwsm-exec"
+hwsm_patch="${hwsm_exec_dir}/zl1-hwservicemanager"
+: > /run/zl1-hwservicemanager-patch.log 2>/dev/null || true
+mkdir -p "$hwsm_exec_dir" 2>/dev/null || true
+if ! grep -qs " $hwsm_exec_dir " /proc/mounts 2>/dev/null; then
+    mount -t tmpfs -o mode=755,exec,nosuid,nodev tmpfs "$hwsm_exec_dir" >>/run/zl1-hwservicemanager-patch.log 2>&1 \
+        || mount -t tmpfs -o mode=755 tmpfs "$hwsm_exec_dir" >>/run/zl1-hwservicemanager-patch.log 2>&1 \
+        || true
+fi
+rm -f "$hwsm_patch" 2>/dev/null || true
+if [ -f "$hwsm_bin" ] && grep -qs " $hwsm_exec_dir " /proc/mounts 2>/dev/null; then
+    grep " $hwsm_exec_dir " /proc/mounts >>/run/zl1-hwservicemanager-patch.log 2>/dev/null || true
+    if cp "$hwsm_bin" "$hwsm_patch" 2>/dev/null \
+        && python3 - <<'PY_ZL1_HWSM_PATCH' "$hwsm_patch" >>/run/zl1-hwservicemanager-patch.log 2>&1
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+old = b'hwservicemanager.ready'
+new = b'zlservicemanager/ready'
+if len(old) != len(new):
+    raise SystemExit('replacement length mismatch')
+data = p.read_bytes()
+old_count = data.count(old)
+new_count = data.count(new)
+if old_count < 1:
+    if new_count >= 1:
+        print(f'already-patched old_count={old_count} new_count={new_count}')
+        raise SystemExit(0)
+    raise SystemExit(f'property string not found old_count={old_count} new_count={new_count}')
+data = data.replace(old, new)
+p.write_bytes(data)
+print(f'patched old_count={old_count} new_count_before={new_count} new_count_after={data.count(new)}')
+PY_ZL1_HWSM_PATCH
+    then
+        chmod --reference="$hwsm_bin" "$hwsm_patch" 2>/dev/null || chmod 0755 "$hwsm_patch" 2>/dev/null || true
+        if mount --bind "$hwsm_patch" "$hwsm_bin" 2>/dev/null; then
+            echo "zl1-lxc-mount-hook: bind-patched hwservicemanager.ready -> invalid zlservicemanager/ready from exec tmpfs" > /dev/kmsg 2>/dev/null || true
+        else
+            echo "zl1-lxc-mount-hook: failed to bind-patch hwservicemanager binary from exec tmpfs" > /dev/kmsg 2>/dev/null || true
+        fi
+    else
+        echo "zl1-lxc-mount-hook: hwservicemanager property-string patch failed from exec tmpfs" > /dev/kmsg 2>/dev/null || true
+    fi
+else
+    echo "zl1-lxc-mount-hook: hwservicemanager binary not visible or exec tmpfs unavailable for property-string patch" > /dev/kmsg 2>/dev/null || true
+fi
+qsee_bin="${LXC_ROOTFS_MOUNT}/vendor/bin/qseecomd"
+qsee_patch="${hwsm_exec_dir}/zl1-qseecomd"
+: > /run/zl1-qseecomd-patch.log 2>/dev/null || true
+rm -f "$qsee_patch" 2>/dev/null || true
+if [ -f "$qsee_bin" ] && grep -qs " $hwsm_exec_dir " /proc/mounts 2>/dev/null; then
+    grep " $hwsm_exec_dir " /proc/mounts >>/run/zl1-qseecomd-patch.log 2>/dev/null || true
+    if cp "$qsee_bin" "$qsee_patch" 2>/dev/null \
+        && python3 - <<'PY_ZL1_QSEE_PATCH' "$qsee_patch" >>/run/zl1-qseecomd-patch.log 2>&1
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+old = b'sys.listeners.registered'
+new = b'zl1.listeners.registered'
+if len(old) != len(new):
+    raise SystemExit('replacement length mismatch')
+data = p.read_bytes()
+old_count = data.count(old)
+new_count = data.count(new)
+if old_count < 1:
+    if new_count >= 1:
+        print(f'already-patched old_count={old_count} new_count={new_count}')
+        raise SystemExit(0)
+    raise SystemExit(f'property string not found old_count={old_count} new_count={new_count}')
+data = data.replace(old, new)
+p.write_bytes(data)
+print(f'patched old_count={old_count} new_count_before={new_count} new_count_after={data.count(new)}')
+PY_ZL1_QSEE_PATCH
+    then
+        chmod --reference="$qsee_bin" "$qsee_patch" 2>/dev/null || chmod 0755 "$qsee_patch" 2>/dev/null || true
+        if mount --bind "$qsee_patch" "$qsee_bin" 2>/dev/null; then
+            echo "zl1-lxc-mount-hook: bind-patched qseecomd sys.listeners.registered -> zl1.listeners.registered" > /dev/kmsg 2>/dev/null || true
+        else
+            echo "zl1-lxc-mount-hook: failed to bind-patch qseecomd binary" > /dev/kmsg 2>/dev/null || true
+        fi
+    else
+        echo "zl1-lxc-mount-hook: qseecomd property-string patch failed" > /dev/kmsg 2>/dev/null || true
+    fi
+else
+    echo "zl1-lxc-mount-hook: qseecomd binary not visible or exec tmpfs unavailable for property-string patch" > /dev/kmsg 2>/dev/null || true
+fi
+libc_prop_old="/dev/socket/property_service"
+libc_prop_new="/dev/socket/property_servicf"
+: > /run/zl1-libc-prop-socket-patch.log 2>/dev/null || true
+for libc_rel in system/lib64/libc.so system/lib/libc.so; do
+    libc_bin="${LXC_ROOTFS_MOUNT}/${libc_rel}"
+    libc_tag=$(printf '%s' "$libc_rel" | tr '/.' '___')
+    libc_patch="${hwsm_exec_dir}/zl1-${libc_tag}"
+    rm -f "$libc_patch" 2>/dev/null || true
+    if [ -f "$libc_bin" ] && grep -qs " $hwsm_exec_dir " /proc/mounts 2>/dev/null; then
+        grep " $hwsm_exec_dir " /proc/mounts >>/run/zl1-libc-prop-socket-patch.log 2>/dev/null || true
+        if cp "$libc_bin" "$libc_patch" 2>/dev/null \
+            && python3 - <<'PY_ZL1_LIBC_PROP_PATCH' "$libc_patch" "$libc_rel" >>/run/zl1-libc-prop-socket-patch.log 2>&1
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+rel = sys.argv[2]
+old = b'/dev/socket/property_service'
+new = b'/dev/socket/property_servicf'
+if len(old) != len(new):
+    raise SystemExit('replacement length mismatch')
+data = p.read_bytes()
+old_count = data.count(old)
+new_count = data.count(new)
+if old_count < 1:
+    if new_count >= 1:
+        print(f'{rel}: already-patched old_count={old_count} new_count={new_count}')
+        raise SystemExit(0)
+    raise SystemExit(f'{rel}: property socket string not found old_count={old_count} new_count={new_count}')
+data = data.replace(old, new)
+p.write_bytes(data)
+print(f'{rel}: patched old_count={old_count} new_count_before={new_count} new_count_after={data.count(new)}')
+PY_ZL1_LIBC_PROP_PATCH
+        then
+            chmod --reference="$libc_bin" "$libc_patch" 2>/dev/null || chmod 0644 "$libc_patch" 2>/dev/null || true
+            if mount --bind "$libc_patch" "$libc_bin" 2>/dev/null; then
+                echo "zl1-lxc-mount-hook: bind-patched $libc_rel property socket -> /dev/socket/property_servicf" > /dev/kmsg 2>/dev/null || true
+            else
+                echo "zl1-lxc-mount-hook: failed to bind-patch $libc_rel property socket" > /dev/kmsg 2>/dev/null || true
+            fi
+        else
+            echo "zl1-lxc-mount-hook: $libc_rel property socket patch failed" > /dev/kmsg 2>/dev/null || true
+        fi
+    else
+        echo "zl1-lxc-mount-hook: $libc_rel not visible or exec tmpfs unavailable for property socket patch" > /dev/kmsg 2>/dev/null || true
+    fi
+done
+mkdir -p /run/zl1-rc-patches 2>/dev/null || true
+python3 - <<'PY_ZL1_RC_SECLABEL' "${LXC_ROOTFS_MOUNT}" /run/zl1-rc-patches >/run/zl1-rc-seclabel.log 2>&1 || echo "zl1-lxc-mount-hook: rc seclabel patch script failed" > /dev/kmsg 2>/dev/null || true
+import os, re, shutil, subprocess, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+patch_dir = Path(sys.argv[2])
+service_re = re.compile(r'^(\s*)service\s+\S+\s+')
+top_re = re.compile(r'^\S')
+search_dirs = [root]
+for rel in ('system/etc/init', 'system_ext/etc/init', 'vendor/etc/init', 'odm/etc/init', 'product/etc/init'):
+    d = root / rel
+    if d.is_dir():
+        search_dirs.append(d)
+candidates = []
+seen = set()
+for d in search_dirs:
+    if d == root:
+        try:
+            entries = [p for p in d.iterdir() if p.is_file() and p.suffix == '.rc']
+        except Exception:
+            entries = []
+    else:
+        try:
+            entries = [p for p in d.rglob('*.rc') if p.is_file()]
+        except Exception:
+            entries = []
+    for p in entries:
+        sp = str(p)
+        if sp not in seen:
+            seen.add(sp)
+            candidates.append(p)
+patched_files = 0
+patched_services = 0
+bind_ok = 0
+for path in candidates:
+    try:
+        text = path.read_text(errors='surrogateescape')
+    except Exception as e:
+        print(f'skip-read {path}: {e}')
+        continue
+    lines = text.splitlines(True)
+    out = []
+    i = 0
+    changed = False
+    while i < len(lines):
+        line = lines[i]
+        m = service_re.match(line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        block = [line]
+        i += 1
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if top_re.match(lines[i]) and stripped and not stripped.startswith('#'):
+                break
+            block.append(lines[i])
+            i += 1
+        has_seclabel = any(re.match(r'^\s*seclabel\s+', b) for b in block[1:])
+        out.append(block[0])
+        if not has_seclabel:
+            out.append(f'{m.group(1)}    seclabel u:r:init:s0\n')
+            changed = True
+            patched_services += 1
+        out.extend(block[1:])
+    if not changed:
+        continue
+    rel = str(path.relative_to(root)).replace('/', '__')
+    patched = patch_dir / rel
+    try:
+        patched.write_text(''.join(out), errors='surrogateescape')
+        shutil.copymode(path, patched)
+    except Exception as e:
+        print(f'skip-write {path}: {e}')
+        continue
+    patched_files += 1
+    rc = subprocess.call(['mount', '--bind', str(patched), str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if rc == 0:
+        bind_ok += 1
+    else:
+        print(f'bind-failed rc={rc} {patched} -> {path}')
+print(f'zl1-rc-seclabel patched_files={patched_files} patched_services={patched_services} bind_ok={bind_ok} candidates={len(candidates)}')
+try:
+    with open('/dev/kmsg', 'w') as kmsg:
+        kmsg.write(f'zl1-lxc-mount-hook: rc seclabel patched_files={patched_files} patched_services={patched_services} bind_ok={bind_ok} candidates={len(candidates)}\n')
+except Exception:
+    pass
+PY_ZL1_RC_SECLABEL
+mkdir -p /run/zl1-usb-hal-rc-patches 2>/dev/null || true
+python3 - <<'PY_ZL1_USB_HAL_RC' "${LXC_ROOTFS_MOUNT}" /run/zl1-usb-hal-rc-patches >/run/zl1-usb-hal-rc-patch.log 2>&1 || echo "zl1-lxc-mount-hook: V49 usb hal rc patch script failed" > /dev/kmsg 2>/dev/null || true
+import os, re, shutil, subprocess, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+patch_dir = Path(sys.argv[2])
+target_bin = 'android.hardware.usb@1.0-service.leeco_msm8996'
+target_iface = 'android.hardware.usb@1.0::IUsb'
+service_re = re.compile(r'^(\s*)service\s+\S+\s+')
+top_re = re.compile(r'^\S')
+search_dirs = [root]
+for rel in ('system/etc/init', 'system_ext/etc/init', 'vendor/etc/init', 'odm/etc/init', 'product/etc/init'):
+    d = root / rel
+    if d.is_dir():
+        search_dirs.append(d)
+candidates = []
+seen = set()
+for d in search_dirs:
+    try:
+        if d == root:
+            entries = [p for p in d.iterdir() if p.is_file() and p.suffix == '.rc']
+        else:
+            entries = [p for p in d.rglob('*.rc') if p.is_file()]
+    except Exception:
+        entries = []
+    for p in entries:
+        sp = str(p)
+        if sp not in seen:
+            seen.add(sp)
+            candidates.append(p)
+patched_files = 0
+patched_services = 0
+removed_interfaces = 0
+bind_ok = 0
+for path in candidates:
+    try:
+        src = path.read_text(errors='surrogateescape')
+    except Exception as e:
+        print(f'skip-read {path}: {e}')
+        continue
+    lines = src.splitlines(True)
+    out = []
+    i = 0
+    changed = False
+    while i < len(lines):
+        line = lines[i]
+        m = service_re.match(line)
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        block = [line]
+        i += 1
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if top_re.match(lines[i]) and stripped and not stripped.startswith('#'):
+                break
+            block.append(lines[i])
+            i += 1
+        block_text = ''.join(block)
+        if target_bin not in block_text and target_iface not in block_text:
+            out.extend(block)
+            continue
+        patched_services += 1
+        changed = True
+        out.append(block[0])
+        out.append(f'{m.group(1)}    # zl1-debug V49: disable Android USB HAL to preserve diagnostic RNDIS\n')
+        if not any(re.match(r'^\s*disabled\s*$', b) for b in block[1:]):
+            out.append(f'{m.group(1)}    disabled\n')
+        if not any(re.match(r'^\s*oneshot\s*$', b) for b in block[1:]):
+            out.append(f'{m.group(1)}    oneshot\n')
+        for b in block[1:]:
+            stripped = b.lstrip()
+            if target_iface in b or stripped.startswith('interface ') and 'android.hardware.usb' in b:
+                out.append(f'{m.group(1)}    # zl1-debug V49 removed: {stripped}')
+                removed_interfaces += 1
+                continue
+            if re.match(r'^\s*class\s+', b):
+                out.append(f'{m.group(1)}    # zl1-debug V49 original: {stripped}')
+                out.append(f'{m.group(1)}    class zl1_usbhal_disabled\n')
+                continue
+            out.append(b)
+    if not changed:
+        continue
+    rel = str(path.relative_to(root)).replace('/', '__')
+    patched = patch_dir / rel
+    try:
+        patched.write_text(''.join(out), errors='surrogateescape')
+        shutil.copymode(path, patched)
+    except Exception as e:
+        print(f'skip-write {path}: {e}')
+        continue
+    patched_files += 1
+    rc = subprocess.call(['mount', '--bind', str(patched), str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if rc == 0:
+        bind_ok += 1
+    else:
+        print(f'bind-failed rc={rc} {patched} -> {path}')
+print(f'zl1-usb-hal-rc patched_files={patched_files} patched_services={patched_services} removed_interfaces={removed_interfaces} bind_ok={bind_ok} candidates={len(candidates)}')
+try:
+    with open('/dev/kmsg', 'w') as kmsg:
+        kmsg.write(f'zl1-lxc-mount-hook: V49 usb hal rc patched_files={patched_files} patched_services={patched_services} removed_interfaces={removed_interfaces} bind_ok={bind_ok} candidates={len(candidates)}\n')
+except Exception:
+    pass
+PY_ZL1_USB_HAL_RC
+qcom_rc="${LXC_ROOTFS_MOUNT}/vendor/etc/init/hw/init.qcom.rc"
+qcom_patch="/run/zl1-init.qcom.rc"
+rm -f "$qcom_patch" 2>/dev/null || true
+if [ -f "$qcom_rc" ]; then
+    if cp "$qcom_rc" "$qcom_patch" 2>/dev/null \
+        && sed -i '/^[[:space:]]*wait_for_prop[[:space:]]\+sys\.listeners\.registered[[:space:]]\+true[[:space:]]*$/d' "$qcom_patch" 2>/dev/null \
+        && ! grep -q 'wait_for_prop sys.listeners.registered true' "$qcom_patch" 2>/dev/null \
+        && mount --bind "$qcom_patch" "$qcom_rc" 2>/dev/null; then
+        echo "zl1-lxc-mount-hook: bind-patched init.qcom.rc via /run to skip sys.listeners.registered wait" > /dev/kmsg 2>/dev/null || true
+    else
+        echo "zl1-lxc-mount-hook: failed to bind-patch init.qcom.rc wait_for_prop via /run" > /dev/kmsg 2>/dev/null || true
+    fi
+else
+    echo "zl1-lxc-mount-hook: init.qcom.rc not visible for wait_for_prop patch" > /dev/kmsg 2>/dev/null || true
+fi
+echo "zl1-lxc-mount-hook: end" > /dev/kmsg 2>/dev/null || true
+exit 0
+EOF_ZL1_LXC_MOUNT
+    chmod 0755 /var/lib/lxc/android/zl1-mount-hook.sh 2>/dev/null || true
+    if [ -f /var/lib/lxc/android/config ]; then
+        cp /var/lib/lxc/android/config /run/zl1-lxc-config-noble 2>/dev/null || true
+        if [ -f /run/zl1-lxc-config-noble ]; then
+            sed -i \
+                -e 's@^lxc.hook.mount = .*@lxc.hook.mount = /var/lib/lxc/android/zl1-mount-hook.sh@' \
+                -e 's@^lxc.log.level = .*@lxc.log.level = 3@' \
+                -e 's@^# lxc.log.level = .*@lxc.log.level = 3@' \
+                -e 's@^lxc.mount.entry = /dev/binderfs @# zl1-debug disabled missing binderfs: lxc.mount.entry = /dev/binderfs @' \
+                -e '/# zl1-debug: legacy binder nodes for 3.18 kernel/d' \
+                -e '/# zl1-debug: extra diagnostics/d' \
+                -e 's@^lxc.seccomp@# zl1-debug disabled unsupported: lxc.seccomp@' \
+                -e '/^lxc.log.file = /d' \
+                -e '/^lxc.mount.entry = \/dev\/binder dev\/binder /d' \
+                -e '/^lxc.mount.entry = \/dev\/hwbinder dev\/hwbinder /d' \
+                -e '/^lxc.mount.entry = \/dev\/vndbinder dev\/vndbinder /d' \
+                -e '/^lxc.mount.entry = \/dev\/ashmem dev\/ashmem /d' \
+                /run/zl1-lxc-config-noble 2>/dev/null || true
+            if ! grep -q '^lxc.log.level = ' /run/zl1-lxc-config-noble 2>/dev/null; then
+                printf '\nlxc.log.level = 3\n' >> /run/zl1-lxc-config-noble
+            fi
+            cat >> /run/zl1-lxc-config-noble <<'EOF_ZL1_LXC_CFG'
+lxc.log.file = /var/log/lxc/android.log
+lxc.mount.entry = /dev/binder dev/binder bind bind,create=file,optional 0 0
+lxc.mount.entry = /dev/hwbinder dev/hwbinder bind bind,create=file,optional 0 0
+lxc.mount.entry = /dev/vndbinder dev/vndbinder bind bind,create=file,optional 0 0
+lxc.mount.entry = /dev/ashmem dev/ashmem bind bind,create=file,optional 0 0
+EOF_ZL1_LXC_CFG
+            mount --bind /run/zl1-lxc-config-noble /var/lib/lxc/android/config 2>/dev/null \
+                && log "runtime-bound Noble LXC config for legacy binder nodes and idempotent mount hook" \
+                || log "failed to bind Noble LXC config patch"
+        fi
+    fi
+else
+    if [ -f /var/lib/lxc/android/config ]; then
+        cp /var/lib/lxc/android/config /run/zl1-lxc-config 2>/dev/null || true
+        if [ -f /run/zl1-lxc-config ]; then
+            sed -i \
+                -e 's@^lxc.mount.entry = /dev/binderfs @# zl1-debug disabled: lxc.mount.entry = /dev/binderfs @' \
+                -e 's@^lxc.mount.entry = /vendor @# zl1-debug disabled: lxc.mount.entry = /vendor @' \
+                -e 's@^lxc.mount.entry = /firmware @# zl1-debug disabled: lxc.mount.entry = /firmware @' \
+                -e 's@^lxc.mount.entry = /odm @# zl1-debug disabled: lxc.mount.entry = /odm @' \
+                /run/zl1-lxc-config 2>/dev/null || true
+            if ! grep -q '^lxc.mount.entry = /dev/null dev/null ' /run/zl1-lxc-config 2>/dev/null; then
+                printf '\nlxc.mount.entry = /dev/null dev/null bind bind,create=file 0 0\n' >> /run/zl1-lxc-config
+            fi
+        fi
+        mount --bind /run/zl1-lxc-config /var/lib/lxc/android/config 2>/dev/null \
+            && log "runtime-bound legacy generated LXC config with dev-null bind and optional mounts disabled" \
+            || log "failed to bind legacy generated LXC config"
+    fi
+    if [ -f /var/lib/lxc/android/pre-start.sh ] && [ -x /tmp/zl1-lxc-pre-start.sh ]; then
+        mount --bind /tmp/zl1-lxc-pre-start.sh /var/lib/lxc/android/pre-start.sh 2>/dev/null \
+            && log "runtime-bound legacy minimal Halium-9 LXC pre-start hook" \
+            || log "failed to bind legacy minimal LXC pre-start hook"
+    fi
+fi
+if [ -x /usr/local/sbin/zl1-debug-net.sh ]; then
+    /usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &
+    log "started zl1 debug network keeper from init wrapper pid=$!"
+elif [ -x "$BB" ]; then
+    "$BB" ifconfig rndis0 192.168.2.15 up 2>/dev/null || "$BB" ifconfig usb0 192.168.2.15 up 2>/dev/null || true
+    "$BB" ifconfig usb0:1 10.15.19.82 up 2>/dev/null || "$BB" ifconfig rndis0:1 10.15.19.82 up 2>/dev/null || true
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" zl1_debug_shell=1 "*)
+            "$BB" telnetd -p 23 -l /bin/sh >/dev/kmsg 2>&1 &
+            "$BB" telnetd -p 2323 -l /bin/sh >/dev/kmsg 2>&1 &
+            log "started fallback post-switch telnetd on 192.168.2.15:23/2323"
+            ;;
+        *)
+            log "fallback telnetd disabled by default; set zl1_debug_shell=1 to enable"
+            ;;
+    esac
+else
+    log "missing $BB; cannot start post-switch debug server"
+fi
+{
+    date 2>/dev/null || true
+    cat /proc/cmdline 2>/dev/null || true
+    mount 2>/dev/null || true
+} >/run/zl1-debug-init.log 2>&1 || true
+init_delay=10
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        zl1_init_delay=*) init_delay="${arg#zl1_init_delay=}" ;;
+    esac
+done
+log "pre-systemd delay=${init_delay}; debug network should be reachable before /sbin/init"
+echo "MARK pre-systemd-delay=${init_delay} uptime=$(cat /proc/uptime 2>/dev/null)" >>/run/zl1-v63-monitor.log 2>/dev/null || true
+echo "MARK pre-systemd-delay=${init_delay} uptime=$(cat /proc/uptime 2>/dev/null)" >>/userdata/zl1-v63-monitor.log 2>/dev/null || true
+if [ "$init_delay" = hold ]; then
+    while :; do
+        sleep 30
+        log "holding before /sbin/init for diagnostics"
+    done
+else
+    sleep "$init_delay" 2>/dev/null || sleep 2
+fi
+log "execing real /sbin/init"
+echo "MARK exec-real-init uptime=$(cat /proc/uptime 2>/dev/null)" >>/run/zl1-v63-monitor.log 2>/dev/null || true
+echo "MARK exec-real-init uptime=$(cat /proc/uptime 2>/dev/null)" >>/userdata/zl1-v63-monitor.log 2>/dev/null || true
+sync 2>/dev/null || true
+exec /sbin/init "$@"
+EOF_DEBUG_INIT
+chmod 0755 "$ROOT/tmp/zl1-debug-init" 2>/dev/null || true
+sync
+mount -o remount,ro "$ROOT" 2>/dev/null || true
+log "installed debug init wrapper V54"
+exit 0

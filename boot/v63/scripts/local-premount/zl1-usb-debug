@@ -1,0 +1,95 @@
+#!/bin/sh
+case "$1" in prereqs) exit 0 ;; esac
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+cat > /run/zl1-v62-phase-keeper.sh <<'EOF_KEEPER'
+#!/bin/sh
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+ANDROID_USB=/sys/class/android_usb/android0
+LOCAL_IP=192.168.2.15
+HOST_HINT=192.168.2.100
+TELNET_DEBUG_PORT=23
+HTTP_DEBUG_PORT=8080
+PRODUCT='zl1 V62 monitor RNDIS'
+SERIAL='33e80afe-v62-monitor-rndis'
+BB=/bin/busybox
+IFACE=''
+log() { echo "zl1-v62-phase: $*" >/dev/kmsg 2>/dev/null || true; echo "$(cat /proc/uptime 2>/dev/null | awk '{print $1}') $*" >>/run/zl1-v62-phase.log 2>/dev/null || true; }
+write_file() { [ -e "$1" ] && printf '%s' "$2" >"$1" 2>/dev/null || true; }
+read_file() { [ -e "$1" ] && cat "$1" 2>/dev/null | tr -d '\r\n' || printf 'missing'; }
+mark() { mkdir -p /run 2>/dev/null || true; echo "$*" >>/run/zl1-v62-markers 2>/dev/null || true; log "MARK $*"; }
+mount_support() { mkdir -p /dev /proc /sys /run /tmp /var /etc /www /config 2>/dev/null || true; grep -q ' /proc ' /proc/mounts 2>/dev/null || mount -t proc proc /proc 2>/dev/null || true; grep -q ' /sys ' /proc/mounts 2>/dev/null || mount -t sysfs sysfs /sys 2>/dev/null || true; grep -q ' /config ' /proc/mounts 2>/dev/null || mount -t configfs none /config 2>/dev/null || true; }
+setup_android_usb() {
+    [ -d "$ANDROID_USB" ] || return 1
+    write_file "$ANDROID_USB/enable" 0
+    write_file "$ANDROID_USB/functions" ""
+    usleep 200000 2>/dev/null || sleep 1
+    write_file "$ANDROID_USB/enable" 0
+    write_file "$ANDROID_USB/idVendor" 18D1
+    write_file "$ANDROID_USB/idProduct" D001
+    write_file "$ANDROID_USB/iManufacturer" Halium
+    write_file "$ANDROID_USB/iProduct" "$PRODUCT"
+    write_file "$ANDROID_USB/iSerial" "$SERIAL"
+    write_file "$ANDROID_USB/f_rndis/ethaddr" "02:15:19:82:00:53"
+    write_file "$ANDROID_USB/f_rndis/vendorID" 18D1
+    write_file "$ANDROID_USB/f_rndis/manufacturer" Halium
+    write_file "$ANDROID_USB/f_rndis/wceis" 1
+    write_file "$ANDROID_USB/functions" rndis
+    usleep 200000 2>/dev/null || sleep 1
+    write_file "$ANDROID_USB/enable" 1
+    return 0
+}
+find_iface() { for c in rndis0 usb0; do [ -d "/sys/class/net/$c" ] && { printf '%s' "$c"; return 0; }; done; return 1; }
+wait_iface() { n=0; while [ "$n" -lt 25 ]; do found="$(find_iface 2>/dev/null || true)"; [ -n "$found" ] && { IFACE="$found"; return 0; }; n=$((n+1)); usleep 200000 2>/dev/null || sleep 1; done; return 1; }
+configure_iface() { [ -n "$IFACE" ] || wait_iface || return 1; ifconfig "$IFACE" "$LOCAL_IP" netmask 255.255.255.0 up 2>/dev/null || true; ip link set "$IFACE" up 2>/dev/null || true; ip addr add "$LOCAL_IP/24" dev "$IFACE" 2>/dev/null || true; ip route replace 192.168.2.0/24 dev "$IFACE" src "$LOCAL_IP" 2>/dev/null || true; return 0; }
+write_status() {
+    mkdir -p /www /run 2>/dev/null || true
+    {
+        echo 'zl1 V62 monitor RNDIS status'
+        echo "time=$(date 2>/dev/null || true)"
+        echo "uptime=$(cat /proc/uptime 2>/dev/null || true)"
+        echo "iface=$IFACE local_ip=$LOCAL_IP host_hint=$HOST_HINT"
+        echo "cmdline=$(cat /proc/cmdline 2>/dev/null || true)"
+        echo '--- markers ---'; cat /run/zl1-v62-markers 2>/dev/null || true
+        echo '--- phase log ---'; tail -n 80 /run/zl1-v62-phase.log 2>/dev/null || true
+        echo '--- android_usb ---'
+        for f in state functions enable idVendor idProduct iManufacturer iProduct iSerial f_rndis/ethaddr f_rndis/vendorID f_rndis/manufacturer f_rndis/wceis; do [ -e "$ANDROID_USB/$f" ] && echo "$f=$(read_file "$ANDROID_USB/$f")"; done
+        echo '--- ifconfig -a ---'; ifconfig -a 2>&1 || true
+        echo '--- ip addr ---'; ip addr 2>&1 || true
+        echo '--- route ---'; ip route 2>&1 || true
+        echo '--- mounts ---'; mount 2>&1 | head -n 120 || true
+        echo '--- ps ---'; ps 2>&1 || true
+        echo '--- dmesg tail ---'; dmesg 2>/dev/null | tail -n 120 || true
+    } > /www/status.txt 2>&1
+    cp /www/status.txt /www/index.html 2>/dev/null || true
+}
+start_services() {
+    [ -n "$IFACE" ] || return 1
+    cat > /etc/udhcpd.conf <<EOF_DHCP
+start 192.168.2.20
+end 192.168.2.90
+lease_file /var/udhcpd.leases
+interface $IFACE
+option subnet 255.255.255.0
+EOF_DHCP
+    pidof udhcpd >/dev/null 2>&1 || { /sbin/udhcpd /etc/udhcpd.conf >/dev/kmsg 2>&1 || "$BB" udhcpd /etc/udhcpd.conf >/dev/kmsg 2>&1 || true; }
+    pidof telnetd >/dev/null 2>&1 || { /sbin/telnetd -b ${LOCAL_IP}:${TELNET_DEBUG_PORT} -l /bin/sh >/dev/kmsg 2>&1 || "$BB" telnetd -b ${LOCAL_IP}:${TELNET_DEBUG_PORT} -l /bin/sh >/dev/kmsg 2>&1 || true; }
+    pidof httpd >/dev/null 2>&1 || { /sbin/httpd -p ${LOCAL_IP}:${HTTP_DEBUG_PORT} -h /www >/dev/kmsg 2>&1 || "$BB" httpd -p ${LOCAL_IP}:${HTTP_DEBUG_PORT} -h /www >/dev/kmsg 2>&1 || true; }
+    return 0
+}
+reassert() { funcs="$(read_file "$ANDROID_USB/functions")"; en="$(read_file "$ANDROID_USB/enable")"; prod="$(read_file "$ANDROID_USB/iProduct")"; if [ ! -d "/sys/class/net/$IFACE" ] || [ "$funcs" != rndis ] || [ "$en" != 1 ] || [ "$prod" != "$PRODUCT" ]; then mark "reassert funcs=$funcs en=$en product=$prod"; IFACE=''; setup_android_usb || true; wait_iface || true; fi; configure_iface || true; start_services || true; write_status; }
+mount_support
+mark 'keeper-start local-premount before-mountroot'
+setup_android_usb || true
+wait_iface && mark "iface-ready $IFACE" || mark 'iface-missing'
+configure_iface || true
+start_services || true
+write_status
+while :; do
+    reassert
+    sleep 2
+done
+EOF_KEEPER
+chmod 0755 /run/zl1-v62-phase-keeper.sh
+/run/zl1-v62-phase-keeper.sh >/dev/kmsg 2>&1 &
+echo "zl1-v62-phase: launched phase keeper pid=$! from local-premount; continuing boot" >/dev/kmsg 2>/dev/null || true
+exit 0

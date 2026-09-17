@@ -1,0 +1,63 @@
+--- a/init
++++ b/init
+@@ -70,6 +70,12 @@
+ done
+ . /scripts/functions
+ 
++zl1_v54_mark() {
++	msg="$*"
++	echo "zl1-v54-init: $msg" >/dev/kmsg 2>/dev/null || true
++	[ -d /run ] && echo "init:$msg" >> /run/zl1-v54-markers 2>/dev/null || true
++}
++
+ # Parse command line options
+ for x in $(cat /proc/cmdline); do
+ 	case $x in
+@@ -217,6 +223,7 @@
+ [ "$quiet" != "y" ] && log_end_msg
+ 
+ maybe_break mount
++zl1_v54_mark "before-mountroot"
+ log_begin_msg "Mounting root file system"
+ # Always load local and nfs (since these might be needed for /etc or
+ # /usr, irrespective of the boot script used to mount the rootfs).
+@@ -228,6 +235,7 @@
+ mount_top
+ mount_premount
+ mountroot
++zl1_v54_mark "after-mountroot rootmnt=${rootmnt}"
+ log_end_msg
+ 
+ if read_fstab_entry /usr; then
+@@ -244,7 +252,9 @@
+ maybe_break bottom
+ [ "$quiet" != "y" ] && log_begin_msg "Running /scripts/init-bottom"
+ # We expect udev's init-bottom script to move /dev to ${rootmnt}/dev
++zl1_v54_mark "before-init-bottom"
+ run_scripts /scripts/init-bottom
++zl1_v54_mark "after-init-bottom"
+ [ "$quiet" != "y" ] && log_end_msg
+ 
+ # Move /run to the root
+@@ -255,6 +265,7 @@
+ }
+ 
+ # Check init is really there
++zl1_v54_mark "before-validate-init init=${init}"
+ if ! validate_init "$init"; then
+ 	echo "Target filesystem doesn't have requested ${init}."
+ 	init=
+@@ -298,11 +309,13 @@
+ unset forcefsck
+ unset fsckfix
+ 
++zl1_v54_mark "before-run-init init=${init}"
+ # Move virtual filesystems over to the real filesystem
+ mount -n -o move /sys ${rootmnt}/sys
+ mount -n -o move /proc ${rootmnt}/proc
+ 
+ # Chain to real filesystem
++zl1_v54_mark "exec-run-init-now init=${init}"
+ exec run-init ${drop_caps} ${rootmnt} ${init} "$@" <${rootmnt}/dev/console >${rootmnt}/dev/console 2>&1
+ echo "Something went badly wrong in the initramfs."
+ panic "Please file a bug on initramfs-tools."
