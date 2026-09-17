@@ -318,4 +318,18 @@ dwc3_gadget_giveback -> dwc3_endpoint_transfer_complete -> dwc3_interrupt
 于是"开机 → 记录 → 自愈 → 自动回 TWRP → 读日志"变成闭环。
 开关是 `/data/zl1-netwatch-reboot-recovery` 文件，不存在就完全不做这件事。
 
+### 7.1 顺带采集 Phase 5 需要的硬件证据
+
+同一次开机里，`uptime > 120s` 时还会做一次**一次性硬件快照**写进同一个日志：
+
+- framebuffer：`/proc/fb`、`/sys/class/graphics/*/{name,state,virtual_size,bits_per_pixel,blank}`
+- DRM 连接器状态 `/sys/class/drm/*/status`
+- 背光 `/sys/class/backlight/*`
+- 输入设备 `/proc/bus/input/devices`（名字、handler、能力位），以及 `evtest` 在不在
+- 声卡 `/proc/asound/cards`、IIO 设备、thermal zone、电池、已加载模块
+
+这样"显示"和"触摸"这两项 Phase 5 验收就不需要各自单独占一次开机——
+设备回来后一次读数就能判断 framebuffer 有没有内容、触摸设备有没有被注册。
+`read-netwatch-log.sh` 会把这段单独打出来。
+
 一键设置：`scripts/twrp-one-shot-setup.sh`（后台等待 TWRP，然后自动装服务、写 marker、重启）。

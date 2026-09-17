@@ -20,6 +20,13 @@ echo
 
 echo "=== samples: $(grep -c '^===== uptime' "$OUT/zl1-netwatch.log" || true)  last: $(grep '^===== uptime' "$OUT/zl1-netwatch.log" | tail -1)"
 echo
+echo "=== hardware snapshot (Phase 5 evidence) ==="
+if grep -q '^===== hwcheck' "$OUT/zl1-netwatch.log"; then
+  awk '/^===== hwcheck/{f=1} f' "$OUT/zl1-netwatch.log"
+else
+  echo "(none yet — the snapshot is taken 120s into a boot)"
+fi
+echo
 echo "=== netwatch decisions ==="
 grep -E 'netwatch start|STALL:|HEAL:|recovered on its own' "$OUT/zl1-netwatch.log" || echo "(none)"
 echo

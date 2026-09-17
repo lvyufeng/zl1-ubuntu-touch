@@ -172,6 +172,50 @@ heal() {
     return 0
 }
 
+# One-shot hardware snapshot, taken once the boot has settled. This is the evidence base
+# for the Phase 5 usability items (display, touch, audio, sensors), collected on the same
+# trip as the network samples so they do not each need their own boot.
+HWCHECK_AFTER=120
+hwcheck_done=0
+
+hwcheck() {
+    {
+        echo "===== hwcheck uptime $(cat /proc/uptime) ====="
+        echo "--- uname ---"; uname -a
+        echo "--- cmdline ---"; cat /proc/cmdline
+        echo "--- framebuffer ---"; cat /proc/fb 2>&1
+        for d in /sys/class/graphics/*; do
+            [ -e "$d/name" ] || continue
+            echo "[$(basename "$d")] name=$(cat "$d/name" 2>/dev/null) state=$(cat "$d/state" 2>/dev/null)"
+            echo "  virtual_size=$(cat "$d/virtual_size" 2>/dev/null) bpp=$(cat "$d/bits_per_pixel" 2>/dev/null) blank=$(cat "$d/blank" 2>/dev/null)"
+        done
+        echo "--- drm ---"
+        for d in /sys/class/drm/*/status; do
+            [ -r "$d" ] && echo "$(dirname "$d" | xargs basename) $(cat "$d" 2>/dev/null)"
+        done
+        echo "--- backlight ---"
+        for d in /sys/class/backlight/*; do
+            [ -d "$d" ] || continue
+            echo "$(basename "$d") brightness=$(cat "$d/brightness" 2>/dev/null)/$(cat "$d/max_brightness" 2>/dev/null)"
+        done
+        echo "--- input devices ---"
+        grep -E '^N: |^H: |^B: ' /proc/bus/input/devices 2>/dev/null | head -60
+        echo "--- evtest present ---"; command -v evtest >/dev/null 2>&1 && echo yes || echo no
+        echo "--- asound cards ---"; cat /proc/asound/cards 2>&1
+        echo "--- iio devices ---"; ls /sys/bus/iio/devices 2>/dev/null | tr '\n' ' '; echo
+        echo "--- thermal ---"
+        for z in /sys/class/thermal/thermal_zone*/temp; do
+            [ -r "$z" ] && printf '%s=%s ' "$(basename "$(dirname "$z")")" "$(cat "$z" 2>/dev/null)"
+        done; echo
+        echo "--- battery ---"
+        for b in /sys/class/power_supply/*; do
+            [ -d "$b" ] || continue
+            echo "$(basename "$b") type=$(cat "$b/type" 2>/dev/null) capacity=$(cat "$b/capacity" 2>/dev/null) status=$(cat "$b/status" 2>/dev/null)"
+        done
+        echo "--- modules ---"; cat /proc/modules 2>/dev/null | head -40
+    } >> "$LOG" 2>&1
+}
+
 log "netwatch start pid=$$ heal=$HEAL_ENABLED stall=${STALL_SECONDS}s max_heals=$MAX_HEALS recovery_after=${RECOVERY_AFTER}s cmdline=$(cat /proc/cmdline)"
 { echo "--- boot ---"; cat /proc/cmdline; } >> "$LOG" 2>&1
 
@@ -203,6 +247,10 @@ while :; do
     fi
 
     uptime_s=$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1)
+    if [ "$hwcheck_done" = "0" ] && [ "${uptime_s:-0}" -ge "$HWCHECK_AFTER" ]; then
+        hwcheck
+        hwcheck_done=1
+    fi
     if [ "$HEAL_ENABLED" = "1" ] && [ "$heals" -lt "$MAX_HEALS" ] \
        && [ "$frozen" -ge "$STALL_SECONDS" ] && [ "${uptime_s:-0}" -ge "$SETTLE_SECONDS" ]; then
         log "STALL: tx_packets frozen at $tx_p for ${frozen}s while rx went $rx_at_last_tx -> $rx_p"
