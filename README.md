@@ -24,6 +24,7 @@ Start here:
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — Phase 1: the build is now byte-for-byte reproducible, and why the old target SHA was wrong
 - [`docs/ubuntu-touch/20-stage2-runbook.md`](docs/ubuntu-touch/20-stage2-runbook.md) — Stage 2: how to flash boot, how to verify, how to roll back
 - [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — Stage 2 result: the flash+cold-boot works, and why the container does not
+- [`docs/ubuntu-touch/22-stage2-coldboot-results.md`](docs/ubuntu-touch/22-stage2-coldboot-results.md) — Stage 2 result: with `/data/system.img` restored the Android container runs too; the remaining flakiness is on the host side
 - [`docs/ubuntu-touch/00-safety.md`](docs/ubuntu-touch/00-safety.md)
 - [`docs/ubuntu-touch/05-build-strategy.md`](docs/ubuntu-touch/05-build-strategy.md)
 - [`docs/ubuntu-touch/16-noble-systemd-lxc.md`](docs/ubuntu-touch/16-noble-systemd-lxc.md)
@@ -79,15 +80,22 @@ Stage 1 of the plan are done:
 
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — `userdata` and `cache` are now backed up and byte-verified against the device
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — two clean rebuilds produce an identical `halium-boot.img`
-- [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — `fastboot flash boot` + cold boot works: systemd as PID 1, RNDIS up with no drops across 71 samples. The Android container does not start, because `/data/system.img` is missing from the device.
+- [`docs/ubuntu-touch/21-stage2-first-cold-boot.md`](docs/ubuntu-touch/21-stage2-first-cold-boot.md) — the first `fastboot flash boot` + cold boot: systemd as PID 1, RNDIS up with no drops
+- [`docs/ubuntu-touch/22-stage2-coldboot-results.md`](docs/ubuntu-touch/22-stage2-coldboot-results.md) — restoring `/data/system.img` brings the Android container up too; that session ran 20 minutes with `lxc-ls` reporting RUNNING throughout
 
 The earlier EDL incident is resolved; see
 [`docs/session-notes/DEVICE-IN-EDL-2026-06-17.md`](docs/session-notes/DEVICE-IN-EDL-2026-06-17.md).
 Every script filters on serial `33e80afe` — the unrelated Xiaomi `4a2fe00b` shares the
 USB bus and must be ignored.
 
-**The device now exposes only RNDIS, not adb.** Changing the boot image needs a physical
-key combination first: Volume Down + Power for fastboot, Volume Up + Power for TWRP.
+The remaining flakiness is on the **host** side: the device reports `rndis0` up with
+`carrier=1` for the whole session, while the host stops reaching it after 30–120 s. See
+`22-stage2-coldboot-results.md` §5.
+
+**The device exposes only RNDIS, not adb.** Changing the boot image needs a physical key
+combination first: Volume Down + Power for fastboot, Volume Up + Power for TWRP. Once the
+`zl1_debug_shell=1` image is flashed there is a telnet shell on port 23, and reboots can be
+driven from it.
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 

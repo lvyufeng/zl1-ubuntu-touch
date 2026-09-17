@@ -36,6 +36,8 @@ result_of() {
       echo "**FAILED** — never connected (211 s of DISCONNECT)" ;;
     halium-boot-zl1-filtered-dtb.img)
       echo "filtered-DTB reference build (2026-06-07). **Not reachable by rebuild** — its built-in initramfs cpio carries a stale mtime; see docs/ubuntu-touch/19-phase1-reproducible-build.md §2" ;;
+    halium-boot-zl1-v63-debug-shell.img)
+      echo "v63 + \`zl1_debug_shell=1\` on the cmdline only (kernel and ramdisk byte-identical to v63). Enables busybox telnetd on port 23 during the debug-init phase." ;;
     halium-boot-zl1-reproducible-20260916.img)
       echo "**Phase 1 baseline** — reproduced byte-for-byte by two clean rebuilds; this is the reproducible target SHA" ;;
     halium-boot-zl1-filtered-dtb-postswitch-debug-v*.img)
@@ -68,4 +70,9 @@ result_of() {
   done < <(cd "$CAND" && ls -1 *.img | sort)
 } > "$OUT"
 
+# Also emit SHA256SUMS alongside the images, so flash-boot-image.sh can refuse
+# any image that is not hash-verified against a known build.
+( cd "$CAND" && sha256sum *.img ) > "$CAND/SHA256SUMS"
+
 echo "wrote $OUT ($(grep -c '^| `' "$OUT") images)"
+echo "wrote $CAND/SHA256SUMS ($(wc -l < "$CAND/SHA256SUMS") entries)"

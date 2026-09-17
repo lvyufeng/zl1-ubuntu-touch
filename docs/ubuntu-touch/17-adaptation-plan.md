@@ -205,14 +205,16 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 这是本计划与旧计划最大的分歧点：**从这里开始用 `fastboot flash boot`，不再用 `fastboot boot`。**
 
-> **状态（2026-09-16）**：2.1 / 2.2 完成，2.3 部分完成（容器未起），2.4 待做。
-> 完整结果与诊断见 [`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md)。
+> **状态（2026-09-17）**：2.1–2.3 完成（含 Android 容器）。2.4 的设备侧每次都成立，
+> 但主机侧 RNDIS 链路不稳，需要在修好链路后再判。
+> 两次冷启动的记录：[`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md)（第一次，容器未起）、
+> [`22-stage2-coldboot-results.md`](22-stage2-coldboot-results.md)（补上 `/data/system.img` 之后，容器起来）。
 
 | 步骤 | 动作 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
 | 2.1 | 确认回滚路径可用 | 备份 `boot.img`（2026-06-07）SHA256 校验通过；记录 `fastboot flash boot` 回刷命令；确认进入 fastboot 的方式（电源+音量减） | ✅ |
 | 2.2 | `fastboot flash boot halium-boot-zl1-v63-usbd-disabled.img` | flash 成功，`fastboot reboot` 后**冷启动**直接进入 V63 状态 | ✅ |
-| 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） | ⚠️ 前两项 ✅（71 个采样点 0 掉线），容器 ❌ — `/data/system.img` 缺失，见下 |
+| 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） | ✅ 三项全过：systemd PID1、`rndis0` carrier=1 全程不掉、`lxc-start` + 整套 Android HAL 在跑 |
 | 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） | ⏳ 需要一次人工按键才能重启设备 |
 | 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android | ⏳ |
 
