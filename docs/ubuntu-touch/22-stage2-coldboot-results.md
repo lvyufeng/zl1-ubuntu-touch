@@ -183,8 +183,15 @@ host MAC——也就是设备的 gadget 栈确实走了一遍 disconnect/connect
 
 **链路仍然是死的。** 这个否定结果很有信息量：
 
-1. 排除了"主机侧状态错乱"这个解释。之前另外三种主机侧手段
-   （`modprobe -r/-r`、`unbind/bind`、`authorized` 切换）也都不行。
+1. 排除了"主机侧状态错乱"这个解释。主机侧能试的五种手段**全部无效**：
+
+   | 手段 | 结果 |
+   | --- | --- |
+   | `modprobe -r rndis_host` + 重新 `modprobe` | usb0 重新注册，链路依旧不通 |
+   | `/sys/bus/usb/devices/3-3/{unbind,bind}`（绑到 usb 驱动再绑回） | 同上 |
+   | `authorized` 0 → 1 | 同上（设备侧 host MAC 变了，说明确实重新绑定了 gadget） |
+   | `USBDEVFS_RESET`（真正的总线复位） | 同上，见上面 dmesg |
+   | runtime PM suspend/resume | **做不到**：`runtime_status=active` 恒定，usbnet 一直持有引用，自动挂起不会触发 |
 2. 把故障范围缩小了：一次全新的 `gether_connect` 都救不回来，说明**能被重新枚举清掉的
    东西不是病因**。
 3. 能在重新枚举后存活下来的，是挂在 **net_device** 上的状态——而 `u_ether` 在
