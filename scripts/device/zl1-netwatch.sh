@@ -296,7 +296,15 @@ while :; do
             [ -e "$blk" ] || continue
             if printf 'boot-recovery' > "$blk" 2>/dev/null; then
                 sync
-                log "RECOVERY: wrote boot-recovery to $blk"
+                # Read it back. Whether the device actually lands in recovery is the one
+                # thing about this mechanism that has never been confirmed — on
+                # 2026-09-17 the device vanished for 9.4 minutes around the expected
+                # moment and came back into Ubuntu Touch, which is consistent with either
+                # a slow system boot or a trip through recovery. Recording whether the
+                # command is really in misc separates the two: if it is there and the
+                # device still boots the system, the bootloader is not acting on it.
+                back="$(dd if="$blk" bs=1 count=16 2>/dev/null | tr -d '\000')"
+                log "RECOVERY: wrote boot-recovery to $blk; read back [$back]"
                 reboot
                 sleep 300
             fi
