@@ -15,10 +15,16 @@
 #     8 boots carried 0.3-1.9 MB, 2 carried ~4 KB and never moved again. See
 #     docs/ubuntu-touch/22-stage2-coldboot-results.md section 5.
 #
-#     When that is detected, re-assert the RNDIS gadget — the same sysfs sequence the
-#     v63 keeper already runs (enable=0, clear functions, set descriptors, functions=
-#     rndis, enable=1). Re-enumerating resets the endpoints and clears the stopped
-#     transmit queue, so the host gets a fresh USB session.
+#     The heal escalates. First a plain enable=0/1, which re-enumerates the USB link and
+#     resets the endpoints. If TX is still frozen after that, the function is unbound and
+#     rebound, which frees and recreates the netdev — that is the only thing that clears
+#     state held on the net_device itself, such as a transmit queue stopped by
+#     netif_stop_queue. (Measured 2026-09-17: a host-side USBDEVFS_RESET re-enumerated the
+#     device — its random host MAC changed — and the link was still dead, so a mere USB
+#     reset is not enough.)
+#
+#     After either stage the device-side addresses are re-applied, because a rebound
+#     netdev comes back with none and the host could not reach a device that had no IP.
 #
 # Nothing here writes to a partition. The only side effect outside this script's own log
 # is the gadget re-assert, which is what the boot image already does by itself.
@@ -97,12 +103,38 @@ sample() {
 
 write_file() { echo "$2" > "$1" 2>/dev/null || return 1; }
 
-reassert_gadget() {
-    reason="$1"
-    [ -d "$ANDROID_USB" ] || { log "HEAL: $ANDROID_USB missing, cannot re-assert"; return 1; }
-    log "HEAL: re-asserting RNDIS reason=$reason (state=$(cat $ANDROID_USB/state 2>/dev/null))"
-    { echo "--- gadget status before heal ---"; gadget_stats; } >> "$LOG" 2>&1
+# Put the device-side addresses back. The v63 keeper configures these at boot; if a heal
+# destroys and recreates the netdev (stage B below), it comes back with no addresses, and
+# the host would still not be able to reach the device even though the link was fixed.
+restore_addrs() {
+    for ifn in rndis0 usb0; do
+        [ -e "/sys/class/net/$ifn" ] || continue
+        ip link set "$ifn" up 2>/dev/null
+        ip addr show dev "$ifn" 2>/dev/null | grep -q '192.168.2.15/' || ip addr add 192.168.2.15/24 dev "$ifn" 2>/dev/null
+        ip addr show dev "$ifn" 2>/dev/null | grep -q '10.15.19.82/'  || ip addr add 10.15.19.82/24 dev "$ifn" 2>/dev/null
+    done
+}
 
+# Stage A: a full USB re-enumeration. enable=0 disconnects the gadget from the bus and
+# enable=1 brings it back, so the host sees a fresh USB session and the endpoints are
+# reset. The netdev survives, so the static addresses stay.
+heal_reenumerate() {
+    log "HEAL A: enable=0/1 on the gadget"
+    write_file "$ANDROID_USB/enable" 0
+    sleep 2
+    write_file "$ANDROID_USB/enable" 1
+    sleep 3
+    restore_addrs
+}
+
+# Stage B: unbind and rebind the function. This frees and recreates the netdev, which is
+# the only thing that clears state living on the net_device itself — a transmit queue
+# stopped by netif_stop_queue survives a mere USB reset, and the host confirmed that on
+# 2026-09-17: a USBDEVFS_RESET re-enumerated the device (its random host MAC changed) and
+# the link was still dead. Stage B is strictly stronger than anything reachable from the
+# host.
+heal_rebind_function() {
+    log "HEAL B: unbind/rebind the rndis function"
     write_file "$ANDROID_USB/enable" 0
     sleep 1
     write_file "$ANDROID_USB/functions" ""
@@ -118,15 +150,25 @@ reassert_gadget() {
     write_file "$ANDROID_USB/functions" rndis
     sleep 1
     write_file "$ANDROID_USB/enable" 1
+    sleep 3
+    restore_addrs
+}
 
-    sleep 2
+heal() {
+    stage="$1"; reason="$2"
+    [ -d "$ANDROID_USB" ] || { log "HEAL: $ANDROID_USB missing, cannot heal"; return 1; }
+    log "HEAL $stage: reason=$reason state=$(cat $ANDROID_USB/state 2>/dev/null)"
+    { echo "--- gadget status before heal $stage ---"; gadget_stats; } >> "$LOG" 2>&1
+
+    if [ "$stage" = "A" ]; then heal_reenumerate; else heal_rebind_function; fi
+
     # Never leave the gadget disabled: if the sequence above failed part-way the device
     # would be unreachable, and only a physical power-cycle could bring it back.
     if [ "$(cat $ANDROID_USB/enable 2>/dev/null)" != "1" ]; then
-        log "HEAL: enable is not 1 after re-assert — forcing it back on"
+        log "HEAL $stage: enable is not 1 — forcing it back on"
         write_file "$ANDROID_USB/enable" 1
     fi
-    log "HEAL: done; state=$(cat $ANDROID_USB/state 2>/dev/null) functions=$(cat $ANDROID_USB/functions 2>/dev/null) enable=$(cat $ANDROID_USB/enable 2>/dev/null) iface=$(ifname_stats)"
+    log "HEAL $stage: done; state=$(cat $ANDROID_USB/state 2>/dev/null) functions=$(cat $ANDROID_USB/functions 2>/dev/null) enable=$(cat $ANDROID_USB/enable 2>/dev/null) iface=$(ifname_stats)"
     return 0
 }
 
@@ -165,7 +207,9 @@ while :; do
        && [ "$frozen" -ge "$STALL_SECONDS" ] && [ "${uptime_s:-0}" -ge "$SETTLE_SECONDS" ]; then
         log "STALL: tx_packets frozen at $tx_p for ${frozen}s while rx went $rx_at_last_tx -> $rx_p"
         { echo "--- stall evidence ---"; gadget_stats; } >> "$LOG" 2>&1
-        reassert_gadget "tx-frozen-${frozen}s"
+        # Escalate: the first heal of a boot re-enumerates, later ones rebind the
+        # function. A stall that survives a re-enumeration needs the stronger one.
+        if [ "$heals" -eq 0 ]; then heal A "tx-frozen-${frozen}s"; else heal B "tx-frozen-${frozen}s-still"; fi
         heals=$((heals + 1))
         log "HEAL: attempt $heals/$MAX_HEALS done; sleeping ${HEAL_RETRY_SECONDS}s before judging"
         sleep "$HEAL_RETRY_SECONDS"
