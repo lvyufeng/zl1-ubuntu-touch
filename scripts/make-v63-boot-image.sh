@@ -25,8 +25,11 @@
 #     entries, same bytes, same modes, same order (verified against the v63 binary)
 #   * it asserts the kernel, the appended DTBs and the cmdline are identical
 #   * it does NOT promise the same SHA256 as v63. Both gzip streams encode the same
-#     data but the framing differs (4122169 bytes here vs 4122576 in v63), so the image
-#     hash differs. Content equality is the honest claim; byte equality was not achieved.
+#     data but the framing differs, so the image hash differs. Content equality is the
+#     honest claim; byte equality was not achieved. (gzip -9/-9n/--best, cpio
+#     --reproducible/--null and several traversal orders were all tried.)
+#   * the rebuild IS deterministic: sorted traversal plus pinned metadata, so the same
+#     source gives the same hash run after run.
 #
 # Usage: make-v63-boot-image.sh [--baseline IMG] [--out IMG] [--verify-against IMG]
 #                               [--kernel-from IMG]
@@ -114,7 +117,24 @@ chmod 0775 "$WORK/rd/scripts/init-bottom/zl1-postswitch-debug-init"
 chmod 0755 "$WORK/rd/scripts/local-premount/zl1-usb-debug"
 
 echo "== repacking the initramfs =="
-( cd "$WORK/rd" && find . | cpio -o -H newc --quiet | gzip -9 ) > "$WORK/initrd-v63.img"
+# --reproducible pins the inode numbers and timestamps cpio writes into the archive, and
+# -n stops gzip embedding a timestamp in its header. Without both, every run produces a
+# different file hash from identical content — the input files carry fresh mtimes from
+# install(1)/patch(1) — which makes "did the rebuild change anything?" unanswerable.
+# Neither flag reproduces v63's own archive framing; both make the rebuild stable.
+# Three things have to be pinned for the hash to be stable across runs, and cpio's
+# --reproducible only covers the first:
+#   * inode numbers                -> --reproducible
+#   * entry order                  -> LC_ALL=C sort (find walks in inode order, which
+#                                     differs between runs; sorting also keeps every
+#                                     directory ahead of its contents, as cpio wants)
+#   * file mtimes                  -> touch below (install(1)/patch(1) leave the time
+#                                     they ran, and --reproducible does not override it
+#                                     for the archive's own top-level entry)
+# gzip -n then keeps its header free of a timestamp as well.
+find "$WORK/rd" -exec touch -h -d "2026-06-13T19:48:00Z" {} + 2>/dev/null || true
+( cd "$WORK/rd" && find . | LC_ALL=C sort | cpio -o -H newc --quiet --reproducible | gzip -9n ) \
+  > "$WORK/initrd-v63.img"
 ls -l "$WORK/initrd-v63.img"
 
 echo "== writing the boot image =="

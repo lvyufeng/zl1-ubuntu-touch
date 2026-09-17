@@ -71,7 +71,21 @@ OK    ramdisk file modes identical
 **bootloader 和内核真正读取的每一个组成部分，重建产物都与 v63 逐内容一致**——
 kernel 字节、appended DTB、cmdline、以及 initramfs 的 322 个条目（含内容和权限位）。
 
-### 4.1 一个说清楚了的限制：SHA256 不同
+### 4.0 重建是确定性的
+
+同一份源码跑三次，产物 SHA256 完全一致（`01004810…`）。要做到这一点需要同时钉住四件事，
+而 `cpio --reproducible` 只覆盖了第一件：
+
+| 变量 | 处理 |
+| --- | --- |
+| inode 号 | `cpio --reproducible` |
+| 归档条目顺序 | `find` 按 inode 顺序遍历，每次不同 → `LC_ALL=C sort`（顺带保证目录排在其内容之前） |
+| 文件 mtime | `install(1)` / `patch(1)` 留下的是执行时刻 → `touch -h -d "2026-06-13T19:48:00Z"` 统一 |
+| gzip 头时间戳 | `gzip -9n` |
+
+**"重建出了不同字节"这件事从此可以回答**：不一样就是源码真的变了。
+
+### 4.1 一个说清楚了的限制：SHA256 与 v63 不同
 
 ```
 重建  ramdisk 4123022 字节  sha256 b789c6c30ef8afad…
@@ -98,8 +112,17 @@ v63   ramdisk 4122576 字节  sha256 7d9fb803fdc16da6…
 
 ```
 /mnt/data/halium-zl1-candidates/halium-boot-zl1-v63-uether-txwakeup.img
-18,014,208 字节  SHA256 d46761d26264bb825331a0a6bf637437230aefe690dbfdf2d85baa229c7544b5
+18,010,112 字节  SHA256 1b98c95df3a19a4b6bf7d34cf6aa9f9ea13e22c252b43d7ff0216f662c45a20b
 ```
+
+以及重建产物本身（v63 的内核 + 本仓重建的 initramfs）：
+
+```
+/mnt/data/halium-zl1-candidates/halium-boot-zl1-v63-rebuilt.img
+18,010,112 字节  SHA256 010048109a96d38440a87179e387d7ac0fbfec02dbe3e62569140b691b9cd17f
+```
+
+数量级小了一点点（18,010,112 vs v63 的 18,022,400）——正是 gzip 封装那 448 字节的差别。
 
 验证结果：cmdline ✅ / DTB ✅ / ramdisk 内容与权限 ✅，只有内核是打过补丁的那份
 （28,274,688 vs 28,258,304 字节，+16 KiB）。

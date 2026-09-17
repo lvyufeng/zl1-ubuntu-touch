@@ -38,6 +38,8 @@ result_of() {
       echo "filtered-DTB reference build (2026-06-07). **Not reachable by rebuild** — its built-in initramfs cpio carries a stale mtime; see docs/ubuntu-touch/19-phase1-reproducible-build.md §2" ;;
     halium-boot-zl1-v63-debug-shell.img)
       echo "v63 + \`zl1_debug_shell=1\` on the cmdline only (kernel and ramdisk byte-identical to v63). Enables busybox telnetd on port 23 during the debug-init phase." ;;
+    halium-boot-zl1-v63-rebuilt.img)
+      echo "v63 rebuilt from tracked source (boot/v63/ + make-v63-boot-image.sh): v63's kernel + this repo's reconstruction of its initramfs. Verified content-identical to halium-boot-zl1-v63-usbd-disabled.img in every component; the hash differs only because the initramfs gzip framing does" ;;
     halium-boot-zl1-v63-uether-txwakeup.img)
       echo "**built to test** — v63's initramfs and cmdline (content-verified against the v63 binary) on the transmit-wakeup kernel. This is the image that asks whether the u_ether patch removes the intermittent stall" ;;
     halium-boot-zl1-uether-txwakeup.img)
