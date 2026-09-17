@@ -52,6 +52,13 @@ Xiaomi `4a2fe00b` shares the USB bus. Everything else is read-only. See
 
 | Script | Purpose |
 | --- | --- |
+| `device/zl1-netdiag.sh` | Runs on the device: samples `rndis0`, its qdisc/queue state, routes, ARP and the container every 2 s into `/userdata/zl1-netdiag.log`. |
+| `install-netdiag-service.sh` | With the device in TWRP, installs that sampler as a systemd unit under `/userdata/system-data/etc/systemd/` — persistent, and no rootfs change needed (the rootfs is read-only at runtime, but `/etc/systemd/system` is a writable-path bind mount). |
+| `read-netdiag-log.sh` | Pulls the sampler's log back and prints the transition. |
+
+
+| Script | Purpose |
+| --- | --- |
 | `fix-ssh-sshd-config.sh` | Edit `sshd_config` inside userdata. |
 | `install-ssh-to-userdata.sh` | Install SSH keys into USERDATA. `/root` is bind-mounted from userdata at runtime, which is why keys must live there and not in the rootfs. |
 | `zl1-status-server-enhanced.py` | HTTP status server with a command-execution endpoint; deployed into the ramdisk at `/usr/local/sbin/`. |
