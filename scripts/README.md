@@ -52,9 +52,10 @@ Xiaomi `4a2fe00b` shares the USB bus. Everything else is read-only. See
 
 | Script | Purpose |
 | --- | --- |
-| `device/zl1-netdiag.sh` | Runs on the device: samples `rndis0`, its qdisc/queue state, routes, ARP and the container every 2 s into `/userdata/zl1-netdiag.log`. |
-| `install-netdiag-service.sh` | With the device in TWRP, installs that sampler as a systemd unit under `/userdata/system-data/etc/systemd/` — persistent, and no rootfs change needed (the rootfs is read-only at runtime, but `/etc/systemd/system` is a writable-path bind mount). |
-| `read-netdiag-log.sh` | Pulls the sampler's log back and prints the transition. |
+| `device/zl1-netwatch.sh` | Runs on the device: samples the RNDIS gadget stats, interface counters and routing state into `/userdata/zl1-netwatch.log`, and **re-asserts the gadget** when it detects the intermittent transmit stall. |
+| `install-netwatch-service.sh` | With the device in TWRP, installs that watchdog as a systemd unit under `/userdata/system-data/etc/systemd/` — persistent, and no rootfs change needed (the rootfs is read-only at runtime, but `/etc/systemd/system` is a writable-path bind mount). Backs up `misc` first. |
+| `read-netwatch-log.sh` | Pulls the watchdog's log back and prints its heal decisions and stall evidence. |
+| `twrp-one-shot-setup.sh` | Waits for TWRP, installs the watchdog, sets the "return to recovery after N seconds" marker, and reboots. One button press sets up the rest.
 
 
 | Script | Purpose |
