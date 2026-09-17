@@ -199,6 +199,39 @@ heal() {
 HWCHECK_AFTER=120
 hwcheck_done=0
 
+# Snapshot of what sits between the socket and the device queue.
+#
+# Added after the 2026-09-17 measurements: the device's outbound packets stop
+# reaching the driver while every other counter stays healthy. Between uptime 42.5 s
+# (host-ping OK) and 61.2 s (host-ping FAIL) the interface transmitted 3 packets for
+# ~7 ping attempts, with tx_dropped=0, tx_errors=0, tx_qlen=0 and tx_throttle=0.
+# Packets that vanish without moving any netdev counter are dropped before the device
+# queue — netfilter or a routing-policy rule, neither of which the other captures see.
+#
+# This matters because Android's netd runs in the same network namespace (the LXC
+# config shares `net`), and the kernel log shows it starting up (/dev/socket/fwmarkd,
+# x_tables owner-match messages) at about the time the device stops transmitting.
+netsnap() {
+    {
+        echo "===== netsnap uptime $(cat /proc/uptime) ====="
+        echo "--- ip rule ---";         ip rule show 2>&1
+        echo "--- route tables ---";    ip route show table all 2>&1 | head -40
+        echo "--- route get host ---";  ip route get 192.168.2.100 2>&1
+        echo "--- route get host2 ---"; ip route get 10.15.19.100 2>&1
+        echo "--- table names ---";     cat /proc/net/ip_tables_names 2>&1
+        echo "--- iptables filter ---"
+        (iptables -t filter -L -n -v 2>&1 || echo "(iptables unavailable)") | head -60
+        echo "--- iptables nat ---"
+        (iptables -t nat -L -n -v 2>&1 || echo "(iptables unavailable)") | head -30
+        echo "--- iptables mangle ---"
+        (iptables -t mangle -L -n -v 2>&1 || echo "(iptables unavailable)") | head -30
+        echo "--- nf conntrack count ---"
+        (wc -l < /proc/net/nf_conntrack 2>/dev/null || echo "(no conntrack)")
+        echo "--- socket marks ---"
+        (ss -tanp 2>/dev/null || netstat -tanp 2>/dev/null) | head -12
+    } >> "$LOG" 2>&1
+}
+
 hwcheck() {
     {
         echo "===== hwcheck uptime $(cat /proc/uptime) ====="
@@ -245,6 +278,7 @@ heals=0
 last_tx=""
 frozen=0
 host_ping_ok=0
+netsnap_early=0
 
 while :; do
     i=$((i + 1))
@@ -278,9 +312,19 @@ while :; do
     if [ "$HEAL_ENABLED" = "0" ] && [ "$frozen" = "$STALL_SECONDS" ]; then
         log "STALL(unhealed): host unreachable for ${frozen}s; iface=${IFACE} tx_pkts=${tx_p:-?} rx_pkts=${rx_p:-?}"
         { echo "--- stall evidence ---"; gadget_stats; } >> "$LOG" 2>&1
+        netsnap
+    fi
+
+    # Capture the netfilter/routing state before and after the break. The break lands
+    # between 40 s and 60 s, so 45 s catches the healthy side and the stall handler
+    # catches the other.
+    if [ "$netsnap_early" = "0" ] && [ "${uptime_s:-0}" -ge 45 ]; then
+        netsnap
+        netsnap_early=1
     fi
 
     if [ "$hwcheck_done" = "0" ] && [ "${uptime_s:-0}" -ge "$HWCHECK_AFTER" ]; then
+        netsnap
         hwcheck
         hwcheck_done=1
     fi
@@ -288,6 +332,7 @@ while :; do
        && [ "$frozen" -ge "$STALL_SECONDS" ] && [ "${uptime_s:-0}" -ge "$SETTLE_SECONDS" ]; then
         log "STALL: host unreachable for ${frozen}s; iface=${IFACE} tx_pkts=${tx_p:-?} rx_pkts=${rx_p:-?}"
         { echo "--- stall evidence ---"; gadget_stats; } >> "$LOG" 2>&1
+        netsnap
         # Escalate: the first heal of a boot re-enumerates, later ones rebind the
         # function. A stall that survives a re-enumeration needs the stronger one.
         if [ "$heals" -eq 0 ]; then heal A "unreachable-${frozen}s"; else heal B "unreachable-${frozen}s-still"; fi

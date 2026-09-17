@@ -44,6 +44,7 @@ for what each stage is trying to establish.
 | --- | --- |
 | `verify-device-online.sh` | Wait for the device gadget, set up host RNDIS, ping both device IPs and fetch the status page. Read-only. |
 | `stage2-coldboot-trial.sh` | After a power-on: verify the boot and append a row to [`../docs/ubuntu-touch/stage2-coldboot-trials.md`](../docs/ubuntu-touch/stage2-coldboot-trials.md). This is how Stage 2.4's "three consecutive cold boots" gets recorded. |
+| `container-ab-test.sh` | A/B: hide `/data/system.img` so the Android container cannot start, measure the link, then restore it and measure again. Tests whether the container is what kills the link — see [`../docs/ubuntu-touch/30-outbound-drops-before-the-queue.md`](../docs/ubuntu-touch/30-outbound-drops-before-the-queue.md). |
 | `netwatch-cycle-supervisor.sh` | Drive repeated unattended boots and collect the stalls-per-boot statistics. Possible because the device now returns itself to TWRP and TWRP answers adb. This is how "did the patch help?" gets answered — it is a question about a rate, not one boot. |
 | `host-watch-usb0.sh` | Keep the host side of the RNDIS link correct while the device boots. The gadget re-binds several times in the first seconds, and each rebind destroys and recreates `usb0` with a new MAC and no addresses, so a one-shot `ip addr add` only works by luck. |
 
