@@ -19,6 +19,8 @@
 #
 # Usage: twrp-one-shot-setup.sh [RECOVERY_AFTER_SECONDS] [WAIT_TWRP_SECONDS] [BOOT_IMAGE]
 #
+# NETWATCH_NOHEAL=1 in the environment installs the watchdog in record-only mode.
+#
 # BOOT_IMAGE is optional. Give it and this also flashes that boot image before starting
 # UT (the image must be listed in /mnt/data/halium-zl1-candidates/SHA256SUMS). Omit it and
 # the device keeps whatever boot image it already has — which is the right default, since
@@ -45,8 +47,14 @@ done
 adb devices 2>/dev/null | awk -v s="$SER" '$1==s{print $2}' | grep -q recovery \
   || { echo "timed out waiting for TWRP" >&2; exit 1; }
 
-echo "== install netwatch (misc backup happens inside) =="
-"$ROOT/scripts/install-netwatch-service.sh" --yes || { echo "install failed" >&2; exit 1; }
+# NETWATCH_NOHEAL=1 installs the watchdog in record-only mode. Use it when the boot being
+# tested is itself the fix for the link: the heal re-asserts the gadget, which is the same
+# class of operation as the churn under test, so leaving it on would confound the A/B.
+# The record-only watchdog still writes its log and still handles the recovery fallback.
+NETWATCH_MODE=""
+[[ "${NETWATCH_NOHEAL:-0}" == "1" ]] && NETWATCH_MODE="--noheal"
+echo "== install netwatch (misc backup happens inside) mode=${NETWATCH_MODE:-heal} =="
+"$ROOT/scripts/install-netwatch-service.sh" --yes $NETWATCH_MODE || { echo "install failed" >&2; exit 1; }
 
 echo "== fix SSH public-key login =="
 "$ROOT/scripts/fix-ssh-authorized-keys.sh" --yes || echo "warning: SSH fix failed (continuing)" >&2
