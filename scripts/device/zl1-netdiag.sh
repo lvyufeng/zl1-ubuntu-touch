@@ -55,6 +55,18 @@ while [ "$i" -lt "$ITERATIONS" ]; do
             printf '%s=%s ' "$f" "$(cat /sys/class/net/rndis0/statistics/$f 2>/dev/null)"
         done
         echo
+        # Decisive for the intermittent transmit stall: tx_pkts_rcvd counts every
+        # packet handed to eth_start_xmit, while tx_qlen is what is still sitting in
+        # the gadget's tx_skb_q and tx_throttle is how often netif_stop_queue was
+        # called. If tx_pkts_rcvd climbs while tx_qlen climbs and the device sends
+        # nothing, the wake-up is being lost (netif_wake_queue is only called from
+        # tx_complete). See docs/ubuntu-touch/22-stage2-coldboot-results.md 5.2c.
+        echo "--- uether stats ---"
+        for d in /sys/kernel/debug/rndis /sys/kernel/debug/usb0 /sys/kernel/debug/eth; do
+            [ -d "$d" ] || continue
+            echo "[$d]"; cat "$d/status" 2>&1; cat "$d/tx_bytes_rcvd" 2>&1
+        done
+        ls /sys/kernel/debug 2>/dev/null | tr '\n' ' '; echo
         echo "--- listeners ---"; (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | head -8
         if pgrep -f lxc-start >/dev/null 2>&1; then echo "lxc-start: RUNNING"; else echo "lxc-start: absent"; fi
         echo "--- android_usb ---"
