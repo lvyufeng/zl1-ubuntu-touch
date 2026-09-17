@@ -95,6 +95,12 @@ adb -s "$SER" shell "chmod 0644 '$UNIT'
   ln -sf '../zl1-netwatch.service' '$WANTS_MULTI/zl1-netwatch.service'
   ls -l '$DEST' '$UNIT' '$WANTS_SYSINIT/zl1-netwatch.service' '$WANTS_MULTI/zl1-netwatch.service'" | tr -d '\r'
 
+# The caller reboots immediately after this. If the writes were still in the page cache
+# when the reset landed, systemd would come up without the unit and the boot would be
+# wasted.
+echo "syncing..."
+adb -s "$SER" shell "sync" || true
+
 echo
 echo "installed. It starts on the next boot and appends to /data/zl1-netwatch.log."
 echo "Read it from TWRP with:  scripts/read-netwatch-log.sh"

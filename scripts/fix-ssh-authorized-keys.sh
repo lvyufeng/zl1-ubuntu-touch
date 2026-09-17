@@ -78,4 +78,8 @@ echo "   (left in place on purpose — it is harmless, and removing it would los
 echo "    record of what the June attempt did.)"
 
 echo
+echo "syncing (the caller reboots straight after this)..."
+sh_ "sync" || true
+
+echo
 echo "done. After the next boot:  ssh -o BatchMode=yes root@10.15.19.82 'id'"

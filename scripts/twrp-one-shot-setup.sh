@@ -13,12 +13,18 @@
 # after RECOVERY_AFTER returns itself to TWRP so the log can be read. No further human
 # input is needed unless the device stops booting at all.
 #
-# Usage: twrp-one-shot-setup.sh [RECOVERY_AFTER_SECONDS] [WAIT_TWRP_SECONDS]
+# Usage: twrp-one-shot-setup.sh [RECOVERY_AFTER_SECONDS] [WAIT_TWRP_SECONDS] [BOOT_IMAGE]
+#
+# BOOT_IMAGE is optional. Give it and this also flashes that boot image before starting
+# UT (the image must be listed in /mnt/data/halium-zl1-candidates/SHA256SUMS). Omit it and
+# the device keeps whatever boot image it already has — which is the right default, since
+# changing two things at once makes it impossible to attribute the result.
 
 set -uo pipefail
 SER="33e80afe"
 RECOVERY_AFTER="${1:-900}"
 WAIT_TWRP="${2:-3600}"
+BOOT_IMAGE="${3:-}"
 ROOT=/mnt/data/zl1-bb10
 
 echo "== waiting up to ${WAIT_TWRP}s for $SER in TWRP =="
@@ -47,6 +53,12 @@ adb -s "$SER" shell "echo $RECOVERY_AFTER > /data/zl1-netwatch-reboot-recovery; 
 echo "== confirm what is in place =="
 adb -s "$SER" shell 'ls -l /data/system-data/etc/systemd/system/zl1-netwatch.* /data/system-data/etc/systemd/system/*.wants/zl1-netwatch.service /data/zl1-netwatch-reboot-recovery 2>&1' | tr -d '\r'
 
-echo "== rebooting into Ubuntu Touch =="
-adb -s "$SER" reboot
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) rebooting; the device should return to TWRP by itself in ~${RECOVERY_AFTER}s"
+if [[ -n "$BOOT_IMAGE" ]]; then
+  echo "== flashing $BOOT_IMAGE, then rebooting =="
+  "$ROOT/scripts/flash-boot-image.sh" "$BOOT_IMAGE" --yes || { echo "flash failed" >&2; exit 1; }
+else
+  echo "== rebooting into Ubuntu Touch (boot image unchanged) =="
+  adb -s "$SER" reboot
+fi
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) started; the device should return to TWRP by itself in ~${RECOVERY_AFTER}s"
+echo "record the boot with: $ROOT/scripts/stage2-coldboot-trial.sh"
