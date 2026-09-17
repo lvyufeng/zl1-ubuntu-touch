@@ -24,6 +24,10 @@
 #   * it asserts the rebuilt initramfs has byte-identical CONTENTS to v63's — same 349
 #     entries, same bytes, same modes, same order (verified against the v63 binary)
 #   * it asserts the kernel, the appended DTBs and the cmdline are identical
+# `--patch FILE` applies a further tracked patch on top of the v63 delta (see
+# boot/patches/). Used to build variants of the known-good configuration that differ by
+# one deliberate change, so an experiment has a single variable.
+#
 #   * it does NOT promise the same SHA256 as v63. Both gzip streams encode the same
 #     data but the framing differs, so the image hash differs. Content equality is the
 #     honest claim; byte equality was not achieved. (gzip -9/-9n/--best, cpio
@@ -46,6 +50,7 @@ BASELINE="/mnt/data/halium-zl1-candidates/halium-boot-zl1-reproducible-20260916.
 OUT="/mnt/data/halium-zl1-candidates/halium-boot-zl1-v63-usbd-disabled.img"
 VERIFY_AGAINST=""
 KERNEL_FROM=""
+declare -a EXTRA_PATCHES=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,6 +58,8 @@ while [[ $# -gt 0 ]]; do
     --out) OUT="$2"; shift 2 ;;
     --verify-against) VERIFY_AGAINST="$2"; shift 2 ;;
     --kernel-from) KERNEL_FROM="$2"; shift 2 ;;
+    # realpath now: the apply step runs inside a `cd` into the unpacked initramfs
+    --patch) EXTRA_PATCHES+=("$(realpath -m "$2")"); shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -115,6 +122,16 @@ chmod 0755 "$WORK/rd/init"
 chmod 0664 "$WORK/rd/scripts/init-bottom/ORDER" "$WORK/rd/scripts/local-premount/ORDER"
 chmod 0775 "$WORK/rd/scripts/init-bottom/zl1-postswitch-debug-init"
 chmod 0755 "$WORK/rd/scripts/local-premount/zl1-usb-debug"
+
+if (( ${#EXTRA_PATCHES[@]} > 0 )); then
+  echo "== applying extra patches =="
+  for p in "${EXTRA_PATCHES[@]}"; do
+    [[ -f "$p" ]] || { echo "missing patch: $p" >&2; exit 1; }
+    ( cd "$WORK/rd" && patch -p1 --forward --silent < "$p" ) \
+      || { echo "failed to apply $p" >&2; exit 1; }
+    echo "  applied $(basename "$p")"
+  done
+fi
 
 echo "== repacking the initramfs =="
 # --reproducible pins the inode numbers and timestamps cpio writes into the archive, and

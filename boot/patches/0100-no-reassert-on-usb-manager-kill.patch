@@ -1,0 +1,23 @@
+--- a/scripts/init-bottom/zl1-postswitch-debug-init
++++ b/scripts/init-bottom/zl1-postswitch-debug-init
+@@ -612,7 +612,19 @@
+     write_runtime_systemd_units
+     maybe_systemctl_mask_usb
+     if kill_usb_managers; then
+-        force_android_usb_rndis usb-manager-killed || true
++        # zl1: do NOT rebuild the gadget here.
++        #
++        # Killing the interfering manager is the point; re-enumerating is not. On
++        # 2026-09-17 this was measured doing it every ~118 s: 16 re-enumerations in
++        # 36 minutes, each with a fresh random host MAC, and each one destroys the
++        # host's usb0. Total reachable time in those 36 minutes: 2 pings. Whatever is
++        # being killed respawns, so this repeats forever.
++        #
++        # The interface config is still re-applied, because a manager that got as far as
++        # reconfiguring the interface may have taken the addresses with it.
++        log "usb manager killed; leaving the gadget alone (no re-enumerate)"
++        configure_iface rndis0 || true
++        configure_iface usb0 || true
+     else
+         force_android_usb_rndis steady || true
+     fi
