@@ -53,34 +53,48 @@ This bypasses SSH entirely and uses the already-working HTTP channel.
 
 ---
 
-## Root cause found (2026-09-16)
+## Root cause found (2026-09-17)
 
-The failures above are explained. **`/root` is not persistent**, so no public key
-placed under `/root/.ssh/` can ever take effect:
+Two things were wrong, and both had to be fixed.
 
-- The UT rootfs image's `/etc/system-image/writable-paths` has no `/root` entry, so
-  `/root` is just the read-only rootfs's own directory. The running mounts do show
-  `/dev/sda10 /root`, but that is a bind mount of a *different* path — and in any case
-  nothing under it survives in the way `/root/.ssh/authorized_keys` needs.
-- `/etc/ssh` **is** persistent (`/etc/ssh  auto  persistent  none  none`), and at runtime
-  it really is a bind mount from userdata.
-- `sshd_config` never sets `AuthorizedKeysFile`, so it uses the default
-  `.ssh/authorized_keys` relative to the user's home — the one place that does not work.
+**1. The key was written to a path that nothing reads.**
 
-`PasswordAuthentication=no` is set by
-`/etc/ssh/sshd_config.d/50-lxc-android-config.conf`, and the server confirms it: the only
-method offered is `publickey` (OpenSSH 9.6p1 Ubuntu-3ubuntu13.16).
+The June attempts (see `install-ssh-to-userdata.sh` above) wrote to
+`/userdata/root/.ssh/authorized_keys`. But `/root` does not resolve there: the
+writable-paths `auto` destination for a mount point lives under
+`/userdata/system-data/`, so `/root` comes from `/userdata/system-data/root`.
+The device still carries the stray copy at `/data/root/.ssh/` — it was never read.
 
-**The fix for the next image:** set
+**2. `AuthorizedKeysFile` is unset, so sshd looked in the wrong place anyway.**
+
+The rootfs's `sshd_config` never sets `AuthorizedKeysFile`, so sshd uses its default,
+`.ssh/authorized_keys` relative to the user's home. Combined with (1), the key could not
+be found even once the file was in the right directory.
+
+On top of both: `PasswordAuthentication=no` is set by
+`/etc/ssh/sshd_config.d/50-lxc-android-config.conf`, and the server confirms it — the
+only method offered is `publickey` (OpenSSH 9.6p1 Ubuntu-3ubuntu13.16). There is no
+password fallback.
+
+### The fix
+
+Stop depending on which home directory root ends up with. `/etc/ssh` is a persistent
+writable-path, bind-mounted from `/userdata/system-data/etc/ssh` — it holds the host keys
+and the config, and it demonstrably survives reboots. So:
 
 ```
 AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
 ```
 
-in the rootfs. `/etc/ssh` is already a persistent, writable bind mount, so keys placed
-there survive reboots and can be updated without rebuilding the rootfs.
+applied to `/data/system-data/etc/ssh/sshd_config`, with the key at
+`/etc/ssh/authorized_keys.d/root` (0644 root:root) and also in
+`/data/system-data/root/.ssh/authorized_keys` (0600) as a second chance.
 
-Verified on hardware 2026-09-16: the device does run sshd on port 22
-(`LISTEN 0 128 0.0.0.0:22`), and it rejects the host key with
-`Permission denied (publickey)` — consistent with the file simply not being at the path
-sshd looks at. See [`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md) §5.
+Script: [`scripts/fix-ssh-authorized-keys.sh`](../../scripts/fix-ssh-authorized-keys.sh)
+(run from TWRP; idempotent). It is also folded into
+[`scripts/twrp-one-shot-setup.sh`](../../scripts/twrp-one-shot-setup.sh).
+
+Verified on hardware 2026-09-16 that the device does run sshd: port 22 is listening
+(`LISTEN 0 128 0.0.0.0:22`) and it answered with the OpenSSH banner before rejecting the
+key, which is consistent with the key simply not being at the path sshd looked at.
+Whether the fix works has not been confirmed yet — the next boot will tell.
