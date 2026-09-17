@@ -88,8 +88,11 @@ The earlier EDL incident is resolved; see
 Every script filters on serial `33e80afe` — the unrelated Xiaomi `4a2fe00b` shares the
 USB bus and must be ignored.
 
-The remaining flakiness is on the **host** side: the device reports `rndis0` up with
-`carrier=1` for the whole session, while the host stops reaching it after 30–120 s. See
+What still does not work: **the device's RNDIS transmit path wedges about 30 seconds
+after the Android container starts.** The device's own `/proc/net/dev` counters show RX
+climbing to the end (the host's ARP requests keep arriving) while TX freezes after one
+HTTP response. `carrier=1` and `operstate=up` are not evidence that the data path is
+alive — that misreading is what produced the earlier "stable for 9 minutes" claim. See
 `22-stage2-coldboot-results.md` §5.
 
 **The device exposes only RNDIS, not adb.** Changing the boot image needs a physical key
