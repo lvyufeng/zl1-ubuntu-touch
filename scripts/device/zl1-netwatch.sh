@@ -278,7 +278,8 @@ heals=0
 last_tx=""
 frozen=0
 host_ping_ok=0
-netsnap_early=0
+# Uptimes at which to snapshot the netfilter/routing state, picked to bracket the break.
+NETSNAP_AT="20 30 40 50 60 75 90 110 140 180"
 
 while :; do
     i=$((i + 1))
@@ -315,12 +316,20 @@ while :; do
         netsnap
     fi
 
-    # Capture the netfilter/routing state before and after the break. The break lands
-    # between 40 s and 60 s, so 45 s catches the healthy side and the stall handler
-    # catches the other.
-    if [ "$netsnap_early" = "0" ] && [ "${uptime_s:-0}" -ge 45 ]; then
+    # Capture the netfilter/routing state several times early in the boot, because the
+    # break lands somewhere in a 40-60 s window and a single sample could easily land on
+    # the wrong side of it. Ten samples bracket it whatever the exact timing, and each one
+    # records whether the host was reachable at that moment, so the series labels itself.
+    netsnap_next="${NETSNAP_AT%% *}"
+    if [ -n "$netsnap_next" ] && [ "${uptime_s:-0}" -ge "$netsnap_next" ]; then
+        {
+            echo "--- host reachable at this snapshot: $([ "$host_ping_ok" = 1 ] && echo yes || echo no)"
+        } >> "$LOG" 2>&1
         netsnap
-        netsnap_early=1
+        case "$NETSNAP_AT" in
+            *" "*) NETSNAP_AT="${NETSNAP_AT#* }" ;;
+            *)     NETSNAP_AT="" ;;
+        esac
     fi
 
     if [ "$hwcheck_done" = "0" ] && [ "${uptime_s:-0}" -ge "$HWCHECK_AFTER" ]; then
