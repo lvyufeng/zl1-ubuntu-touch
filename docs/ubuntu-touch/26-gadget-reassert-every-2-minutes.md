@@ -1,5 +1,17 @@
 # 26 — 真凶：v63 keeper 每 ~2 分钟把 USB gadget 拆一次重来
 
+> ## ⚠️ 这篇的结论已被推翻。见 [`29-correction-watchdog-not-keeper.md`](29-correction-watchdog-not-keeper.md)。
+>
+> ~118 秒一次的重新枚举**不是 keeper 做的，是我自己的 netwatch 在治愈**。
+> 设备端 `/data/zl1-netwatch.log` 直接写着 `HEAL A: enable=0/1 on the gadget`
+> 和 `HEAL B: unbind/rebind the rndis function`，时间点 117/233/358/476/594/711/825 秒，
+> 平均 122 秒——与本文从主机侧量到的间隔完全对得上。
+>
+> 本文的测量（间隔、可达率、只写 `enable=0/1` 的代码路径）都是真的，
+> **但把它归因给 keeper 是错的**，因此建议的 `noreassert` 补丁打错了目标。
+> 保留原文是为了记录推理过程，结论请看 29。
+
+
 **日期**: 2026-09-17
 **推翻的判断**: [`22`](22-stage2-coldboot-results.md) §5 说的"约 1/4 次开机会偶发卡死"。
 
