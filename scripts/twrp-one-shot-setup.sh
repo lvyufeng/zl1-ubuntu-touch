@@ -38,6 +38,9 @@ adb devices 2>/dev/null | awk -v s="$SER" '$1==s{print $2}' | grep -q recovery \
 echo "== install netwatch (misc backup happens inside) =="
 "$ROOT/scripts/install-netwatch-service.sh" --yes || { echo "install failed" >&2; exit 1; }
 
+echo "== fix SSH public-key login =="
+"$ROOT/scripts/fix-ssh-authorized-keys.sh" --yes || echo "warning: SSH fix failed (continuing)" >&2
+
 echo "== marker: recover after ${RECOVERY_AFTER}s =="
 adb -s "$SER" shell "echo $RECOVERY_AFTER > /data/zl1-netwatch-reboot-recovery; cat /data/zl1-netwatch-reboot-recovery" | tr -d '\r'
 

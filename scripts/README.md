@@ -60,7 +60,9 @@ Xiaomi `4a2fe00b` shares the USB bus. Everything else is read-only. See
 
 | Script | Purpose |
 | --- | --- |
-| `fix-ssh-sshd-config.sh` | Edit `sshd_config` inside userdata. |
+| `fix-ssh-authorized-keys.sh` | **The SSH fix.** Points `AuthorizedKeysFile` at `/etc/ssh/authorized_keys.d/%u`, which is a persistent writable-path, instead of a user's home directory. Run from TWRP. |
+| `fix-ssh-sshd-config.sh` | June attempt: appends `PermitRootLogin`/`PasswordAuthentication` to the userdata `sshd_config`. Kept for the record; superseded — it never touched `AuthorizedKeysFile`. |
+| `install-ssh-to-userdata.sh` | June attempt: writes the key to `/userdata/root/.ssh`, which is not the path `/root` resolves to. Kept for the record; superseded by `fix-ssh-authorized-keys.sh`. |
 | `install-ssh-to-userdata.sh` | Install SSH keys into USERDATA. `/root` is bind-mounted from userdata at runtime, which is why keys must live there and not in the rootfs. |
 | `zl1-status-server-enhanced.py` | HTTP status server with a command-execution endpoint; deployed into the ramdisk at `/usr/local/sbin/`. |
 
