@@ -268,6 +268,15 @@ while :; do
     fi
 
     uptime_s=$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1)
+
+    # In record-only mode nothing is healed, but the moment the link dies is still the
+    # most interesting line in the log — say so rather than leaving it to be inferred
+    # from a run of host-ping: FAIL samples.
+    if [ "$HEAL_ENABLED" = "0" ] && [ "$frozen" = "$STALL_SECONDS" ]; then
+        log "STALL(unhealed): host unreachable for ${frozen}s; iface=${IFACE} tx_pkts=${tx_p:-?} rx_pkts=${rx_p:-?}"
+        { echo "--- stall evidence ---"; gadget_stats; } >> "$LOG" 2>&1
+    fi
+
     if [ "$hwcheck_done" = "0" ] && [ "${uptime_s:-0}" -ge "$HWCHECK_AFTER" ]; then
         hwcheck
         hwcheck_done=1

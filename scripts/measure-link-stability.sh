@@ -34,10 +34,13 @@ echo "t,usb0,mac,carrier,host_txp,host_rxp,ping15,ping82,http22,status8080" > "$
 
 samples=0; up_samples=0; ssh_samples=0; http_samples=0
 renum=0; last_mac=""
-run=0; best_run=0
+best_run=0; run_seconds=0
+reach_seconds=0; total_seconds=0
+prev_epoch=""
 
 while (( SECONDS < DEADLINE )); do
   t="$(date -u +%H:%M:%S)"
+  epoch="$(date +%s)"
   mac=""; carrier=""; txp=""; rxp=""; p1=N; p2=N; s22=N; h8080=N
 
   if [[ -e /sys/class/net/usb0 ]]; then
@@ -51,19 +54,36 @@ while (( SECONDS < DEADLINE )); do
 
     ping -c1 -W1 192.168.2.15  >/dev/null 2>&1 && p1=Y
     ping -c1 -W1 10.15.19.82   >/dev/null 2>&1 && p2=Y
-    timeout 2 bash -c 'exec 3<>/dev/tcp/10.15.19.82/22' 2>/dev/null && s22=Y
-    timeout 3 curl -fsS --max-time 2 http://10.15.19.82:8080/ >/dev/null 2>&1 && h8080=Y
+    # Only probe the higher-level services when the link is up at all: on a dead link
+    # those probes cost seconds each and say nothing new.
+    if [[ "$p1" == Y || "$p2" == Y ]]; then
+      timeout 2 bash -c 'exec 3<>/dev/tcp/10.15.19.82/22' 2>/dev/null && s22=Y
+      timeout 3 curl -fsS --max-time 2 http://10.15.19.82:8080/ >/dev/null 2>&1 && h8080=Y
+    fi
   fi
 
   echo "$t,$([[ -n "$mac" ]] && echo 1 || echo 0),$mac,$carrier,$txp,$rxp,$p1,$p2,$s22,$h8080" >> "$OUT"
 
-  samples=$((samples + 1))
-  if [[ "$p1" == Y || "$p2" == Y ]]; then
-    up_samples=$((up_samples + 1)); run=$((run + 1))
-    (( run > best_run )) && best_run=$run
-  else
-    run=0
+  # Account in seconds, not in samples. One iteration costs whatever the probes cost —
+  # several seconds when they time out — so a percentage of samples would weight dead
+  # periods more heavily than live ones, and a "reachable run" counted in samples would
+  # understate its length.
+  if [[ -n "$prev_epoch" ]]; then
+    dt=$(( epoch - prev_epoch ))
+    (( dt > 60 )) && dt=60          # a gap that long means the sampler stalled, not data
+    total_seconds=$(( total_seconds + dt ))
+    if [[ "$p1" == Y || "$p2" == Y ]]; then
+      reach_seconds=$(( reach_seconds + dt ))
+      run_seconds=$(( run_seconds + dt ))
+      (( run_seconds > best_run )) && best_run=$run_seconds
+    else
+      run_seconds=0
+    fi
   fi
+  prev_epoch="$epoch"
+
+  samples=$((samples + 1))
+  [[ "$p1" == Y || "$p2" == Y ]] && up_samples=$((up_samples + 1))
   [[ "$s22"   == Y ]] && ssh_samples=$((ssh_samples + 1))
   [[ "$h8080" == Y ]] && http_samples=$((http_samples + 1))
 
@@ -80,19 +100,19 @@ while (( SECONDS < DEADLINE )); do
   sleep 2
 done
 
-elapsed=$(( MINUTES * 60 ))
+pct() { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.1f", (b?100*a/b:0)}'; }
 {
   echo
   echo "================ summary ================"
-  echo "sampling window        : ${MINUTES} min (${samples} samples, one per 2 s)"
+  echo "window                 : ${MINUTES} min requested; ${total_seconds}s covered in ${samples} samples"
   echo "gadget re-enumerations : ${renum}"
-  printf 'reachable              : %.1f%% of samples (%d/%d)\n' \
-    "$(awk -v a="$up_samples" -v b="$samples" 'BEGIN{print (b?100*a/b:0)}')" "$up_samples" "$samples"
-  echo "longest reachable run  : $((best_run * 2)) s"
-  printf 'ssh port 22 open       : %.1f%% (%d)\n' \
-    "$(awk -v a="$ssh_samples" -v b="$samples" 'BEGIN{print (b?100*a/b:0)}')" "$ssh_samples"
-  printf 'status page 8080       : %.1f%% (%d)\n' \
-    "$(awk -v a="$http_samples" -v b="$samples" 'BEGIN{print (b?100*a/b:0)}')" "$http_samples"
-  echo "baseline (v63, 36 min) : 16 re-enumerations, 2 pings"
+  printf 'reachable              : %s%% of the time (%ds of %ds)\n' \
+    "$(pct "$reach_seconds" "$total_seconds")" "$reach_seconds" "$total_seconds"
+  echo "longest reachable run  : ${best_run}s"
+  printf 'ssh port 22 open       : %s%% of samples (%d)\n' "$(pct "$ssh_samples" "$samples")" "$ssh_samples"
+  printf 'status page 8080       : %s%% of samples (%d)\n' "$(pct "$http_samples" "$samples")" "$http_samples"
+  echo
+  echo "baseline to beat (v63, 36 min — docs/ubuntu-touch/26-gadget-reassert-every-2-minutes.md):"
+  echo "  16 gadget re-enumerations at a ~118 s cadence; 2 pings reached the device"
   echo "csv                    : $OUT"
 } | tee -a "$OUT"
