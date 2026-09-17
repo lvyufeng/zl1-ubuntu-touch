@@ -296,7 +296,11 @@ while :; do
         set -- $(ifname_stats)
         last_tx="$4"
         frozen=0
-        continue
+        # Deliberately no `continue` here. It used to jump straight back to the top, which
+        # meant the recovery check further down was skipped on every iteration that healed
+        # — so a device that kept stalling also never reached its scheduled reboot. That is
+        # exactly the state the device was found in on 2026-09-17: 47 minutes uptime with
+        # the recovery marker set to 900 s and no recovery ever attempted.
     fi
 
     if [ "$RECOVERY_AFTER" -gt 0 ] && [ "${uptime_s:-0}" -ge "$RECOVERY_AFTER" ]; then

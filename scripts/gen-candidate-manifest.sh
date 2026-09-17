@@ -37,7 +37,7 @@ result_of() {
     halium-boot-zl1-filtered-dtb.img)
       echo "filtered-DTB reference build (2026-06-07). **Not reachable by rebuild** — its built-in initramfs cpio carries a stale mtime; see docs/ubuntu-touch/19-phase1-reproducible-build.md §2" ;;
     halium-boot-zl1-v63-debug-shell.img)
-      echo "v63 + \`zl1_debug_shell=1\` on the cmdline only (kernel and ramdisk byte-identical to v63). Enables busybox telnetd on port 23 during the debug-init phase." ;;
+      echo "v63 + \`zl1_debug_shell=1\` on the cmdline only (kernel and ramdisk byte-identical to v63). **The flag does reach the ramdisk, but busybox telnetd exits rc=1, so it does not actually give a shell** — measured 2026-09-17, docs/ubuntu-touch/27-what-a-reachable-window-shows.md" ;;
     halium-boot-zl1-v63-noreassert.img)
       echo "**the next one to test** — v63 with one change: the keeper no longer rebuilds the USB gadget after killing a USB manager. Measured 2026-09-17: that rebuild re-enumerated the device every ~118 s (16 times in 36 minutes) and the link was reachable for 2 pings of those 36 minutes. Verified to differ from v63 in exactly one initramfs file" ;;
     halium-boot-zl1-v63-rebuilt.img)

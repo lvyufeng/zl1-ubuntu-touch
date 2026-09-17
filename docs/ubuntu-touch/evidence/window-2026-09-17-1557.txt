@@ -1,0 +1,21 @@
+# Status page grabbed during a reachable window, 2026-09-17 15:57 UTC
+# The device was 9.73 s into a boot. Excerpts only; the full page is a rolling
+# log with several snapshot sections and is not useful verbatim.
+
+== listeners (one snapshot, with sshd up) ==
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+LISTEN 0      8            0.0.0.0:8080      0.0.0.0:*          
+LISTEN 0      8            0.0.0.0:8081      0.0.0.0:*          
+LISTEN 0      128          0.0.0.0:22        0.0.0.0:*          
+LISTEN 0      128                *:22              *:*          
+zl1-debug-net-v63: spawned shell telnetd 23 pid=545258
+
+== a process table from the same page, trimmed to the interesting entries ==
+1:systemd:/sbin/init ;1019:zl1-netwatch.sh:/bin/sh /etc/systemd/system/zl1-netwatch.sh 
+...
+3135:lxc-start:/usr/bin/lxc-start -n android -F -- /system/bin/env -i PATH=/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/sbin:/system/sbin:/system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin INIT_STARTED_AT=0 INIT_SECOND_STAGE=true /init 
+...
+559331:lxc-stop:/usr/bin/lxc-stop -n android -k 
+
+== the telnetd failure line from the persisted monitor log tail ==
+zl1-debug-net-v63: shell telnetd 23 exited rc=1
