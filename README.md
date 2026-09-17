@@ -88,17 +88,21 @@ The earlier EDL incident is resolved; see
 Every script filters on serial `33e80afe` — the unrelated Xiaomi `4a2fe00b` shares the
 USB bus and must be ignored.
 
-What still does not work: **the device's RNDIS transmit path wedges about 30 seconds
-after the Android container starts.** The device's own `/proc/net/dev` counters show RX
+What still does not work: **the device's RNDIS transmit path wedges on about 1 boot in 4.**
+It is intermittent, not systematic — 6 of 8 boots in the historical monitor log carried
+0.3–1.9 MB, and the one boot right after a stalled one was fine. The device's own `/proc/net/dev` counters show RX
 climbing to the end (the host's ARP requests keep arriving) while TX freezes after one
 HTTP response. `carrier=1` and `operstate=up` are not evidence that the data path is
 alive — that misreading is what produced the earlier "stable for 9 minutes" claim. See
 `22-stage2-coldboot-results.md` §5.
 
-**The device exposes only RNDIS, not adb.** Changing the boot image needs a physical key
-combination first: Volume Down + Power for fastboot, Volume Up + Power for TWRP. Once the
-`zl1_debug_shell=1` image is flashed there is a telnet shell on port 23, and reboots can be
-driven from it.
+**The device exposes only RNDIS, not adb**, and it is currently sitting in a stalled boot,
+so it needs one physical key combination before anything else can happen: Volume Up + Power
+for TWRP. A watcher is already running and will do the rest —
+`scripts/twrp-one-shot-setup.sh` installs a device-side watchdog that records the counters
+and re-asserts the gadget when the transmit path stalls, fixes SSH, and sets the device to
+return itself to TWRP after a configurable delay. After that one press, the loop runs
+without human input.
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 

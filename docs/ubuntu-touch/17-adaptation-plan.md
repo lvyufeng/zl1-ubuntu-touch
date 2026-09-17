@@ -207,6 +207,9 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 > **状态（2026-09-17）**：2.1–2.3 完成（含 Android 容器）。2.4 每次都起得来、容器每次都在，
 > 但设备发包通路**约 1/4 次开机会偶发卡死**（`22` §5.2：8 次有真实流量开机的历史数据里 6 次正常）。
+> 已装上设备侧看门狗（记录 + 自愈）与自动回 recovery 的闭环，见 `22` §7；
+> 2.4 / 2.5 的取证脚本已就位（`scripts/stage2-coldboot-trial.sh`、`scripts/stage2-rollback-drill.sh`），
+> 等设备回到 TWRP 即可跑。
 > 两次冷启动的记录：[`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md)（第一次，容器未起）、
 > [`22-stage2-coldboot-results.md`](22-stage2-coldboot-results.md)（补上 `/data/system.img` 之后，容器起来）。
 
@@ -220,6 +223,24 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 2.3/2.4 通过，才可以说"zl1 能跑 Ubuntu Touch"。
 2.5 通过，才可以说"这条路线是安全的"。
+
+#### 当前卡点与恢复步骤（2026-09-17）
+
+设备卡在一次**发包通路卡死**的开机里：RNDIS 只暴露 gadget、没有 adb，
+状态页取不到，主机侧试过 `modprobe -r/-r`、`unbind/bind`、`authorized` 强制重新枚举，
+都无法让它恢复。**需要一次人工按键。**
+
+后台已经在等（`scripts/twrp-one-shot-setup.sh 900 5400`）：
+
+```bash
+# 设备：关机，然后按住 音量上 + 电源 进 TWRP
+# 之后全自动：misc 备份 → 装 netwatch（记录+自愈）→ 修 SSH → 写 marker → 重启
+```
+
+再之后每次开机都会：UT 起来并记录 → 卡死则自愈 → 到点自动回 TWRP。
+日志：`scripts/read-netwatch-log.sh`，取证：`scripts/stage2-coldboot-trial.sh`。
+
+想换 boot 镜像时才需要再按一次键（用 `flash-boot-image.sh`）。
 
 > **2.3 的容器缺口不是镜像问题，是设备数据问题。**
 > v63 的 initramfs 需要 `/data/system.img`（或 `/data/android-rootfs.img`）来建立
