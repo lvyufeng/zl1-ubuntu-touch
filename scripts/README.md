@@ -65,6 +65,7 @@ for what each stage is trying to establish.
 | `setup-halium9-tree.sh` | Initialise the external Halium 9 build tree for zl1. |
 | `sync-halium9-tree.sh` | Sync the external build tree. |
 | `patch-halium9-build-tree.sh` | Reproducible local fixes needed by the historical `halium-leeco` zl1 tree. Touches only the external tree, never the phone. Idempotent. |
+| `patch-uether-tx-wakeup.sh` | Experimental: fixes the confirmed fact that `netif_wake_queue()` in the kernel's `u_ether.c` is reachable only from `tx_complete()`, so one lost completion leaves the transmit queue stopped for the rest of the boot. `--apply` / `--remove` / `--status`; removal is byte-exact. See [`../docs/ubuntu-touch/23-uether-tx-wakeup-patch.md`](../docs/ubuntu-touch/23-uether-tx-wakeup-patch.md). |
 | `verify-halium-kernel-config.sh` | Check Halium-relevant kernel config options. Read-only. |
 | `build-halium-boot.sh` | Build the Halium boot artifact. Pins `KBUILD_BUILD_*` so two clean builds agree byte-for-byte — see [`../docs/ubuntu-touch/19-phase1-reproducible-build.md`](../docs/ubuntu-touch/19-phase1-reproducible-build.md). |
 | `gen-candidate-manifest.sh` | Regenerate [`../manifests/halium-boot-candidates.md`](../manifests/halium-boot-candidates.md) from `/mnt/data/halium-zl1-candidates/`, and write that directory's `SHA256SUMS`. |

@@ -38,6 +38,8 @@ result_of() {
       echo "filtered-DTB reference build (2026-06-07). **Not reachable by rebuild** — its built-in initramfs cpio carries a stale mtime; see docs/ubuntu-touch/19-phase1-reproducible-build.md §2" ;;
     halium-boot-zl1-v63-debug-shell.img)
       echo "v63 + \`zl1_debug_shell=1\` on the cmdline only (kernel and ramdisk byte-identical to v63). Enables busybox telnetd on port 23 during the debug-init phase." ;;
+    halium-boot-zl1-uether-txwakeup.img)
+      echo "**mitigation candidate** — the reproducible baseline plus the u_ether.c transmit-wakeup patch (scripts/patch-uether-tx-wakeup.sh). Kernel-only: ramdisk and appended DTBs are byte-identical to the baseline. Fixes the confirmed code fact that netif_wake_queue() was reachable only from tx_complete(); not yet shown to be the cause of the stall on hardware" ;;
     halium-boot-zl1-reproducible-20260916.img)
       echo "**Phase 1 baseline** — reproduced byte-for-byte by two clean rebuilds; this is the reproducible target SHA" ;;
     halium-boot-zl1-filtered-dtb-postswitch-debug-v*.img)
