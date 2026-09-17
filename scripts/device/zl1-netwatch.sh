@@ -233,12 +233,20 @@ while :; do
     set -- $(ifname_stats)
     rx_b="$1"; rx_p="$2"; tx_b="$3"; tx_p="$4"
 
+    # A stall is specifically "the host is talking to us and we are not answering", so
+    # the frozen counter only accrues while RX is also moving. Counting any period of
+    # quiet TX as a stall would fire on an idle system — and a heal is disruptive
+    # (stage B recreates the netdev), besides polluting the evidence we are collecting.
     if [ -n "$tx_p" ]; then
         if [ "$tx_p" = "$last_tx" ]; then
-            frozen=$((frozen + SAMPLE_INTERVAL))
+            if [ -n "$rx_p" ] && [ "$rx_p" != "$rx_at_last_tx" ]; then
+                frozen=$((frozen + SAMPLE_INTERVAL))
+            else
+                frozen=0
+            fi
         else
             if [ "$frozen" -ge "$STALL_SECONDS" ]; then
-                log "HEAL: recovered on its own after ${frozen}s frozen"
+                log "HEAL: transmit recovered on its own after ${frozen}s frozen"
             fi
             frozen=0
             last_tx="$tx_p"

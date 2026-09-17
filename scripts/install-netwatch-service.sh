@@ -77,6 +77,9 @@ Description=zl1 network watchdog (recorder + RNDIS self-heal)
 DefaultDependencies=no
 After=local-fs.target
 Before=multi-user.target
+# The script loops forever by design, so any restart is a bug. Do not let systemd's
+# start-limit give up on it and leave the device without a recorder.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
