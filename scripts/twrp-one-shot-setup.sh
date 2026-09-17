@@ -3,15 +3,19 @@
 #
 # Run this and press Volume Up + Power on the zl1. It waits for TWRP, then:
 #   1. backs up the misc partition (the 2026-06-07 set has no misc image)
-#   2. installs the netwatch service: a recorder that also re-asserts the RNDIS
-#      gadget when it detects the intermittent transmit stall
-#   3. drops the marker that makes the device ask the bootloader for recovery after
+#   2. installs the netwatch service — it records the RNDIS gadget's own counters, takes
+#      a hardware snapshot for the later display/touch work, and re-asserts the gadget
+#      (re-enumerate, then rebind if that was not enough) when the transmit path stalls
+#   3. makes SSH public-key login work, which is the first Phase 5 item and a much better
+#      debug channel than the read-only status page
+#   4. drops the marker that makes the device ask the bootloader for recovery after
 #      RECOVERY_AFTER seconds, so its log can be read without a button press
-#   4. reboots into Ubuntu Touch
+#   5. reboots into Ubuntu Touch
 #
 # From then on the cycle is: UT boots and logs, heals itself if the link stalls, and
 # after RECOVERY_AFTER returns itself to TWRP so the log can be read. No further human
-# input is needed unless the device stops booting at all.
+# input is needed unless the device stops booting at all. To repeat boots unattended, run
+# netwatch-cycle-supervisor.sh after this.
 #
 # Usage: twrp-one-shot-setup.sh [RECOVERY_AFTER_SECONDS] [WAIT_TWRP_SECONDS] [BOOT_IMAGE]
 #
