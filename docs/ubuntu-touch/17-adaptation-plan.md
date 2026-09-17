@@ -201,6 +201,12 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 关键修复：`scripts/build-halium-boot.sh` 固定 `KBUILD_BUILD_TIMESTAMP` 等四个变量，
 未固定时重建与参照镜像差 99 字节。
 
+> **补充（2026-09-17）**：Phase 1 的可复现产物是 **Stock halium-boot**，从未在设备上跑过；
+> 真正能跑的是 v63。两者之间只差 initramfs 里的 5 个条目，现已把这段差距纳入版本管理，
+> v63 可以**从仓库源码确定性重建**，且每次重建都自动与 v63 二进制逐内容比对。
+> 见 [`24-reproducible-working-image.md`](24-reproducible-working-image.md)。
+> 这补上了"可复现的构建"与"能用的安装"之间的缝。
+
 ### Phase 2 — 持久化安装与回滚路径
 
 这是本计划与旧计划最大的分歧点：**从这里开始用 `fastboot flash boot`，不再用 `fastboot boot`。**
