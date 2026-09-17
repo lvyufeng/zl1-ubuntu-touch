@@ -97,9 +97,27 @@ sample() {
         done
         echo
         if pgrep -f lxc-start >/dev/null 2>&1; then echo "lxc-start: RUNNING"; else echo "lxc-start: absent"; fi
-        if ping -c1 -W1 192.168.2.100 >/dev/null 2>&1; then echo "host-ping: OK"; else echo "host-ping: FAIL"; fi
+        if [ "$host_ping_ok" = "1" ]; then echo "host-ping: OK"; else echo "host-ping: FAIL"; fi
     } >> "$LOG" 2>&1
 }
+
+# Is the transmit path alive? The device asks the host a question and waits for the
+# answer; if it never comes, our packets are not getting out.
+#
+# This probe is the whole detection mechanism, and the reason is that the previous one
+# could not fire when it mattered. It watched the device's RX counter for movement, on the
+# theory that a stall looks like "the host is talking and we are not answering" — but with
+# no traffic from either side (an idle system, or a host that stopped probing after its
+# first success) RX does not move either, so it concluded "not stalled" and did nothing.
+# Measured on hardware 2026-09-17: exactly that happened, the device sat unreachable for
+# 15 minutes with the watchdog running.
+#
+# Probing from here removes the dependency: the device generates its own traffic, so the
+# test works whether or not anything else is happening on the link.
+probe_host() {
+    ping -c1 -W1 192.168.2.100 >/dev/null 2>&1
+}
+
 
 write_file() { echo "$2" > "$1" 2>/dev/null || return 1; }
 
@@ -223,34 +241,29 @@ i=0
 heals=0
 last_tx=""
 frozen=0
-rx_at_last_tx=""
+host_ping_ok=0
 
 while :; do
     i=$((i + 1))
+    host_ping_ok=0
+    [ -e "/sys/class/net/$IFACE" ] && probe_host && host_ping_ok=1
     sample
 
-    # Only judge health from a sample taken while the interface exists.
     set -- $(ifname_stats)
     rx_b="$1"; rx_p="$2"; tx_b="$3"; tx_p="$4"
 
-    # A stall is specifically "the host is talking to us and we are not answering", so
-    # the frozen counter only accrues while RX is also moving. Counting any period of
-    # quiet TX as a stall would fire on an idle system — and a heal is disruptive
-    # (stage B recreates the netdev), besides polluting the evidence we are collecting.
-    if [ -n "$tx_p" ]; then
-        if [ "$tx_p" = "$last_tx" ]; then
-            if [ -n "$rx_p" ] && [ "$rx_p" != "$rx_at_last_tx" ]; then
-                frozen=$((frozen + SAMPLE_INTERVAL))
-            else
-                frozen=0
-            fi
-        else
+    # Track how long the host has been unreachable. The counter only runs while the
+    # interface exists, so a heal tearing the netdev down does not itself look like a
+    # worsening stall.
+    if [ -e "/sys/class/net/$IFACE" ]; then
+        if [ "$host_ping_ok" = "1" ]; then
             if [ "$frozen" -ge "$STALL_SECONDS" ]; then
-                log "HEAL: transmit recovered on its own after ${frozen}s frozen"
+                log "HEAL: host reachable again after ${frozen}s unreachable"
             fi
             frozen=0
             last_tx="$tx_p"
-            rx_at_last_tx="$rx_p"
+        else
+            frozen=$((frozen + SAMPLE_INTERVAL))
         fi
     fi
 
@@ -261,11 +274,11 @@ while :; do
     fi
     if [ "$HEAL_ENABLED" = "1" ] && [ "$heals" -lt "$MAX_HEALS" ] \
        && [ "$frozen" -ge "$STALL_SECONDS" ] && [ "${uptime_s:-0}" -ge "$SETTLE_SECONDS" ]; then
-        log "STALL: tx_packets frozen at $tx_p for ${frozen}s while rx went $rx_at_last_tx -> $rx_p"
+        log "STALL: host unreachable for ${frozen}s; iface=${IFACE} tx_pkts=${tx_p:-?} rx_pkts=${rx_p:-?}"
         { echo "--- stall evidence ---"; gadget_stats; } >> "$LOG" 2>&1
         # Escalate: the first heal of a boot re-enumerates, later ones rebind the
         # function. A stall that survives a re-enumeration needs the stronger one.
-        if [ "$heals" -eq 0 ]; then heal A "tx-frozen-${frozen}s"; else heal B "tx-frozen-${frozen}s-still"; fi
+        if [ "$heals" -eq 0 ]; then heal A "unreachable-${frozen}s"; else heal B "unreachable-${frozen}s-still"; fi
         heals=$((heals + 1))
         log "HEAL: attempt $heals/$MAX_HEALS done; sleeping ${HEAL_RETRY_SECONDS}s before judging"
         sleep "$HEAL_RETRY_SECONDS"
@@ -273,7 +286,6 @@ while :; do
         # re-flagged as the same stall.
         set -- $(ifname_stats)
         last_tx="$4"
-        rx_at_last_tx="$2"
         frozen=0
         continue
     fi

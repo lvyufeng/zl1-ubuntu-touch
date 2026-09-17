@@ -60,10 +60,21 @@ while :; do
       done
     fi
 
+    # Re-probe on every pass, not only until the first success. The device-side watchdog
+    # decides whether its transmit path is alive by pinging us, so keeping a trickle of
+    # host traffic going means the link is exercised from both ends; and a probe that
+    # starts failing again is itself the signal that something changed.
     for ip in "${DEV_IPS[@]}"; do
-      if [[ -z "${announced[$ip]:-}" ]] && ping -c1 -W1 "$ip" >/dev/null 2>&1; then
-        log "  ping $ip OK"
-        announced[$ip]=1
+      if ping -c1 -W1 "$ip" >/dev/null 2>&1; then
+        if [[ -z "${announced[$ip]:-}" ]]; then
+          log "  ping $ip OK"
+          announced[$ip]=1
+        fi
+      else
+        if [[ -n "${announced[$ip]:-}" ]]; then
+          log "  ping $ip FAILED (was OK)"
+          unset "announced[$ip]"
+        fi
       fi
     done
   else
