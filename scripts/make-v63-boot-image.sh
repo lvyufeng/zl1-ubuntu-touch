@@ -157,24 +157,45 @@ ls -l "$WORK/initrd-v63.img"
 echo "== writing the boot image =="
 # mkbootimg needs the v63 cmdline and the baseline's addresses; take them from the
 # extracted cfg so they cannot drift from the image the baseline actually has.
-read -r PAGESIZE KADDR RADDR SADDR TADDR < <(python3 - "$WORK/bootimg.cfg" <<'PY'
+# mkbootimg ADDS --base to each offset, and --base defaults to 0x10000000. Passing only
+# --kernel_offset therefore lands the kernel at 0x10008000 instead of 0x80008000 — an image
+# the bootloader loads to the wrong address, fails to boot, and the SoC eventually falls
+# back from into EDL. That is exactly what happened on 2026-09-17, twice. --base is now
+# passed explicitly, derived from the reference image so it cannot drift.
+read -r PAGESIZE BASE KOFF ROFF SOFF TOFF < <(python3 - "$WORK/bootimg.cfg" <<'PY'
 import re, sys
-t = open(sys.argv[1]).read()
-def g(k, d):
-    m = re.search(rf'^{k}\s*=\s*(\S+)', t, re.M)
-    return m.group(1) if m else d
-print(g('pagesize','0x1000'), g('kerneladdr','0x80008000'), g('ramdiskaddr','0x81000000'),
-      g('secondaddr','0x80f00000'), g('tagsaddr','0x80000100'))
+text = open(sys.argv[1]).read()
+
+
+def g(key, default):
+    m = re.search(rf'^{key}\s*=\s*(\S+)', text, re.M)
+    return m.group(1) if m else default
+
+
+kaddr = int(g('kerneladdr', '0x80008000'), 16)
+raddr = int(g('ramdiskaddr', '0x81000000'), 16)
+saddr = int(g('secondaddr', '0x80f00000'), 16)
+taddr = int(g('tagsaddr', '0x80000100'), 16)
+if re.search(r'^base\s*=', text, re.M):
+    base = int(g('base', '0x80000000'), 16)
+else:
+    # No base in the cfg (abootimg writes absolute addresses), so take the kernel address
+    # rounded down to a 0x10000000 boundary: 0x80008000 -> 0x80000000.
+    base = kaddr & ~0x0FFFFFFF
+print(g('pagesize', '0x1000'), hex(base),
+      hex(kaddr - base), hex(raddr - base), hex(saddr - base), hex(taddr - base))
 PY
 )
+echo "  header: base=$BASE kernel_off=$KOFF ramdisk_off=$ROFF second_off=$SOFF tags_off=$TOFF pagesize=$PAGESIZE"
 mkbootimg \
   --kernel "$KERNEL_IMG" \
   --ramdisk "$WORK/initrd-v63.img" \
   --pagesize "$PAGESIZE" \
-  --kernel_offset "$(printf '0x%08x' $(( KADDR - 0x80000000 )))" \
-  --ramdisk_offset "$(printf '0x%08x' $(( RADDR - 0x80000000 )))" \
-  --second_offset "$(printf '0x%08x' $(( SADDR - 0x80000000 )))" \
-  --tags_offset "$(printf '0x%08x' $(( TADDR - 0x80000000 )))" \
+  --base "$BASE" \
+  --kernel_offset "$KOFF" \
+  --ramdisk_offset "$ROFF" \
+  --second_offset "$SOFF" \
+  --tags_offset "$TOFF" \
   --cmdline "$V63_CMDLINE" \
   --output "$OUT" 2>/dev/null
 
@@ -208,6 +229,25 @@ def check(name, same, extra=''):
     global ok
     print(f'  {"OK  " if same else "FAIL"}  {name}{(" — " + extra) if extra else ""}')
     ok = ok and same
+
+# Compare every header field, not just the content. An image whose kernel and ramdisk
+# contents were byte-identical still could not boot, because its load addresses were wrong
+# — the header is what the bootloader actually reads. That check is the one that was
+# missing on 2026-09-17 and it is why that image reached the device.
+import struct as _struct
+_bf = open(os.environ['BUILT'], 'rb').read()
+_rf = open(os.environ['REF'], 'rb').read()
+for _i, _name in enumerate(['kernel_size', 'kernel_addr', 'ramdisk_size', 'ramdisk_addr',
+                            'second_size', 'second_addr', 'tags_addr', 'page_size',
+                            'header_version', 'os_version']):
+    _b = _struct.unpack_from('<I', _bf, 8 + _i * 4)[0]
+    _r = _struct.unpack_from('<I', _rf, 8 + _i * 4)[0]
+    if _name == 'ramdisk_size':
+        # Same data, different gzip framing, so this one legitimately differs.
+        check('header.' + _name + ' comparable', _b <= _r, f'{_b} vs {_r}')
+    else:
+        check('header.' + _name + ' identical', _b == _r,
+              '' if _b == _r else f'0x{_b:08x} vs 0x{_r:08x}')
 
 check('cmdline identical', built['cmd'] == ref['cmd'])
 check('appended DTBs identical', built['dtb'] == ref['dtb'])
