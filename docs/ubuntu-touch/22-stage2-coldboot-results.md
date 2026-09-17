@@ -166,6 +166,34 @@ if (dev->tx_skb_hold_count < dev->dl_max_pkts_per_xfer) {
 这条路径需要 `multi_pkt_xfer` 且走 `tx_reqs` 池；**是不是它，要靠 §5.4 的现场证据判定**，
 现在只有代码层面的吻合，不算证明。
 
+### 5.2d 主机侧能做的都试过了：USB 总线复位也不行
+
+在主机上对这个 gadget 发了一次**真正的 USB 总线复位**（`USBDEVFS_RESET` ioctl 直接打到
+`/dev/bus/usb/003/012`；`usbreset(1)` 工具不行，它没法在总线上两个 `18d1` 设备里选对）。
+
+dmesg 证明复位确实发生了，而且**设备侧真的重新绑定了 gadget**：
+
+```
+[1676676.813446] usb 3-3: reset high-speed USB device number 12 using xhci_hcd
+[1676676.964589] rndis_host 3-3:1.0 usb0: register 'rndis_host' ... c2:18:4b:33:2f:1b
+```
+
+主机侧看到的 host MAC 变了（前一次是 `6a:53:29:85:64:07`），说明设备重新生成了它那份随机
+host MAC——也就是设备的 gadget 栈确实走了一遍 disconnect/connect。
+
+**链路仍然是死的。** 这个否定结果很有信息量：
+
+1. 排除了"主机侧状态错乱"这个解释。之前另外三种主机侧手段
+   （`modprobe -r/-r`、`unbind/bind`、`authorized` 切换）也都不行。
+2. 把故障范围缩小了：一次全新的 `gether_connect` 都救不回来，说明**能被重新枚举清掉的
+   东西不是病因**。
+3. 能在重新枚举后存活下来的，是挂在 **net_device** 上的状态——而 `u_ether` 在
+   `gether_disconnect` / `gether_connect` 之间**不会重建 net_device**，
+   所以 `netif_stop_queue` 停掉的发送队列会一直留着。
+
+也就是说 §5.2c 的假设没被推翻，反而更贴了。而且这也说明**设备侧看门狗的第二级治愈
+（unbind/rebind 函数 → 释放并重建 netdev）比主机上任何手段都强**，是唯一还没试过的一招。
+
 ### 5.3 结论（更正）
 
 **设备偶尔会卡在"收得到、发不出"的状态。** 发生率约 1/4 次开机；
@@ -254,9 +282,15 @@ dwc3_gadget_giveback -> dwc3_endpoint_transfer_complete -> dwc3_interrupt
 那就是"唤醒丢了"（§5.2c）。这一条能直接判定，不需要再靠猜。
 
 **自愈**：当 `tx_packets` 连续 45 秒不动（且 `uptime > 90` 秒，避免把启动过程误判成卡死），
-就**重绑 RNDIS gadget**——和 v63 keeper 开机时做的是同一套 sysfs 序列
-（`enable=0` → 清 `functions` → 写描述符 → `functions=rndis` → `enable=1`）。
-重新枚举会重置端点，这正是停住的发送队列需要的；发送路径里没有别的东西会唤醒它。
+**按两级升级**：
+
+- **A 级**：`enable=0` → `enable=1`，整条 USB 链路重新枚举，端点复位，netdev 保留
+- **B 级**：解绑再重绑 rndis 函数，**释放并重建 netdev**——按 §5.2d 的结论，
+  这是唯一能清掉"挂在 net_device 上的停摆状态"的手段，比主机上任何操作都强
+
+每次开机第一次治愈走 A，之后走 B。两级之后都**重新配上设备侧地址**
+（`192.168.2.15/24` + `10.15.19.82/24`）——B 级会毁掉 netdev，它重新出现时是没有地址的，
+不补上就算链路修好了主机也照样够不着。
 
 安全性：
 
