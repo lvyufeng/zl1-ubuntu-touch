@@ -233,26 +233,48 @@ dwc3_gadget_giveback -> dwc3_endpoint_transfer_complete -> dwc3_interrupt
 | 2.4 连续 3 次冷启动复现 | 3/3 一致 | ⏳ 每次都起得来、容器每次都在；网络 **6/8 次正常**（§5.2），偶发卡死约 1/4。需要重试 + 抓现场 |
 | 2.5 失败回滚演练 | 刷坏镜像 → 回刷成功 | ⏳ |
 
-## 7. 下一步：要一个设备上的 shell
+## 7. 下一步：设备侧看门狗（记录 + 自愈）
 
-设备只暴露 RNDIS，没有 adb；HTTP 状态页是只读的，而且卡死时**连那一次都抓不到**。
-要在现场抓 §5 的证据，必须在设备上有个 shell，或者让设备自己把现场记下来。
+设备只暴露 RNDIS、没有 adb，状态页是只读的，而且卡死时连状态页都取不到。
+所以现场只能靠设备自己记下来——并且既然卡死不会自愈，就得让设备自己治。
 
-v63 的 ramdisk 已经支持这个开关——`zl1_debug_shell=1` 会让它在调试 init 阶段
-起一个 `busybox telnetd -l /bin/sh`（端口 23）。所以做了一张
-**v63 + 这一个 cmdline 参数**的镜像：
+`scripts/device/zl1-netwatch.sh` 一个服务干两件事：
 
-```
-/mnt/data/halium-zl1-candidates/halium-boot-zl1-v63-debug-shell.img
-18,022,400 字节  SHA256 e89be201efc882156169d14d40878915b286de6af649d02511bc11629f6fde5c
-```
+**记录**：每 2 秒把下面这些追加进 `/userdata/zl1-netwatch.log`（持久分区，跨启动保留）：
 
-内核和 ramdisk **一个字节都没动**，只是在 cmdline 的 512 字节字段尾部补了
-` zl1_debug_shell=1`（该字段是 NUL 填充的，`ANDROID!` 头也没有校验和）。
-生成脚本：[`scripts/make-zl1-debug-shell-boot.sh`](../../scripts/make-zl1-debug-shell-boot.sh)。
+- **`/sys/kernel/debug/rndis/status`** —— `u_ether.c` 自己的计数器：
+  `tx_pkts_rcvd`（交给 `eth_start_xmit` 的包数）、`tx_qlen`（还堆在 `tx_skb_q` 里的）、
+  `tx_throttle`（`netif_stop_queue` 被调用的次数）、聚合直方图
+- `/proc/net/dev` 的 `rndis0` 收发计数
+- `ip -s -s link show rndis0`（qdisc / 队列 / drop）
+- 地址、路由、ARP 表
+- `lxc-start` 在不在、能不能 ping 通主机
 
-刷进去用 [`scripts/flash-boot-image.sh`](../../scripts/flash-boot-image.sh)，
-它会拒绝任何不在 `/mnt/data/halium-zl1-candidates/SHA256SUMS` 里的镜像。
+`tx_pkts_rcvd` 是关键：如果它一直涨而 `tx_qlen` 也一直涨、主机却收不到任何东西，
+那就是"唤醒丢了"（§5.2c）。这一条能直接判定，不需要再靠猜。
 
-**拿到 shell 之后，后续每次重启都不用再按键了**——shell 里可以直接
-`reboot` / `reboot recovery` / `reboot bootloader`。
+**自愈**：当 `tx_packets` 连续 45 秒不动（且 `uptime > 90` 秒，避免把启动过程误判成卡死），
+就**重绑 RNDIS gadget**——和 v63 keeper 开机时做的是同一套 sysfs 序列
+（`enable=0` → 清 `functions` → 写描述符 → `functions=rndis` → `enable=1`）。
+重新枚举会重置端点，这正是停住的发送队列需要的；发送路径里没有别的东西会唤醒它。
+
+安全性：
+
+- 每次开机最多自愈 8 次，每次自愈后等 25 秒再判断
+- 自愈后**检查 `enable` 是否回到 1**，没回到就强行写回——这是唯一可能让设备失联的
+  环节，所以单独兜底
+- 只写 `/sys/class/android_usb/android0/*` 和它自己的日志，**不碰任何分区**
+- 需要只记录不自愈时：`install-netwatch-service.sh --yes --noheal`
+  （自愈会破坏"复现卡死"的实验，所以这个开关是必要的）
+
+安装方式**不动 rootfs、不动 ramdisk、不写分区**：rootfs 的 `/etc/systemd/system`
+本身是一个 `writable-path`，运行时 bind mount 自 `/userdata/system-data/etc/systemd`，
+在 TWRP 里就是 `/data/system-data/etc/systemd`。把 unit 放进去就是持久的。
+安装脚本顺便备份 `misc`（2026-06-07 那批备份里没有它）。
+
+**一次按键之后就不用再按了**：同一脚本可以在 `uptime` 超过设定值后往 `misc` 写
+`boot-recovery`（就是 Android `reboot recovery` 的做法）并要求 bootloader 进 recovery，
+于是"开机 → 记录 → 自愈 → 自动回 TWRP → 读日志"变成闭环。
+开关是 `/data/zl1-netwatch-reboot-recovery` 文件，不存在就完全不做这件事。
+
+一键设置：`scripts/twrp-one-shot-setup.sh`（后台等待 TWRP，然后自动装服务、写 marker、重启）。

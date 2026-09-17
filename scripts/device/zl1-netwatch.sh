@@ -57,13 +57,23 @@ ifname_stats() {
 }
 
 gadget_stats() {
-    for d in /sys/kernel/debug/rndis /sys/kernel/debug/usb0; do
+    # The gadget's own counters live in debugfs (u_ether.c uether_stat_show). The
+    # directory is named after the netdev the function registered, which is "rndis"
+    # for f_rndis — but do not rely on that, search for the file.
+    for d in /sys/kernel/debug/rndis /sys/kernel/debug/usb0 /sys/kernel/debug/eth; do
         [ -r "$d/status" ] || continue
         echo "[$d]"; cat "$d/status" 2>/dev/null
         echo "tx_bytes_rcvd=$(cat "$d/tx_bytes_rcvd" 2>/dev/null)"
         return 0
     done
-    echo "(no uether debugfs status file; debugfs mounted=$([ -d /sys/kernel/debug/rndis ] && echo yes || echo no))"
+    for s in /sys/kernel/debug/*/status; do
+        [ -r "$s" ] || continue
+        grep -q 'tx_qlen' "$s" 2>/dev/null || continue
+        echo "[$s]"; cat "$s" 2>/dev/null
+        echo "tx_bytes_rcvd=$(cat "${s%status}tx_bytes_rcvd" 2>/dev/null)"
+        return 0
+    done
+    echo "(no uether debugfs status file; /sys/kernel/debug mounted=$([ -d /sys/kernel/debug ] && echo yes || echo no), entries: $(ls /sys/kernel/debug 2>/dev/null | tr '\n' ' '))"
 }
 
 sample() {
