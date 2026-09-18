@@ -99,7 +99,18 @@ sample() {
             printf '%s=%s ' "$f" "$(cat /sys/class/net/$IFACE/statistics/$f 2>/dev/null)"
         done
         echo
-        if pgrep -f lxc-start >/dev/null 2>&1; then echo "lxc-start: RUNNING"; else echo "lxc-start: absent"; fi
+        # Record how far the Android container has got, alongside the link state. Added
+        # 2026-09-18 after comparing status pages showed the discriminator is not "the
+        # container is running" but "the container reached netd": every boot whose link
+        # stayed healthy had the container stuck before zygote, and every boot whose link
+        # died had zygote, netd and fwmarkd present.
+        #   docs/ubuntu-touch/32-counterexample-38-minute-boot.md
+        echo "--- container progress ---"
+        for p in lxc-start ueventd hwservicemanager servicemanager vndservicemanager zygote netd; do
+            if pgrep -f "$p" >/dev/null 2>&1; then printf '%s=RUNNING ' "$p"; else printf '%s=absent ' "$p"; fi
+        done
+        echo
+        if [ -e /dev/socket/fwmarkd ]; then echo "fwmarkd socket: present"; else echo "fwmarkd socket: absent"; fi
         if [ "$host_ping_ok" = "1" ]; then echo "host-ping: OK"; else echo "host-ping: FAIL"; fi
     } >> "$LOG" 2>&1
 }
