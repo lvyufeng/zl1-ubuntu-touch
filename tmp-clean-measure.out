@@ -1,0 +1,13 @@
+sampling for 45 minutes -> /mnt/data/zl1-bb10/tmp-clean-20260918T143021Z.csv
+
+================ summary ================
+window                 : 45 min requested; 2696s covered in 668 samples
+gadget re-enumerations : 0
+reachable              : 0.1% of the time (4s of 2696s)
+longest reachable run  : 4s
+ssh port 22 open       : 0.0% of samples (0)
+status page 8080       : 0.0% of samples (0)
+
+baseline to beat (v63, 36 min — docs/ubuntu-touch/26-gadget-reassert-every-2-minutes.md):
+  16 gadget re-enumerations at a ~118 s cadence; 2 pings reached the device
+csv                    : /mnt/data/zl1-bb10/tmp-clean-20260918T143021Z.csv
