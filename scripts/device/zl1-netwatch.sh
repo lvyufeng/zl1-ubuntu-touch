@@ -111,6 +111,16 @@ sample() {
         done
         echo
         if [ -e /dev/socket/fwmarkd ]; then echo "fwmarkd socket: present"; else echo "fwmarkd socket: absent"; fi
+        # Where the container gets to, exactly. lxc-android-ready blocks on this file with
+        # no timeout, so while it is missing systemd keeps restarting the container — 143
+        # times in one 2.6-hour boot, about every 65 s. See
+        # docs/ubuntu-touch/33-the-container-restart-loop.md
+        cpid="$(pgrep -f 'lxc-start -n android' | head -1)"
+        if [ -n "$cpid" ] && [ -e "/proc/$cpid/root/dev/.coldboot_done" ]; then
+            echo "coldboot_done: present (container reached Android boot completion)"
+        else
+            echo "coldboot_done: absent (container is stuck before it)"
+        fi
         if [ "$host_ping_ok" = "1" ]; then echo "host-ping: OK"; else echo "host-ping: FAIL"; fi
     } >> "$LOG" 2>&1
 }
