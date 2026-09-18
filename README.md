@@ -21,7 +21,8 @@ Start here:
 
 - [`docs/ubuntu-touch/25-status-2026-09-17.md`](docs/ubuntu-touch/25-status-2026-09-17.md)
 - [`docs/ubuntu-touch/30-outbound-drops-before-the-queue.md`](docs/ubuntu-touch/30-outbound-drops-before-the-queue.md)
-- [`docs/ubuntu-touch/31-ruled-out-and-what-to-read-next.md`](docs/ubuntu-touch/31-ruled-out-and-what-to-read-next.md) — what has been eliminated and the four commands that will settle it — the stall mechanism: outbound packets are dropped before the device queue, and the evidence points at Android's netd in the shared network namespace — **current status: what is done, what is blocked, and the one key press that unblocks it**
+- [`docs/ubuntu-touch/31-ruled-out-and-what-to-read-next.md`](docs/ubuntu-touch/31-ruled-out-and-what-to-read-next.md)
+- [`docs/ubuntu-touch/32-counterexample-38-minute-boot.md`](docs/ubuntu-touch/32-counterexample-38-minute-boot.md) — a boot that ran 38 minutes without stalling, which contradicts the "always dies at 50 s" reading — what has been eliminated and the four commands that will settle it — the stall mechanism: outbound packets are dropped before the device queue, and the evidence points at Android's netd in the shared network namespace — **current status: what is done, what is blocked, and the one key press that unblocks it**
 - [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) — the adaptation plan
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — Stage 0: what is now backed up and how it was verified
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — Phase 1: the build is now byte-for-byte reproducible, and why the old target SHA was wrong

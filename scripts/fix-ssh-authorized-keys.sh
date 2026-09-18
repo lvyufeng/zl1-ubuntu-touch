@@ -34,9 +34,15 @@ set -euo pipefail
 
 SER="33e80afe"
 KEYFILE="${HOME}/.ssh/id_ed25519.pub"
+SYSTEM_DATA="/data/system-data"
 SSH_DIR="/data/system-data/etc/ssh"
 CONF="$SSH_DIR/sshd_config"
 AKD="$SSH_DIR/authorized_keys.d"
+# The persistent systemd tree. It must be the one under /data/system-data — from TWRP a
+# bare /etc/systemd/system is *recovery's own*, and writing there would be wrong and
+# potentially harmful. The rootfs's writable-paths entry for /etc/systemd/system is
+# "auto persistent", which resolves to this path.
+SYSD="$SYSTEM_DATA/etc/systemd/system"
 ROOT_SSH="/data/system-data/root/.ssh"
 
 [[ "${1:-}" == "--yes" ]] || { echo "refusing without --yes" >&2; exit 2; }
@@ -76,6 +82,25 @@ echo "== 4/4 note the stale copy left by the June script =="
 sh_ "ls -la /data/root/.ssh/ 2>&1" | tr -d '\r'
 echo "   (left in place on purpose — it is harmless, and removing it would lose the"
 echo "    record of what the June attempt did.)"
+
+echo
+echo "== 5/5 neutralise the service that turns sshd off =="
+# Ubuntu Touch ships lxc-android-config-disable-ssh-socket.service, wanted by
+# multi-user.target. Its whole job is to stop sshd listening — which is why the
+# 2026-09-18 boot had nothing on port 22 while an earlier boot did, even though
+# AuthorizedKeysFile and the key were already right.
+#
+# Refuse to touch anything if the tree does not look like the UT one: getting this path
+# wrong would edit recovery's own systemd configuration.
+if ! sh_ "[ -d '$SYSD' ] && echo present" | tr -d '\r' | grep -q present; then
+  echo "  SKIPPED: $SYSD does not exist — refusing to guess at the path" >&2
+else
+  sh_ "ls -l '$SYSD/multi-user.target.wants/lxc-android-config-disable-ssh-socket.service' 2>&1" | tr -d '\r'
+  sh_ "ln -sfn /dev/null '$SYSD/lxc-android-config-disable-ssh-socket.service'
+       rm -f '$SYSD/multi-user.target.wants/lxc-android-config-disable-ssh-socket.service'
+       ls -l '$SYSD/lxc-android-config-disable-ssh-socket.service'" | tr -d '\r'
+  echo "   (masked: the unit points at /dev/null and is no longer wanted)"
+fi
 
 echo
 echo "syncing (the caller reboots straight after this)..."
