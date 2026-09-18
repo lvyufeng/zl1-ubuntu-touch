@@ -41,8 +41,17 @@ wait_for "$WAIT_TWRP" in_recovery || { log "timed out waiting for TWRP"; exit 1;
 log "TWRP up"
 
 log "=== 1. deploy the recorder (record-only: no heals, so nothing disturbs the sample) ==="
-NETWATCH_NOHEAL=1 "$ROOT/scripts/install-netwatch-service.sh" --yes >>"$LOG" 2>&1 \
+# --noheal has to be passed as an argument: the installer reads the mode from "$2", not
+# from the environment. The first version of this set NETWATCH_NOHEAL=1 and relied on the
+# installer picking it up, which it does not — so the watchdog ran with heals on and
+# re-enumerated the gadget every ~82 s, corrupting the very measurement the run existed to
+# take. Found by noticing the host's usb0 MAC changing every 82 s in dmesg.
+NETWATCH_NOHEAL=1 "$ROOT/scripts/install-netwatch-service.sh" --yes --noheal >>"$LOG" 2>&1 \
   || { log "install failed"; exit 1; }
+# Confirm it took, rather than trusting the installer's own message.
+NOHEAL="$(adb -s "$SER" shell 'ls /data/zl1-netwatch-noheal 2>/dev/null' | tr -d '\r')"
+log "record-only marker on device: ${NOHEAL:-<missing>}"
+[[ -n "$NOHEAL" ]] || { log "FATAL: record-only mode did not take; refusing to run a test whose instrument heals"; exit 1; }
 log "installed"
 
 log "=== 2. clear any recovery marker ==="

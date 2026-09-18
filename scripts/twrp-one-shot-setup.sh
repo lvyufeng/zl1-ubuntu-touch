@@ -55,6 +55,10 @@ NETWATCH_MODE=""
 [[ "${NETWATCH_NOHEAL:-0}" == "1" ]] && NETWATCH_MODE="--noheal"
 echo "== install netwatch (misc backup happens inside) mode=${NETWATCH_MODE:-heal} =="
 "$ROOT/scripts/install-netwatch-service.sh" --yes $NETWATCH_MODE || { echo "install failed" >&2; exit 1; }
+if [[ -n "$NETWATCH_MODE" ]]; then
+  marker="$(adb -s "$SER" shell 'ls /data/zl1-netwatch-noheal 2>/dev/null' | tr -d '\r')"
+  [[ -n "$marker" ]] || { echo "FATAL: asked for record-only mode but the marker is missing" >&2; exit 1; }
+fi
 
 echo "== fix SSH public-key login =="
 "$ROOT/scripts/fix-ssh-authorized-keys.sh" --yes || echo "warning: SSH fix failed (continuing)" >&2
