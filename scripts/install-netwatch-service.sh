@@ -40,6 +40,12 @@ fi
 
 [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
 
+# Refuse to install a build that lost functions. `sh -n` cannot catch that, and on
+# 2026-09-19 a build missing five of them was installed and used for a cold boot.
+if [[ -x "$(dirname "$SRC")/../check-netwatch-integrity.sh" ]]; then
+  "$(dirname "$SRC")/../check-netwatch-integrity.sh" "$SRC" || { echo "refusing to install: integrity check failed" >&2; exit 1; }
+fi
+
 # The watchdog can ask the bootloader for recovery by writing "boot-recovery" into the
 # misc partition, and the healer can toggle the USB gadget. The 2026-06-07 backup set
 # has no misc image, so take one before anything could write to that partition.
