@@ -164,45 +164,48 @@ write_file() { echo "$2" > "$1" 2>/dev/null || return 1; }
 #
 # It has to run after netd installs its rules, which is partway into the boot, so it is
 # applied on every sample where it is missing rather than once at startup.
-# Two routes in the table netd already consults.
+# Two routes in the tables netd already consults.
 #
 # The first attempt (2026-09-19) added two ip rules ahead of netd's:
 #
 #     ip rule add pref 1000 from all to 192.168.2.0/24 lookup main
 #     ip rule add pref 1001 from all to 10.15.19.0/24  lookup main
 #
-# That worked — reachability went from 0.3% to ~80% — but netd rewrites the whole rule
-# set every 4-8 s, so the rules were being deleted and re-added continuously. The 80%
-# was simply the fraction of time they happened to be present. Measured over two
-# minutes the count went 2 -> 0 -> 2 -> 0, roughly every 5 s.
+# That worked — reachability went from 0.3% to ~80% with the watchdog never having to
+# heal — but netd rewrites the whole rule set every 4-8 s, so those rules were deleted
+# and re-added continuously and the 80% was the fraction of time they happened to exist:
 #
-# The rules are not where the fix belongs. netd owns them and will keep rewriting them.
-# What it does not touch is the CONTENTS of the tables its rules point at. Its own rule
+#     15:28:51 pref100x=2   15:28:51 pref100x=0   15:28:54 pref100x=2
+#     15:28:58 pref100x=0   15:29:13 pref100x=0   15:29:13 pref100x=2
+#
+# Racing it is the wrong shape. netd owns the rules; what it does not touch is the
+# CONTENTS of the tables they point at. Its own rule
 #
 #     15000: from all fwmark 0/0x10000 lookup 99
 #
-# sends every unmarked packet to table 99; that table was empty, which is why the lookup
-# found nothing and fell through to `32000: from all unreachable`. Put the routes in
-# table 99 and netd's own rule resolves them.
+# sends every unmarked packet to table 99, and that table was empty — which is why the
+# lookup found nothing and fell through to `32000: from all unreachable`. Put the routes
+# in table 99 and netd's own rule resolves them.
 #
-# Measured: deleting the pref-1000/1001 rules, leaving only the two routes in table 99,
-# the link went to 40/40 and stayed there; table 99's contents did not change once over
-# two minutes.
-POLICY_TABLES="99"
+# Measured: with the pref-1000/1001 rules deleted and only the two routes in table 99,
+# the link went to 40/40 and stayed there, and table 99 did not change once over two
+# minutes. Tables 98 and 97 get the same routes because netd's 16000/17000 rules point
+# at them for the same packets, so whichever one wins the lookup finds a route.
+POLICY_TABLES="99 98 97"
 POLICY_ROUTES="192.168.2.0/24 10.15.19.0/24"
 
 apply_policy_routing_fix() {
     added=0
     for tbl in $POLICY_TABLES; do
-        for net in $POLICY_ROUTES; do
-            ip route show table "$tbl" 2>/dev/null | grep -q "^$net " && continue
-            if ip route add "$net" dev "$IFACE" table "$tbl" 2>/dev/null; then
+        for pnet in $POLICY_ROUTES; do
+            ip route show table "$tbl" 2>/dev/null | grep -q "^$pnet " && continue
+            if ip route add "$pnet" dev "$IFACE" table "$tbl" 2>/dev/null; then
                 added=$((added + 1))
             fi
         done
     done
     if [ "$added" -gt 0 ]; then
-        log "policy routing fix: added $added route(s) to table $POLICY_TABLES"
+        log "policy routing fix: added $added route(s) across tables [$POLICY_TABLES]"
     fi
     # Report against the test that was failing, not against the routes simply existing.
     if ip route get 192.168.2.100 2>&1 | grep -q "dev $IFACE"; then
@@ -213,6 +216,114 @@ apply_policy_routing_fix() {
         policy_failed=1
     fi
     return 0
+}
+
+# Put the device-side addresses back. The v63 keeper configures these at boot; if a heal
+# destroys and recreates the netdev (stage B below), it comes back with no addresses, and
+# the host would still not be able to reach the device even though the link was fixed.
+restore_addrs() {
+    for ifn in rndis0 usb0; do
+        [ -e "/sys/class/net/$ifn" ] || continue
+        ip link set "$ifn" up 2>/dev/null
+        ip addr show dev "$ifn" 2>/dev/null | grep -q '192.168.2.15/' || ip addr add 192.168.2.15/24 dev "$ifn" 2>/dev/null
+        ip addr show dev "$ifn" 2>/dev/null | grep -q '10.15.19.82/'  || ip addr add 10.15.19.82/24 dev "$ifn" 2>/dev/null
+    done
+}
+
+# Stage A: a full USB re-enumeration. enable=0 disconnects the gadget from the bus and
+# enable=1 brings it back, so the host sees a fresh USB session and the endpoints are
+# reset. The netdev survives, so the static addresses stay.
+heal_reenumerate() {
+    log "HEAL A: enable=0/1 on the gadget"
+    write_file "$ANDROID_USB/enable" 0
+    sleep 2
+    write_file "$ANDROID_USB/enable" 1
+    sleep 3
+    restore_addrs
+}
+
+# Stage B: unbind and rebind the function. This frees and recreates the netdev, which is
+# the only thing that clears state living on the net_device itself — a transmit queue
+# stopped by netif_stop_queue survives a mere USB reset, and the host confirmed that on
+# 2026-09-17: a USBDEVFS_RESET re-enumerated the device (its random host MAC changed) and
+# the link was still dead. Stage B is strictly stronger than anything reachable from the
+# host.
+heal_rebind_function() {
+    log "HEAL B: unbind/rebind the rndis function"
+    write_file "$ANDROID_USB/enable" 0
+    sleep 1
+    write_file "$ANDROID_USB/functions" ""
+    write_file "$ANDROID_USB/idVendor" 18D1
+    write_file "$ANDROID_USB/idProduct" D001
+    write_file "$ANDROID_USB/iManufacturer" "Halium"
+    write_file "$ANDROID_USB/iProduct" "zl1 V63 usbd-disabled RNDIS"
+    write_file "$ANDROID_USB/iSerial" "33e80afe-v63-usbd-disabled-rndis"
+    write_file "$ANDROID_USB/f_rndis/ethaddr" "02:15:19:82:00:01"
+    write_file "$ANDROID_USB/f_rndis/vendorID" 18D1
+    write_file "$ANDROID_USB/f_rndis/manufacturer" "Halium"
+    write_file "$ANDROID_USB/f_rndis/wceis" 1
+    write_file "$ANDROID_USB/functions" rndis
+    sleep 1
+    write_file "$ANDROID_USB/enable" 1
+    sleep 3
+    restore_addrs
+}
+
+heal() {
+    stage="$1"; reason="$2"
+    [ -d "$ANDROID_USB" ] || { log "HEAL: $ANDROID_USB missing, cannot heal"; return 1; }
+    log "HEAL $stage: reason=$reason state=$(cat $ANDROID_USB/state 2>/dev/null)"
+    { echo "--- gadget status before heal $stage ---"; gadget_stats; } >> "$LOG" 2>&1
+
+    if [ "$stage" = "A" ]; then heal_reenumerate; else heal_rebind_function; fi
+
+    # Never leave the gadget disabled: if the sequence above failed part-way the device
+    # would be unreachable, and only a physical power-cycle could bring it back.
+    if [ "$(cat $ANDROID_USB/enable 2>/dev/null)" != "1" ]; then
+        log "HEAL $stage: enable is not 1 — forcing it back on"
+        write_file "$ANDROID_USB/enable" 1
+    fi
+    log "HEAL $stage: done; state=$(cat $ANDROID_USB/state 2>/dev/null) functions=$(cat $ANDROID_USB/functions 2>/dev/null) enable=$(cat $ANDROID_USB/enable 2>/dev/null) iface=$(ifname_stats)"
+    return 0
+}
+
+# One-shot hardware snapshot, taken once the boot has settled. This is the evidence base
+# for the Phase 5 usability items (display, touch, audio, sensors), collected on the same
+# trip as the network samples so they do not each need their own boot.
+HWCHECK_AFTER=120
+hwcheck_done=0
+
+# Snapshot of what sits between the socket and the device queue.
+#
+# Added after the 2026-09-17 measurements: the device's outbound packets stop
+# reaching the driver while every other counter stays healthy. Between uptime 42.5 s
+# (host-ping OK) and 61.2 s (host-ping FAIL) the interface transmitted 3 packets for
+# ~7 ping attempts, with tx_dropped=0, tx_errors=0, tx_qlen=0 and tx_throttle=0.
+# Packets that vanish without moving any netdev counter are dropped before the device
+# queue — netfilter or a routing-policy rule, neither of which the other captures see.
+#
+# This matters because Android's netd runs in the same network namespace (the LXC
+# config shares `net`), and the kernel log shows it starting up (/dev/socket/fwmarkd,
+# x_tables owner-match messages) at about the time the device stops transmitting.
+netsnap() {
+    {
+        echo "===== netsnap uptime $(cat /proc/uptime) ====="
+        echo "--- ip rule ---";         ip rule show 2>&1
+        echo "--- route tables ---";    ip route show table all 2>&1 | head -40
+        echo "--- route get host ---";  ip route get 192.168.2.100 2>&1
+        echo "--- route get host2 ---"; ip route get 10.15.19.100 2>&1
+        echo "--- table names ---";     cat /proc/net/ip_tables_names 2>&1
+        echo "--- iptables filter ---"
+        (iptables -t filter -L -n -v 2>&1 || echo "(iptables unavailable)") | head -60
+        echo "--- iptables nat ---"
+        (iptables -t nat -L -n -v 2>&1 || echo "(iptables unavailable)") | head -30
+        echo "--- iptables mangle ---"
+        (iptables -t mangle -L -n -v 2>&1 || echo "(iptables unavailable)") | head -30
+        echo "--- nf conntrack count ---"
+        (wc -l < /proc/net/nf_conntrack 2>/dev/null || echo "(no conntrack)")
+        echo "--- socket marks ---"
+        (ss -tanp 2>/dev/null || netstat -tanp 2>/dev/null) | head -12
+    } >> "$LOG" 2>&1
 }
 
 hwcheck() {
@@ -272,8 +383,8 @@ while :; do
     [ -e "/sys/class/net/$IFACE" ] && probe_host && host_ping_ok=1
     sample
 
-    # Re-assert the policy routing fix whenever it is missing. It has to run continuously
-    # because netd rewrites its rule set and the container restarts every ~65 s.
+    # Re-assert the policy routing fix whenever it is missing. netd wipes and reinstalls
+    # its rules as the container starts and restarts, so this cannot be a one-shot.
     [ -e "/sys/class/net/$IFACE" ] && apply_policy_routing_fix
 
     set -- $(ifname_stats)

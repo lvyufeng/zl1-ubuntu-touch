@@ -10,3 +10,4 @@ Stage 2.4 asks for three consecutive boots with the same result.
 | 3 | 20260919T172723Z | ssh | ? | ? | ? | none | 0 | ? | cold boot #1 after reboot |
 | 4 | 20260919T173421Z | ssh | ? | ? | ? | none | 0 | ? | cold boot #1 (SSH waited) |
 | 5 | 20260919T173530Z | ssh | systemd | ok | 0 | 34961 | 24 | no | cold boot #1 (old netwatch, rules-based fix) |
+| 6 | 20260919T175032Z | ssh | ? | ? | ? | none | 0 | ? | cold boot #2 (table-99 netwatch) |
