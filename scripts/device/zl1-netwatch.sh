@@ -145,6 +145,52 @@ probe_host() {
 
 write_file() { echo "$2" > "$1" 2>/dev/null || return 1; }
 
+# zl1: policy routing fix.
+#
+# Android's netd installs, in the network namespace it shares with Ubuntu Touch:
+#
+#     15000: from all fwmark 0/0x10000 lookup 99
+#     16000: from all fwmark 0/0x10000 lookup 98
+#     17000: from all fwmark 0/0x10000 lookup 97
+#     32000: from all unreachable
+#
+# UT's packets carry no fwmark, so they hit 15000-17000, which select tables 99/98/97 —
+# and those tables are empty. The lookup finds nothing and rule 32000 declares the packet
+# unreachable, so it is never constructed and never reaches eth_start_xmit. That is the
+# whole stall. See docs/ubuntu-touch/35-the-policy-routing-rule-that-kills-the-link.md
+#
+# One rule ahead of netd's, selecting the main table (which does hold
+# "192.168.2.0/24 dev rndis0"), puts the routes back in front of the dead end.
+#
+# It has to run after netd installs its rules, which is partway into the boot, so it is
+# applied on every sample where it is missing rather than once at startup.
+# Scoped to the two networks the debug link uses, not "from all". A bare
+# "from all lookup main" would sit ahead of netd's fwmark rules and intercept Android's
+# traffic too; main has no default route so those packets would fall through and still
+# reach netd's rules, but that is a subtle thing to rely on when a one-word change makes
+# it unnecessary. With "to <net>" only packets addressed to the link are redirected.
+POLICY_PREF=1000
+POLICY_TARGETS="192.168.2.0/24 10.15.19.0/24"
+
+apply_policy_routing_fix() {
+    pref=$POLICY_PREF
+    for net in $POLICY_TARGETS; do
+        if ! ip rule show 2>/dev/null | grep -q "^$pref:.*$net"; then
+            ip rule add pref "$pref" from all to "$net" lookup main 2>/dev/null || true
+        fi
+        pref=$((pref + 1))
+    done
+    # Report against the test that was failing, not against the rule simply existing.
+    if ip route get 192.168.2.100 2>&1 | grep -q "dev $IFACE"; then
+        [ "$policy_ok" = "1" ] || log "policy routing fix in place: route get 192.168.2.100 resolves via $IFACE"
+        policy_ok=1
+    else
+        [ "$policy_failed" = "1" ] || log "policy routing fix NOT working: $(ip route get 192.168.2.100 2>&1 | head -1)"
+        policy_failed=1
+    fi
+    return 0
+}
+
 # Put the device-side addresses back. The v63 keeper configures these at boot; if a heal
 # destroys and recreates the netdev (stage B below), it comes back with no addresses, and
 # the host would still not be able to reach the device even though the link was fixed.
@@ -299,6 +345,8 @@ heals=0
 last_tx=""
 frozen=0
 host_ping_ok=0
+policy_ok=0
+policy_failed=0
 # Uptimes at which to snapshot the netfilter/routing state, picked to bracket the break.
 NETSNAP_AT="20 30 40 50 60 75 90 110 140 180"
 
@@ -307,6 +355,10 @@ while :; do
     host_ping_ok=0
     [ -e "/sys/class/net/$IFACE" ] && probe_host && host_ping_ok=1
     sample
+
+    # Re-assert the policy routing fix whenever it is missing. netd wipes and reinstalls
+    # its rules as the container starts and restarts, so this cannot be a one-shot.
+    [ -e "/sys/class/net/$IFACE" ] && apply_policy_routing_fix
 
     set -- $(ifname_stats)
     rx_b="$1"; rx_p="$2"; tx_b="$3"; tx_p="$4"
