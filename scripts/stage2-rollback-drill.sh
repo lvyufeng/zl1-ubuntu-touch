@@ -57,6 +57,28 @@ adb devices 2>/dev/null | awk -v s="$SER" '$1==s{found=1} END{exit found?0:1}' \
 log "target $SER present; starting the drill"
 log "the log for this run: $LOG"
 
+# "Came up" for a Halium boot image means the RNDIS gadget appeared, NOT that adb did.
+# Ubuntu Touch does not run adbd at all — it exposes RNDIS and nothing else — so an
+# adb-based test reports failure for every UT image, including the known-good v63. The
+# first version of this script had exactly that bug.
+wait_for_halium() {
+  local secs="$1" label="$2"
+  local deadline=$(( SECONDS + secs ))
+  while (( SECONDS < deadline )); do
+    if lsusb -d 18d1:d001 >/dev/null 2>&1; then
+      log "$label: RNDIS gadget present — the image booted"
+      return 0
+    fi
+    if lsusb | grep -q '05c6:9008'; then
+      log "$label: device fell to EDL (05c6:9008) rather than booting"
+      return 2
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+# The stock Android image does run adbd, so the rollback side is checked that way.
 wait_for_android() {
   local secs="$1" label="$2"
   local deadline=$(( SECONDS + secs ))
@@ -64,6 +86,10 @@ wait_for_android() {
     if adb devices 2>/dev/null | awk -v s="$SER" '$1==s && $2=="device"{f=1} END{exit f?0:1}'; then
       log "$label: $SER came up as an adb device"
       return 0
+    fi
+    if lsusb -d 18d1:d001 >/dev/null 2>&1; then
+      log "$label: RNDIS gadget present instead — that is a Halium image, not stock Android"
+      return 2
     fi
     sleep 5
   done
@@ -75,12 +101,16 @@ log "=== 1/4 flashing the known-bad image ==="
 "$ROOT/scripts/flash-boot-image.sh" "$BAD_IMG" --yes >>"$LOG" 2>&1 || die "bad-image flash failed"
 
 log "=== 2/4 confirming it does NOT come up (up to ${BAD_CONFIRM_SECONDS}s) ==="
-if wait_for_android "$BAD_CONFIRM_SECONDS" "bad image"; then
-  log "WARNING: the bad image came up as adb. That makes it a poor drill — check whether"
-  log "         the image at $BAD_IMG is still the one documented as failing."
-else
-  log "as expected: no adb within ${BAD_CONFIRM_SECONDS}s"
-fi
+wait_for_halium "$BAD_CONFIRM_SECONDS" "bad image"
+bad_rc=$?
+case "$bad_rc" in
+  0) log "WARNING: the bad image produced an RNDIS gadget. That makes it a poor drill —"
+     log "         check whether $BAD_IMG is still the image documented as failing." ;;
+  2) log "the device fell to EDL instead of booting — that is a failure, but a harsher"
+     log "         one than the documented symptom. Note it and continue to the rollback." ;;
+  *) log "as expected: no RNDIS gadget within ${BAD_CONFIRM_SECONDS}s, so it did not boot"
+     log "         enough to bring up USB at all" ;;
+esac
 log "the device needs a human to reach fastboot or TWRP now:"
 log "  fastboot  = power off, hold Volume Down + Power"
 log "  TWRP      = power off, hold Volume Up + Power"
@@ -111,7 +141,9 @@ log "rollback flashed"
 
 # ------------------------------------------------------- 4. the proof --
 log "=== 4/4 confirming the device is back (up to ${GOOD_CONFIRM_SECONDS}s) ==="
-if wait_for_android "$GOOD_CONFIRM_SECONDS" "rollback"; then
+wait_for_android "$GOOD_CONFIRM_SECONDS" "rollback"
+good_rc=$?
+if [[ "$good_rc" -eq 0 ]]; then
   log "device back on stock Android: $(adb -s "$SER" shell getprop ro.build.fingerprint 2>/dev/null | tr -d '\r')"
   log "=== DRILL PASSED ==="
   log "log: $LOG"
