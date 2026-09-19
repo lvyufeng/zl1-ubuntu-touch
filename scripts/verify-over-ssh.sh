@@ -30,6 +30,9 @@ report="$(timeout 45 "${SSH[@]}" '
   echo "coldboot_done=$([ -n "$p" ] && { [ -e /proc/$p/root/dev/.coldboot_done ] && echo yes || echo no; } || echo n/a)"
   echo "route_get=$(ip route get 192.168.2.100 >/dev/null 2>&1 && echo ok || echo FAIL)"
   echo "t99=$(ip route show table 99 2>/dev/null | wc -l)"
+  # Plain shell arithmetic: bc and paste are not guaranteed to exist on the device.
+  ta=0; for tb in 99 98 97; do n=$(ip route show table $tb 2>/dev/null | wc -l); ta=$((ta + n)); done
+  echo "t_all=$ta"
   echo "sshd=$(ss -ltn 2>/dev/null | grep -c ":22 " || echo 0)"
 ' 2>/dev/null)"
 
@@ -44,10 +47,29 @@ chk() { if [ "$2" = "$3" ]; then pass=$((pass+1)); printf '  OK   %-22s %s\n' "$
         else fail=$((fail+1)); printf '  FAIL %-22s got=%s want=%s\n' "$1" "$2" "$3"; fi; }
 chk systemd_pid1   "$pid1" "systemd"
 chk link_route_get "$rg"   "ok"
-chk table99_routes "$t99"  "2"
 
-printf '  info container=%s hal=%s coldboot_done=%s uptime=%s\n' "${lxc:-none}" "${hal:-0}" "${cold:-?}" "${uptime:-?}"
-[ "${hal:-0}" -ge 5 ] 2>/dev/null && printf '  OK   %-22s %s\n' "hal_processes" "$hal" || printf '  WARN %-22s %s\n' "hal_processes" "${hal:-0}"
+# The fix puts the link's routes into tables 99, 98 and 97 — every table netd's
+# unmarked-packet rules point at — so six routes is the expected steady state, not two.
+# Hard-coding 2 here was wrong the moment the fix was widened.
+if [[ "${t_all:-0}" -ge 2 ]]; then
+  printf '  OK   %-22s %s routes across tables 99/98/97\n' "policy_routes" "$t_all"
+  pass=$((pass+1))
+else
+  printf '  FAIL %-22s got=%s want>=2\n' "policy_routes" "${t_all:-0}"
+  fail=$((fail+1))
+fi
+
+# The container being genuinely up is the point of Stage 2.3, so HAL processes is a
+# criterion rather than a note. A running lxc-start with no HAL processes means the
+# container started and died, which is the failure mode doc 33 describes.
+printf '  info container=%s coldboot_done=%s uptime=%s\n' "${lxc:-none}" "${cold:-?}" "${uptime:-?}"
+if [[ "${hal:-0}" -ge 5 ]]; then
+  printf '  OK   %-22s %s\n' "hal_processes" "$hal"
+  pass=$((pass+1))
+else
+  printf '  FAIL %-22s got=%s want>=5\n' "hal_processes" "${hal:-0}"
+  fail=$((fail+1))
+fi
 
 if [[ ! -f "$LEDGER" ]]; then
   mkdir -p "$(dirname "$LEDGER")"
