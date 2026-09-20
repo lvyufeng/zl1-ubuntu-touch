@@ -38,3 +38,17 @@ the functions the script is supposed to have are still there. That is now what t
 rebuild does, and it is cheaper than the two boots it cost.
 | 11 | 20260920T012033Z | ssh | systemd | ok | 2 | 34312 | 23 | no | cold boot #2 (three-table netwatch, installed and verified in TWRP) |
 | 12 | 20260920T012142Z | ssh | systemd | ok | 2 | 34312 | 24 | no | cold boot #2 (three-table netwatch) |
+
+## cold boot #3 (2026-09-20)
+
+The three-table fix, record-only watchdog, no healing. Result: **failed** — RNDIS
+present, no traffic through, SSH dropped during the key exchange
+(`kex_exchange_identification: Connection closed by remote host`), and it did not
+recover over the next three minutes.
+
+Note the difference from a retryable failure: `Connection refused` means sshd has not
+started yet (cold boot #2 showed this at uptime 52 s and was fine by 92 s), whereas a
+dropped key exchange means packets are being lost on a link that is nominally up.
+
+So the count stays at **2 of 3**, and this row is a real failure, not a measurement
+artefact.
