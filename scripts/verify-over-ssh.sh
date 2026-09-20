@@ -40,7 +40,17 @@ printf '%s\n' "$report" > "$OUT/verify.txt"
 get() { printf '%s\n' "$report" | sed -n "s/^$1=//p" | head -1; }
 
 uptime="$(get uptime)"; pid1="$(get pid1)"; lxc="$(get lxc_start)"
-hal="$(get hal_count)"; cold="$(get coldboot_done)"; rg="$(get route_get)"; t99="$(get t99)"
+hal="$(get hal_count)"; cold="$(get coldboot_done)"; rg="$(get route_get)"
+t99="$(get t99)"; t_all="$(get t_all)"
+
+# If the report came back empty the checks below would all read as failures against a
+# device that may be perfectly fine. Say so instead of reporting three FAILs.
+if [[ -z "$pid1$rg$t_all" ]]; then
+  echo "  ERROR: could not parse anything out of the device report — SSH connected but"
+  echo "         the command produced no output. Not a verdict on the system."
+  printf '%s\n' "$report" | head -5
+  exit 2
+fi
 
 pass=0; fail=0
 chk() { if [ "$2" = "$3" ]; then pass=$((pass+1)); printf '  OK   %-22s %s\n' "$1" "$2"

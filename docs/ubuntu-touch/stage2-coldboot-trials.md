@@ -36,3 +36,5 @@ syntax error, so `sh -n` passed and the file went from 23513 to 19043 bytes unno
 The check that would have caught it is not a syntax check but a content check — assert
 the functions the script is supposed to have are still there. That is now what the
 rebuild does, and it is cheaper than the two boots it cost.
+| 11 | 20260920T012033Z | ssh | systemd | ok | 2 | 34312 | 23 | no | cold boot #2 (three-table netwatch, installed and verified in TWRP) |
+| 12 | 20260920T012142Z | ssh | systemd | ok | 2 | 34312 | 24 | no | cold boot #2 (three-table netwatch) |
