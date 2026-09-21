@@ -84,10 +84,26 @@ apply() {
     # patched libc is out of the way.
     nsenter -t "$A" -p -m -- /system/bin/setprop ctl.restart hwservicemanager >/dev/null 2>&1
     nsenter -t "$A" -p -m -- /system/bin/setprop ctl.restart qseecomd        >/dev/null 2>&1
+    # RescueParty is the Android framework's "this device is in a crash loop" escalator, and
+    # it ends in a reboot to recovery. Stopping SurfaceFlinger below puts the framework in
+    # exactly that state on purpose: system_server waits forever for a service that will
+    # never come back, RescueParty counts every wait as an event, and the device reboots into
+    # TWRP — with no help from us and nothing in the host's own logs to explain it.
+    # Verified on 2026-09-21: W/RescueParty: "Noticed 2 events for UID 0 in last 126 sec"
+    # alongside I/ServiceManager: "Waiting for service SurfaceFlinger..." repeating, which
+    # is what pstore's ramoops buffer still held after the device came up in recovery.
+    nsenter -t "$A" -p -m -- /system/bin/setprop persist.sys.disable_rescue true >/dev/null 2>&1
     sf=$(nsenter -t "$A" -p -m -- /system/bin/getprop init.svc.surfaceflinger 2>/dev/null)
     if [ "$sf" = running ]; then
         nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop surfaceflinger >/dev/null 2>&1
         nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop bootanim        >/dev/null 2>&1
+    fi
+    # ...and stop the framework too, rather than leaving it waiting. Nothing the host needs
+    # is a zygote child: every HAL the compositor talks to is an init service, and lshal
+    # still reports 146 of them with zygote stopped. What stopping it buys is the end of the
+    # crash loop itself, and the load average drops from ~14 to ~9 with it.
+    if [ "$(nsenter -t "$A" -p -m -- /system/bin/getprop init.svc.zygote 2>/dev/null)" = running ]; then
+        nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop zygote >/dev/null 2>&1
     fi
 }
 
@@ -112,12 +128,18 @@ while :; do
             log "after apply: st_dev=$dev hwready=$(nsenter -t "$A" -p -m -- /system/bin/getprop hwservicemanager.ready 2>/dev/null)"
         else
             # Clean. Only make sure the container's display stack stays out of the
-            # host compositor's way.
+            # host compositor's way — and that the framework is not left waiting for it,
+            # which is what feeds RescueParty (see apply()).
             sf=$(nsenter -t "$A" -p -m -- /system/bin/getprop init.svc.surfaceflinger 2>/dev/null)
             if [ "$sf" = running ]; then
                 log "surfaceflinger came back — stopping it again"
                 nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop surfaceflinger >/dev/null 2>&1
                 nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop bootanim        >/dev/null 2>&1
+            fi
+            z=$(nsenter -t "$A" -p -m -- /system/bin/getprop init.svc.zygote 2>/dev/null)
+            if [ "$z" = running ]; then
+                log "container zygote is running — stopping it (nothing the host needs is a zygote child)"
+                nsenter -t "$A" -p -m -- /system/bin/setprop ctl.stop zygote >/dev/null 2>&1
             fi
         fi
     fi
