@@ -26,6 +26,7 @@ Start here:
 - [`docs/ubuntu-touch/33-the-container-restart-loop.md`](docs/ubuntu-touch/33-the-container-restart-loop.md)
 - [`docs/ubuntu-touch/34-correction-the-100-percent-was-the-watchdog.md`](docs/ubuntu-touch/34-correction-the-100-percent-was-the-watchdog.md)
 - [`docs/ubuntu-touch/35-the-policy-routing-rule-that-kills-the-link.md`](docs/ubuntu-touch/35-the-policy-routing-rule-that-kills-the-link.md) — **root cause found**: Android's netd installs `from all unreachable` at pref 32000, and Ubuntu Touch's unmarked packets fall into it — **the 100% was my own watchdog healing every 84 s**; with it off the same image measures 0.3% — why the container restarts every ~65 s, and why a stable link is currently a side effect of Android failing to start — a boot that ran 38 minutes without stalling, which contradicts the "always dies at 50 s" reading — what has been eliminated and the four commands that will settle it — the stall mechanism: outbound packets are dropped before the device queue, and the evidence points at Android's netd in the shared network namespace — **current status: what is done, what is blocked, and the one key press that unblocks it**
+- [`docs/ubuntu-touch/38-stage25-rollback-drill.md`](docs/ubuntu-touch/38-stage25-rollback-drill.md) — **Stage 2.5 passed**: a documented-bad image was flashed, confirmed not to boot, and the stock `boot.img` restored by hash — the device is not bricked, `/data` is intact, and TWRP is now reachable from Ubuntu Touch in 20 s via the `misc` bootloader command, no key press needed. The caveat: stock Android brings up adbd but never reaches `sys.boot_completed` (zygote never starts), which the drill wrote down as its own finding rather than folding into a pass
 - [`docs/ubuntu-touch/37-the-trial-that-had-no-peer.md`](docs/ubuntu-touch/37-the-trial-that-had-no-peer.md) — **the "failed" cold boot that was counted on 2026-09-20 was measured with nothing at the other end**: `rx_packets` was 0 at all 10205 samples over 14.7 hours because no host-side watcher was running; the three-table fix is stable (netd never cleared it), and the cold-boot driver had itself been unable to reboot past the first trial
 - [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) — the adaptation plan
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — Stage 0: what is now backed up and how it was verified
@@ -84,9 +85,16 @@ Three earlier conclusions have been corrected and are recorded in that document:
   31 images re-verified against `SHA256SUMS` (31/31 OK).
 - `fastboot boot` is not the safe option it looks like; see the safety notes below.
 
-The device (serial `33e80afe`) is now **running Ubuntu Touch from a flashed boot
-partition** — the first time this port has survived a real cold boot. Stage 0 and
-Stage 1 of the plan are done:
+**Stage 2.4 and 2.5 are both done** (2026-09-21): three consecutive cold boots with the
+same result, and a rollback drill that flashed a known-bad image, confirmed it failed, and
+restored the stock `boot.img` by hash. The device is on stock Android at the moment, with
+the Ubuntu Touch staging files intact on `/data`. See
+[`docs/ubuntu-touch/38-stage25-rollback-drill.md`](docs/ubuntu-touch/38-stage25-rollback-drill.md)
+and [`docs/ubuntu-touch/stage2-coldboot-trials.md`](docs/ubuntu-touch/stage2-coldboot-trials.md).
+
+The device (serial `33e80afe`) has **run Ubuntu Touch from a flashed boot partition** —
+the first time this port survived a real cold boot. Stage 0 and Stage 1 of the plan are
+done:
 
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — `userdata` and `cache` are now backed up and byte-verified against the device
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — two clean rebuilds produce an identical `halium-boot.img`

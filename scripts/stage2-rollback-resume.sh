@@ -18,6 +18,10 @@ set -uo pipefail
 SER="33e80afe"
 ROOT=/mnt/data/zl1-bb10
 WAIT="${2:-21600}"
+# Measured 2026-09-21: the stock kernel took ~25 minutes to bring adbd up after the
+# rollback, so 420 s was never going to be enough and reported a false "inconclusive".
+ADBD_SECONDS="${ADBD_SECONDS:-2400}"
+FRAMEWORK_SECONDS="${FRAMEWORK_SECONDS:-600}"
 STOCK="/mnt/data/zl1-backups/2026-06-07-adb-root-staged/boot.img"
 STOCK_SHA="a06d6508499ee37a03effea1e6bec1d04f23843fd44d198a49fb3e07cb5778ef"
 
@@ -67,14 +71,31 @@ fi
 
 log "=== flashing the stock boot.img back ==="
 "$ROOT/scripts/stage2-rollback-boot.sh" --yes >>"$LOG" 2>&1 || die "rollback flash failed"
-log "rollback flashed; waiting for Android"
+log "rollback flashed; waiting for adbd (up to ${ADBD_SECONDS}s), then the framework"
 
-deadline=$(( SECONDS + 420 ))
+deadline=$(( SECONDS + ADBD_SECONDS ))
 while (( SECONDS < deadline )); do
   if adb devices 2>/dev/null | awk -v s="$SER" '$1==s && $2=="device"{f=1} END{exit f?0:1}'; then
     fp="$(adb -s "$SER" shell getprop ro.build.fingerprint 2>/dev/null | tr -d '\r')"
-    log "device is back on stock Android: $fp"
-    log "=== STAGE 2.5 PASSED ==="
+    log "adbd is up: $fp"
+    # adbd is not Android. Measured 2026-09-21: adbd came up ~25 min after the reboot and
+    # sys.boot_completed never did, with zygote never started. Both are reported.
+    log "waiting up to ${FRAMEWORK_SECONDS}s for sys.boot_completed"
+    fw_deadline=$(( SECONDS + FRAMEWORK_SECONDS ))
+    while (( SECONDS < fw_deadline )); do
+      if [[ "$(adb -s "$SER" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+        log "sys.boot_completed=1 — Android is up, not just adbd"
+        log "=== STAGE 2.5 PASSED ==="
+        log "log: $LOG"
+        exit 0
+      fi
+      sleep 5
+    done
+    log "=== STAGE 2.5: ROLLBACK OK, ANDROID DID NOT COME UP ==="
+    log "boot partition : the stock image (hash-verified before flashing, fastboot OKAY)"
+    log "device state   : reachable over adb, not bricked, booting the stock kernel"
+    log "framework      : sys.boot_completed never became 1; zygote never started"
+    log "This is a fact about Android on this device, not about the drill. Record it."
     log "log: $LOG"
     exit 0
   fi
@@ -84,7 +105,7 @@ done
 
 log "=== INCONCLUSIVE ==="
 log "the boot partition holds the stock image again (verified), so this is not a stuck"
-log "bootloader, but adb did not appear within 420 s. Look at the screen and try a fresh"
-log "power-on before concluding anything."
+log "bootloader, but adb did not appear within ${ADBD_SECONDS}s. Look at the screen and try"
+log "a fresh power-on before concluding anything."
 log "log: $LOG"
 exit 1

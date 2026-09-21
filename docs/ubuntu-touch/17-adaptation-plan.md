@@ -211,11 +211,21 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 
 这是本计划与旧计划最大的分歧点：**从这里开始用 `fastboot flash boot`，不再用 `fastboot boot`。**
 
-> **状态（2026-09-17）**：2.1–2.3 完成（含 Android 容器）。2.4 每次都起得来、容器每次都在，
-> 但设备发包通路**约 1/4 次开机会偶发卡死**（`22` §5.2：8 次有真实流量开机的历史数据里 6 次正常）。
-> 已装上设备侧看门狗（记录 + 自愈）与自动回 recovery 的闭环，见 `22` §7；
-> 2.4 / 2.5 的取证脚本已就位（`scripts/stage2-coldboot-trial.sh`、`scripts/stage2-rollback-drill.sh`），
-> 等设备回到 TWRP 即可跑。
+> **状态（2026-09-21）**：**Phase 2 全部完成。** 2.1–2.3 见下；2.4 做了连续 3 次冷启动
+> 且 3/3 一致（[`stage2-coldboot-trials.md`](stage2-coldboot-trials.md)）；
+> 2.5 的回滚演练通过（[`38`](38-stage25-rollback-drill.md)）。
+>
+> 两件在这次推进中才暴露出来的事：
+>
+> - **判据要落在被评价的对象上。** 2026-09-20 记成"2.4 第 3 次失败"的那次开机，
+>   其实是**主机侧没有对端**（14.7 小时里 `rx_packets` 全是 0），设备并没有出问题。
+>   见 [`37`](37-the-trial-that-had-no-peer.md)。
+> - **设备发包通路偶发卡死（约 1/4 次开机）这件事，仍然没有被证实或推翻。**
+>   历史那 6/8 次正常的数据是**有主机在场**时测的，所以那个数字还作数；
+>   但那份 14.7 小时的日志不能用来判定它。这一点写在 `37` §7。
+>
+> Phase 3 的 3.1–3.4 大部分在 `run-stage24-and-25.sh` + `host-watch-usb0.sh` 里已经落地，
+> 下一步是 Phase 4（容器运行时）与 Phase 5（显示 / 触摸 / Wi-Fi / 稳定性）。
 > 两次冷启动的记录：[`21-stage2-first-cold-boot.md`](21-stage2-first-cold-boot.md)（第一次，容器未起）、
 > [`22-stage2-coldboot-results.md`](22-stage2-coldboot-results.md)（补上 `/data/system.img` 之后，容器起来）。
 
@@ -224,11 +234,12 @@ v64–v67 的"持久化失败"很可能主要是这个方法论问题的产物�
 | 2.1 | 确认回滚路径可用 | 备份 `boot.img`（2026-06-07）SHA256 校验通过；记录 `fastboot flash boot` 回刷命令；确认进入 fastboot 的方式（电源+音量减） | ✅ |
 | 2.2 | `fastboot flash boot halium-boot-zl1-v63-usbd-disabled.img` | flash 成功，`fastboot reboot` 后**冷启动**直接进入 V63 状态 | ✅ |
 | 2.3 | 冷启动验收：不接主机也能起来 | 冷启动后 5 分钟内 `systemd` PID1 在位；接上 USB 后 `rndis0` up、`carrier=1`；Android 容器进程存在（`lxc-info -n android` 或 `pgrep -f lxc-start`） | ✅ 三项全过：systemd PID1、`rndis0` carrier=1 全程不掉、`lxc-start` + 整套 Android HAL 在跑 |
-| 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） | ⏳ 需要一次人工按键才能重启设备 |
-| 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android | ⏳ |
+| 2.4 | 连续 3 次冷启动复现 | 3/3 次结果一致（这是旧计划从未验证过的指标） | ✅ 2026-09-21：3/3，每项都过（systemd PID1 / route get ok / 6 条表路由 / 23–24 个 HAL 进程）。记录：[`stage2-coldboot-trials.md`](stage2-coldboot-trials.md) |
+| 2.5 | 失败回滚演练 | 人为刷一次坏镜像 → 成功回刷备份 `boot.img` → 设备回到原生 Android | ✅ 2026-09-21：回滚路径成立，设备未变砖，`/data` 现场完好。**但原厂 Android 框架起不来**（zygote 未启动），与演练无关。见 [`38`](38-stage25-rollback-drill.md) |
 
-2.3/2.4 通过，才可以说"zl1 能跑 Ubuntu Touch"。
-2.5 通过，才可以说"这条路线是安全的"。
+2.3/2.4 通过，才可以说"zl1 能跑 Ubuntu Touch"。**2.4 已于 2026-09-21 通过。**
+2.5 通过，才可以说"这条路线是安全的"。**2.5 已于 2026-09-21 通过**，
+保留意见（原厂 Android 自身起不来）见 [`38`](38-stage25-rollback-drill.md) §5。
 
 #### 当前卡点与恢复步骤（2026-09-17）
 

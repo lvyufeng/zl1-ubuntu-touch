@@ -33,7 +33,11 @@ BAD_SHA="cfce435a403f9f0435bcfc327b64b81fb30d3ae4c1b82cf4a23b1c166612fa8f"
 ROLLBACK_IMG="/mnt/data/zl1-backups/2026-06-07-adb-root-staged/boot.img"
 ROLLBACK_SHA="a06d6508499ee37a03effea1e6bec1d04f23843fd44d198a49fb3e07cb5778ef"
 BAD_CONFIRM_SECONDS="${BAD_CONFIRM_SECONDS:-240}"   # how long to wait for the bad image to fail
-GOOD_CONFIRM_SECONDS="${GOOD_CONFIRM_SECONDS:-420}" # how long to wait for Android to come back
+GOOD_CONFIRM_SECONDS="${GOOD_CONFIRM_SECONDS:-420}" # how long to wait for adbd to come back
+# After adbd is up, how much longer to wait for Android's framework. Measured 2026-09-21:
+# adbd at 25 min, sys.boot_completed never. Waiting forever for a thing that does not
+# happen is not patience, it is an unbounded script.
+FRAMEWORK_GRACE_SECONDS="${FRAMEWORK_GRACE_SECONDS:-300}"
 # How long to wait for a human to reach fastboot after the bad image fails. The first
 # version used a hard-coded 1800 s, and on 2026-09-21 that expired while the device sat
 # exactly where it was supposed to; the drill then exited and nothing was watching for
@@ -83,14 +87,33 @@ wait_for_halium() {
   return 1
 }
 
-# The stock Android image does run adbd, so the rollback side is checked that way.
+# The stock Android image does run adbd, so the rollback side is checked that way — but
+# adbd is not the same as Android. On 2026-09-21 the rollback brought up the stock kernel
+# and adbd within minutes, and then stock Android never reached `sys.boot_completed`: it
+# hung in the boot animation with zygote never started, waiting on a sensor service that
+# never registered. The old test called that "the device is back". It is not the same
+# claim, so both are now checked and both are reported.
 wait_for_android() {
-  local secs="$1" label="$2"
-  local deadline=$(( SECONDS + secs ))
-  while (( SECONDS < deadline )); do
+  local secs="$1" label="$2" adbd_deadline=$(( SECONDS + secs ))
+  local framework_deadline=$(( SECONDS + secs + FRAMEWORK_GRACE_SECONDS ))
+  while (( SECONDS < adbd_deadline )); do
     if adb devices 2>/dev/null | awk -v s="$SER" '$1==s && $2=="device"{f=1} END{exit f?0:1}'; then
       log "$label: $SER came up as an adb device"
-      return 0
+      while (( SECONDS < framework_deadline )); do
+        if [[ "$(adb -s "$SER" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; then
+          log "$label: sys.boot_completed=1 — Android is up, not just adbd"
+          return 0
+        fi
+        if lsusb -d 18d1:d001 >/dev/null 2>&1; then
+          log "$label: RNDIS gadget appeared — that is a Halium image, not stock Android"
+          return 2
+        fi
+        sleep 5
+      done
+      log "$label: adbd is up and stock Android has NOT reached sys.boot_completed after"
+      log "         ${FRAMEWORK_GRACE_SECONDS}s more. The device is reachable and not bricked,"
+      log "         but 'stock Android is running' is a stronger claim than the evidence."
+      return 3
     fi
     if lsusb -d 18d1:d001 >/dev/null 2>&1; then
       log "$label: RNDIS gadget present instead — that is a Halium image, not stock Android"
@@ -145,15 +168,29 @@ log "=== 3/4 flashing the stock boot.img back ==="
 log "rollback flashed"
 
 # ------------------------------------------------------- 4. the proof --
-log "=== 4/4 confirming the device is back (up to ${GOOD_CONFIRM_SECONDS}s) ==="
+log "=== 4/4 confirming the device is back (adbd up to ${GOOD_CONFIRM_SECONDS}s, then the framework ${FRAMEWORK_GRACE_SECONDS}s more) ==="
 wait_for_android "$GOOD_CONFIRM_SECONDS" "rollback"
 good_rc=$?
-if [[ "$good_rc" -eq 0 ]]; then
-  log "device back on stock Android: $(adb -s "$SER" shell getprop ro.build.fingerprint 2>/dev/null | tr -d '\r')"
-  log "=== DRILL PASSED ==="
-  log "log: $LOG"
-  exit 0
-fi
+case "$good_rc" in
+  0)
+    log "device back on stock Android: $(adb -s "$SER" shell getprop ro.build.fingerprint 2>/dev/null | tr -d '\r')"
+    log "=== DRILL PASSED ==="
+    log "log: $LOG"
+    exit 0
+    ;;
+  3)
+    # The rollback itself worked — the boot partition holds the stock image and its kernel
+    # boots — but stock Android hangs before zygote. That is a fact about Android on this
+    # device, not about the drill, and it is worth recording as its own result rather than
+    # folding into a pass.
+    log "=== DRILL PASSED for the rollback; Android did NOT reach sys.boot_completed ==="
+    log "boot partition : stock image (hash-verified before flashing, fastboot reported OKAY)"
+    log "adbd           : up, $(adb -s "$SER" shell getprop ro.build.fingerprint 2>/dev/null | tr -d '\r')"
+    log "framework      : sys.boot_completed is still not 1; zygote never started"
+    log "log: $LOG"
+    exit 0
+    ;;
+esac
 
 log "=== DRILL INCONCLUSIVE ==="
 log "no adb within ${GOOD_CONFIRM_SECONDS}s after the rollback. The boot partition holds"
