@@ -219,3 +219,4 @@ init: Command 'restart cameraserver' ... succeeded
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/hybris-shims/free-container-display.sh` | 新增。`--apply` 撤掉三处替换（`umount -l` 四个 tmpfs 文件 + 重启 `hwservicemanager`/`qseecomd`）、停掉容器的 `surfaceflinger`/`bootanim`；`--status` 打印两边的对照（容器里 `property_service` 路径是 `e` 还是 `f`、`hwservicemanager.ready`、`lshal` 计数、`init.svc.surfaceflinger`、compositor 的 PID namespace）；`--explain` 把三处替换和它们的出处列出来。运行时-only，容器一重启就要重跑 |
+| `scripts/hybris-shims/install-container-desabotage.sh` | 新增。把上面那件事**做成持久的**：`--install` 在设备上写 `/userdata/zl1-container-fix/apply.sh`（一个 5 秒一轮的看门狗）和 `/etc/systemd/system/zl1-container-fix.service`。设备端的脚本由这个脚本生成，所以逻辑只有一份、就在仓库里。**没有碰 boot 镜像、没有碰任何分区**：`/etc/systemd/system` 是 rootfs 的可写路径之一，bind 自 `/userdata/system-data/etc/systemd`，放进去的 unit 能活过重启。`--status` 打印容器当前是干净还是被改、`--remove` 拆掉。§6 说的"必须改镜像"因此只是**最终形态**上的必须 —— 持久化可以先做 |

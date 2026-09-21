@@ -127,6 +127,8 @@ and
 | `hybris-shims/lsc-wrapper.orig`, `lsc-wrapper.zl1` | The device's wrapper and the patched copy, both tracked, so the delta is reviewable. `--mount` refuses to run if the device's file is neither of them (rootfs moved on) unless `FORCE=1`. |
 | `hybris-shims/free-container-display.sh` | `--apply` / `--status` / `--explain`. Undoes two things the **v63 boot image does to itself**: the three same-length string substitutions its LXC mount hook bind-mounts over `hwservicemanager`, `qseecomd` and both `libc.so` (which is why no HAL in the container ever registered), and the container's SurfaceFlinger holding the QCOM composer's single client slot (which is why the host compositor could not create a client). Runtime-only, and dies with the container — the hook runs on every `lxc-start`. See [`../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md`](../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md). |
 
+| `hybris-shims/install-container-desabotage.sh` | `--install` / `--remove` / `--status`. Makes `free-container-display.sh` **persistent**: installs a supervisor at `/userdata/zl1-container-fix/apply.sh` plus a `multi-user.target` unit, so the four over-mounts are lifted and the container's SurfaceFlinger stopped again every time the container restarts. Persistent *without touching the boot image* because `/etc/systemd/system` is one of the rootfs's writable-paths, bind-mounted from `/userdata/system-data/etc/systemd`. The device script is written by this one, so there is one copy of the logic and it lives here. |
+
 ### What the container does to itself
 
 `free-container-display.sh --explain` prints this, but it is worth having here too,
