@@ -99,10 +99,11 @@ unit_cmd() {
     lomiri-location-service) printf '%s' '/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper';;
     biometryd)               printf '%s' '/usr/bin/biometryd run';;
     sensorfwd)               printf '%s' '/usr/sbin/sensorfwd --systemd --device-info --log-level=warning';;
+    bluebinder)              printf '%s' '/usr/sbin/bluebinder';;
     *) return 1;;
   esac
 }
-ALL_UNITS="lomiri-location-service biometryd sensorfwd"
+ALL_UNITS="lomiri-location-service biometryd sensorfwd bluebinder"
 
 # Extra unit-file text a unit needs on top of the ExecStart swap. Section headers included;
 # `\n` is expanded on the device with `printf %b`, because the field has to survive a
@@ -157,6 +158,23 @@ unit_extra() {
       printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestartSec=5';;
     sensorfwd)
       printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nNotifyAccess=all\nRestartSec=5\nEnvironment=ZL1_NS_DROP_CAPS=1\nCapabilityBoundingSet=CAP_BLOCK_SUSPEND CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SETPCAP';;
+    # bluebinder needs three things beyond the ExecStart swap, and none of them is a capability
+    # (its own unit file has all its sandboxing lines commented out, so no widening and no
+    # setpriv hand-back is involved):
+    #
+    #   * `ExecStartPre=` reset plus a replacement, because the shipped readiness script reads
+    #     Android properties through a host-side stub and can never succeed. See BTWAIT_SH above.
+    #   * `NotifyAccess=all`, for the reason sensorfwd needs it: `nsenter -p` forks, so READY=1
+    #     does not come from MainPID. This unit is `Type=notify` too.
+    #   * `TimeoutStartSec` raised from the shipped 60 to 240, because the pre-check may legitimately
+    #     wait for a HAL that this port does not bring up until t≈46 s (see BTWAIT_SH).
+    #
+    # The shipped unit also puts `StartLimitBurst` / `StartLimitIntervalSec` in `[Service]`, where
+    # systemd ignores both (`Unknown key name 'StartLimitIntervalSec' in section 'Service'`), so
+    # the default 5-starts-per-10-s applies and the loop it drives dies permanently. Setting the
+    # interval to 0 in the right section is what makes the retry work at all.
+    bluebinder)
+      printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nNotifyAccess=all\nRestartSec=5\nTimeoutStartSec=240\nExecStartPre=\nExecStartPre=/userdata/zl1-hybris/bin/zl1-bt-wait';;
     *) return 1;;
   esac
 }
@@ -223,6 +241,70 @@ echo "zl1-ns-exec: no android container after 60s; refusing to run $1 outside it
 exit 1
 '
 
+# bluebinder's readiness test, and why the shipped one cannot work here.
+#
+# `bluebinder.service` ships `ExecStartPre=/usr/bin/droid/bluebinder_wait.sh`, which loops until
+# `getprop | grep 'init.svc.*bluetooth' | grep -v audio | grep -o '[running]'` matches. On this
+# port that can never match, for one reason wearing two hats: **Android properties are only
+# visible inside the container**, exactly like binder.
+#
+#   * `/usr/bin/getprop` on the host is not the Android binary at all. It is a 1352-byte shell
+#     script (from the v63 debug image — see `zl1-getprop-is-a-stub`) that answers a handful of
+#     `ro.*` properties from a case statement and prints the caller's default for `init.svc.*`.
+#     Its bare-`getprop` case — the one the wait script uses, with no argument — prints **nothing
+#     at all**. So the grep sees an empty string, forever.
+#   * Even the real binary, `/usr/bin/getprop.orig-zl1`, returns **0 lines** when run from the
+#     host. Measured. The property area is the container's.
+#
+# Inside the container the same question has a real answer:
+#     [init.svc.vendor.bluetooth-1-0-qti]: [running]
+#
+# So the fix is not a better host-side getprop; it is to ask inside. The loop below keeps the
+# shipped script's shape (any `init.svc.*bluetooth*` that is not audio, running) and its intent,
+# and only changes where it looks.
+#
+# The 120 s budget is deliberate: the log carries `ro.boottime.vendor.bluetooth-1-0-qti:
+# [45723205437]`, i.e. the Android bluetooth HAL is up at t≈45.7 s, and this unit is only ordered
+# after `lxc-android-config.service`. That is why the drop-in also raises `TimeoutStartSec`.
+BTWAIT_SH='
+#!/bin/sh
+# Wait until the Android bluetooth HAL is running. Written by
+# scripts/hybris-shims/install-container-ns-services.sh — edit it there.
+
+container_init() {
+    A=$(lxc-info -n android -pH 2>/dev/null | head -1)
+    if [ -n "$A" ] && [ -e "/proc/$A/ns/pid" ]; then echo "$A"; fi
+}
+
+A=""
+i=0
+while [ "$i" -lt 60 ]; do
+    A=$(container_init)
+    [ -n "$A" ] && break
+    A=""
+    i=$((i + 1))
+    sleep 2
+done
+if [ -z "$A" ]; then
+    echo "zl1-bt-wait: no android container after 120s" >&2
+    exit 1
+fi
+
+i=0
+while [ "$i" -lt 60 ]; do
+    st=$(nsenter -t "$A" -p -m -- /system/bin/getprop 2>/dev/null |
+         grep "init\.svc.*bluetooth" | grep -v audio | grep -o "\[running\]" | head -1)
+    if [ "$st" = "[running]" ]; then
+        echo "zl1-bt-wait: bluetooth HAL running in the container"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 2
+done
+echo "zl1-bt-wait: bluetooth HAL still not running after 120s" >&2
+exit 1
+'
+
 case "${1:-}" in
 --install)
   guard
@@ -233,19 +315,24 @@ case "${1:-}" in
   done
 
   tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
-  printf '%s\n' "$WRAPPER_SH" > "$tmp"
-  # Same trap as the other installers here: the assignment starts with a newline, so without
-  # this the file's first line is not the shebang and systemd reports `Exec format error` /
-  # status=203/EXEC without saying why.
-  sed -i '/./,$!d' "$tmp"
-  case "$(head -1 "$tmp")" in
-    '#!'*) ;;
-    *) echo "refusing to push: first line is not a shebang ($(head -1 "$tmp"))" >&2; exit 1;;
-  esac
-
-  "${SSH[@]}" "mkdir -p $BINDIR"
-  "${SCP[@]}" "$tmp" "$DEV:$BINDIR/zl1-ns-exec" || exit 1
-  "${SSH[@]}" "chmod 755 $BINDIR/zl1-ns-exec"
+  # Both device-side scripts are pushed on every install, whichever units were named: they are
+  # tiny, and a unit's drop-in can then reference either without the installer needing to know
+  # which. `zl1-bt-wait` is only referenced by bluebinder's drop-in.
+  for pair in "ns-exec:$WRAPPER_SH" "bt-wait:$BTWAIT_SH"; do
+    name="${pair%%:*}"; body="${pair#*:}"
+    printf '%s\n' "$body" > "$tmp"
+    # Same trap as the other installers here: the assignment starts with a newline, so without
+    # this the file's first line is not the shebang and systemd reports `Exec format error` /
+    # status=203/EXEC without saying why.
+    sed -i '/./,$!d' "$tmp"
+    case "$(head -1 "$tmp")" in
+      '#!'*) ;;
+      *) echo "refusing to push $name: first line is not a shebang ($(head -1 "$tmp"))" >&2; exit 1;;
+    esac
+    "${SSH[@]}" "mkdir -p $BINDIR"
+    "${SCP[@]}" "$tmp" "$DEV:$BINDIR/zl1-$name" || exit 1
+    "${SSH[@]}" "chmod 755 $BINDIR/zl1-$name"
+  done
 
   # The units, their commands, and the extra service properties each one needs go in through
   # the environment so the heredoc stays quoted. `|` separates the fields rather than
@@ -309,7 +396,7 @@ REMOTE
   guard
   "${SSH[@]}" "BINDIR='$BINDIR' bash -s" <<'REMOTE'
 set -u
-UNITS="lomiri-location-service:lomiri-location biometryd:biometryd sensorfwd:sensorfwd"
+UNITS="lomiri-location-service:lomiri-location biometryd:biometryd sensorfwd:sensorfwd bluebinder:bluebinder"
 printf 'wrapper: '; ls -l "$BINDIR/zl1-ns-exec" 2>/dev/null || echo 'ABSENT'
 A=$(lxc-info -n android -pH 2>/dev/null | head -1)
 echo "android init pid: ${A:-<none>}"
