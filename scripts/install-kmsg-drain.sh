@@ -27,7 +27,14 @@
 # happens when you go at a driver you cannot see, and it is an EDL. `51-*` is the grep list
 # to run against the snapshots once they exist.
 #
-# Usage: install-kmsg-drain.sh --install | --remove | --status | --read [LINES] | --follow-on | --follow-off
+# Updated 2026-09-21: the set is no longer discarded on the next boot. It is archived to
+# `keep/boot-<boot_id>/` (newest 4), and a boot whose ring shows the secure-world failure
+# signatures copies itself to `keep/bad-<boot_id>/` the moment the signature appears. Why
+# both: `docs/ubuntu-touch/58-*` §4 asks for a diff of a bad boot against a good one
+# **before** the failure at t≈49 s, and by then there was nothing left to diff — see §2 of
+# `docs/ubuntu-touch/59-*`. `--bad` is the query that diff needs.
+#
+# Usage: install-kmsg-drain.sh --install | --remove | --status | --read [LINES] | --bad | --follow-on | --follow-off
 #
 # Env: ZL1_HOST (default root@10.15.19.82)
 
@@ -45,18 +52,72 @@ guard() {
 # than a loop: the point is coverage of the first ~2 minutes, and each dump is the *whole*
 # ring as it stands, so a later snapshot is never a superset of an earlier one — the early
 # one is the only one that still has the boot messages.
+#
+# Two additions after 2026-09-21, both of them consequences of the same mistake:
+#
+#   * **The previous boot's snapshots are archived, not deleted.** This script wiped
+#     boot-*.log on every boot, and that is what destroyed the only evidence for doc 58.
+#     The one cold boot whose secure world refused was captured — doc 58 quotes its
+#     t=49.6 s lines straight out of a snapshot — but the *next* boot wiped that snapshot,
+#     and the two files copied aside by hand (keep/boot-badgpu-350s.log, keep/kmsg-badgpu.log)
+#     are both ring-buffer tails that start at t=288 s and t=102 s. The ring is ~3470 lines
+#     and wraps within about a minute, so nothing earlier was ever retrievable. keep/boot-<id>/
+#     is that boot, named by /proc/sys/kernel/random/boot_id, which the *previous* run
+#     remembered in keep/current-boot-id (this boot's id is already a fresh one by the time we
+#     run). Newest 4 archives are kept — each is ~1.5 MiB and /userdata has 11 GiB free.
+#
+#   * **A bad boot preserves itself as it happens.** The ring still holds the t=49 s region at
+#     the snapshot taken ~75 s in; a minute later it does not, and if the snapshot unit does not
+#     run on the following boot the archive above never happens either. So every snapshot is
+#     grepped for the two signatures that mean "the secure world refused"
+#     (`Invalid firmware metadata`, `scm_call failed ... ret: -12`) and, on the first hit, the
+#     whole set collected so far is copied to keep/bad-<boot_id>/ immediately.
 SNAPSHOT_SH='
 #!/bin/sh
 D=/userdata/zl1-kmsg
-mkdir -p "$D"
+K=$D/keep
+mkdir -p "$D" "$K"
+
+# ---- carry the previous boot forward, before anything is wiped -------------
+set -- "$D"/boot-*.log
+if [ -e "$1" ]; then
+    prev=$(cat "$K/current-boot-id" 2>/dev/null)
+    [ -n "$prev" ] || prev=unknown
+    a="$K/boot-$prev"
+    n=2
+    while [ -e "$a" ]; do a="$K/boot-$prev.$n"; n=$((n + 1)); done
+    mkdir -p "$a"
+    cp -f "$D"/boot-*.log "$a"/ 2>/dev/null
+    printf "%s prev=%s files=%s\n" "$(cut -d. -f1 /proc/uptime)" "$prev" "$(ls "$a" | wc -l)" >> "$K/archive.log"
+    # newest 4 only; boot-*/ excludes the hand-made keep/boot-badgpu-*.log files
+    ls -dt "$K"/boot-*/ 2>/dev/null | tail -n +5 | while IFS= read -r p; do rm -rf "$p"; done
+fi
+BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+[ -n "$BOOT" ] || BOOT=unknown
+printf "%s\n" "$BOOT" > "$K/current-boot-id" 2>/dev/null
+
 # Keep only the snapshots from the current boot, so `--read` is never ambiguous about
-# which boot it is looking at. The uptime in the filename is the marker.
+# which boot it is looking at. The uptime in the filename is the marker. The copy above
+# is what makes this safe.
 rm -f "$D"/boot-*.log "$D"/boot.log "$D"/now-*.log 2>/dev/null
+
 snap() {
-    dmesg > "$D/boot-$(cut -d. -f1 /proc/uptime)s.log" 2>/dev/null
+    f="$D/boot-$(cut -d. -f1 /proc/uptime)s.log"
+    dmesg > "$f" 2>/dev/null
+    b="$K/bad-$BOOT"
+    if grep -qaE "Invalid firmware metadata|scm_call failed.*ret: -12" "$f" 2>/dev/null; then
+        # First hit: the whole set so far (the ring still holds the window before the
+        # failure). Later snapshots of the same boot are appended one at a time by the
+        # branch below, so a bad boot keeps its aftermath as well as its beginning.
+        # Deliberately never pruned — bad boots are rare and this is the only copy.
+        mkdir -p "$b"
+        cp -f "$D"/boot-*.log "$b"/ 2>/dev/null
+    elif [ -d "$b" ]; then
+        cp -f "$f" "$b"/ 2>/dev/null
+    fi
 }
 snap
-for d in 5 10 20 40 80 160; do
+for d in 5 5 5 10 20 40 80 160; do
     sleep "$d"
     snap
 done
@@ -167,8 +228,11 @@ case "${1:-}" in
   guard
   push_scripts
   write_units
-  echo "installed. The snapshot unit collects the ring at ~0, 5, 15, 35, 75, 155, 315 s of uptime."
-  echo "After a reboot, read them with: $0 --read 300"
+  echo "installed. The snapshot unit collects the ring at ~0, 5, 10, 15, 25, 45, 85, 165, 325 s of uptime."
+  echo "Before wiping them it archives the previous boot's set to /userdata/zl1-kmsg/keep/boot-<boot_id>/"
+  echo "(newest 4 kept), and any boot whose ring contains the secure-world failure signatures copies"
+  echo "itself to keep/bad-<boot_id>/ as soon as the signature appears."
+  echo "After a reboot:  $0 --status    then   $0 --bad    then   $0 --read 300"
   ;;
 --remove)
   guard
@@ -188,30 +252,68 @@ case "${1:-}" in
   ;;
 --status)
   guard
+  # `first` / `earliest` must sort by the uptime in the filename, not lexicographically:
+  # `ls | sort | head -1` answers boot-111s.log when boot-35s.log is the one with t=0 in it,
+  # which is exactly backwards — the earliest snapshot is the only one holding the boot.
   "${SSH[@]}" "
     printf 'snapshot unit : '; systemctl is-active zl1-kmsg-snapshot.service 2>&1
     printf 'follow unit   : '; systemctl is-active zl1-kmsg-follow.service 2>&1
-    echo 'snapshots:'
+    echo 'snapshots (this boot):'
     for f in $DIR/boot-*.log; do
       [ -f \"\$f\" ] || continue
-      printf '  %-28s %6s lines\n' \"\$(basename \$f)\" \"\$(wc -l < \$f)\"
+      printf '  %-28s %6s lines  from %s\n' \"\$(basename \$f)\" \"\$(wc -l < \$f)\" \"\$(head -1 \$f | cut -c1-14)\"
+    done
+    echo 'archived boots:'
+    for d in $DIR/keep/boot-*/; do
+      [ -d \"\$d\" ] || continue
+      e=\$(ls \$d/boot-*.log 2>/dev/null | sed 's#.*/boot-##; s#s\.log\$##' | sort -n | head -1)
+      printf '  %-44s %2s file(s)  earliest boot-%ss.log: %s\n' \"\$(basename \$d)\" \"\$(ls \$d | wc -l)\" \"\$e\" \"\$(head -1 \$d/boot-\${e}s.log 2>/dev/null | cut -c1-14)\"
+    done
+    for d in $DIR/keep/bad-*/; do
+      [ -d \"\$d\" ] || continue
+      e=\$(ls \$d/boot-*.log 2>/dev/null | sed 's#.*/boot-##; s#s\.log\$##' | sort -n | head -1)
+      printf '  BAD %-40s %2s file(s)  earliest boot-%ss.log: %s\n' \"\$(basename \$d)\" \"\$(ls \$d | wc -l)\" \"\$e\" \"\$(head -1 \$d/boot-\${e}s.log 2>/dev/null | cut -c1-14)\"
     done
     printf 'ring right now : %s lines, earliest: ' \"\$(dmesg | wc -l)\"; dmesg | head -1"
+  ;;
+--bad)
+  guard
+  # The doc 58 §4 query: what does a boot in which the secure world refused look like, and
+  # does a good boot differ from it *before* the failure? Prints the secure-world lines in
+  # time order for every archived boot, plus which func ids each one got and with what errno.
+  # Each archive is summarised over its *earliest* snapshot — the one with the boot in it.
+  "${SSH[@]}" "
+    for d in $DIR/keep/bad-*/ $DIR/keep/boot-*/ $DIR/boot-*.log; do
+      [ -e \"\$d\" ] || continue
+      case \"\$d\" in */) e=\$(ls \$d/boot-*.log 2>/dev/null | sed 's#.*/boot-##; s#s\.log\$##' | sort -n | head -1)
+                         f=\"\$d/boot-\${e}s.log\"; tag=\"\$(basename \$d) / boot-\${e}s.log\";;
+                  *)  f=\"\$d\"; tag=\"this boot: \$(basename \$d)\";; esac
+      [ -f \"\$f\" ] || continue
+      hits=\$(grep -acE 'scm_call failed|hyp_assign_table|Invalid firmware metadata|arm_smmu_assign_table|secure world has been busy' \"\$f\")
+      printf '=== %-52s %s line(s), covering %s .. %s\n' \"\$tag\" \"\$hits\" \
+        \"\$(head -1 \$f | cut -c1-12)\" \"\$(tail -1 \$f | cut -c1-12)\"
+      if [ \"\$hits\" -gt 0 ]; then
+        grep -aE 'scm_call failed|hyp_assign_table|Invalid firmware metadata|arm_smmu_assign_table|secure world has been busy' \"\$f\" | head -24
+        echo '  -- func id / errno tally:'
+        grep -aoE 'func id 0x[0-9a-f]+, ret: -?[0-9]+' \"\$f\" | sort | uniq -c | sort -rn
+      fi
+      echo
+    done"
   ;;
 --read)
   guard
   n="${2:-300}"
-  # Every snapshot and the live follow, grepped for the driver names the Wi-Fi work needs.
-  # This is the command docs/ubuntu-touch/51-* refers to.
+  # Every snapshot — this boot's, and each archived boot's — plus the live follow, grepped for
+  # the driver names the Wi-Fi work needs. This is the command docs/ubuntu-touch/51-* refers to.
   "${SSH[@]}" "
-    for f in $DIR/boot-*.log $DIR/kmsg.log; do
+    for f in $DIR/boot-*.log $DIR/keep/boot-*/*.log $DIR/keep/bad-*/*.log $DIR/kmsg.log; do
       [ -f \"\$f\" ] || continue
       n=\$(grep -aicE 'cnss|wlan|wcnss|qca6174|ar6320|qcacld' \"\$f\")
       printf '=== %s  (%s matching lines) ===\n' \"\$f\" \"\$n\"
       grep -aiE 'cnss|wlan|wcnss|qca6174|ar6320|qcacld' \"\$f\" | head -n $n
       echo
     done
-    echo '=== earliest snapshot, first 40 lines ==='
+    echo '=== earliest snapshot of this boot, first 40 lines ==='
     ls -t $DIR/boot-*.log 2>/dev/null | tail -1 | xargs -r head -40"
   ;;
 *)

@@ -54,7 +54,20 @@ cat > "$tmp/apply.sh" <<'EOF_APPLY'
 set +e
 
 LOG=/userdata/zl1-container-fix.log
-log() { echo "$(cut -d' ' -f1 /proc/uptime) $*" >> "$LOG"; }
+# Every line carries a short boot id, and there is one `=== boot` marker per boot.
+#
+# This log is *not* wiped at boot — it is appended to with rotation — so it spans many boots
+# at once, and without an id there is no way to tell which lines belong to the boot you are
+# looking at. That cost something on 2026-09-21: docs 58 §4 and 59 §4 both need to know
+# whether this desabotage had already run, was still in flight, or had not started, on the one
+# cold boot whose secure world answered `-12` to `MEM_PROT_ASSIGN` — and this file is the only
+# record of when `apply()` ran. What it held was nine boots of lines whose timings are almost
+# identical (apply at 41.3-42.7 s, `after apply` at 53.8-61.9 s, PIL loads at 47.8-48.2 s)
+# with nothing to match any of them to a boot.
+BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | cut -c1-8)
+[ -n "$BOOT" ] || BOOT=nobootid
+log() { echo "$BOOT $(cut -d' ' -f1 /proc/uptime) $*" >> "$LOG"; }
+log "=== boot $BOOT: container-fix starting"
 
 logfile_rotate() {
     [ -f "$LOG" ] || return 0
