@@ -76,6 +76,12 @@ for what each stage is trying to establish.
 | `install-ssh-to-userdata.sh` | June attempt: writes the key to `/userdata/root/.ssh`, which is **not** where `/root` resolves (it comes from `/userdata/system-data/root`). Kept for the record; superseded by `fix-ssh-authorized-keys.sh`. |
 | `zl1-status-server-enhanced.py` | HTTP status server with a command-execution endpoint; deployed into the ramdisk at `/usr/local/sbin/`. |
 
+## Finding out *where* the device crashed
+
+| Script | Purpose |
+| --- | --- |
+| `hybris-crash-hunt.sh` | Runs a `/usr/bin/test_*` libhybris helper on the device, captures the kernel's core dump, rebuilds a sysroot out of the core's own `NT_FILE` list, and prints the faulting address, the nearest symbol, the faulting instruction and the frame-pointer chain. This is how the Phase 5 display failure was traced to `__ctype_get_mb_cur_max+8` inside Android `libc.so` — see [`../docs/ubuntu-touch/40-the-display-died-below-lomiri.md`](../docs/ubuntu-touch/40-the-display-died-below-lomiri.md). Needs `gdb-multiarch` on the host; needs nothing on the device (no compiler, no rootfs change — `core_pattern` is `/proc`, and cores land on `/userdata`). |
+
 ## Halium 9 build tree
 
 | Script | Purpose |
