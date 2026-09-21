@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 2.4 + 2.5 in one run, once the device is in TWRP.
+# Stage 2.4 + 2.5 in one run.
 #
 # Stage 2.4 wants three consecutive cold boots with the same result. Stage 2.5 wants a
 # deliberately bad image flashed, confirmed failed, then the stock boot restored and the
@@ -10,16 +10,21 @@
 # partition twice on purpose. If anything goes wrong early, nothing has been risked.
 #
 #   1. install the integrity-checked watchdog, record-only, and verify it on the device
-#   2. cold boot #2 — count it
-#   3. cold boot #3 — count it
-#   4. cold boot #4 — count it
-#   5. rollback drill: bad image -> confirm failed -> stock boot.img -> confirm back
+#   2. three cold boots, each verified over SSH — counted as they pass
+#   3. rollback drill: bad image -> confirm failed -> stock boot.img -> confirm back
 #
-# This script never flashes anything until step 5, and step 5 goes through
+# This script never flashes anything until step 3, and step 3 goes through
 # flash-boot-image.sh and stage2-rollback-boot.sh, both of which verify hashes first.
 #
 # Usage: run-stage24-and-25.sh [--skip-drill]
-#   Run it with the device in TWRP. It waits for TWRP at the start.
+#   Start it with the device in TWRP (it installs first) or with Ubuntu Touch already
+#   running and answering SSH (it skips the install). It then drives the reboots itself:
+#   Ubuntu Touch runs no adbd, so the reboots go over SSH, and the device must be
+#   reachable that way for the sequence to continue past the first boot.
+#
+#   The host side of the link is started and kept up by this script. Do not judge a
+#   cold boot from the device log alone: a boot with no host peer records rx_packets=0
+#   for its whole life and looks exactly like a stall.
 
 set -uo pipefail
 ROOT=/mnt/data/zl1-bb10
@@ -35,7 +40,19 @@ in_recovery() { [[ "$(adb devices 2>/dev/null | awk -v s="$SER" '$1==s{print $2}
 has_gadget()  { lsusb -d 18d1:d001 >/dev/null 2>&1; }
 in_edl()      { lsusb | grep -q '05c6:9008'; }
 host_usb0()   { ip link show usb0 >/dev/null 2>&1; }
+host_usb0_gone() { ! ip link show usb0 >/dev/null 2>&1; }
 wait_for()    { local d=$(( SECONDS + $1 )); while (( SECONDS < d )); do "$2" && return 0; sleep 5; done; return 1; }
+
+DEV_HOST="root@10.15.19.82"
+ssh_cmd() {
+    timeout 30 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 "$DEV_HOST" "$@" 2>/dev/null
+}
+# Wait for SSH, not for the gadget. The link appearing is not the same as the system
+# being up — on 2026-09-19 a check ran 20 s after RNDIS appeared and reported three
+# failures against a device that was fine.
+ssh_ready() { ssh_cmd true; }
+either_ready() { in_recovery || ssh_ready; }
 
 # The host side of the RNDIS link has to be configured while the device boots, and it has
 # to be configured by something that is already running when the gadget appears. The
@@ -60,27 +77,44 @@ stop_host_watch() {
 }
 trap stop_host_watch EXIT
 
-# Wait for SSH, not for the gadget. The link appearing is not the same as the system
-# being up — on 2026-09-19 a check ran 20 s after RNDIS appeared and reported three
-# failures against a device that was fine.
-ssh_ready() {
-    timeout 12 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 root@10.15.19.82 'true' 2>/dev/null
+# Reboot, over whichever transport is up.
+#
+# This used to be `adb shell reboot` unconditionally, and that worked exactly once: the
+# first boot it started came up as Ubuntu Touch, which runs no adbd at all, so the *next*
+# reboot failed with "reboot failed" and the sequence stopped there. That is why Stage 2.4
+# never got past one boot. On 2026-09-21 cold boot #2 passed and cold boot #3 died on the
+# reboot, not on the device.
+reboot_device() {
+    if ssh_ready; then
+        ssh_cmd 'rm -f /data/zl1-netwatch.log; sync; reboot' || true   # the link drops mid-command
+        return 0
+    fi
+    if in_recovery; then
+        adb -s "$SER" shell 'rm -f /data/zl1-netwatch.log; sync; reboot' >/dev/null 2>&1 && return 0
+    fi
+    return 1
 }
 
 cold_boot() {  # cold_boot <n> <note>
     local n="$1" note="$2"
     log "=== cold boot #$n ==="
-    adb -s "$SER" shell 'rm -f /data/zl1-netwatch.log; sync; reboot' >/dev/null 2>&1 || { log "reboot failed"; return 1; }
-    # Wait for the host to see the gadget before waiting for SSH. If usb0 never appears
-    # on this side, whatever the device is doing is unobservable, and a reported failure
-    # would be a statement about the host, not about the image.
+    reboot_device || { log "cold boot #$n: reboot failed (neither SSH nor TWRP answered)"; return 1; }
+    # Wait for the gadget to actually go away before waiting for it to come back. usb0
+    # still exists for a moment after the reboot command, so without this the "host sees
+    # usb0" test passes instantly against the *previous* boot's interface.
+    if ! wait_for 90 host_usb0_gone; then
+        log "cold boot #$n: usb0 never went away — the device did not reboot"
+        return 1
+    fi
+    # Then wait for the host to see it again. If it never appears on this side, whatever
+    # the device is doing is unobservable, and a reported failure would be a statement
+    # about the host, not about the image.
     if ! wait_for 240 host_usb0; then
         log "cold boot #$n: the host never saw usb0 within 240 s — nothing to judge."
         log "  Check the host watcher before counting this as a failed boot."
         return 1
     fi
-    log "cold boot #$n: host usb0 is present"
+    log "cold boot #$n: host usb0 reappeared"
     if ! wait_for 300 ssh_ready; then
         log "cold boot #$n: SSH never came up within 300 s"
         if in_edl; then log "  and the device is in EDL"; fi
@@ -94,25 +128,37 @@ cold_boot() {  # cold_boot <n> <note>
 }
 
 log "=== Stage 2.4 + 2.5 run; log $LOG ==="
-log "waiting for TWRP"
-wait_for "$WAIT_TWRP" in_recovery || { log "timed out waiting for TWRP"; exit 1; }
-log "TWRP up"
+# The run may start from TWRP (install first) or from an already-running Ubuntu Touch
+# (SSH answers, the watchdog is already installed). Requiring TWRP each time meant the
+# sequence could not be resumed after a successful boot without a physical key press —
+# and since a successful boot *is* the normal state between trials, that made 2.4
+# uncompletable by construction.
+log "waiting up to ${WAIT_TWRP}s for TWRP or a running Ubuntu Touch"
+wait_for "$WAIT_TWRP" either_ready || { log "timed out waiting for the device"; exit 1; }
 # Start this before the first reboot, not after: the gadget appears at uptime ~4 s and
 # rebinds several times, so the watcher has to already be looping.
 start_host_watch
 
 # ---------------------------------------------------------------- step 1 ------
-log "=== 1. install the watchdog (integrity-checked, record-only, verified on device) ==="
-if ! NETWATCH_NOHEAL=1 "$ROOT/scripts/install-netwatch-service.sh" --yes --noheal >>"$LOG" 2>&1; then
-  log "install refused or failed — see $LOG"; exit 1
+if in_recovery; then
+  log "TWRP up — installing the watchdog"
+  if ! NETWATCH_NOHEAL=1 "$ROOT/scripts/install-netwatch-service.sh" --yes --noheal >>"$LOG" 2>&1; then
+    log "install refused or failed — see $LOG"; exit 1
+  fi
+else
+  log "the device is already running Ubuntu Touch — skipping the install"
 fi
-chk() { adb -s "$SER" shell "$1" | tr -d '\r'; }
+
+chk() {  # run a shell snippet on the device, over whichever transport is up
+  if in_recovery; then adb -s "$SER" shell "$1" | tr -d '\r'
+  else ssh_cmd "$1" | tr -d '\r'; fi
+}
 [[ -n "$(chk 'ls /data/zl1-netwatch-noheal 2>/dev/null')" ]] || { log "FATAL: record-only marker missing"; exit 1; }
 [[ "$(chk 'grep -c "^heal_rebind_function()" /data/system-data/etc/systemd/system/zl1-netwatch.sh')" = "1" ]] \
   || { log "FATAL: installed script missing functions"; exit 1; }
 [[ "$(chk 'grep -c "^POLICY_TABLES=" /data/system-data/etc/systemd/system/zl1-netwatch.sh')" = "1" ]] \
   || { log "FATAL: installed script missing the three-table fix"; exit 1; }
-log "installed and verified on the device"
+log "watchdog present and verified on the device"
 
 # ------------------------------------------------------- steps 2, 3, 4 --------
 ok=0
