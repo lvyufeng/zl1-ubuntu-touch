@@ -77,6 +77,41 @@ unit_cmd() {
 }
 ALL_UNITS="lomiri-location-service biometryd"
 
+# Extra unit-file text a unit needs on top of the ExecStart swap. Section headers included;
+# `\n` is expanded on the device with `printf %b`, because the field has to survive a
+# line-oriented `read`. Empty (`-` in the wire format) means "nothing extra".
+#
+# Both of these services have the same problem in different clothes: something they need is
+# not there yet when they first start, they exit, and systemd's *default start rate limit*
+# (5 starts per 10 s) turns "late" into "never" — the unit lands in `failed` with
+# `start-limit-hit` and stays there for the rest of the boot.
+#
+# lomiri-location-service exits ~1.5-8 s after claiming its bus name, before the user session
+# exists. It builds a trust-store agent at startup (`liblomiri-location-service.so` links
+# `libtrust-store.so.2`; `TrustStorePermissionManager::create_default_instance_with_bus`,
+# `core::trust::dbus::create_multi_user_agent_for_bus_connection` and a literal
+# `DBUS_SESSION_BUS_ADDRESS` are all in its strings), and the `trust-stored-skeleton` for
+# `--for-service LomiriLocationService` is started by the *user* session, which on this port
+# begins ~25 s after this unit does. It exits *cleanly*, which is exactly what the rootfs's
+# `Restart=on-failure` does not retry, so it was dead for the whole boot and `--failed` did not
+# even show it. `Restart=always` plus no rate limit makes it retry until the session is up.
+#
+# biometryd already ships `Restart=always`, and it does recover — but only just: one boot it
+# restarted itself 4 times against a limit of 5. Its first attempt calls the Android fingerprint
+# HAL's `setActiveGroup`, which answers `SYS_EINVAL` until the HAL is ready, and it exits
+# cleanly on that. `RestartSec=5` bounds the retry instead of leaving the 100 ms default in
+# place, which on the boot where the HAL never became ready turned into a ~4 s hot loop and
+# pushed the load average to 14 (measured).
+unit_extra() {
+  case "$1" in
+    lomiri-location-service)
+      printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestartSec=5\nRestart=always';;
+    biometryd)
+      printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestartSec=5';;
+    *) return 1;;
+  esac
+}
+
 guard() {
   "${SSH[@]}" 'grep -qa msm8996 /proc/device-tree/compatible' 2>/dev/null ||
     { echo "not the zl1 (no msm8996 in /proc/device-tree/compatible) — refusing" >&2; exit 1; }
@@ -144,31 +179,44 @@ case "${1:-}" in
   "${SCP[@]}" "$tmp" "$DEV:$BINDIR/zl1-ns-exec" || exit 1
   "${SSH[@]}" "chmod 755 $BINDIR/zl1-ns-exec"
 
-  # The units and their commands go in through the environment so the heredoc stays quoted.
+  # The units, their commands, and the extra service properties each one needs go in through
+  # the environment so the heredoc stays quoted. `|` separates the fields rather than
+  # whitespace, because a command contains spaces (`/usr/bin/biometryd run`) and a
+  # whitespace-split `read` would silently truncate it. `-` means "no extra properties" —
+  # a placeholder rather than an empty field, so the field count never depends on the value.
   cmds=""
-  for u in $units; do cmds="$cmds$u $(unit_cmd "$u")
-"; done
+  for u in $units; do
+    extra="$(unit_extra "$u")"; [ -n "$extra" ] || extra="-"
+    cmds="$cmds$u|$(unit_cmd "$u")|$extra
+"
+  done
   "${SSH[@]}" "BINDIR='$BINDIR' CMDS='$cmds' bash -s" <<'REMOTE'
 set -u
-printf '%s\n' "$CMDS" | while read -r u c; do
+printf '%s\n' "$CMDS" | while IFS='|' read -r u c extra; do
   [ -n "$u" ] || continue
   mkdir -p "/etc/systemd/system/$u.service.d"
-  cat > "/etc/systemd/system/$u.service.d/zz-zl1-ns.conf" <<EOF
-[Service]
-# zz- so this sorts after lxc-android-config.conf: systemd applies drop-ins in one
-# lexicographic order across all drop-in directories, and the last ExecStart= wins.
-ExecStart=
-ExecStart=$BINDIR/zl1-ns-exec $c
-EOF
-  echo "wrote /etc/systemd/system/$u.service.d/zz-zl1-ns.conf"
+  {
+    echo '[Service]'
+    echo '# zz- so this sorts after lxc-android-config.conf: systemd applies drop-ins in one'
+    echo '# lexicographic order across all drop-in directories, and the last ExecStart= wins.'
+    echo 'ExecStart='
+    echo "ExecStart=$BINDIR/zl1-ns-exec $c"
+  } > "/etc/systemd/system/$u.service.d/zz-zl1-ns.conf"
+  if [ "$extra" != "-" ]; then
+    printf '\n# why the retry settings below are not the rootfs defaults:\n' \
+      >> "/etc/systemd/system/$u.service.d/zz-zl1-ns.conf"
+    printf '%b\n' "$extra" >> "/etc/systemd/system/$u.service.d/zz-zl1-ns.conf"
+  fi
+  echo "wrote /etc/systemd/system/$u.service.d/zz-zl1-ns.conf:"
+  sed 's/^/  | /' "/etc/systemd/system/$u.service.d/zz-zl1-ns.conf"
 done
 systemctl daemon-reload
-for u in $(printf '%s\n' "$CMDS" | awk '{print $1}'); do
+for u in $(printf '%s\n' "$CMDS" | awk -F'|' '{print $1}'); do
   systemctl reset-failed "$u" >/dev/null 2>&1
   systemctl restart "$u"
 done
 sleep 20
-for u in $(printf '%s\n' "$CMDS" | awk '{print $1}'); do
+for u in $(printf '%s\n' "$CMDS" | awk -F'|' '{print $1}'); do
   printf '  %-32s %s\n' "$u" "$(systemctl is-active "$u" 2>&1)"
 done
 REMOTE
