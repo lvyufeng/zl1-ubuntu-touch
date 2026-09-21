@@ -152,7 +152,7 @@ echo soc:qcom,cnss > /sys/bus/platform/drivers/cnss/bind
 ## 6. 下一步（都在设备回来之后）
 
 - **先恢复设备**：长按电源键 ~10–20 秒硬复位，确认重新以 `18d1:d001`（RNDIS）出现，`grep -qa msm8996 /proc/device-tree/compatible` 自检一遍，`adb devices` 里不该有 `33e80afe`。
-- **把内核日志接住。** 现在 `dmesg` 只能留最后 18 秒，`journalctl -k` 只有 1 行（journald 没接 `/dev/kmsg`）。开一个常驻的 `/dev/kmsg` 消费者写到 `/userdata`，这样下次开机才看得到 cnss 的报错。**这一步必须在再碰 Wi-Fi 之前做完**，否则又只能在盲区里试。
+- **把内核日志接住。** 现在 `dmesg` 只能留最后 18 秒，`journalctl -k` 只有 1 行（journald 没接 `/dev/kmsg`）。所以写了 `scripts/install-kmsg-drain.sh`：一个 `DefaultDependencies=no` 的 unit，先把环形缓冲整份快照下来（`dmesg` 走 `SYSLOG_ACTION_READ_ALL`，读的是**整个**缓冲，所以在风暴把它刷掉之前抓得到开机的部分），再用一个常驻的 `/dev/kmsg` 读循环跟着写，8 MB 轮转。日志留在 `/userdata/zl1-kmsg/`，unit 在 `/etc/systemd/system` 这个可写路径上。**它还没在设备上跑过**（设备当时在 EDL），下次开机第一件事就是装它并核对 `boot.log` 里有没有 cnss 的行。**这一步必须在再碰 Wi-Fi 之前做完**，否则又只能在盲区里试 —— 而盲区里的试法已经证明代价是整机。
 - **Wi-Fi**：有了开机日志再判断 WCNSS 那一步失败在哪 —— 固件、上电 GPB、还是 PIL。**不要再用 unbind/bind 去触发。**
 - **`lomiri-location-serviced` / `biometryd`**：`pc=0x0` 已经是可查的了 —— 按 `lr`（`liblomiri-location-service.so.3.0.0+0xdaa68`、`libbiometry.so.2.0.0+0xd6750`）反查调用点，看那个函数指针是谁设置的。
 - **顺带**：那个 `tx_complete` WARN 风暴本身也值得处理（它是我们 `patch-uether-tx-wakeup.sh` 带出来的），它让整个内核日志不可用，是这次只能盲试的直接原因。
@@ -162,3 +162,4 @@ echo soc:qcom,cnss > /sys/bus/platform/drivers/cnss/bind
 | 文件 | 作用 |
 | --- | --- |
 | `scripts/hybris-crash-hunt.sh` | 改。取 core 从"按名字 + 取最新"改成"按时间戳取新的"（`touch` + `find -newer`），并写进 `/tmp/zl1-hunt-core`；两个分支都改。不这么改，它在找不到新 core 时会静默分析上一次启动留下的 core |
+| `scripts/install-kmsg-drain.sh` | 新增。`--install` / `--remove` / `--status` / `--read`。开机时先把环形缓冲整份快照到 `/userdata/zl1-kmsg/boot.log`，再常驻跟读 `/dev/kmsg` 到 `kmsg.log`（8 MB 轮转，保留新的一半）。unit 在 `/etc/systemd/system`，排在容器之前。**尚未在设备上验证** —— 写它的时候设备在 EDL |
