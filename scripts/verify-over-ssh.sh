@@ -96,7 +96,10 @@ if [[ ! -f "$LEDGER" ]]; then
     echo "| ---: | --- | --- | --- | --- | ---: | --- | ---: | --- | --- |"
   } > "$LEDGER"
 fi
-n=$(( $(grep -c '^| [0-9]' "$LEDGER" || true) + 1 ))
+# Number the next row by counting only rows that look like trials — a number followed by
+# a UTC stamp. The old `grep -c '^| [0-9]'` also counted the rows of the "which rows
+# count" table further down this same file, so the numbering jumped 6 → 11 → 17.
+n=$(( $(grep -cE '^\| [0-9]+ \| [0-9]{8}T[0-9]{6}Z \|' "$LEDGER" || true) + 1 ))
 printf '| %d | %s | ssh | %s | %s | %s | %s | %s | %s | %s |\n' \
   "$n" "$STAMP" "${pid1:-?}" "${rg:-?}" "${t99:-?}" "${lxc:-none}" "${hal:-0}" "${cold:-?}" "$NOTE" >> "$LEDGER"
 
