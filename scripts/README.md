@@ -93,8 +93,8 @@ and install a superset of `libtls-padding.so` that fills the slot. See
 
 | Script | Purpose |
 | --- | --- |
-| `tlsfix/tlsfix.c` | The shim: the original 128-byte TLS padding plus a constructor that points `TP+8` at a zeroed fake `pthread_internal_t`. Freestanding (`-nostdlib`), no libc calls. |
-| `tlsfix/build-tlsfix.sh` | Cross-builds it with `clang --target=aarch64-linux-gnu` + `lld`, then checks the result really has a `PT_TLS` segment, an `DT_INIT_ARRAY` entry and the `tls_padding` symbol. |
+| `tlsfix/tlsfix.c` | The shim: the original 128-byte TLS padding, a constructor that points `TP+8` at a zeroed fake `pthread_internal_t`, **and a `pthread_create` interposer** that fills the slot on every thread created later — the constructor only reaches the thread it runs on. Freestanding (`-nostdlib`); the only libc entry points are `malloc`/`free`/`dlsym`, and both failures fall back to the real `pthread_create`. |
+| `tlsfix/build-tlsfix.sh` | Cross-builds it with `clang --target=aarch64-linux-gnu` + `lld`, then checks the result really has a `PT_TLS` segment, an `DT_INIT_ARRAY` entry, the `tls_padding` symbol, an exported `pthread_create`, and **no version definition** (a versioned `pthread_create` would not bind glibc's `pthread_create@GLIBC_2.34` references and the interposer would silently never run). |
 | `tlsfix/install-tlsfix.sh` | `--mount` / `--unmount` / `--status`. `--mount` `scp`s the build to `/userdata/zl1-tlsfix/shadow/` and bind-mounts it over `/usr/lib/aarch64-linux-gnu/libtls-padding.so`, which is the one file `lsc-wrapper` preloads — lightdm builds the compositor's environment itself, so an `LD_LIBRARY_PATH` on `lightdm.service` never reaches it, but replacing that file does. Runtime only: gone after a reboot, and `--unmount` undoes it. |
 
 Two details in `hybris-crash-hunt.sh` are worth knowing before trusting a trace

@@ -28,6 +28,14 @@ clang --target=aarch64-linux-gnu -shared -fPIC -nostdlib -fno-stack-protector -O
 readelf -lW "$out/libtls-padding.so" | grep -q TLS || { echo "no PT_TLS segment" >&2; exit 1; }
 readelf -dW "$out/libtls-padding.so" | grep -q INIT_ARRAY || { echo "no DT_INIT_ARRAY" >&2; exit 1; }
 readelf -sW "$out/libtls-padding.so" | grep -q "TLS.*tls_padding" || { echo "no tls_padding symbol" >&2; exit 1; }
+# The constructor only reaches the main thread; every thread created later needs the
+# interposer, so a missing pthread_create means the fix silently covers one thread again.
+readelf -sW "$out/libtls-padding.so" | grep -q "FUNC.*pthread_create" || { echo "pthread_create not exported" >&2; exit 1; }
+# ...and it must have no version definition, or a versioned reference from glibc
+# (pthread_create@GLIBC_2.34) would not bind to it and the interposer would never run.
+if readelf -VW "$out/libtls-padding.so" | grep -q "Version definition"; then
+  echo "the shim is versioned; the interposer would not bind" >&2; exit 1
+fi
 
 echo "built $out/libtls-padding.so"
 sha256sum "$out/libtls-padding.so"
