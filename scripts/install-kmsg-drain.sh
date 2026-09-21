@@ -317,5 +317,7 @@ case "${1:-}" in
     ls -t $DIR/boot-*.log 2>/dev/null | tail -1 | xargs -r head -40"
   ;;
 *)
-  sed -n '2,35p' "$0"; exit 1;;
+  # The header, whatever its current length: lines 2..the end of the leading comment block.
+  # A fixed line range silently truncates the usage text every time the header grows.
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

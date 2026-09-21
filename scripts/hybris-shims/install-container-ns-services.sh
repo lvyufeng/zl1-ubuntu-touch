@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run `lomiri-location-service` and `biometryd` inside the Android container's PID namespace,
-# which is the last thing standing between them and the HALs they were built to talk to.
+# Run `lomiri-location-service`, `biometryd` and `sensorfwd` inside the Android container's PID
+# namespace, which is the last thing standing between them and the HALs they were built to talk to.
 #
 # Where this comes from: doc 55 built and installed the two missing bridge libraries, and both
 # services went from `failed (Result: signal)` to `active` — the `pc=0x0` class is closed. They
@@ -14,12 +14,22 @@
 #
 # Same binary, only the PID namespace differs. The compositor has been living with this since
 # doc 43 — `lsc-wrapper` execs it through `nsenter -p`, which is why it can reach hwcomposer and
-# why it appears in the container's `ps -A` and never in the host's. These two services are
-# plain system units, so nothing did that for them.
+# why it appears in the container's `ps -A` and never in the host's. These services are plain
+# system units, so nothing did that for them.
+#
+# `sensorfwd` is the same wall a third time (doc 60), and it was measured the same way — the same
+# binary, the same 25 seconds, only the namespace changed:
+#
+#     host namespace       sensorfw: Requesting adaptor: "magnetometeradaptor"
+#                          sensorfw: Could not find remote object for sensor service. Trying...
+#     container namespace  sensorfw: Connected to sensor 1.0 service
+#                          sensorfw: void HybrisManager::initManager() SELECT type: 1
+#                                    ACCELEROMETER name: LSM6DS3 Accelerometer
+#                          sensorfw: HYBRIS CTL setActive(1=ACCELEROMETER, false) -> success
 #
 # What this installs:
 #
-#   /userdata/zl1-hybris/bin/zl1-ns-exec                     the wrapper (one copy, used by both)
+#   /userdata/zl1-hybris/bin/zl1-ns-exec                     the wrapper (one copy, shared)
 #   /etc/systemd/system/<unit>.service.d/zz-zl1-ns.conf      ExecStart override
 #
 # The `zz-` prefix is load-bearing. `lomiri-location-service` already has an `ExecStart=` reset
@@ -33,7 +43,7 @@
 #   * `-p` only, never `-F`. `setns` on a PID namespace affects only future children, so with
 #     `-F` the exec'd process stays in the host namespace while its children go to the
 #     container's, and `pthread_create` then fails with EINVAL because a thread cannot share a
-#     thread group across the two. Both of these services are GLib-threaded; that would kill
+#     thread group across the two. All three of these services are threaded; that would kill
 #     them the same way doc 43 saw the compositor die.
 #
 #   * No `nsenter` sweep before starting, unlike `lsc-wrapper`. There, a leftover childless
@@ -44,15 +54,31 @@
 #     would put the compositor's live one in reach; not worth it for a cosmetic leak.
 #
 #   * If the container is not up, the wrapper waits up to a minute and then *fails*, rather than
-#     running the service outside the namespace. Both units are `Type=dbus` and are ordered
-#     after `lxc-android-config.service`, so this should not happen; when it does, a unit that
-#     says it failed is honest and `Restart=` will pick it up, whereas a service running in the
-#     wrong namespace would report `active` and quietly do nothing.
+#     running the service outside the namespace. The units are ordered after
+#     `lxc-android-config.service` where they can be, so this should not happen; when it does, a
+#     unit that says it failed is honest and `Restart=` will pick it up, whereas a service
+#     running in the wrong namespace would report `active` and quietly do nothing.
+#
+#   * The wrapper itself needs two capabilities the services do not. `CAP_SYS_ADMIN` is required
+#     by `setns()` for any namespace (kernel/nsproxy.c: `if (!(flags & CLONE_NEWUSER) &&
+#     !ns_capable(current_user_ns(), CAP_SYS_ADMIN)) return -EPERM;`), and `CAP_SYS_PTRACE` is
+#     required to `stat()` `/proc/<container-init>/ns/pid` — the wrapper's own "is the container
+#     up" test, and the reason it reported `no android container after 60s` when only
+#     `CAP_SYS_ADMIN` was added. Bisected on the device: neither cap alone is enough, both
+#     together are. But `sensorfwd.service` ships `CapabilityBoundingSet=CAP_BLOCK_SUSPEND
+#     CAP_DAC_OVERRIDE CAP_FOWNER`, so widening it would leave the *service* holding caps it was
+#     never given. Instead the wrapper re-narrows after `setns` with
+#     `setpriv --bounding-set=-sys_admin,-sys_ptrace,-setpcap`, so `sensorfwd` ends up with
+#     exactly the three caps its unit file lists (verified: `CapBnd: 000000100000000a`, which is
+#     2^36 + 2^3 + 2^1 — BLOCK_SUSPEND, FOWNER, DAC_OVERRIDE and nothing else). Dropping from the
+#     bounding set needs `CAP_SETPCAP`, which is why that is in the widened set too and is
+#     dropped first. This is opt-in per unit via `ZL1_NS_DROP_CAPS=1`, so it cannot change the
+#     behaviour of the two services that already work.
 #
 # One service at a time is still the rule — see `--install` for how to do just one.
 #
 # Usage: install-container-ns-services.sh --install [unit...] | --remove | --status
-#        (no unit named with --install = both)
+#        (no unit named with --install = all three)
 #
 # Env: ZL1_HOST (default root@10.15.19.82)
 
@@ -72,10 +98,11 @@ unit_cmd() {
   case "$1" in
     lomiri-location-service) printf '%s' '/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper';;
     biometryd)               printf '%s' '/usr/bin/biometryd run';;
+    sensorfwd)               printf '%s' '/usr/sbin/sensorfwd --systemd --device-info --log-level=warning';;
     *) return 1;;
   esac
 }
-ALL_UNITS="lomiri-location-service biometryd"
+ALL_UNITS="lomiri-location-service biometryd sensorfwd"
 
 # Extra unit-file text a unit needs on top of the ExecStart swap. Section headers included;
 # `\n` is expanded on the device with `printf %b`, because the field has to survive a
@@ -102,12 +129,34 @@ ALL_UNITS="lomiri-location-service biometryd"
 # cleanly on that. `RestartSec=5` bounds the retry instead of leaving the 100 ms default in
 # place, which on the boot where the HAL never became ready turned into a ~4 s hot loop and
 # pushed the load average to 14 (measured).
+#
+# sensorfwd is a different shape of the same thing, and it is worse than either: `Type=notify`
+# with the default 90 s start timeout. Without a PID namespace it never sends READY=1 at all, so
+# systemd kills it every 90 s and restarts it — `Failed with result 'timeout'`, `NRestarts=9` —
+# and because the unit is `WantedBy=graphical.target` that stall sits directly in front of the
+# GUI. It also carries two properties the others do not (see the header for the first):
+#
+#   * `NotifyAccess=all`. `Type=notify` defaults to accepting READY=1 only from the unit's main
+#     PID, and `nsenter -p` **forks**: the process systemd calls MainPID is nsenter's own, while
+#     the one that moved into the container, execs sensorfwd and sends the notification is its
+#     child (and with the setpriv step in between, further still). systemd said so exactly —
+#     `Got notification message from PID 1049011, but reception only permitted for main PID
+#     1048906` — and then timed out at 90 s anyway, so the unit stayed in `activating` and the
+#     `ExecStart` swap alone was not enough. `all` accepts a notification from any process in
+#     the unit's cgroup, which is what a wrapper needs.
+#   * the widened capability bounding set `zl1-ns-exec` needs, paired with `ZL1_NS_DROP_CAPS=1`
+#     so the wrapper hands the service back exactly the three caps its own unit file lists.
+#
+# `RestartSec=5` is only insurance for a boot where the container is late; with the namespace and
+# `NotifyAccess` in place it reaches READY on the first try.
 unit_extra() {
   case "$1" in
     lomiri-location-service)
       printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestartSec=5\nRestart=always';;
     biometryd)
       printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestartSec=5';;
+    sensorfwd)
+      printf '%s' '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nNotifyAccess=all\nRestartSec=5\nEnvironment=ZL1_NS_DROP_CAPS=1\nCapabilityBoundingSet=CAP_BLOCK_SUSPEND CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SETPCAP';;
     *) return 1;;
   esac
 }
@@ -122,17 +171,23 @@ WRAPPER_SH='
 # Run the command given as arguments inside the Android container PID namespace.
 #
 # Why: Android binder -- both /dev/binder and /dev/hwbinder -- only completes a transaction
-# between two processes in the same PID namespace. A host process calling IGnss::getService()
-# or IBiometricsFingerprint::getService() gets nullptr, and the failure is silent: the HIDL
-# side just returns null, the binder side returns an empty reply. `lshal` run from the host
-# lists 0 registered services; the same binary inside the container lists 134.
+# between two processes in the same PID namespace. A host process calling IGnss::getService(),
+# IBiometricsFingerprint::getService() or ISensors::getService() gets nullptr, and the failure is
+# silent: the HIDL side just returns null, the binder side returns an empty reply. `lshal` run
+# from the host lists 0 registered services; the same binary inside the container lists 134.
 #
 # -p only. Never -F: setns on a PID namespace only affects future children, so -F would leave
 # this process behind while its children move, and every pthread_create would fail with EINVAL.
-# That is fatal for GLib-threaded services.
+# That is fatal for threaded services.
 
-# Wait for the container, but not forever. Both callers are ordered after
-# lxc-android-config.service, so this normally succeeds on the first try.
+# Wait for the container, but not forever. The callers are ordered after
+# lxc-android-config.service where they can be, so this normally succeeds on the first try.
+#
+# The `-e` test needs CAP_SYS_PTRACE in the *caller*: /proc/<pid>/ns/pid is only readable for a
+# process this one may ptrace, and the container init is not in our PID namespace. Without that
+# capability the test is false no matter how healthy the container is, and this loop runs the
+# full 60 s and then reports "no android container" — which is what it said when sensorfwd was
+# given CAP_SYS_ADMIN but not CAP_SYS_PTRACE. Both caps are listed in that unit drop-in.
 A=""
 i=0
 while [ "$i" -lt 30 ]; do
@@ -146,6 +201,19 @@ while [ "$i" -lt 30 ]; do
 done
 
 if [ -n "$A" ]; then
+    # ZL1_NS_DROP_CAPS: the wrapper needs CAP_SYS_ADMIN (setns requires it for every namespace
+    # type) and CAP_SYS_PTRACE (the test above), but a service whose own unit file lists a
+    # narrower CapabilityBoundingSet must not inherit them just because we put a wrapper in
+    # front of it. setpriv re-narrows after the namespace switch, so what is execd ends up with
+    # exactly the caps its unit file names. Dropping from the bounding set needs CAP_SETPCAP,
+    # which is why that is in the widened set as well and is dropped here along with the rest.
+    # Opt-in, and set only by units whose bounding set we had to widen -- never on by default,
+    # so it cannot change the behaviour of services that already work.
+    if [ -n "${ZL1_NS_DROP_CAPS:-}" ] && [ -x /usr/bin/setpriv ]; then
+        exec nsenter -t "$A" -p -- /usr/bin/setpriv \
+            --bounding-set=-sys_admin,-sys_ptrace,-setpcap \
+            --inh-caps=-all --ambient-caps=-all -- "$@"
+    fi
     exec nsenter -t "$A" -p -- "$@"
 fi
 
@@ -241,7 +309,7 @@ REMOTE
   guard
   "${SSH[@]}" "BINDIR='$BINDIR' bash -s" <<'REMOTE'
 set -u
-UNITS="lomiri-location-service:lomiri-location biometryd:biometryd"
+UNITS="lomiri-location-service:lomiri-location biometryd:biometryd sensorfwd:sensorfwd"
 printf 'wrapper: '; ls -l "$BINDIR/zl1-ns-exec" 2>/dev/null || echo 'ABSENT'
 A=$(lxc-info -n android -pH 2>/dev/null | head -1)
 echo "android init pid: ${A:-<none>}"
@@ -287,8 +355,42 @@ if [ -n "$A" ]; then
 else
     echo '  (no container, so no logcat to read)'
 fi
+echo
+# sensorfwd's evidence is in its own journal, not logcat: it does not go through a bridge library
+# of ours, it opens the Android sensors HAL directly with libgbinder, so what it has to say is
+# only in what it prints. Per boot (`-b`) on purpose — unlike the logcat counts above, this one
+# must not include attempts from before the change.
+#
+# The patterns are chosen for the level the *unit* runs at (`--log-level=warning`), not the level
+# a hand-run probe uses: `Connected to sensor 1.0 service` and the `SELECT type: ... name: ...`
+# enumeration are only printed at `debug`, so counting them here answers 0 on a perfectly healthy
+# service. `Hybris sensor manager initialized` is what is left at warning level, and it is logged
+# only after the HAL has answered and every sensor has been probed.
+echo 'sensorfwd evidence (its journal this boot):'
+printf '  %-46s %s\n' 'Hybris sensor manager initialized' \
+    "$(journalctl -u sensorfwd -b --no-pager 2>/dev/null | grep -c 'Hybris sensor manager initialized')"
+printf '  %-46s %s\n' 'Could not find remote object (host ns symptom)' \
+    "$(journalctl -u sensorfwd -b --no-pager 2>/dev/null | grep -c 'Could not find remote object')"
+printf '  %-46s %s\n' 'HYBRIS CTL calls that returned an error' \
+    "$(journalctl -u sensorfwd -b --no-pager 2>/dev/null | grep -c 'HYBRIS CTL.*-> -')"
+printf '  %-46s %s\n' 'sensors named in those errors' \
+    "$(journalctl -u sensorfwd -b --no-pager 2>/dev/null | grep -o 'HYBRIS CTL [a-zA-Z]*([0-9]*=[A-Z_]*' | sed 's/.*(//; s/[0-9]*=//' | sort -u | tr '\n' ' ')"
+printf '  %-46s %s\n' 'owns com.nokia.SensorService' \
+    "$(busctl --system list 2>/dev/null | grep -c 'com.nokia.SensorService')"
+printf '  %-46s %s\n' 'NRestarts / Result' \
+    "$(systemctl show -p NRestarts --value sensorfwd 2>/dev/null) / $(systemctl show -p Result --value sensorfwd 2>/dev/null)"
+printf '  %-46s %s\n' "Failed with result 'timeout' (this boot)" \
+    "$(journalctl -u sensorfwd -b --no-pager 2>/dev/null | grep -c "Failed with result 'timeout'")"
+echo '  (that last count is whole-boot, so a boot in which this was installed while running still'
+echo '   contains the failures from before it — the unambiguous facts are NRestarts and Result)'
+echo '  (the per-sensor enumeration — "SELECT type: 1 ACCELEROMETER name: LSM6DS3 Accelerometer"'
+echo '   and friends — is only printed at --log-level=debug; run it by hand, or temporarily'
+echo '   change the drop-in, if you need to see the HAL inventory itself)'
 REMOTE
   ;;
 *)
-  sed -n '2,57p' "$0"; exit 1;;
+  # The header, whatever its current length: lines 2..the end of the leading comment block.
+  # A fixed `sed -n '2,57p'` silently truncates the usage text every time the header grows,
+  # which is how it was found.
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac
