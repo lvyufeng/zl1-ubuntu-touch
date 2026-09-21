@@ -95,15 +95,36 @@ nsenter -t $A -p -m -- /system/bin/setprop ctl.stop zygote                   # �
 
 两条都已经写进 `install-container-desabotage.sh` 的看门狗，每次容器启动后自动执行。
 
-## 5. 还没证实的
+## 5. 第二次重启（做了）
 
-- **重启了第二次吗。** 这一篇只重启了一次（§1）。RescueParty 的核弹已经拆了，但"再重启一次屏幕还会自己回来"要再测一遍才算数。
+同一天稍后又重启了一次，这次容器已经在 HAL 那一层了：
+
+```
+=== host-fix ===
+42.60 opened /dev/kgsl-3d0
+42.70 opened /dev/ion
+42.76 bind-mounted .../lsc-wrapper over /usr/share/ubuntu-touch-session/lsc-wrapper
+42.81 bind-mounted .../libtls-padding.so over /usr/lib/aarch64-linux-gnu/libtls-padding.so
+42.90 bind-mounted .../lomiri-greeter-wrapper over /usr/bin/lomiri-greeter-wrapper
+=== container-fix ===
+42.66 sabotage present (st_dev=39, want 1800) — lifting it
+59.51 after apply: st_dev=1800 hwready=true
+64.80 surfaceflinger came back — stopping it again
+66.05 container zygote is running — stopping it (nothing the host needs is a zygote child)
+```
+
+`uptime=202s` 时：`shell=1  mir=1/1  bl=128  ldm=active`，容器 `zygote=stopped sf=stopped rescue=true`，145 个 HIDL 服务。**从 `systemctl reboot` 到屏幕回来，全程没有人工步骤，而且没有再掉进 recovery。** 设备这次在 45 秒内就以 RNDIS（`18d1:d001`）出现，`adb devices` 里没有 `33e80afe` —— 也就是没有进 TWRP。
+
+§5 剩下的条目仍然是待证。
+
+## 6. 还没证实的
+
 - **`persist.sys.disable_rescue=true` 之外，init 自己有没有别的重启路径。** `44` §5.1 那条 `onrestart restart zygote` 还在；现在 zygote 是被主动停的（不是崩的），init 不会因此重启。但 `ctl.stop zygote` 之后如果 init 重启容器，zygote 会自己回来，看门狗要能跟上。
 - **容器的 `/data` 里 `persist.sys.disable_rescue` 落到哪了。** 写进去了（读回来是 `true`），但它存的位置是容器的持久属性区，容器重启后是否还在没有被单独验证 —— 看门狗每次启动都会再写一遍，所以功能上不依赖。
 - **屏幕内容还是没被眼睛验证。** 这一篇的所有结论都还是间接证据（出帧、背光、QML、socket）。
 - **rescue 事件是不是真的会累积到那一级。** 我看到的证据是"RescueParty 在数事件"加"设备进了 recovery"，中间那一步（RescueParty 的第几级、它到底调用的是 `reboot recovery` 还是别的）没有直接抓到。写在这里当待证。
 
-## 6. 这一段改了哪些东西
+## 7. 这一段改了哪些东西
 
 | 文件 | 作用 |
 | --- | --- |
