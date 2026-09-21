@@ -81,6 +81,7 @@ for what each stage is trying to establish.
 | Script | Purpose |
 | --- | --- |
 | `hybris-crash-hunt.sh` | Runs a libhybris helper on the device (any `/usr/bin/test_*`, or a full command path such as `/usr/share/ubuntu-touch-session/lsc-wrapper`), captures the kernel's core dump, rebuilds a sysroot out of the core's own `NT_FILE` list, and prints the faulting address, the nearest symbol, the faulting instruction and the frame-pointer chain. `HYBRIS_TEST_PRELOAD` sets the run's `LD_PRELOAD`, `HYBRIS_TEST_ARGS` appends arguments. This is how the Phase 5 display failure was traced to `__ctype_get_mb_cur_max+8` inside Android `libc.so` — see [`../docs/ubuntu-touch/40-the-display-died-below-lomiri.md`](../docs/ubuntu-touch/40-the-display-died-below-lomiri.md). Needs `gdb-multiarch` on the host; needs nothing on the device (no compiler, no rootfs change — `core_pattern` is `/proc`, and cores land on `/userdata`). |
+| `hybris-crash-hunt.sh --from-pid PID` | The same analysis for a process that **hangs** instead of crashing: `SIGABRT` it, which makes the kernel write the core, and everything after that is identical. `RLIMIT_CORE` belongs to the target process, so the script calls `prlimit --pid … --core=unlimited` first — without it no core is written and the newest `core.*` is the *previous* session's, which analyses perfectly and means nothing. It also verifies the core's name is `core.<comm>.<pid>`, and reads `/proc/PID/exe` before the kill because `comm` is truncated to 15 characters. This is how the Phase 5 hang was traced to `waitForHwServiceManager` — see [`../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md`](../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md). |
 
 ## The bionic TLS-slot shim
 
@@ -95,6 +96,31 @@ and install a superset of `libtls-padding.so` that fills the slot. See
 | `tlsfix/tlsfix.c` | The shim: the original 128-byte TLS padding plus a constructor that points `TP+8` at a zeroed fake `pthread_internal_t`. Freestanding (`-nostdlib`), no libc calls. |
 | `tlsfix/build-tlsfix.sh` | Cross-builds it with `clang --target=aarch64-linux-gnu` + `lld`, then checks the result really has a `PT_TLS` segment, an `DT_INIT_ARRAY` entry and the `tls_padding` symbol. |
 | `tlsfix/install-tlsfix.sh` | `--mount` / `--unmount` / `--status`. `--mount` `scp`s the build to `/userdata/zl1-tlsfix/shadow/` and bind-mounts it over `/usr/lib/aarch64-linux-gnu/libtls-padding.so`, which is the one file `lsc-wrapper` preloads — lightdm builds the compositor's environment itself, so an `LD_LIBRARY_PATH` on `lightdm.service` never reaches it, but replacing that file does. Runtime only: gone after a reboot, and `--unmount` undoes it. |
+
+Two details in `hybris-crash-hunt.sh` are worth knowing before trusting a trace
+that came out of it. First, the offset it reports for a frame is the ELF's
+link-time vaddr, obtained by taking the address's file offset from `NT_FILE` and
+mapping it through the module's own program headers — **not** `address − mapping
+start`, which is only the same thing when the mapping covering the start of the
+file has `p_vaddr == 0` (`libc.so` yes, `libhidltransport.so` no: 0xa000). Second,
+for a run, `SIGABRT` on a process whose `RLIMIT_CORE` is 0 produces no core at all,
+and the script then finds the newest one lying around.
+
+## The Android-side libraries the stock image is missing
+
+`libui_compat_layer.so` and `libhidltransport.so` are Android-side objects that
+the host graphics stack reaches through libhybris, and the stock LeEco image
+either does not have them or has one that cannot work here. These three scripts
+fetch the link-time inputs, build the objects and put them in front of the
+compositor. See
+[`../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md`](../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md).
+
+| Script | Purpose |
+| --- | --- |
+| `hybris-shims/fetch-android-libs.sh` | Copies the device's `/android/system/lib64` libraries out to `out/stubs/`. Read-only against the device. They are link-time inputs, so the shim's ABI is the device's ABI rather than a guess. |
+| `hybris-shims/build-hybris-shims.sh` | Builds `libui_compat_layer.so` from the Halium tree with the AOSP prebuilt clang (standalone: it names the header paths Soong would have supplied), and produces the patched `libhidltransport.so`. Both steps verify the result's shape — soname, exported symbols, and that the patch changed at most four bytes and the file length not at all. Deterministic for a given `ld.lld`. |
+| `hybris-shims/install-hybris-shims.sh` | `--mount` / `--unmount` / `--status`. Stages the libraries in `/userdata/zl1-hybris/lib/`, bind-mounts `lsc-wrapper.zl1` over `/usr/share/ubuntu-touch-session/lsc-wrapper`, ensures the TLS-slot mount, and restarts lightdm. The mounted wrapper is what sets `HYBRIS_LD_LIBRARY_PATH`, which is how the Android linker is told to search `/userdata/zl1-hybris/lib` **before** `/system/lib64`. |
+| `hybris-shims/lsc-wrapper.orig`, `lsc-wrapper.zl1` | The device's wrapper and the patched copy, both tracked, so the delta is reviewable. `--mount` refuses to run if the device's file is neither of them (rootfs moved on) unless `FORCE=1`. |
 
 ## Halium 9 build tree
 

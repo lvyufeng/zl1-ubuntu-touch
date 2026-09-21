@@ -12,21 +12,36 @@
 #   * gdb-multiarch on the host does the symbolising
 #
 # Usage: hybris-crash-hunt.sh [TEST] [OUTDIR]
+#        hybris-crash-hunt.sh --from-pid PID [OUTDIR]
 #   TEST    name of a /usr/bin/test_* helper (default test_hwcomposer), or any
 #           command — a name containing a "/" is used verbatim, which is how the
 #           real compositor gets analysed (`/usr/share/ubuntu-touch-session/lsc-wrapper`).
 #   OUTDIR  where to keep core + sysroot (default /mnt/data/zl1-bb10/tmp-hybris-<TEST>)
 #
+# --from-pid is for the other failure mode: a process that *hangs* rather than crashes
+# leaves no core, and "it is sitting in futex_wait" is not an answer. SIGABRT turns the
+# running process into a core, and then the identical analysis applies. Use it on a
+# process something else restarts (lightdm restarts the compositor every 60 s anyway).
+#
 # Env: HYBRIS_TEST_PRELOAD  LD_PRELOAD for the run (e.g. the TLS-slot shim)
 #      HYBRIS_TEST_ARGS     extra arguments appended to the command
 
 set -uo pipefail
-TEST="${1:-test_hwcomposer}"
-[[ "$TEST" == */* ]] && CMD="$TEST" || CMD="/usr/bin/$TEST"
-TAG="$(basename "$CMD")"
+FROM_PID=""
+if [[ "${1:-}" == "--from-pid" ]]; then
+  FROM_PID="${2:?--from-pid needs a pid}"
+  shift 2
+  TAG="hang"
+  CMD="(pid $FROM_PID)"
+  OUT="${1:-/mnt/data/zl1-bb10/tmp-hybris-hang}"
+else
+  TEST="${1:-test_hwcomposer}"
+  [[ "$TEST" == */* ]] && CMD="$TEST" || CMD="/usr/bin/$TEST"
+  TAG="$(basename "$CMD")"
+  OUT="${2:-/mnt/data/zl1-bb10/tmp-hybris-$TAG}"
+fi
 PRELOAD="${HYBRIS_TEST_PRELOAD:-}"
 ARGS="${HYBRIS_TEST_ARGS:-}"
-OUT="${2:-/mnt/data/zl1-bb10/tmp-hybris-$TAG}"
 DEV="root@10.15.19.82"
 COREDIR="/userdata/zl1-cores"          # on /userdata, rw — the rootfs image is read-only
 
@@ -36,8 +51,30 @@ SCP=(scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
 command -v gdb-multiarch >/dev/null || { echo "need gdb-multiarch on the host: apt install gdb-multiarch" >&2; exit 1; }
 mkdir -p "$OUT"
 
-echo "== 1/5  run $CMD on the device, with cores enabled"
-"${SSH[@]}" "bash -s" <<REMOTE
+if [[ -n "$FROM_PID" ]]; then
+  echo "== 1/5  force a core out of running pid $FROM_PID"
+  FROM_COMM="$("${SSH[@]}" "cat /proc/$FROM_PID/comm 2>/dev/null" | tr -d '\r')"
+  [[ -n "$FROM_COMM" ]] || { echo "pid $FROM_PID is not running" >&2; exit 1; }
+  EXPECT="core.$FROM_COMM.$FROM_PID"
+  "${SSH[@]}" "bash -s" <<REMOTE
+set -u
+mkdir -p $COREDIR
+echo '$COREDIR/core.%e.%p' > /proc/sys/kernel/core_pattern || { echo "core_pattern not writable" >&2; exit 1; }
+echo "   target: $FROM_COMM  uptime \$(cut -d. -f1 /proc/uptime)s  state \$(awk '{print \$3}' /proc/$FROM_PID/stat)"
+readlink -f /proc/$FROM_PID/exe > /tmp/zl1-hunt-exe 2>/dev/null
+# RLIMIT_CORE belongs to the *process*, not to this shell: a compositor started by
+# systemd->lightdm almost certainly has it at 0, and killing it then leaves only the
+# previous session's core behind — which analyses beautifully and means nothing.
+echo "   core limit: \$(grep -i 'core file' /proc/$FROM_PID/limits | tr -s ' ')"
+prlimit --pid $FROM_PID --core=unlimited || echo "   prlimit failed — no core will be written" >&2
+rm -f $COREDIR/core.$FROM_COMM.*
+kill -ABRT $FROM_PID
+sleep 6
+ls -t $COREDIR/core.* 2>/dev/null | head -1
+REMOTE
+else
+  echo "== 1/5  run $CMD on the device, with cores enabled"
+  "${SSH[@]}" "bash -s" <<REMOTE
 set -u
 ulimit -c unlimited
 mkdir -p $COREDIR
@@ -51,11 +88,19 @@ echo "exit=\$?   output=[\$(head -c 300 /tmp/$TAG.out)]"
 # (lsc-wrapper) is not the wrapper but the binary it exec'd — so report the newest.
 ls -t $COREDIR/core.* 2>/dev/null | head -1
 REMOTE
+fi
 
 core="$("${SSH[@]}" "ls -t $COREDIR/core.* 2>/dev/null | head -1" | tr -d '\r')"
 [[ -n "$core" ]] || { echo "no core was written — did the test actually crash?" >&2; exit 1; }
-[[ "$(basename "$core")" == core.$TAG.* ]] || \
+# comm is capped at 15 characters, so a core's name is not always a usable binary name;
+# --from-pid records the real path before the process disappears.
+EXE="$("${SSH[@]}" 'cat /tmp/zl1-hunt-exe 2>/dev/null' | tr -d '\r')"
+if [[ -n "$FROM_PID" ]]; then
+  [[ "$(basename "$core")" == "$EXPECT" ]] ||
+    { echo "no new core: expected $EXPECT, newest is $(basename "$core")" >&2; exit 1; }
+elif [[ "$(basename "$core")" != core.$TAG.* ]]; then
   echo "   note: the core is from $(basename "$core" | sed 's/^core\.//;s/\.[0-9]*$//'), not $TAG"
+fi
 echo "   core: $core"
 
 echo "== 2/5  pull the core"
@@ -147,15 +192,47 @@ while $n < 20
 end
 EOF
 exe="$(basename "$core")"; exe="${exe#core.}"; exe="${exe%.*}"
-[[ -x "$OUT/sysroot/usr/bin/$exe" ]] && MAIN="$OUT/sysroot/usr/bin/$exe" || MAIN="$OUT/sysroot/android/system/bin/$exe"
+if [[ -n "$FROM_PID" && -n "$EXE" && -x "$OUT/sysroot$EXE" ]]; then
+  MAIN="$OUT/sysroot$EXE"
+else
+  [[ -x "$OUT/sysroot/usr/bin/$exe" ]] && MAIN="$OUT/sysroot/usr/bin/$exe" || MAIN="$OUT/sysroot/android/system/bin/$exe"
+fi
 gdb-multiarch -q -batch -x "$OUT/analyse.gdb" "$MAIN" "$OUT/core" 2>&1 | grep -E '^ADDR' | tee "$OUT/addrs.txt"
 
 # module + offset for every address, from the core's own NT_FILE list.
-# The offset is "address minus the start of the containing mapping", which is the ELF's
-# link-time vaddr for the first load segment (page offset 0, p_vaddr 0) — the one that
-# carries .text, i.e. the only one code addresses can be in.
-python3 - "$OUT/nt_file.txt" "$OUT/addrs.txt" <<'PY' | tee "$OUT/resolved.txt"
-import re, sys
+#
+# The offset is the ELF's link-time vaddr, because that is what `info symbol` and
+# `disassemble` want. It is NOT simply "address minus the start of the mapping": that
+# only holds when the mapping covering the start of the file has p_vaddr == 0, which is
+# true for libc.so and false for libhidltransport.so (first LOAD: file 0, vaddr 0xa000).
+# Getting it wrong is quiet — the module name is right and the offset is short by that
+# vaddr, so it symbols to an unrelated function or to garbage. So: find the address's
+# file offset from NT_FILE, then map it through the file's own program headers.
+python3 - "$OUT/nt_file.txt" "$OUT/addrs.txt" "$OUT/sysroot" <<'PY' | tee "$OUT/resolved.txt"
+import re, struct, sys
+
+PAGE = 4096   # aarch64 with 4K pages; only ever used for non-first mappings
+
+def load_segments(path):
+    try:
+        d = open(path, 'rb').read()
+    except OSError:
+        return []
+    if d[:4] != b'\x7fELF':
+        return []
+    e_phoff, = struct.unpack_from('<Q', d, 0x20)
+    e_phentsize, e_phnum = struct.unpack_from('<HH', d, 0x36)
+    segs = []
+    for i in range(e_phnum):
+        o = e_phoff + i * e_phentsize
+        if struct.unpack_from('<I', d, o)[0] != 1:      # PT_LOAD
+            continue
+        p_offset, = struct.unpack_from('<Q', d, o + 8)
+        p_vaddr,  = struct.unpack_from('<Q', d, o + 16)
+        p_filesz, = struct.unpack_from('<Q', d, o + 32)
+        segs.append((p_offset, p_vaddr, p_filesz))
+    return segs
+
 maps, pending = [], None
 for ln in open(sys.argv[1]):
     m = re.match(r'\s*(0x[0-9a-f]+)\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)\s*$', ln)
@@ -163,12 +240,22 @@ for ln in open(sys.argv[1]):
         pending = (int(m.group(1), 16), int(m.group(2), 16), int(m.group(3), 16)); continue
     f = ln.strip()
     if f.startswith('/') and pending:
-        maps.append((pending[0], pending[1], f)); pending = None
+        maps.append((pending[0], pending[1], pending[2] * PAGE, f)); pending = None
+
+segcache = {}
+root = sys.argv[3].rstrip('/')
 for ln in open(sys.argv[2]):
     _, tag, a = ln.split()
     a = int(a, 16)
-    hit = next(((f, a - s) for s, e, f in maps if s <= a < e), None)
-    print(f"{tag:8s} 0x{a:x}  {hit[0]} +0x{hit[1]:x}" if hit else f"{tag:8s} 0x{a:x}  (unmapped)")
+    hit = next(((s, e, fo, f) for s, e, fo, f in maps if s <= a < e), None)
+    if not hit:
+        print(f"{tag:8s} 0x{a:x}  (unmapped)"); continue
+    s, e, fo, f = hit
+    off = fo + (a - s)
+    if f not in segcache:
+        segcache[f] = load_segments(root + f)
+    v = next((pv + (off - po) for po, pv, fs in segcache[f] if po <= off < po + fs), None)
+    print(f"{tag:8s} 0x{a:x}  {f} +0x{v:x}" if v is not None else f"{tag:8s} 0x{a:x}  {f} (no segment)")
 PY
 
 # Nearest symbol + the instruction itself, read from the module on disk.

@@ -35,7 +35,8 @@ case "${1:-}" in
   [ -f "$here/out/libtls-padding.so" ] || { echo "build it first: $here/build-tlsfix.sh" >&2; exit 1; }
   "${SSH[@]}" "mkdir -p $(dirname $STAGE)"
   "${SCP[@]}" "$here/out/libtls-padding.so" "$DEV:$STAGE" || exit 1
-  "${SSH[@]}" "mount --bind $STAGE $LIB || exit 1
+  # Unmount first so running this twice does not stack two bind mounts on one file.
+  "${SSH[@]}" "umount $LIB 2>/dev/null; mount --bind $STAGE $LIB || exit 1
     echo 'mounted:'; findmnt -T $LIB | tail -1
     echo -n 'sha256 on device: '; sha256sum $LIB | cut -d' ' -f1"
   echo "now: systemctl reset-failed lightdm; systemctl restart lightdm"
