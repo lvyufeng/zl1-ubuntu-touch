@@ -74,7 +74,7 @@ EOF
   done
   # 0755 before the copy, not after: lightdm reports a non-executable wrapper as
   # "not found in path", which reads like a missing file rather than a mode.
-  ./make-lsc-wrapper.sh --check >/dev/null || ./make-lsc-wrapper.sh >/dev/null
+  ./make-lsc-wrapper.sh --check >/dev/null || "$here/make-lsc-wrapper.sh" >/dev/null
   cp "$here/lsc-wrapper.zl1" "$here/out/lsc-wrapper"
   chmod 0755 "$here/out/lsc-wrapper"
   "${SCP[@]}" "$here/out/lsc-wrapper" "$DEV:$STAGE/lsc-wrapper" || exit 1
@@ -115,7 +115,10 @@ EOF
     sha256sum $WRAPPER /usr/lib/aarch64-linux-gnu/libtls-padding.so $LIBDIR/*.so 2>/dev/null
     echo '== display stack'
     echo -n 'lightdm:    '; systemctl is-active lightdm
-    P=\$(pgrep -f 'lomiri-system-compositor' | head -1)
+    # The real compositor, not the nsenter wrapper in front of it: pgrep -f on
+    # the bare name matches the wrapper first, and the wrapper is deliberately
+    # still in the host's namespaces.
+    P=\$(pgrep -f '^/usr/sbin/lomiri-system-compositor' | tail -1)
     if [ -n \"\$P\" ]; then
       printf 'compositor: pid %s, up %ss\n' \"\$P\" \"\$(ps -o etimes= -p \$P | tr -d ' ')\"
       printf '  pid namespace: %s\n' \"\$(readlink /proc/\$P/ns/pid)\"
@@ -123,6 +126,7 @@ EOF
     else
       echo 'compositor: not running'
     fi
+    echo -n 'nsenter wrapper pid namespace: '; W=\$(pgrep -f '^nsenter -t .*lomiri-system-compositor' | tail -1); [ -n \"\$W\" ] && readlink /proc/\$W/ns/pid || echo '(no wrapper)'
     echo -n 'container init pid namespace: '; A=\$(lxc-info -n android -pH 2>/dev/null | head -1); readlink /proc/\$A/ns/pid 2>/dev/null
     echo '== last compositor output'
     tail -6 /var/log/lightdm/unity-system-compositor.log"

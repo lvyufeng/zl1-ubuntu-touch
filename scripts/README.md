@@ -125,6 +125,29 @@ and
 | `hybris-shims/make-lsc-wrapper.sh` | Regenerates `lsc-wrapper.zl1` from the device's original as two hunks, so the delta stays reviewable and a rootfs that moved on shows up as a hash mismatch rather than a silently patched file. `--check` verifies the tracked copy is current. |
 | `hybris-shims/install-hybris-shims.sh` | `--mount` / `--unmount` / `--status`. Stages the libraries in `/userdata/zl1-hybris/lib/`, bind-mounts `lsc-wrapper.zl1` over `/usr/share/ubuntu-touch-session/lsc-wrapper`, ensures the TLS-slot mount, and restarts lightdm. The mounted wrapper is what sets `HYBRIS_LD_LIBRARY_PATH` (how the Android linker is told to search `/userdata/zl1-hybris/lib` **before** `/system/lib64`) and what puts the compositor in the container's PID namespace. |
 | `hybris-shims/lsc-wrapper.orig`, `lsc-wrapper.zl1` | The device's wrapper and the patched copy, both tracked, so the delta is reviewable. `--mount` refuses to run if the device's file is neither of them (rootfs moved on) unless `FORCE=1`. |
+| `hybris-shims/free-container-display.sh` | `--apply` / `--status` / `--explain`. Undoes two things the **v63 boot image does to itself**: the three same-length string substitutions its LXC mount hook bind-mounts over `hwservicemanager`, `qseecomd` and both `libc.so` (which is why no HAL in the container ever registered), and the container's SurfaceFlinger holding the QCOM composer's single client slot (which is why the host compositor could not create a client). Runtime-only, and dies with the container — the hook runs on every `lxc-start`. See [`../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md`](../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md). |
+
+### What the container does to itself
+
+`free-container-display.sh --explain` prints this, but it is worth having here too,
+because every symptom it causes looks like a different bug. The v63 image's
+`lxc.hook.mount` script copies four Android binaries into a tmpfs, changes one
+string in each to another of the **same length**, and bind-mounts them back over
+the originals:
+
+| file | string | becomes |
+| --- | --- | --- |
+| `system/bin/hwservicemanager` | `hwservicemanager.ready` | `zlservicemanager/ready` |
+| `vendor/bin/qseecomd` | `sys.listeners.registered` | `zl1.listeners.registered` |
+| `system/lib64/libc.so`, `system/lib/libc.so` | `/dev/socket/property_service` | `/dev/socket/property_servicf` |
+
+The shape checks all pass — same size, same inode? No: the giveaway is `st_dev`.
+`stat -c '%d %i'` on `/system/lib64/libc.so` from inside the container's mount
+namespace reports a tmpfs device, while the file at `/android/system/lib64/libc.so`
+reports `1800` (`7:8`, `/dev/loop1`). Same path, same mount point, two different
+`st_dev` values means something is mounted on top of it. They were V25/V28/V29/V30
+diagnostics and they were never taken back out; see
+[`../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md`](../docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md) §3.
 
 ### Why the compositor has to run in the container's PID namespace
 
