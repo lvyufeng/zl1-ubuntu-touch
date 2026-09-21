@@ -387,6 +387,15 @@ policy_failed=0
 # Uptimes at which to snapshot the netfilter/routing state, picked to bracket the break.
 NETSNAP_AT="20 30 40 50 60 75 90 110 140 180"
 
+# A sampling loop that is not running is itself evidence, and the header already carries
+# both fields of /proc/uptime — so the gap is recoverable by hand. Nobody read it, though,
+# and on 2026-09-21 a 1.6-hour CPU-saturated spiral appeared only as an unexplained hole in
+# the log. Say it out loud instead: the second field is cumulative idle, so the pair
+# separates "busy" from "waiting on something".
+GAP_SECONDS=20
+prev_up=""
+prev_idle=""
+
 while :; do
     i=$((i + 1))
     host_ping_ok=0
@@ -458,6 +467,9 @@ while :; do
         heals=$((heals + 1))
         log "HEAL: attempt $heals/$MAX_HEALS done; sleeping ${HEAL_RETRY_SECONDS}s before judging"
         sleep "$HEAL_RETRY_SECONDS"
+        # The heal sleeps deliberately, so the next iteration is late by design. Clear the
+        # gap baseline rather than reporting the tool's own pause as a machine problem.
+        prev_up=""
         # Give the heal a fresh baseline so a successful reset is not immediately
         # re-flagged as the same stall.
         set -- $(ifname_stats)
@@ -501,6 +513,24 @@ while :; do
             RECOVERY_AFTER=0
         fi
     fi
+
+    # How long did this iteration take? See GAP_SECONDS above.
+    up_now=$(cut -d' ' -f1 /proc/uptime 2>/dev/null | cut -d. -f1)
+    idle_now=$(cut -d' ' -f2 /proc/uptime 2>/dev/null | cut -d. -f1)
+    if [ -n "$prev_up" ] && [ -n "$up_now" ] && [ -n "$idle_now" ]; then
+        gap=$((up_now - prev_up))
+        idle_delta=$((idle_now - prev_idle))
+        if [ "$gap" -ge "$GAP_SECONDS" ]; then
+            if [ "$idle_delta" -le $((gap / 4)) ]; then
+                why="BUSY — only ${idle_delta}s of idle in ${gap}s, so the machine was spinning, not waiting"
+            else
+                why="idle — ${idle_delta}s idle of ${gap}s, so something was blocking, not burning CPU"
+            fi
+            log "GAP: ${gap}s since the previous sample; ${why}"
+        fi
+    fi
+    prev_up="$up_now"
+    prev_idle="$idle_now"
 
     sleep "$SAMPLE_INTERVAL"
 done
