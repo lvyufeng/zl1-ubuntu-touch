@@ -129,6 +129,8 @@ and
 
 | `hybris-shims/install-container-desabotage.sh` | `--install` / `--remove` / `--status`. Makes `free-container-display.sh` **persistent**: installs a supervisor at `/userdata/zl1-container-fix/apply.sh` plus a `multi-user.target` unit, so the four over-mounts are lifted and the container's SurfaceFlinger stopped again every time the container restarts. Persistent *without touching the boot image* because `/etc/systemd/system` is one of the rootfs's writable-paths, bind-mounted from `/userdata/system-data/etc/systemd`. The device script is written by this one, so there is one copy of the logic and it lives here. |
 
+| `hybris-shims/free-gpu-devices.sh` | `--apply` / `--restore` / `--status` / `--explain`. Opens the GPU to the session user: `/dev/ion` and `/dev/kgsl-3d0` are created `crw------- root:root` by devtmpfs, and the Lomiri session runs as `phablet`, so `eglInitialize()` fails with `EGL_NOT_INITIALIZED` and Mir reports the misleading `could not select EGL config`. `--status` prints the mode bits **and** what the session user actually gets (`test_egl_configs` run through `su phablet` with the doc-45 environment), because mode bits alone do not answer it. Runtime-only — devtmpfs, back to 0600 after a reboot. See [`../docs/ubuntu-touch/46-the-gui-runs-dev-ion-was-root-only.md`](../docs/ubuntu-touch/46-the-gui-runs-dev-ion-was-root-only.md). |
+
 ### What the container does to itself
 
 `free-container-display.sh --explain` prints this, but it is worth having here too,
