@@ -70,7 +70,9 @@ prlimit --pid $FROM_PID --core=unlimited || echo "   prlimit failed — no core 
 rm -f $COREDIR/core.$FROM_COMM.*
 kill -ABRT $FROM_PID
 sleep 6
-ls -t $COREDIR/core.* 2>/dev/null | head -1
+rm -f /tmp/zl1-hunt-core
+ls -t $COREDIR/$EXPECT 2>/dev/null | head -1 > /tmp/zl1-hunt-core
+cat /tmp/zl1-hunt-core
 REMOTE
 else
   echo "== 1/5  run $CMD on the device, with cores enabled"
@@ -80,26 +82,31 @@ ulimit -c unlimited
 mkdir -p $COREDIR
 # A plain file path (not a pipe) so the kernel writes the core where we can read it.
 echo '$COREDIR/core.%e.%p' > /proc/sys/kernel/core_pattern || { echo "core_pattern not writable" >&2; exit 1; }
-rm -f $COREDIR/core.$TAG.*
+# Pick the core by *time*, not by name. Two reasons the name cannot be trusted:
+#   * the kernel truncates %e to 15 characters, so the core for
+#     /usr/bin/lomiri-location-serviced is core.lomiri-location.<pid> — deleting or
+#     matching a name built from the command does not find it;
+#   * for a wrapper script (lsc-wrapper) the dying process is the binary it exec'd.
+# Getting this wrong is worse than getting nothing: on 2026-09-21 the stale core that a
+# name-based match fell back to analysed perfectly and reproduced doc 45's Mir fault,
+# which is a different bug in a different process. A stamp file cannot be fooled.
+touch /tmp/$TAG.stamp
 cd $COREDIR
 LD_PRELOAD="$PRELOAD" timeout 60 $CMD $ARGS >/tmp/$TAG.out 2>&1
 echo "exit=\$?   output=[\$(head -c 300 /tmp/$TAG.out)]"
-# The core is named after the process that actually died, which for a wrapper script
-# (lsc-wrapper) is not the wrapper but the binary it exec'd — so report the newest.
-ls -t $COREDIR/core.* 2>/dev/null | head -1
+find $COREDIR -maxdepth 1 -name 'core.*' -newer /tmp/$TAG.stamp 2>/dev/null | head -1 > /tmp/zl1-hunt-core
+cat /tmp/zl1-hunt-core
 REMOTE
 fi
 
-core="$("${SSH[@]}" "ls -t $COREDIR/core.* 2>/dev/null | head -1" | tr -d '\r')"
-[[ -n "$core" ]] || { echo "no core was written — did the test actually crash?" >&2; exit 1; }
-# comm is capped at 15 characters, so a core's name is not always a usable binary name;
-# --from-pid records the real path before the process disappears.
+core="$("${SSH[@]}" "cat /tmp/zl1-hunt-core 2>/dev/null" | tr -d '\r')"
+[[ -n "$core" ]] || { echo "no new core was written — did the test actually crash?" >&2; exit 1; }
+# --from-pid records the real path before the process disappears, because comm is capped
+# at 15 characters and a core's name is not always a usable binary name.
 EXE="$("${SSH[@]}" 'cat /tmp/zl1-hunt-exe 2>/dev/null' | tr -d '\r')"
 if [[ -n "$FROM_PID" ]]; then
   [[ "$(basename "$core")" == "$EXPECT" ]] ||
     { echo "no new core: expected $EXPECT, newest is $(basename "$core")" >&2; exit 1; }
-elif [[ "$(basename "$core")" != core.$TAG.* ]]; then
-  echo "   note: the core is from $(basename "$core" | sed 's/^core\.//;s/\.[0-9]*$//'), not $TAG"
 fi
 echo "   core: $core"
 

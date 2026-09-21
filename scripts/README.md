@@ -97,14 +97,20 @@ and install a superset of `libtls-padding.so` that fills the slot. See
 | `tlsfix/build-tlsfix.sh` | Cross-builds it with `clang --target=aarch64-linux-gnu` + `lld`, then checks the result really has a `PT_TLS` segment, an `DT_INIT_ARRAY` entry, the `tls_padding` symbol, an exported `pthread_create`, and **no version definition** (a versioned `pthread_create` would not bind glibc's `pthread_create@GLIBC_2.34` references and the interposer would silently never run). |
 | `tlsfix/install-tlsfix.sh` | `--mount` / `--unmount` / `--status`. `--mount` `scp`s the build to `/userdata/zl1-tlsfix/shadow/` and bind-mounts it over `/usr/lib/aarch64-linux-gnu/libtls-padding.so`, which is the one file `lsc-wrapper` preloads — lightdm builds the compositor's environment itself, so an `LD_LIBRARY_PATH` on `lightdm.service` never reaches it, but replacing that file does. Runtime only: gone after a reboot, and `--unmount` undoes it. |
 
-Two details in `hybris-crash-hunt.sh` are worth knowing before trusting a trace
+    Three details in `hybris-crash-hunt.sh` are worth knowing before trusting a trace
 that came out of it. First, the offset it reports for a frame is the ELF's
 link-time vaddr, obtained by taking the address's file offset from `NT_FILE` and
 mapping it through the module's own program headers — **not** `address − mapping
 start`, which is only the same thing when the mapping covering the start of the
 file has `p_vaddr == 0` (`libc.so` yes, `libhidltransport.so` no: 0xa000). Second,
 for a run, `SIGABRT` on a process whose `RLIMIT_CORE` is 0 produces no core at all,
-and the script then finds the newest one lying around.
+and the script then finds the newest one lying around. Third, and for the same
+reason: the script picks the core by **time** (`touch` a stamp, then `find -newer`),
+never by name — the kernel truncates `%e` to 15 characters, so
+`/usr/bin/lomiri-location-serviced` writes `core.lomiri-location.<pid>`, and a
+name-based match silently falls back to a stale core from a previous boot. On
+2026-09-21 that stale core analysed perfectly and reproduced doc 45's Mir fault in
+a different process; see [`../docs/ubuntu-touch/49-two-cores-that-are-not-tls-wifi-stuck-at-wcnss-and-a-trip-into-edl.md`](../docs/ubuntu-touch/49-two-cores-that-are-not-tls-wifi-stuck-at-wcnss-and-a-trip-into-edl.md).
 
 ## The Android-side libraries the stock image is missing
 
