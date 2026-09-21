@@ -177,6 +177,8 @@ hci0 在；wlp1s0、p2p0 在
 
 ## 7. 还差的：pretty hostname 没变，因为设备没有 yaml
 
+> **更正（[`64`](64-the-last-unit-was-not-failing-it-was-obeying.md)）**：这一节的观察对象错了 —— 主机名的来源不是 deviceinfo 的 yaml，而是这个 unit "只在当前 pretty hostname 为空时才写"的策略加上镜像里那个 `PRETTY_HOSTNAME="Generic device"`。而且设备**本来就通过兜底路径把自己认对了**（`Name: le_zl1` / `PrettyName: LeEco Pro3` / `DeviceType: phone` / `GridUnit: 21`），`/etc/deviceinfo/devices/` 也根本是只读的。下面这段保留原样，因为它记录的是当时的推断过程。
+
 `update-machine-info-from-deviceinfo` 现在**成功退出**了，但 `hostnamectl` 还是：
 
 ```
