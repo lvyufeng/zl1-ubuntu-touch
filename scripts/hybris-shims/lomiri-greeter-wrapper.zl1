@@ -1,0 +1,115 @@
+#!/bin/sh
+# -*- Mode: sh; indent-tabs-mode: nil; tab-width: 4 -*-
+#
+# Copyright (C) 2011, 2013, 2016 Canonical Ltd.
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3 of the License.
+#
+# See http://www.gnu.org/copyleft/gpl.html the full text of the license.
+
+# This wrapper merely ensures that init and friends live only as long as this
+# script does.  Otherwise, it's very easy for some processes to not notice that
+# the session died.  We could try to do this in-process, but we want to do this
+# cleanup even if the greeter aborts.
+
+# zl1: hybris' Android linker never fills bionic's TLS slot 1 (TP+8), which glibc
+# leaves alone, so any Android-side read of __get_bionic_tls() faults at
+# __ctype_get_mb_cur_max+8. QtMir loads the android2 graphics platform and dies
+# there. lsc-wrapper preloads the fix for the system compositor; the greeter needs
+# it too. See docs/ubuntu-touch/44-the-v63-image-sabotages-its-own-container.md.
+export LD_PRELOAD=libtls-padding.so
+export HYBRIS_LD_LIBRARY_PATH=/userdata/zl1-hybris/lib:/system/lib64:/odm/lib64:/vendor/lib64
+
+trap cleanup TERM EXIT
+
+cleanup()
+{
+    trap - TERM EXIT
+    if [ -n "$CMD_PID" ]; then
+        kill "$CMD_PID"
+    fi
+    exit 0
+}
+
+set_greeter_var()
+{
+    export "$1=$2"
+    dbus-update-activation-environment --systemd "$1=$2"
+}
+
+SUB_SOCKET=$XDG_RUNTIME_DIR/mir_socket
+rm -f $SUB_SOCKET # clear socket in case we were hard shut down
+
+echo "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}" >"$XDG_RUNTIME_DIR/dbus-session"
+
+# If touch session script (which sets up grid units and mir variables) is available, use it
+TOUCH_WRAPPER=
+if which lomiri-touch-session >/dev/null; then
+    TOUCH_WRAPPER=lomiri-touch-session
+fi
+
+# Advertise as a lomiri session, so that indicator-network will start.
+set_greeter_var XDG_SESSION_DESKTOP lomiri
+set_greeter_var DESKTOP_SESSION $XDG_SESSION_DESKTOP
+
+set_greeter_var QT_IM_MODULE Maliit
+set_greeter_var QT_QPA_PLATFORM ubuntumirclient
+
+# We disable ofono using pulse.  It causes problems with racing with the user's
+# pulse.  We need to come up with a better long-term fix for this, because we
+# eventually need the greeter to play ringtones for users that aren't logged in.
+set_greeter_var PA_DISABLED 1
+
+# Define language here for phone if available.  When phone user switches their
+# language, they expect that to affect the greeter too.  But the user doesn't
+# have permission to switch system language, only their own.  So we notice if
+# the phablet user exists and use their language if so.  TODO: talk to design
+# about whether we should switch language on fly as users are selected (this
+# is very hard to do technically).
+#
+# Do this after lomiri-greeter-starting, in case a customization upstart job
+# changes language.
+if [ "$(id -u phablet 2>/dev/null)" = "32011" ]; then
+    USER_LANG=$(gdbus call --system --dest org.freedesktop.Accounts --object-path /org/freedesktop/Accounts/User32011 --method org.freedesktop.DBus.Properties.Get org.freedesktop.Accounts.User Language | cut -d\' -f2)
+    if [ -n "$USER_LANG" ]; then
+        set_greeter_var LANGUAGE "$USER_LANG"
+    fi
+    USER_LOCALE=$(gdbus call --system --dest org.freedesktop.Accounts --object-path /org/freedesktop/Accounts/User32011 --method org.freedesktop.DBus.Properties.Get org.freedesktop.Accounts.User FormatsLocale | cut -d\' -f2)
+    if [ -n "$USER_LOCALE" ]; then
+        set_greeter_var LANG "$USER_LOCALE"
+        set_greeter_var LC_ALL "$USER_LOCALE"
+    fi
+fi
+
+# And finally actually start the greeter
+if [ -n "$(command -v device-info)" ]; then
+    GRID_UNIT_PX="$(device-info get GridUnit)"
+fi
+
+export GRID_UNIT_PX="${GRID_UNIT_PX:-18}"
+export MIR_SERVER_ENABLE_MIRCLIENT=1
+
+rm "$XDG_RUNTIME_DIR/mir_socket"
+exec env MIR_SERVER_FILE=$SUB_SOCKET $TOUCH_WRAPPER $@ &
+CMD_PID=$!
+
+count=0
+limit=60
+while [ true ]; do
+    count=$((count + 1))
+    [ $count -gt $limit ] && break
+    [ -e "$XDG_RUNTIME_DIR/mir_socket" ] && break
+    sleep 1s
+done
+
+systemctl --user restart maliit-server.service &
+systemctl --user restart lomiri-indicators.target &
+
+wait $CMD_PID
+CMD_PID=
+
+systemctl --user stop maliit-server.service
+systemctl --user stop lomiri-indicators.target
+
