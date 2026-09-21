@@ -88,7 +88,8 @@ file:///usr/lib/aarch64-linux-gnu/qt5/qml/Lomiri/Components/1.3/Icon.qml:115:5: 
 - **屏幕内容仍然没有被眼睛验证过。** 出帧、背光 128、QML 在加载都是间接证据；一次触摸或者一张照片才能确认画面是对的。
 - **没测过长稳。** 98 秒不掉不等于可以过夜；`44` 记录的容器自毁机制（每次 `lxc-start` 重放补丁）还在，`zl1-container-fix.service` 在看守它。
 - **剩下那个失败的 unit**：`audiosystem-passthrough-qti.service`（"instance implementing IQcRilAudio interface"）—— 音频那条线的第一个待办。
-- 触摸、Wi-Fi、其余硬件一个都没开始测（用户的目标里"所有的硬件都能驱动"那一半）。
+- **触摸：外壳已经枚举到了，但没测过事件。** `lomiri` 的日志里 8 个 `/dev/input/event*` 全部 `Input device added`，包括触摸屏 `synaptics_dsx /dev/input/event3`，类型是 `Button|TouchScreen`；`phablet` 也在 `android_input` 组里（`/dev/input/event*` 是 `crw-rw---- root:android_input`），所以节点权限不是问题。缺的只是一次真实触摸，看事件到不到得了 shell。
+- 其余硬件（Wi-Fi、音频、传感器、摄像头、蓝牙…）一个都没开始测（用户的目标里"所有的硬件都能驱动"那一半）。已知第一个失败的 unit 是 `audiosystem-passthrough-qti.service`。
 
 ## 6. 复现（当前设备上生效的全部运行时改动）
 
