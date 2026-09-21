@@ -69,10 +69,14 @@ echo "== building (this also builds the host toolchain the tree has not built ye
   cd "$TREE"
   [ -z "$PYSHIM" ] || export PATH="$PYSHIM:$PATH"
   export ALLOW_MISSING_DEPENDENCIES=true
+  # See the long note in build-platform-api-libs.sh: envsetup.sh indexes one past the end of
+  # an array on purpose, which bash >= 4.4 treats as an unbound variable and aborts the source
+  # under `set -u`. That kills this subshell after "== building" and before any make output.
+  set +u
   source build/envsetup.sh >/dev/null 2>&1
   lunch "$LUNCH" >/dev/null 2>&1
   m -j"$(nproc)" libhwc2_compat_layer
-)
+) || { echo "build failed (see the make output above)" >&2; exit 1; }
 
 SRC="$TREE/out/target/product/zl1/system/lib64/libhwc2_compat_layer.so"
 [ -f "$SRC" ] || { echo "build reported success but $SRC is not there" >&2; exit 1; }
