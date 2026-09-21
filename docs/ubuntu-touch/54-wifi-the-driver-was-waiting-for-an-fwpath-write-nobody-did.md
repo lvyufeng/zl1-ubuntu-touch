@@ -84,6 +84,39 @@ IPv6: ADDRCONF(NETDEV_UP): wlan0: link is not ready
 
 `wlan0` 是 `DOWN`/`NO-CARRIER`，那是当然的：**没连过任何网络**。而它一出现，已经有两个 userspace 进程在跟它说话：宿主上一直在跑的 `/usr/sbin/wpa_supplicant`，和 NetworkManager（日志里的 `Qt bearer thread`）。
 
+## 3.5 重启之后：名字不是 `wlan0`，而且能扫到 25 个 AP
+
+重启验证（unit 自动触发）时先看到的是**失败**：`ip link show wlan0` 报 "Device wlan0 does not exist"，而 unit 的日志显示它一次又一次地重写 `fwpath`。差一点就把它当成"重启之后不生效"。
+
+实际上驱动是起来的 —— **接口被 udev 改了名字**：
+
+```
+$ ip -brief link | grep -E "wlp|wlan|p2p"
+wlp1s0   DOWN  b4:ef:fa:d1:32:38 <NO-CARRIER,BROADCAST,MULTICAST,UP>
+p2p0     DOWN  b6:ef:fa:d1:32:38 <BROADCAST,MULTICAST>
+
+$ iw dev
+phy#0
+	Interface p2p0     addr b6:ef:fa:d1:32:38  type managed
+	Interface wlp1s0   addr b4:ef:fa:d1:32:38  type managed
+```
+
+`b4:ef:fa:d1:32:38` 就是上一段里那个 `wlan0` 的 MAC。**systemd-udevd 的可预测命名把它变成了 `wlp1s0`** —— 所以"按名字找 `wlan0`"这个判据自始至终是错的：驱动一直是好的，是检查方法错了。（`52` 那个教训换了个形式又来一次：不是"看不见"，是"看的名字不对"。）
+
+判据改成"问内核"而不是"问名字"：`/sys/class/net/<if>/wireless` 存在才是无线接口。改完一次就认出来了，而且把真正说明问题的那一项检查补上了：
+
+```
+$ iw dev wlp1s0 scan
+BSS 3c:6a:48:df:87:54(on wlp1s0)
+	freq: 2437   signal: -34.00 dBm
+	SSID: 50111111
+	Country: CN
+	HT20/HT40 ...
+```
+
+**扫到真实 AP 了**（`--status` 的 scan test 报 **25 个 BSS**）。所以 `wpa_supplicant` 那句 `__wlan_hdd_cfg80211_dump_survey: chan_info is NULL` 是 survey-dump 那一条单独 ioctl 路径上的问题（`iw survey` 走的），**不影响扫描**。射频是通的。
+
+
 ## 4. 一个真实的危险对比
 
 `49` 里 `unbind` `cnss` 平台驱动把设备送进了 EDL；这一次是**往驱动的正式入口写参数**（原厂 Android 的正常启动路径），不是拆链路。两件事在源码上的区别很清楚：`unbind` 会走 `cnss_wlan_pci_remove()` 那侧（拆 PCIe link），而写 `fwpath` 走 `kickstart_driver(true, ...)` 那侧（上电、引导）。**但这也是为什么动手之前先把日志抓起来**：`49` 的教训不是"别碰"，是"别在看不见的时候碰"。
@@ -94,23 +127,20 @@ IPv6: ADDRCONF(NETDEV_UP): wlan0: link is not ready
 
 手工写一次不算数 —— 每次开机都得写，而且要等 `/vendor/firmware_mnt/image` 可读（固件是经内核固件加载器读的，容器文件系统没起来之前那个路径不存在，太早写会得到看起来像"固件坏了"的失败）。所以做成了和这里其它 unit 同一个形状：
 
-- 设备侧 `/userdata/zl1-wlan/bringup.sh`：`wlan0` 不在 → 等 `/vendor/firmware_mnt/image/qwlan30.bin` 可读 → 写 `fwpath=sta` → 记一行。每轮记一次，成功后安静下来（每 60 秒看一次）；有重试预算，`wlan0` 掉了会重新触发。
+- 设备侧 `/userdata/zl1-wlan/bringup.sh`：**没有无线接口**（判据是 `/sys/class/net/<if>/wireless`，不是名字 `wlan0` —— 见 §3.5）→ 等 `/vendor/firmware_mnt/image/qwlan30.bin` 可读 → 写 `fwpath=sta` → 记一行。每轮记一次，成功后安静下来（每 60 秒看一次）；有重试预算，接口掉了会重新触发。
 - unit `zl1-wlan-bringup.service` 在 `/etc/systemd/system`（可写路径，活过重启），`After=multi-user.target`。
 
 ## 6. 还没解决 / 下一步
 
-- **重启验证持久化。** 还没做（这一篇写完就去做）。
-- **扫描是坏的。** `wpa_supplicant` 一直在报：
-  ```
-  wlan: [E :HDD] __wlan_hdd_cfg80211_dump_survey: 31044: chan_info is NULL
-  ```
-  `wlan0` 在、驱动在、固件在，但 scan/survey 这条路上 `chan_info` 是空的。这说明**驱动起来了不等于 Wi-Fi 能用** —— 这一条要单独查。
-- **NetworkManager 认不认这张卡。** 它已经在发 ioctl（`__hdd_ioctl: unknown ioctl 35591`，那是它探测无线能力时打的，qcacld 不实现那个 ioctl，不一定是问题）。要确认它能不能建起无线设备、能不能扫到 SSID。
-- 上面两条都解决之前，"Wi-Fi 能用"不算成立。
+- **重启验证持久化：做了，成了**（见 §3.5，unit 自动触发，接口是 `wlp1s0`）。**但还没做第二次冷启动**，而且这次是同一天里的第三次重启。
+- **接上网络。** 扫描通了，关联没试过 —— 那需要一份 AP 的口令（用户提供）。
+- **`survey` 那条路。** `__wlan_hdd_cfg80211_dump_survey: chan_info is NULL` 还在刷；扫描不受影响，但 `iw survey` 和 NetworkManager 的某些信号强度查询会拿不到东西。要不要修、修不修得动，另说。
+- **接口名。** 现在是 `wlp1s0`。UT 的 network indicator / NM 不依赖固定名字，所以先不动；如果要统一成 `wlan0`，那是 udev 策略的事（`/etc/systemd/network/*.link`），不是驱动的事。
+- **`unknown ioctl 35591`**：NetworkManager（Qt bearer 线程）探测无线能力时发的，qcacld 不实现。不一定是问题，但记着。
 
 ## 7. 这一段改了哪些东西
 
 | 文件 | 作用 |
 | --- | --- |
-| `scripts/hybris-shims/install-wlan-bringup.sh` | 新增。`--install` / `--remove` / `--status` / `--trigger`。把"写 `fwpath`"做成开机自动、可重试的 unit；`--status` 一次打印 unit 状态、`fwpath`、`wlan0`、cnss 池用量、驱动日志和 bringup 日志 |
+| `scripts/hybris-shims/install-wlan-bringup.sh` | 新增。`--install` / `--remove` / `--status` / `--trigger`。把"写 `fwpath`"做成开机自动、可重试的 unit；`--status` 一次打印 unit 状态、`fwpath`、**无线接口（按 `/sys/class/net/*/wireless` 发现，不假设名字）**、cnss 池用量、**一次真实扫描的 BSS 数量**和 bringup 日志 |
 | `scripts/install-kmsg-drain.sh` | 用的（`52` 那个），这次重启第一次证明它在设备上真的抓到了从 `[0.000000]` 开始的完整开机日志 |

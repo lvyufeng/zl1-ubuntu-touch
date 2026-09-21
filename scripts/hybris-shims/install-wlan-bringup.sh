@@ -65,20 +65,39 @@ logfile_rotate() {
 }
 log() { printf "%s %s\n" "$(cut -d. -f1 /proc/uptime)" "$*" >> "$LOG"; }
 
+# The interface is NOT called wlan0. systemd-udevd predictable naming renames it, and on
+# 2026-09-21 the name that came up was `wlp1s0` — with `p2p0` alongside it — while `wlan0`
+# never existed at all. So a check for the literal name reports "the driver did not load" on
+# a device where it loaded fine and `iw dev … scan` returns real access points. Ask the kernel
+# which interfaces are wireless instead: /sys/class/net/<if>/wireless exists only for those.
+wifi_if() {
+    for d in /sys/class/net/*/; do
+        [ -e "$d/wireless" ] || continue
+        n=$(basename "$d")
+        [ "$n" = p2p0 ] && continue          # the P2P sibling is not the station interface
+        printf '%s' "$n"
+        return 0
+    done
+    return 1
+}
+
 # One attempt per boot is the common case; the retry budget exists for the boot where the
 # firmware is not readable yet when the container is still coming up.
 tries=0
 while :; do
     logfile_rotate
-    if [ -e /sys/class/net/wlan0 ]; then
+    if ifc=$(wifi_if); then
         # Already up. Say so once, then stay quiet — this loop runs for the life of the boot.
-        [ "$tries" = up ] || { log "wlan0 present: $(cat /sys/class/net/wlan0/address 2>/dev/null)"; tries=up; }
+        if [ "$tries" != up ]; then
+            log "wireless interface $ifc present: $(cat /sys/class/net/$ifc/address 2>/dev/null)"
+            tries=up
+        fi
         sleep 60
         continue
     fi
     if [ "$tries" = up ]; then
         # It existed and went away; that is worth a line, and worth retrying.
-        log "wlan0 disappeared — re-triggering"
+        log "the wireless interface went away — re-triggering"
         tries=0
     fi
     if [ "$tries" -ge 12 ]; then
@@ -159,20 +178,34 @@ REMOTE
   guard
   "${SSH[@]}" '
     echo sta > /sys/module/wlan/parameters/fwpath && echo "wrote fwpath=sta"
-    sleep 10
-    printf "wlan0: "; ip -brief link show wlan0 2>&1 | head -1 || echo absent'
+    sleep 12
+    ip -brief link | awk "/wlp|wlan/ {print \"  \" \$0}"'
   ;;
 --status)
   guard
-  "${SSH[@]}" "
-    printf 'unit       : '; systemctl is-active zl1-wlan-bringup.service 2>&1
-    printf 'fwpath     : '; cat /sys/module/wlan/parameters/fwpath 2>/dev/null; echo
-    printf 'wlan0      : '; ip -brief link show wlan0 2>&1 | head -1 || echo 'absent'
-    printf 'cnss pool  : '; grep -A2 'Memory Status' /sys/kernel/debug/cnss-prealloc/status 2>/dev/null | tail -2 | tr '\n' ' '; echo
-    echo 'driver messages:'
-    grep -aiE 'cnss|wlan: |qcacld|QCA6174' /userdata/zl1-kmsg/kmsg.log 2>/dev/null | tail -5
-    echo 'bringup log:'
-    tail -8 /userdata/zl1-wlan/bringup.log 2>/dev/null"
+  # The interface name is udev'"'"'s (wlp1s0 on 2026-09-21), so it is discovered rather than
+  # assumed — and the scan test is the one that actually answers "does the radio work".
+  "${SSH[@]}" 'bash -s' <<'REMOTE'
+printf 'unit       : '; systemctl is-active zl1-wlan-bringup.service 2>&1
+printf 'fwpath     : '; cat /sys/module/wlan/parameters/fwpath 2>/dev/null; echo
+echo 'wireless interfaces (the name is udev'\''s, not wlan0):'
+station=""
+for d in /sys/class/net/*/; do
+    [ -e "$d/wireless" ] || continue
+    n=$(basename "$d")
+    printf '  %-10s %s  %s\n' "$n" "$(cat $d/address 2>/dev/null)" "$(cat $d/operstate 2>/dev/null)"
+    [ "$n" = p2p0 ] || [ -n "$station" ] || station=$n
+done
+printf 'cnss pool  : '; grep -A2 'Memory Status' /sys/kernel/debug/cnss-prealloc/status 2>/dev/null | tail -2 | tr '\n' ' '; echo
+if [ -n "$station" ]; then
+    ip link set "$station" up 2>/dev/null
+    printf 'scan test  : '
+    n=$(timeout 25 iw dev "$station" scan 2>/dev/null | grep -c '^BSS')
+    echo "$n BSS(es) visible on $station"
+fi
+echo 'bringup log:'
+tail -8 /userdata/zl1-wlan/bringup.log 2>/dev/null
+REMOTE
   ;;
 *)
   sed -n '2,32p' "$0"; exit 1;;
