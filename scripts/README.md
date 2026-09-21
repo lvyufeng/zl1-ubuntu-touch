@@ -80,7 +80,21 @@ for what each stage is trying to establish.
 
 | Script | Purpose |
 | --- | --- |
-| `hybris-crash-hunt.sh` | Runs a `/usr/bin/test_*` libhybris helper on the device, captures the kernel's core dump, rebuilds a sysroot out of the core's own `NT_FILE` list, and prints the faulting address, the nearest symbol, the faulting instruction and the frame-pointer chain. This is how the Phase 5 display failure was traced to `__ctype_get_mb_cur_max+8` inside Android `libc.so` — see [`../docs/ubuntu-touch/40-the-display-died-below-lomiri.md`](../docs/ubuntu-touch/40-the-display-died-below-lomiri.md). Needs `gdb-multiarch` on the host; needs nothing on the device (no compiler, no rootfs change — `core_pattern` is `/proc`, and cores land on `/userdata`). |
+| `hybris-crash-hunt.sh` | Runs a libhybris helper on the device (any `/usr/bin/test_*`, or a full command path such as `/usr/share/ubuntu-touch-session/lsc-wrapper`), captures the kernel's core dump, rebuilds a sysroot out of the core's own `NT_FILE` list, and prints the faulting address, the nearest symbol, the faulting instruction and the frame-pointer chain. `HYBRIS_TEST_PRELOAD` sets the run's `LD_PRELOAD`, `HYBRIS_TEST_ARGS` appends arguments. This is how the Phase 5 display failure was traced to `__ctype_get_mb_cur_max+8` inside Android `libc.so` — see [`../docs/ubuntu-touch/40-the-display-died-below-lomiri.md`](../docs/ubuntu-touch/40-the-display-died-below-lomiri.md). Needs `gdb-multiarch` on the host; needs nothing on the device (no compiler, no rootfs change — `core_pattern` is `/proc`, and cores land on `/userdata`). |
+
+## The bionic TLS-slot shim
+
+On aarch64 glibc the thread pointer's slot 1 (`TP+8`) is `tcbhead_t::private`, which glibc never
+reads or writes — and that is where bionic keeps `TLS_SLOT_THREAD_ID`. Nothing in this libhybris
+fills it, so `__get_thread()` is NULL and any `__get_bionic_tls()` read crashes. These two build
+and install a superset of `libtls-padding.so` that fills the slot. See
+[`../docs/ubuntu-touch/41-bionic-tls-slot-is-never-filled.md`](../docs/ubuntu-touch/41-bionic-tls-slot-is-never-filled.md).
+
+| Script | Purpose |
+| --- | --- |
+| `tlsfix/tlsfix.c` | The shim: the original 128-byte TLS padding plus a constructor that points `TP+8` at a zeroed fake `pthread_internal_t`. Freestanding (`-nostdlib`), no libc calls. |
+| `tlsfix/build-tlsfix.sh` | Cross-builds it with `clang --target=aarch64-linux-gnu` + `lld`, then checks the result really has a `PT_TLS` segment, an `DT_INIT_ARRAY` entry and the `tls_padding` symbol. |
+| `tlsfix/install-tlsfix.sh` | `--mount` / `--unmount` / `--status`. `--mount` `scp`s the build to `/userdata/zl1-tlsfix/shadow/` and bind-mounts it over `/usr/lib/aarch64-linux-gnu/libtls-padding.so`, which is the one file `lsc-wrapper` preloads — lightdm builds the compositor's environment itself, so an `LD_LIBRARY_PATH` on `lightdm.service` never reaches it, but replacing that file does. Runtime only: gone after a reboot, and `--unmount` undoes it. |
 
 ## Halium 9 build tree
 

@@ -12,12 +12,21 @@
 #   * gdb-multiarch on the host does the symbolising
 #
 # Usage: hybris-crash-hunt.sh [TEST] [OUTDIR]
-#   TEST    name of a /usr/bin/test_* helper (default test_hwcomposer)
+#   TEST    name of a /usr/bin/test_* helper (default test_hwcomposer), or any
+#           command — a name containing a "/" is used verbatim, which is how the
+#           real compositor gets analysed (`/usr/share/ubuntu-touch-session/lsc-wrapper`).
 #   OUTDIR  where to keep core + sysroot (default /mnt/data/zl1-bb10/tmp-hybris-<TEST>)
+#
+# Env: HYBRIS_TEST_PRELOAD  LD_PRELOAD for the run (e.g. the TLS-slot shim)
+#      HYBRIS_TEST_ARGS     extra arguments appended to the command
 
 set -uo pipefail
 TEST="${1:-test_hwcomposer}"
-OUT="${2:-/mnt/data/zl1-bb10/tmp-hybris-$TEST}"
+[[ "$TEST" == */* ]] && CMD="$TEST" || CMD="/usr/bin/$TEST"
+TAG="$(basename "$CMD")"
+PRELOAD="${HYBRIS_TEST_PRELOAD:-}"
+ARGS="${HYBRIS_TEST_ARGS:-}"
+OUT="${2:-/mnt/data/zl1-bb10/tmp-hybris-$TAG}"
 DEV="root@10.15.19.82"
 COREDIR="/userdata/zl1-cores"          # on /userdata, rw — the rootfs image is read-only
 
@@ -27,22 +36,26 @@ SCP=(scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
 command -v gdb-multiarch >/dev/null || { echo "need gdb-multiarch on the host: apt install gdb-multiarch" >&2; exit 1; }
 mkdir -p "$OUT"
 
-echo "== 1/5  run /usr/bin/$TEST on the device, with cores enabled"
+echo "== 1/5  run $CMD on the device, with cores enabled"
 "${SSH[@]}" "bash -s" <<REMOTE
 set -u
 ulimit -c unlimited
 mkdir -p $COREDIR
 # A plain file path (not a pipe) so the kernel writes the core where we can read it.
 echo '$COREDIR/core.%e.%p' > /proc/sys/kernel/core_pattern || { echo "core_pattern not writable" >&2; exit 1; }
-rm -f $COREDIR/core.$TEST.*
+rm -f $COREDIR/core.$TAG.*
 cd $COREDIR
-timeout 60 /usr/bin/$TEST >/tmp/$TEST.out 2>&1
-echo "exit=$?   output=[\$(head -c 200 /tmp/$TEST.out)]"
-ls -t $COREDIR/core.$TEST.* 2>/dev/null | head -1
+LD_PRELOAD="$PRELOAD" timeout 60 $CMD $ARGS >/tmp/$TAG.out 2>&1
+echo "exit=\$?   output=[\$(head -c 300 /tmp/$TAG.out)]"
+# The core is named after the process that actually died, which for a wrapper script
+# (lsc-wrapper) is not the wrapper but the binary it exec'd — so report the newest.
+ls -t $COREDIR/core.* 2>/dev/null | head -1
 REMOTE
 
-core="$("${SSH[@]}" "ls -t $COREDIR/core.$TEST.* 2>/dev/null | head -1" | tr -d '\r')"
+core="$("${SSH[@]}" "ls -t $COREDIR/core.* 2>/dev/null | head -1" | tr -d '\r')"
 [[ -n "$core" ]] || { echo "no core was written — did the test actually crash?" >&2; exit 1; }
+[[ "$(basename "$core")" == core.$TAG.* ]] || \
+  echo "   note: the core is from $(basename "$core" | sed 's/^core\.//;s/\.[0-9]*$//'), not $TAG"
 echo "   core: $core"
 
 echo "== 2/5  pull the core"
@@ -133,7 +146,7 @@ while $n < 20
   set $n = $n + 1
 end
 EOF
-exe="$(basename "$TEST")"
+exe="$(basename "$core")"; exe="${exe#core.}"; exe="${exe%.*}"
 [[ -x "$OUT/sysroot/usr/bin/$exe" ]] && MAIN="$OUT/sysroot/usr/bin/$exe" || MAIN="$OUT/sysroot/android/system/bin/$exe"
 gdb-multiarch -q -batch -x "$OUT/analyse.gdb" "$MAIN" "$OUT/core" 2>&1 | grep -E '^ADDR' | tee "$OUT/addrs.txt"
 
