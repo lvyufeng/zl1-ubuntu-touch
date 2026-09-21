@@ -14,7 +14,8 @@ F="${1:-/mnt/data/zl1-bb10/scripts/device/zl1-netwatch.sh}"
 [[ -f "$F" ]] || { echo "missing $F" >&2; exit 1; }
 
 REQUIRED="log ifname_stats gadget_stats sample probe_host write_file restore_addrs
-heal_reenumerate heal_rebind_function heal apply_policy_routing_fix hwcheck netsnap"
+heal_reenumerate heal_rebind_function heal apply_policy_routing_fix hwcheck netsnap
+container_pid"
 
 missing=""; n=0
 for fn in $REQUIRED; do

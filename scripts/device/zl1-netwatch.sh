@@ -111,15 +111,39 @@ sample() {
         done
         echo
         if [ -e /dev/socket/fwmarkd ]; then echo "fwmarkd socket: present"; else echo "fwmarkd socket: absent"; fi
-        # Where the container gets to, exactly. lxc-android-ready blocks on this file with
-        # no timeout, so while it is missing systemd keeps restarting the container — 143
-        # times in one 2.6-hour boot, about every 65 s. See
-        # docs/ubuntu-touch/33-the-container-restart-loop.md
-        cpid="$(pgrep -f 'lxc-start -n android' | head -1)"
+# The container's own init, i.e. the process whose root is the Android rootfs.
+#
+# This is NOT `pgrep -f 'lxc-start -n android'`. That matches the lxc-start helper, which
+# lives in the *host* root, so `/proc/<it>/root/dev/.coldboot_done` can never exist — and
+# this check therefore reported "the container is stuck before coldboot_done" on every
+# single sample of every boot, for days, while the container was in fact fine. The ready
+# wrapper (`/usr/lib/lxc-android-config/lxc-android-ready`, which uses `lxc-info -p`) was
+# finding the marker in 6 ticks at the same moment. Found 2026-09-21.
+container_pid() {
+    p="$(lxc-info -n android -p -H 2>/dev/null | tr -d '[:space:]')"
+    case "$p" in ''|*[!0-9]*) p="" ;; esac
+    if [ -z "$p" ]; then
+        # Fall back to asking the kernel: whoever's root has the marker is the container.
+        for d in /proc/[0-9]*; do
+            [ -e "$d/root/dev/.coldboot_done" ] || continue
+            p="${d#/proc/}"
+            break
+        done
+    fi
+    printf '%s' "$p"
+}
+
+# Where the container gets to, exactly. lxc-android-ready blocks on this file with
+# no timeout, so while it is missing systemd keeps restarting the container — 143
+# times in one 2.6-hour boot, about every 65 s. See
+# docs/ubuntu-touch/33-the-container-restart-loop.md
+        cpid="$(container_pid)"
         if [ -n "$cpid" ] && [ -e "/proc/$cpid/root/dev/.coldboot_done" ]; then
-            echo "coldboot_done: present (container reached Android boot completion)"
+            echo "coldboot_done: present (pid $cpid reached Android boot completion)"
+        elif [ -n "$cpid" ]; then
+            echo "coldboot_done: absent (pid $cpid is stuck before it)"
         else
-            echo "coldboot_done: absent (container is stuck before it)"
+            echo "coldboot_done: absent (no container init found)"
         fi
         if [ "$host_ping_ok" = "1" ]; then echo "host-ping: OK"; else echo "host-ping: FAIL"; fi
     } >> "$LOG" 2>&1

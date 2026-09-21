@@ -1,5 +1,16 @@
 # 33 — 90 分钟可达的一次开机，和它暴露的真正结构
 
+> ## ⚠️⚠️ §2 的机制在 2026-09-21 被推翻。见 [`39-the-container-was-up-all-along.md`](39-the-container-was-up-all-along.md)。
+>
+> "`lxc-android-ready` 无超时等待 coldboot_done，所以容器被反复重启"不成立：
+> v63 镜像里那个脚本在 switch_root 前就被换成了**有 20 秒上限、且无论如何退 0** 的
+> 版本，不可能造成重启循环。"143 次"很可能是把 monitor 每 tick 重复抄写的 lxc 日志
+> 当成了事件次数（同一字符串在累计日志里出现 46364 次）。这次开机的权威计数是
+> `NRestarts=0`。§1 里由 `pgrep` 得到的数字（那一次 zygote=0 / netd=1）不受影响。
+>
+> 另外，本文所依赖的 "coldboot_done absent" 判据本身是错的——它读的是 lxc-start
+> 的 root，那个路径永远不存在。容器其实一直是起来的。
+
 > ## ⚠️ 本文的前提已被推翻。见 [`34-correction-the-100-percent-was-the-watchdog.md`](34-correction-the-100-percent-was-the-watchdog.md)。
 >
 > "90 分钟可达"是看门狗持续治愈的结果，不是链路健康。本文第 3 节

@@ -5,6 +5,15 @@ entered by hand from the older RNDIS-probe check `scripts/stage2-coldboot-trial.
 Stage 2.4 asks for three consecutive cold boots with the same result — **reached on
 2026-09-21**, see "Stage 2.4 — result" below.
 
+> **The `coldboot_done` column was wrong on every ssh row up to 2026-09-21.** The check
+> read `/proc/<lxc-start>/root/dev/.coldboot_done`, and lxc-start lives in the *host* root,
+> so that path can never exist — it reported `no` on every boot, including boots where the
+> container was demonstrably fine. The container's own init is a different pid
+> (`lxc-info -n android -p -H`) and its marker was there all along. Fixed 2026-09-21; see
+> [`39-the-container-was-up-all-along.md`](39-the-container-was-up-all-along.md).
+> Row 14 is the first honest reading. The column is kept as recorded rather than
+> back-filled, because a row that was produced by a broken instrument is what it is.
+
 | # | UTC | method | pid1 | link | t99 | container | HAL | coldboot_done | note |
 | ---: | --- | --- | --- | --- | ---: | --- | ---: | --- | --- |
 | 1 | 20260917T144328Z | rndis-probe | ? | ? | ? | unknown | 0 | ? | pre-SSH era: gadget up, no traffic through, status page unreachable — columns not comparable to the rows below |
@@ -88,3 +97,5 @@ anything. See [`37-the-trial-that-had-no-peer.md`](37-the-trial-that-had-no-peer
 
 That boot is therefore **not** a failed trial and is not counted either way. The count
 restarted at row 9, the first trial of the 2026-09-21 run.
+| 13 | 20260921T141022Z | ssh | systemd | ok | 2 | 34274 | 24 | no | container fully up (coldboot_done present) with the link alive |
+| 14 | 20260921T141031Z | ssh | systemd | ok | 2 | 34274 | 24 | yes | container init pid fix: coldboot_done now read from the right process |

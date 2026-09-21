@@ -26,8 +26,16 @@ report="$(timeout 45 "${SSH[@]}" '
   echo "pid1=$(cat /proc/1/comm)"
   p=$(pgrep -f "lxc-start -n android" | head -1)
   echo "lxc_start=${p:-none}"
+  # The container'"'"'s OWN init, not the lxc-start helper. lxc-start lives in the host root,
+  # so /proc/<it>/root/dev/.coldboot_done can never exist, and checking it reported "no"
+  # on every boot including ones where the container was demonstrably fine. Found
+  # 2026-09-21; same bug was in scripts/device/zl1-netwatch.sh.
+  c=$(lxc-info -n android -p -H 2>/dev/null | tr -d "[:space:]")
+  case "$c" in ""|*[!0-9]*) c="";; esac
+  echo "container_pid=${c:-none}"
+  if [ -z "$c" ]; then for d in /proc/[0-9]*; do [ -e "$d/root/dev/.coldboot_done" ] || continue; c="${d#/proc/}"; break; done; fi
   echo "hal_count=$(pgrep -cf "android\.hardware" 2>/dev/null || echo 0)"
-  echo "coldboot_done=$([ -n "$p" ] && { [ -e /proc/$p/root/dev/.coldboot_done ] && echo yes || echo no; } || echo n/a)"
+  echo "coldboot_done=$([ -n "$c" ] && { [ -e /proc/$c/root/dev/.coldboot_done ] && echo yes || echo no; } || echo n/a)"
   echo "route_get=$(ip route get 192.168.2.100 >/dev/null 2>&1 && echo ok || echo FAIL)"
   echo "t99=$(ip route show table 99 2>/dev/null | wc -l)"
   # Plain shell arithmetic: bc and paste are not guaranteed to exist on the device.
