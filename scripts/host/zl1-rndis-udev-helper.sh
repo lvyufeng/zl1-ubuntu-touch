@@ -42,12 +42,18 @@ fi
 
 # Refuse if the serial is not the target's. This is the check that keeps an
 # identical-looking Xiaomi from being configured as if it were the zl1.
+#
+# Match on the *prefix*, not equality. The zl1 does not always report the bare serial:
+# in v63's RNDIS mode it reports `33e80afe-v63-usbd-disabled-rndis`. The first version of
+# this script required `33e80afe` exactly and therefore skipped the zl1 itself — logged as
+# "skip 3-3:1.1: serial [33e80afe-v63-usbd-disabled-rndis] is not 33e80afe", which is a
+# fine illustration of a guard that is stricter than the thing it guards.
 dev="${ifc%%:*}"
 serial="$(cat "/sys/bus/usb/devices/$dev/serial" 2>/dev/null || true)"
-if [[ "$serial" != "$ZL1_SERIAL" ]]; then
-  log "skip $ifc: serial [${serial:-none}] is not $ZL1_SERIAL"
-  exit 0
-fi
+case "$serial" in
+  "$ZL1_SERIAL"*) ;;
+  *) log "skip $ifc: serial [${serial:-none}] does not start with $ZL1_SERIAL"; exit 0 ;;
+esac
 
 modprobe rndis_host 2>/dev/null || true
 if [ ! -e "/sys/bus/usb/drivers/rndis_host/$ifc" ]; then
