@@ -1,0 +1,117 @@
+# 37 — 那次"失败"的冷启动，其实没有对端
+
+**日期**: 2026-09-21
+**状态**: 读数更正 + 流程修复。设备侧的偶发卡死问题**没有被这份日志证实或推翻**。
+**承接**: [`35-the-policy-routing-rule-that-kills-the-link.md`](35-the-policy-routing-rule-that-kills-the-link.md)、
+[`22-stage2-coldboot-results.md`](22-stage2-coldboot-results.md) §5
+
+---
+
+## 1. 读了什么
+
+2026-09-20 那次记成"冷启动 #3 失败"的开机，它的 netwatch 日志
+（`/userdata/zl1-netwatch.log`，16 MB，**10205 个采样点**，uptime 36 s → 52864 s ≈ 14.7 小时）
+在 2026-09-21 从 TWRP 里取出来读了。
+
+当时记的判词是"RNDIS 在、包不通、SSH 在密钥交换时被断开"。读完日志之后，
+**这个判词是关于主机的，不是关于设备的。**
+
+## 2. 三表修复是稳的（doc 35 的一句话是错的）
+
+整份日志里跟策略路由有关的行一共这几条：
+
+```
+36.82s  policy routing fix: added 6 route(s) across tables [99 98 97]
+36.83s  policy routing fix in place: 192.168.2.100 dev rndis0 src 192.168.2.15 uid 0
+4372.81s policy routing fix NOT working: 192.168.2.100 dev rndis0 src 192.168.2.15 uid 0
+```
+
+`added` 只出现**一次**，而且在开机第 37 秒。加路由的代码有一个前提：
+
+```sh
+ip route show table "$tbl" 2>/dev/null | grep -q "^$pnet " && continue
+```
+
+——表里已经有这条路由就跳过。所以"只加过一次"等价于
+**这 14.7 小时里 99/98/97 三张表一直有路由**。netd 没有清表。
+
+[`35`](35-the-policy-routing-rule-that-kills-the-link.md) §4 说 netd 每次容器重启都会重装规则，
+所以修复必须反复施加。这对**规则**（`ip rule`）也许成立；对**这三张表里的路由**不成立。
+现在的实现把路由放进 netd 自己指向的三张表里，正是为了不跟它抢——这一层是对的。
+
+## 3. 那条 "NOT working" 是日志自己的 bug
+
+看它印出来的内容：`192.168.2.100 dev rndis0 src 192.168.2.15 uid 0` ——
+那是**成功**的 `ip route get`。一条失败判词旁边印着一次成功的查找结果。
+
+原因：老代码的**判据**和**日志**是两次独立调用：
+
+```sh
+if ip route get 192.168.2.100 2>&1 | grep -q "dev $IFACE"; then
+    ...
+else
+    ... log "... NOT working: $(ip route get 192.168.2.100 2>&1 | head -1)"
+```
+
+两次调用之间路由状态变了，于是这两者互相矛盾。现在改成**取一次、判一次、记一次**，
+一个被存下来的字符串不可能和自己不一致。
+
+顺带得到一个真信息：那一瞬间 `ip route get` 确实短暂解析不了——4372 秒里出现过一次。
+
+## 4. 真正的事实：14.7 小时里设备一个包都没收到
+
+`--- iface ---` 段是 `/proc/net/dev` 的四元组 `rx_bytes rx_pkts tx_bytes tx_pkts`：
+
+```
+uptime     36.3s         0        0        0        0
+uptime  52864.1s         0        0        0        0
+```
+
+**`rx_packets` 在全部 10205 个采样点里都是 0。** 这 14.7 小时里，主机没有发过一个包给它。
+
+对照主机侧 `tmp-host-usb0-*.log`：最后一次运行结束在
+**2026-09-19T17:00:28Z**（最后一行是 `ping 192.168.2.15 OK`），而这次开机开始于
+2026-09-20 上午。中间 32 小时，主机侧的 `usb0` 根本没人配。
+
+所以那次开机的 "host-ping 100% FAIL"、curl 没反应、SSH 握手断开，
+**都不是设备故障的证据**。设备在 ping 一个不存在的对端。
+
+这里的关键是：**从设备端日志，"链路坏了"和"另一端什么都没有"长得一模一样。**
+设备端的 `host-ping` 只能证明"我发的包没被回应"，证明不了"我发得出去"。
+
+## 5. `tx_qlen` 涨到顶也是这个原因，不是 `u_ether` 的锅
+
+同一次开机里 `tx_qlen` 从 uptime 62 s 开始单调上涨，**+3 每 5.6 s**，最后停在
+**2001** 并翻出 `tx_throttle = 1`；同时 `tx_pkts_rcvd=2021`、`tx_bytes_rcvd=85390`
+（≈42 字节/包，正是 ARP 请求的大小）。
+
+这有一个很自然的读法：[`22`](22-stage2-coldboot-results.md) §5.2c 的 `u_ether` 发送队列卡死。
+
+但**主机侧没有驱动消费这个端点时，USB 传输本来就不会完成**——`tx_complete` 不回调，
+`netif_wake_queue()` 不执行，队列当然堆满。所以这份数据同样**不能**用来判定设备卡死。
+
+历史那 6/8 次正常的记录是**有主机在场**的时候测的，那些才作数。
+
+## 6. 改了什么
+
+| 改动 | 为什么 |
+| --- | --- |
+| `host-watch-usb0.sh` 现在不只是配 `usb0`，还会把它**带起来**：按 `18d1:d001` 找到 zl1 的 gadget（绝不碰小米的 `18d1:4ee7`）、`modprobe rndis_host`、并显式 bind 到那个接口 | 驱动没绑上时 `usb0` 根本不出现，而"没出现"和"没开机"在主机侧也长得一样 |
+| `run-stage24-and-25.sh` 在第一次重启**之前**启动这个 watcher | gadget 在 uptime ~4 s 出现并重绑好几次，一次性 `ip addr add` 只能靠运气 |
+| 每次冷启动先等主机看到 `usb0` **消失**、再等它回来，然后才等 SSH | `usb0` 在重启命令之后还会存在一小会儿，不先等消失就会拿**上一次**开机的接口当这次的结果 |
+| 看不到 `usb0` 就说"没得判"，而不是记成失败 | 判词要落在被评价的对象上 |
+| `verify-over-ssh.sh` 记录 `rxpkts` | 事后能看出那次开机主机到底在不在 |
+| 脚本按视角选持久分区路径：运行时 `/data` 是 `/android/data`，真正的分区是 `/userdata`；在 TWRP 里 userdata 就是 `/data` | 同一个分区两个名字，硬编码 `/data` 会把"标记文件在"报成"标记文件不在" |
+
+一条与设备无关但同等重要的：`run-stage24-and-25.sh` 原来用 `adb shell reboot` 重启，
+而 Ubuntu Touch **不跑 adbd**。所以它只能走一次——第一次开机之后每次重启都失败，
+Stage 2.4 因此**在构造上不可能完成**。现在重启走 SSH。
+
+## 7. 还没解决什么
+
+**设备 RNDIS 偶发卡死那件事没有被这份日志证实或推翻。** 它仍然只能靠在
+"主机在场"的开机上测，而它的历史发生率（8 次里 2 次）本来就是在有主机时测出来的。
+
+Stage 2.4 的计数：2026-09-20 那次开机既不算失败也不算通过，
+计数从 2026-09-21 的冷启动重开。见
+[`stage2-coldboot-trials.md`](stage2-coldboot-trials.md)。

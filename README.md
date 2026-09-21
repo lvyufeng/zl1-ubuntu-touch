@@ -26,6 +26,7 @@ Start here:
 - [`docs/ubuntu-touch/33-the-container-restart-loop.md`](docs/ubuntu-touch/33-the-container-restart-loop.md)
 - [`docs/ubuntu-touch/34-correction-the-100-percent-was-the-watchdog.md`](docs/ubuntu-touch/34-correction-the-100-percent-was-the-watchdog.md)
 - [`docs/ubuntu-touch/35-the-policy-routing-rule-that-kills-the-link.md`](docs/ubuntu-touch/35-the-policy-routing-rule-that-kills-the-link.md) — **root cause found**: Android's netd installs `from all unreachable` at pref 32000, and Ubuntu Touch's unmarked packets fall into it — **the 100% was my own watchdog healing every 84 s**; with it off the same image measures 0.3% — why the container restarts every ~65 s, and why a stable link is currently a side effect of Android failing to start — a boot that ran 38 minutes without stalling, which contradicts the "always dies at 50 s" reading — what has been eliminated and the four commands that will settle it — the stall mechanism: outbound packets are dropped before the device queue, and the evidence points at Android's netd in the shared network namespace — **current status: what is done, what is blocked, and the one key press that unblocks it**
+- [`docs/ubuntu-touch/37-the-trial-that-had-no-peer.md`](docs/ubuntu-touch/37-the-trial-that-had-no-peer.md) — **the "failed" cold boot that was counted on 2026-09-20 was measured with nothing at the other end**: `rx_packets` was 0 at all 10205 samples over 14.7 hours because no host-side watcher was running; the three-table fix is stable (netd never cleared it), and the cold-boot driver had itself been unable to reboot past the first trial
 - [`docs/ubuntu-touch/17-adaptation-plan.md`](docs/ubuntu-touch/17-adaptation-plan.md) — the adaptation plan
 - [`docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md`](docs/ubuntu-touch/18-stage0-backup-record-2026-09-16.md) — Stage 0: what is now backed up and how it was verified
 - [`docs/ubuntu-touch/19-phase1-reproducible-build.md`](docs/ubuntu-touch/19-phase1-reproducible-build.md) — Phase 1: the build is now byte-for-byte reproducible, and why the old target SHA was wrong
@@ -112,13 +113,21 @@ HTTP response. `carrier=1` and `operstate=up` are not evidence that the data pat
 alive — that misreading is what produced the earlier "stable for 9 minutes" claim. See
 `22-stage2-coldboot-results.md` §5.
 
-**The device exposes only RNDIS, not adb**, and it is currently sitting in a stalled boot,
-so it needs one physical key combination before anything else can happen: Volume Up + Power
-for TWRP. A watcher is already running and will do the rest —
-`scripts/twrp-one-shot-setup.sh` installs a device-side watchdog that records the counters
-and re-asserts the gadget when the transmit path stalls, fixes SSH, and sets the device to
-return itself to TWRP after a configurable delay. After that one press, the loop runs
-without human input.
+**The device exposes only RNDIS, not adb**, so everything after a boot is done over SSH
+(`ssh root@10.15.19.82`) or, when the device is in recovery, over adb. The device-side
+watchdog is installed, SSH works, and cold-boot trials are now driven end to end over SSH
+by [`scripts/run-stage24-and-25.sh`](scripts/run-stage24-and-25.sh) — including the
+reboots, which is what the earlier adb-based driver could not do.
+
+The step that was missing is on **this** side of the cable. A trial is only a trial once
+the host's `usb0` is configured; with nothing at the other end the device records
+`rx_packets=0` for its whole life and looks exactly like a stall. Every trial now starts
+[`scripts/host-watch-usb0.sh`](scripts/host-watch-usb0.sh) first and waits for the host to
+see `usb0` go away and come back. See
+[`docs/ubuntu-touch/37-the-trial-that-had-no-peer.md`](docs/ubuntu-touch/37-the-trial-that-had-no-peer.md).
+
+The running tally of Stage 2.4 trials, and which of them count, is in
+[`docs/ubuntu-touch/stage2-coldboot-trials.md`](docs/ubuntu-touch/stage2-coldboot-trials.md).
 
 ## Historical track: BlackBerry 10 / QNX and BlackBerry Android
 

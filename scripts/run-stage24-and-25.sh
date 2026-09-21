@@ -54,6 +54,15 @@ ssh_cmd() {
 ssh_ready() { ssh_cmd true; }
 either_ready() { in_recovery || ssh_ready; }
 
+# Where the persistent partition is, from the shell that is asking.
+#
+# On the device, `/data` is a symlink to `/android/data` — the Android container's view —
+# and the real persistent partition is `/userdata`. From TWRP there is no `/userdata` and
+# userdata *is* `/data`. Same bytes, two names, depending on who is looking. The first
+# version of these checks hard-coded `/data` and therefore reported "record-only marker
+# missing" against a device that had it.
+devroot() { if in_recovery; then echo /data; else echo /userdata; fi }
+
 # The host side of the RNDIS link has to be configured while the device boots, and it has
 # to be configured by something that is already running when the gadget appears. The
 # device re-binds its gadget several times in the first seconds, so a one-shot `ip addr
@@ -85,12 +94,13 @@ trap stop_host_watch EXIT
 # never got past one boot. On 2026-09-21 cold boot #2 passed and cold boot #3 died on the
 # reboot, not on the device.
 reboot_device() {
+    local dr; dr="$(devroot)"
     if ssh_ready; then
-        ssh_cmd 'rm -f /data/zl1-netwatch.log; sync; reboot' || true   # the link drops mid-command
+        ssh_cmd "rm -f $dr/zl1-netwatch.log; sync; reboot" || true   # the link drops mid-command
         return 0
     fi
     if in_recovery; then
-        adb -s "$SER" shell 'rm -f /data/zl1-netwatch.log; sync; reboot' >/dev/null 2>&1 && return 0
+        adb -s "$SER" shell "rm -f $dr/zl1-netwatch.log; sync; reboot" >/dev/null 2>&1 && return 0
     fi
     return 1
 }
@@ -153,10 +163,12 @@ chk() {  # run a shell snippet on the device, over whichever transport is up
   if in_recovery; then adb -s "$SER" shell "$1" | tr -d '\r'
   else ssh_cmd "$1" | tr -d '\r'; fi
 }
-[[ -n "$(chk 'ls /data/zl1-netwatch-noheal 2>/dev/null')" ]] || { log "FATAL: record-only marker missing"; exit 1; }
-[[ "$(chk 'grep -c "^heal_rebind_function()" /data/system-data/etc/systemd/system/zl1-netwatch.sh')" = "1" ]] \
+DR="$(devroot)"
+log "persistent partition, as seen from here: $DR"
+[[ -n "$(chk "ls $DR/zl1-netwatch-noheal 2>/dev/null")" ]] || { log "FATAL: record-only marker missing"; exit 1; }
+[[ "$(chk "grep -c '^heal_rebind_function()' $DR/system-data/etc/systemd/system/zl1-netwatch.sh")" = "1" ]] \
   || { log "FATAL: installed script missing functions"; exit 1; }
-[[ "$(chk 'grep -c "^POLICY_TABLES=" /data/system-data/etc/systemd/system/zl1-netwatch.sh')" = "1" ]] \
+[[ "$(chk "grep -c '^POLICY_TABLES=' $DR/system-data/etc/systemd/system/zl1-netwatch.sh")" = "1" ]] \
   || { log "FATAL: installed script missing the three-table fix"; exit 1; }
 log "watchdog present and verified on the device"
 
