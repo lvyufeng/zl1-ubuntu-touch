@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Put the Android-side shims in front of the system compositor, or take them away.
 #
-# Three runtime pieces make the compositor start on this device. None of them is
+# Four runtime pieces make the compositor start on this device. None of them is
 # persistent and none of them writes to a partition:
 #
-#   /userdata/zl1-hybris/lib/libui_compat_layer.so   from libhybris compat/ui
-#   /userdata/zl1-hybris/lib/libhidltransport.so     stock, 4 bytes patched
-#   /usr/share/ubuntu-touch-session/lsc-wrapper      bind-mounted, patched copy
+#   /userdata/zl1-hybris/lib/libui_compat_layer.so    from libhybris compat/ui
+#   /userdata/zl1-hybris/lib/libhwc2_compat_layer.so  from libhybris compat/hwc2
+#   /userdata/zl1-hybris/lib/libhidltransport.so      stock, 4 bytes patched
+#   /usr/share/ubuntu-touch-session/lsc-wrapper       bind-mounted, patched copy
 #
 # The last one is the injection point. lightdm builds the compositor's
 # environment itself, so nothing set on lightdm.service reaches it — but the
 # wrapper is executed by lightdm, so it can set LD_PRELOAD (for the TLS-slot
-# shim) and HYBRIS_LD_LIBRARY_PATH (which is how the Android linker is told to
-# look in /userdata/zl1-hybris/lib *before* /system/lib64).
+# shim), HYBRIS_LD_LIBRARY_PATH (which is how the Android linker is told to look
+# in /userdata/zl1-hybris/lib *before* /system/lib64), and the PID namespace the
+# compositor runs in (Android's binder does not cross one; see
+# lsc-wrapper.zl1 and make-lsc-wrapper.sh).
 #
 # A patched copy of the wrapper is mounted rather than a directory: the rootfs is
 # a read-only image, and one file is a smaller thing to keep honest. The device's
@@ -42,8 +45,9 @@ sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 case "${1:-}" in
 --mount)
   guard
-  for f in "$here/out/libui_compat_layer.so" "$here/out/libhidltransport.so"; do
-    [ -f "$f" ] || { echo "build them first: $here/build-hybris-shims.sh" >&2; exit 1; }
+  for f in "$here/out/libui_compat_layer.so" "$here/out/libhidltransport.so" \
+           "$here/out/libhwc2_compat_layer.so"; do
+    [ -f "$f" ] || { echo "build them first: $here/build-hybris-shims.sh and $here/build-hwc2-compat-layer.sh" >&2; exit 1; }
   done
 
   # The file at that path is the *mounted* one once this has run, so both states
@@ -65,11 +69,12 @@ EOF
   fi
 
   "${SSH[@]}" "mkdir -p $LIBDIR"
-  for f in libui_compat_layer.so libhidltransport.so; do
+  for f in libui_compat_layer.so libhwc2_compat_layer.so libhidltransport.so; do
     "${SCP[@]}" "$here/out/$f" "$DEV:$LIBDIR/$f" || exit 1
   done
   # 0755 before the copy, not after: lightdm reports a non-executable wrapper as
   # "not found in path", which reads like a missing file rather than a mode.
+  ./make-lsc-wrapper.sh --check >/dev/null || ./make-lsc-wrapper.sh >/dev/null
   cp "$here/lsc-wrapper.zl1" "$here/out/lsc-wrapper"
   chmod 0755 "$here/out/lsc-wrapper"
   "${SCP[@]}" "$here/out/lsc-wrapper" "$DEV:$STAGE/lsc-wrapper" || exit 1
@@ -80,7 +85,7 @@ EOF
     mount --bind $STAGE/lsc-wrapper $WRAPPER || exit 1
     echo 'wrapper:'; findmnt -T $WRAPPER | tail -1
     echo -n 'wrapper sha256: '; sha256sum $WRAPPER | cut -d' ' -f1
-    for f in libui_compat_layer.so libhidltransport.so; do
+    for f in libui_compat_layer.so libhwc2_compat_layer.so libhidltransport.so; do
       echo -n \"lib \$f: \"; sha256sum $LIBDIR/\$f | cut -d' ' -f1
     done"
 
@@ -110,13 +115,15 @@ EOF
     sha256sum $WRAPPER /usr/lib/aarch64-linux-gnu/libtls-padding.so $LIBDIR/*.so 2>/dev/null
     echo '== display stack'
     echo -n 'lightdm:    '; systemctl is-active lightdm
-    P=\$(pgrep -f '^lomiri-system-compositor' | head -1)
+    P=\$(pgrep -f 'lomiri-system-compositor' | head -1)
     if [ -n \"\$P\" ]; then
       printf 'compositor: pid %s, up %ss\n' \"\$P\" \"\$(ps -o etimes= -p \$P | tr -d ' ')\"
+      printf '  pid namespace: %s\n' \"\$(readlink /proc/\$P/ns/pid)\"
       echo -n '  libhidltransport in use: '; grep -oE '/[A-Za-z0-9_/.-]*libhidltransport\.so' /proc/\$P/maps | sort -u | head -1
     else
       echo 'compositor: not running'
     fi
+    echo -n 'container init pid namespace: '; A=\$(lxc-info -n android -pH 2>/dev/null | head -1); readlink /proc/\$A/ns/pid 2>/dev/null
     echo '== last compositor output'
     tail -6 /var/log/lightdm/unity-system-compositor.log"
   ;;

@@ -29,9 +29,10 @@ esac
 # but will continue.
 export LD_PRELOAD=libtls-padding.so
 
-# Halium resolves the Android-side libs through HYBRIS_LD_LIBRARY_PATH; without it
-# the Android linker only searches /system/lib64, /odm/lib64 and /vendor/lib64. The
-# stock LeEco image has no libui_compat_layer.so, so put our own copy first.
+# Halium resolves the Android-side libraries through HYBRIS_LD_LIBRARY_PATH.
+# Without it the Android linker only searches /system/lib64, /odm/lib64 and
+# /vendor/lib64. The stock LeEco image has no libui_compat_layer.so and no
+# libhwc2_compat_layer.so, so put the copies built for this device first.
 export HYBRIS_LD_LIBRARY_PATH=/userdata/zl1-hybris/lib:/system/lib64:/odm/lib64:/vendor/lib64
 
 # FIXME: this is done primarily to prevent collision with root's user session.
@@ -39,6 +40,37 @@ export HYBRIS_LD_LIBRARY_PATH=/userdata/zl1-hybris/lib:/system/lib64:/odm/lib64:
 # over Wayland.
 export XDG_RUNTIME_DIR=/run
 export WAYLAND_DISPLAY=wayland-syscomp
+
+# Android's binder only completes a transaction between two processes in the
+# same PID namespace. The compositor runs in the host's; every Android HAL and
+# both of binder's service managers (servicemanager, hwservicemanager) run in
+# the LXC container's. A lookup across that boundary does not fail loudly -- the
+# transaction is accepted and the reply comes back empty -- so every Android
+# service looks absent. `service list` run from the host root reports "Found 0
+# services:" while the same binary inside the container reports 19.
+#
+# nsenter -p forks, and it is the *child* that lands in the container's
+# namespace (setns on a PID namespace only affects future children). Do not add
+# -F/--no-fork: that makes the exec'd process stay in the parent namespace while
+# its children go to the new one, and pthread_create then fails with EINVAL
+# because a thread cannot share a thread group across the two.
+#
+# util-linux's nsenter does not always reap a child that lived in another PID
+# namespace, so a round can leave one behind in do_wait with no children. They
+# are inert, but each one holds the namespace open, so sweep the childless ones
+# before starting another.
+for p in $(pgrep -x nsenter 2>/dev/null); do
+    [ -s "/proc/$p/task/$p/children" ] || kill -TERM "$p" 2>/dev/null
+done
+
+ANDROID_INIT_PID=$(lxc-info -n android -pH 2>/dev/null | head -1)
+if [ -n "$ANDROID_INIT_PID" ] && [ -e "/proc/$ANDROID_INIT_PID/ns/pid" ]; then
+    exec nsenter -t "$ANDROID_INIT_PID" -p -- /usr/sbin/lomiri-system-compositor \
+        $LSC_FLAGS \
+        --console-provider=vt \
+        --spinner=/usr/bin/lomiri-system-compositor-spinner \
+        "$@"
+fi
 
 exec lomiri-system-compositor \
     $LSC_FLAGS \

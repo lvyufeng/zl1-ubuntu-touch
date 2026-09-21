@@ -108,19 +108,45 @@ and the script then finds the newest one lying around.
 
 ## The Android-side libraries the stock image is missing
 
-`libui_compat_layer.so` and `libhidltransport.so` are Android-side objects that
-the host graphics stack reaches through libhybris, and the stock LeEco image
-either does not have them or has one that cannot work here. These three scripts
-fetch the link-time inputs, build the objects and put them in front of the
-compositor. See
-[`../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md`](../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md).
+`libui_compat_layer.so`, `libhwc2_compat_layer.so` and `libhidltransport.so` are
+Android-side objects that the host graphics stack reaches through libhybris, and
+the stock LeEco image either does not have them or has one that cannot work
+here. These scripts fetch the link-time inputs, build the objects and put them
+in front of the compositor. See
+[`../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md`](../docs/ubuntu-touch/42-the-wait-that-could-never-finish.md)
+and
+[`../docs/ubuntu-touch/43-binder-does-not-cross-a-pid-namespace.md`](../docs/ubuntu-touch/43-binder-does-not-cross-a-pid-namespace.md).
 
 | Script | Purpose |
 | --- | --- |
 | `hybris-shims/fetch-android-libs.sh` | Copies the device's `/android/system/lib64` libraries out to `out/stubs/`. Read-only against the device. They are link-time inputs, so the shim's ABI is the device's ABI rather than a guess. |
 | `hybris-shims/build-hybris-shims.sh` | Builds `libui_compat_layer.so` from the Halium tree with the AOSP prebuilt clang (standalone: it names the header paths Soong would have supplied), and produces the patched `libhidltransport.so`. Both steps verify the result's shape — soname, exported symbols, and that the patch changed at most four bytes and the file length not at all. Deterministic for a given `ld.lld`. |
-| `hybris-shims/install-hybris-shims.sh` | `--mount` / `--unmount` / `--status`. Stages the libraries in `/userdata/zl1-hybris/lib/`, bind-mounts `lsc-wrapper.zl1` over `/usr/share/ubuntu-touch-session/lsc-wrapper`, ensures the TLS-slot mount, and restarts lightdm. The mounted wrapper is what sets `HYBRIS_LD_LIBRARY_PATH`, which is how the Android linker is told to search `/userdata/zl1-hybris/lib` **before** `/system/lib64`. |
+| `hybris-shims/build-hwc2-compat-layer.sh` | Builds `libhwc2_compat_layer.so` with the Android build system, because that one is a HIDL `composer@2.1` client and needs hidl-gen's output. Checks the three host prerequisites that each cost a confusing failure — ImageMagick (`bootanimation`'s `$(error)` fires during product config), a `python` → python2.7 shim (two Soong genrules are still Python 2), and `ALLOW_MISSING_DEPENDENCIES=true` (unrelated lineage modules abort kati). Prints the symbols the rootfs's `libhwc2.so.1` looks up that this build does not export; it does not NULL-check those, so a missing one is a jump to address 0. |
+| `hybris-shims/make-lsc-wrapper.sh` | Regenerates `lsc-wrapper.zl1` from the device's original as two hunks, so the delta stays reviewable and a rootfs that moved on shows up as a hash mismatch rather than a silently patched file. `--check` verifies the tracked copy is current. |
+| `hybris-shims/install-hybris-shims.sh` | `--mount` / `--unmount` / `--status`. Stages the libraries in `/userdata/zl1-hybris/lib/`, bind-mounts `lsc-wrapper.zl1` over `/usr/share/ubuntu-touch-session/lsc-wrapper`, ensures the TLS-slot mount, and restarts lightdm. The mounted wrapper is what sets `HYBRIS_LD_LIBRARY_PATH` (how the Android linker is told to search `/userdata/zl1-hybris/lib` **before** `/system/lib64`) and what puts the compositor in the container's PID namespace. |
 | `hybris-shims/lsc-wrapper.orig`, `lsc-wrapper.zl1` | The device's wrapper and the patched copy, both tracked, so the delta is reviewable. `--mount` refuses to run if the device's file is neither of them (rootfs moved on) unless `FORCE=1`. |
+
+### Why the compositor has to run in the container's PID namespace
+
+Android's binder does not complete a transaction between processes in different
+PID namespaces. `/dev/binder` and `/dev/hwbinder` are the same kernel devices
+on both sides (the LXC config bind-mounts them), and the same binary proves it:
+
+```sh
+$ /android/system/bin/service list                                  # host PID ns
+Found 0 services:
+$ nsenter -t $$ -p -- /android/system/bin/service list              # control: our own ns
+Found 0 services:
+$ nsenter -t "$(lxc-info -n android -pH)" -p -- /android/system/bin/service list
+Found 19 services:
+```
+
+The second run is the control that rules nsenter itself out. So the wrapper
+`nsenter -p`s the compositor into the container's namespace first — without
+`-F`/`--no-fork`, because `setns` on a PID namespace only affects future
+children: with `-F` the process stays in the parent namespace while its children
+go to the new one, and `pthread_create` then fails with `EINVAL`.
+
 
 ## Halium 9 build tree
 
