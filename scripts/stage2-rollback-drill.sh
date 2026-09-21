@@ -34,6 +34,11 @@ ROLLBACK_IMG="/mnt/data/zl1-backups/2026-06-07-adb-root-staged/boot.img"
 ROLLBACK_SHA="a06d6508499ee37a03effea1e6bec1d04f23843fd44d198a49fb3e07cb5778ef"
 BAD_CONFIRM_SECONDS="${BAD_CONFIRM_SECONDS:-240}"   # how long to wait for the bad image to fail
 GOOD_CONFIRM_SECONDS="${GOOD_CONFIRM_SECONDS:-420}" # how long to wait for Android to come back
+# How long to wait for a human to reach fastboot after the bad image fails. The first
+# version used a hard-coded 1800 s, and on 2026-09-21 that expired while the device sat
+# exactly where it was supposed to; the drill then exited and nothing was watching for
+# the key press any more. scripts/stage2-rollback-resume.sh picks it up from there.
+HUMAN_WAIT_SECONDS="${HUMAN_WAIT_SECONDS:-21600}"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$ROOT/stage2-rollback-drill-${STAMP}.log"
@@ -116,8 +121,8 @@ log "  fastboot  = power off, hold Volume Down + Power"
 log "  TWRP      = power off, hold Volume Up + Power"
 
 # ------------------------------------------------------- 2. human in loop --
-log "waiting up to 30 minutes for a human to bring the device to fastboot..."
-deadline=$(( SECONDS + 1800 ))
+log "waiting up to ${HUMAN_WAIT_SECONDS}s for a human to bring the device to fastboot..."
+deadline=$(( SECONDS + HUMAN_WAIT_SECONDS ))
 while (( SECONDS < deadline )); do
   if timeout 5 fastboot devices 2>/dev/null | awk -v s="$SER" '$1==s{f=1} END{exit f?0:1}'; then
     log "fastboot is up"
@@ -132,7 +137,7 @@ while (( SECONDS < deadline )); do
   sleep 10
 done
 timeout 5 fastboot devices 2>/dev/null | awk -v s="$SER" '$1==s{f=1} END{exit f?0:1}' \
-  || die "timed out waiting for fastboot; the device is still on the bad image"
+  || die "timed out waiting for fastboot after ${HUMAN_WAIT_SECONDS}s; the device is still on the bad image. Resume with scripts/stage2-rollback-resume.sh --yes"
 
 # ------------------------------------------------------- 3. the rollback --
 log "=== 3/4 flashing the stock boot.img back ==="
