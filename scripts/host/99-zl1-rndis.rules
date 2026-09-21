@@ -1,0 +1,21 @@
+# Bind rndis_host to the zl1's Halium RNDIS gadget and configure usb0, automatically.
+#
+# The zl1 (LeEco Pro3) in Ubuntu Touch exposes a single RNDIS function as 18d1:d001 and
+# nothing else — no adbd. rndis_host does not always claim that interface by itself, and
+# when it does not, no usb0 exists, which looks exactly like a device that never booted.
+#
+# The rule is deliberately narrow:
+#   * 18d1:d001 is the Halium gadget (the source of the problem is that this is a
+#     *different* ID from the one stock Android presents, so it does not collide with the
+#     unrelated Xiaomi, which shows up as 18d1:4ee7)
+#   * the helper re-checks the serial (33e80afe) before doing anything, so a device that
+#     merely shares the ID is skipped rather than configured
+#
+# RUN is not used for the interface: udev's RUN on a $devpath can fire before the netdev
+# exists. This matches the USB *device* and lets the helper find and bind the interface.
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", RUN+="/usr/local/sbin/zl1-rndis-udev-helper.sh"
+
+# Also match the interface directly, so a rebind of the function (which is how the
+# device-side watchdog heals a stalled transmit path) is picked up too.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTRS{idVendor}=="18d1", ATTRS{idProduct}=="d001", RUN+="/usr/local/sbin/zl1-rndis-udev-helper.sh %k"

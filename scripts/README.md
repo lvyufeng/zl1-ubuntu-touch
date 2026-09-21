@@ -46,7 +46,22 @@ for what each stage is trying to establish.
 | `stage2-coldboot-trial.sh` | After a power-on: verify the boot and append a row to [`../docs/ubuntu-touch/stage2-coldboot-trials.md`](../docs/ubuntu-touch/stage2-coldboot-trials.md). This is how Stage 2.4's "three consecutive cold boots" gets recorded. |
 | `container-ab-test.sh` | A/B: hide `/data/system.img` so the Android container cannot start, measure the link, then restore it and measure again. Tests whether the container is what kills the link — see [`../docs/ubuntu-touch/30-outbound-drops-before-the-queue.md`](../docs/ubuntu-touch/30-outbound-drops-before-the-queue.md). |
 | `netwatch-cycle-supervisor.sh` | Drive repeated unattended boots and collect the stalls-per-boot statistics. Possible because the device now returns itself to TWRP and TWRP answers adb. This is how "did the patch help?" gets answered — it is a question about a rate, not one boot. |
-| `host-watch-usb0.sh` | Keep the host side of the RNDIS link correct while the device boots. The gadget re-binds several times in the first seconds, and each rebind destroys and recreates `usb0` with a new MAC and no addresses, so a one-shot `ip addr add` only works by luck. |
+| `host-watch-usb0.sh` | Keep the host side of the RNDIS link correct while the device boots. The gadget re-binds several times in the first seconds, and each rebind destroys and recreates `usb0` with a new MAC and no addresses, so a one-shot `ip addr add` only works by luck. It also binds `rndis_host` to the zl1 gadget explicitly, because a gadget the driver declined to claim produces no `usb0` at all — indistinguishable from a device that never booted. |
+
+## Host side: making `usb0` appear by itself
+
+| Script | Purpose |
+| --- | --- |
+| `host/99-zl1-rndis.rules` | udev rule (Phase 3.1): on `18d1:d001`, run the helper below. Replaces the "a watcher must happen to be running" arrangement — on 2026-09-20 none was, and a 14.7-hour cold boot was judged a failure because of it. |
+| `host/zl1-rndis-udev-helper.sh` | Binds `rndis_host` to the zl1's interface and gives `usb0` its two host addresses. Re-checks the serial (`33e80afe`) before touching anything, so a device that merely shares the USB ID is skipped. Logs to `/var/log/zl1-rndis-udev.log`. |
+| `host/install-zl1-udev-rule.sh` | Installs/removes those two into `/etc/udev/rules.d/` and `/usr/local/sbin/`. |
+
+## Getting in and out of the device
+
+| Script | Purpose |
+| --- | --- |
+| `enter-recovery-from-ut.sh` | Phase 2.5's other half: get from a running Ubuntu Touch into TWRP with **no key press**, by writing `boot-recovery` into `misc` (what Android's own `reboot recovery` does). 20 s, measured 2026-09-21. Refuses to reboot unless the command reads back correctly — a reboot without it is a reboot loop, not a degraded version of the feature. |
+| `stage2-rollback-resume.sh` | Pick up the rollback drill after its wait for a human key press expires. Waits as long as it takes, then runs the same hash-verified rollback. |
 
 ## On-device runtime
 
