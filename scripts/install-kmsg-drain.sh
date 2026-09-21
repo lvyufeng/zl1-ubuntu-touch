@@ -1,21 +1,33 @@
 #!/usr/bin/env bash
-# Keep the kernel log. On this device it is currently unreadable, and that is what made
-# the Wi-Fi investigation a blind one.
+# Keep the kernel log — as a bounded set of **early** snapshots, not a continuous follow.
 #
-# Why this exists: on 2026-09-21 the kernel ring buffer held only the last ~18 seconds,
-# because the uether TX path (patched by scripts/patch-uether-tx-wakeup.sh) emits a
-# `tx_complete` WARN stack trace on every transmit, ~3500 lines at a time. Every boot-time
-# message — including everything the cnss/wlan/qcacld drivers say while bringing up the
-# QCA6174 — is overwritten within seconds of the USB link coming up. `journalctl -k`
-# returns 1 line, so journald is not capturing /dev/kmsg either. The only way to read a
-# driver error was to make the driver probe again, and doing that with `unbind` put the
-# device into EDL (see docs/ubuntu-touch/49-*). So: capture the log *first*.
+# Why this exists: on 2026-09-21 the kernel ring buffer was unreadable on this device. Two
+# things were wrong, and the second one changed the design:
 #
-# The unit goes on the /etc/systemd/system writable-path (a bind mount of
-# /userdata/system-data/etc/systemd), so it survives a reboot with no rootfs change, and
-# the script and its output live on /userdata.
+#   1. `journalctl -k` returns 1 line — journald is not capturing /dev/kmsg — so the only
+#      source is the ring itself.
+#   2. The ring is small and the noise is fast. Measured on the device:
+#          ring capacity   ~3470 lines / ~249 KiB
+#          while idle      3473 -> 3470 lines in 6 s   (nothing: no traffic, no noise)
+#          while talking   ~3480 lines in 3 s          (~90 KiB/s, a burst per transmit)
+#      The noise is `tx_complete` WARN stack traces from the uether TX patch
+#      (scripts/patch-uether-tx-wakeup.sh), and it is triggered by *host traffic*: the
+#      device WARNs on transmit, so the ring is only wrapped while something is talking to
+#      it. That is why the boot messages can still be caught — but only in the first
+#      seconds, before the host starts pinging.
 #
-# Usage: install-kmsg-drain.sh --install | --remove | --status | --read [LINES]
+# So a continuous `dmesg -W >> file` is the wrong tool twice over: it would write ~90 KiB/s
+# (≈8 GiB/day) onto the eMMC for no benefit, because by the time it runs the messages worth
+# keeping are already hours old. What is actually wanted is the *boot* log, and the way to
+# get it is to snapshot the ring as early as systemd will run us, and again a few times
+# while the boot settles. The whole set costs a couple of MiB per boot and then the unit
+# exits.
+#
+# This is the prerequisite for the Wi-Fi work: `docs/ubuntu-touch/49-*` records what
+# happens when you go at a driver you cannot see, and it is an EDL. `51-*` is the grep list
+# to run against the snapshots once they exist.
+#
+# Usage: install-kmsg-drain.sh --install | --remove | --status | --read [LINES] | --follow-on | --follow-off
 #
 # Env: ZL1_HOST (default root@10.15.19.82)
 
@@ -29,28 +41,32 @@ guard() {
     { echo "not the zl1 (no msm8996 in /proc/device-tree/compatible) — refusing" >&2; exit 1; }
 }
 
-case "${1:-}" in
---install)
-  guard
-  # The device-side script is written with a quoted heredoc and scp'd, rather than pasted
-  # into an ssh one-liner: it is a loop with redirections, and the escaping is not worth it.
-  tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
-  cat > "$tmp" <<'DRAIN'
+# The snapshot collector. Deliberately a short, bounded sequence of sleep-then-dump rather
+# than a loop: the point is coverage of the first ~2 minutes, and each dump is the *whole*
+# ring as it stands, so a later snapshot is never a superset of an earlier one — the early
+# one is the only one that still has the boot messages.
+SNAPSHOT_SH='
 #!/bin/sh
-# Snapshot the ring buffer first, then follow it.
-#
-# The snapshot is the whole point: /dev/kmsg opened *after* a WARN storm has wrapped the
-# ring gives you the tail of the storm and nothing else. `dmesg` reads the entire buffer
-# (SYSLOG_ACTION_READ_ALL), so a drainer that starts at ~t=10 s keeps the boot log.
-#
-# Neither half uses the clock. The device's clock is wrong (1970-02-09 in systemd's view),
-# so the raw /dev/kmsg records — which carry a monotonic microsecond counter — are kept
-# verbatim. That is also why the log is readable across a reboot at all.
 D=/userdata/zl1-kmsg
 mkdir -p "$D"
-dmesg > "$D/boot.log" 2>/dev/null
-
-# Rotate at 8 MB, keeping the newer 4 MB. Without this the WARN storm fills /userdata.
+# Keep only the snapshots from the current boot, so `--read` is never ambiguous about
+# which boot it is looking at. The uptime in the filename is the marker.
+rm -f "$D"/boot-*.log "$D"/boot.log "$D"/now-*.log 2>/dev/null
+snap() {
+    dmesg > "$D/boot-$(cut -d. -f1 /proc/uptime)s.log" 2>/dev/null
+}
+snap
+for d in 5 10 20 40 80 160; do
+    sleep "$d"
+    snap
+done
+'
+# Only for the rare case where a *live* trace is needed (e.g. watching a driver while
+# something is deliberately poked). Off by default, and the unit comment says why.
+FOLLOW_SH='
+#!/bin/sh
+D=/userdata/zl1-kmsg
+mkdir -p "$D"
 rotate() {
     [ -f "$D/kmsg.log" ] || return 0
     [ "$(wc -c < "$D/kmsg.log")" -gt 8388608 ] || return 0
@@ -58,86 +74,146 @@ rotate() {
         mv "$D/kmsg.log.tmp" "$D/kmsg.log"
     echo "=== rotated at uptime $(cut -d. -f1 /proc/uptime)s ===" >> "$D/kmsg.log"
 }
-
-# One open file description, read forever. Re-opening /dev/kmsg per iteration would
-# restart at the head of the buffer every time and loop over the same records.
+# `dmesg -W` (follow-new), not `read` on /dev/kmsg: bash'\''s read() takes one byte at a
+# time, and a partial read of a /dev/kmsg record fails with EINVAL, so a `while read` loop
+# over it exits immediately having read nothing. That is how the first version of this
+# script "succeeded" and wrote no log at all.
 n=0
-exec 3< /dev/kmsg
-while IFS= read -r line <&3; do
-    printf '%s\n' "$line" >> "$D/kmsg.log"
+dmesg -W 2>/dev/null | while IFS= read -r line; do
+    printf "%s\n" "$line" >> "$D/kmsg.log"
     n=$((n + 1))
     [ $((n % 500)) -eq 0 ] && rotate
 done
-DRAIN
+'
+
+push_scripts() {
+  tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+  printf '%s\n' "$SNAPSHOT_SH" > "$tmp.snap"
+  printf '%s\n' "$FOLLOW_SH"   > "$tmp.follow"
+  # The two assignments above start with `='` and a newline, so the strings begin with a
+  # blank line and the file's first line is *not* the shebang. systemd then refuses it with
+  # `Failed to execute ... Exec format error` / status=203/EXEC, which says nothing at all
+  # about why. Strip the leading blank lines and prove the result starts with `#!` before it
+  # goes anywhere near the device.
+  for f in "$tmp.snap" "$tmp.follow"; do
+    sed -i '/./,$!d' "$f"
+    case "$(head -1 "$f")" in
+      '#!'*) ;;
+      *) echo "refusing to push $f: first line is not a shebang ($(head -1 "$f"))" >&2; exit 1;;
+    esac
+  done
   "${SSH[@]}" "mkdir -p $DIR"
-  scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$tmp" "$DEV:$DIR/drain.sh"
-  "${SSH[@]}" "chmod 755 $DIR/drain.sh"
+  scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      "$tmp.snap" "$DEV:$DIR/snapshot.sh"
+  scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      "$tmp.follow" "$DEV:$DIR/follow.sh"
+  "${SSH[@]}" "chmod 755 $DIR/snapshot.sh $DIR/follow.sh"
+  rm -f "$tmp.snap" "$tmp.follow"
+}
+
+write_units() {
   "${SSH[@]}" "bash -s" <<'REMOTE'
 set -u
-mkdir -p /etc/systemd/system/zl1-kmsg-drain.service.d
-# DefaultDependencies=no and ordering before the container is what makes this early
-# enough: the point is to have a reader attached before the USB link starts its WARN
-# storm, and the container starts well after that.
-cat > /etc/systemd/system/zl1-kmsg-drain.service <<'UNIT'
+# Early and non-blocking: DefaultDependencies=no plus Before=sysinit.target puts the unit
+# near the front of boot, and Type=simple means systemd only waits for the fork, not for
+# the snapshots — a oneshot that sleeps for 160 s must never sit in front of sysinit.
+cat > /etc/systemd/system/zl1-kmsg-snapshot.service <<'UNIT'
 [Unit]
-Description=zl1: keep the kernel log on /userdata
+Description=zl1: snapshot the kernel ring early, while the boot log is still in it
 DefaultDependencies=no
 After=local-fs.target
-Before=lxc.service android.service sysinit.target shutdown.target
+Before=sysinit.target shutdown.target
 Conflicts=shutdown.target
 
 [Service]
 Type=simple
-ExecStart=/userdata/zl1-kmsg/drain.sh
-Restart=always
-RestartSec=5
-# The drainer must not be killed by the OOM killer while it is the only reader.
+ExecStart=/userdata/zl1-kmsg/snapshot.sh
+Restart=no
+TimeoutStartSec=0
 OOMScoreAdjust=-500
 
 [Install]
 WantedBy=sysinit.target
 UNIT
+
+cat > /etc/systemd/system/zl1-kmsg-follow.service <<'UNIT'
+[Unit]
+Description=zl1: follow /dev/kmsg (live trace only — writes ~90 KiB/s while the host talks)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/userdata/zl1-kmsg/follow.sh
+Restart=always
+RestartSec=5
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 systemctl daemon-reload
-systemctl enable zl1-kmsg-drain.service >/dev/null 2>&1
-systemctl reset-failed zl1-kmsg-drain.service >/dev/null 2>&1
-systemctl restart zl1-kmsg-drain.service
-sleep 4
-systemctl is-active zl1-kmsg-drain.service
+systemctl enable zl1-kmsg-snapshot.service >/dev/null 2>&1
+systemctl disable zl1-kmsg-follow.service >/dev/null 2>&1
+systemctl reset-failed zl1-kmsg-snapshot.service zl1-kmsg-follow.service >/dev/null 2>&1
+systemctl restart zl1-kmsg-snapshot.service
+sleep 3
+echo "snapshot unit: $(systemctl is-active zl1-kmsg-snapshot.service)"
 REMOTE
-  echo "installed. Wrote $( "${SSH[@]}" "wc -l < $DIR/boot.log 2>/dev/null" | tr -d '\r' ) lines of boot log already."
-  echo "Read it with: $0 --read 200"
+}
+
+case "${1:-}" in
+--install)
+  guard
+  push_scripts
+  write_units
+  echo "installed. The snapshot unit collects the ring at ~0, 5, 15, 35, 75, 155, 315 s of uptime."
+  echo "After a reboot, read them with: $0 --read 300"
   ;;
 --remove)
   guard
   "${SSH[@]}" '
-    systemctl disable --now zl1-kmsg-drain.service >/dev/null 2>&1
-    rm -f /etc/systemd/system/zl1-kmsg-drain.service
-    rmdir /etc/systemd/system/zl1-kmsg-drain.service.d 2>/dev/null
+    systemctl disable --now zl1-kmsg-snapshot.service zl1-kmsg-follow.service >/dev/null 2>&1
+    rm -f /etc/systemd/system/zl1-kmsg-snapshot.service /etc/systemd/system/zl1-kmsg-follow.service
     systemctl daemon-reload
-    echo "removed the unit. The script and its log stay on /userdata/zl1-kmsg."'
+    echo "removed the units. The snapshots and scripts stay on /userdata/zl1-kmsg."'
+  ;;
+--follow-on)
+  guard
+  "${SSH[@]}" 'systemctl enable --now zl1-kmsg-follow.service >/dev/null 2>&1; sleep 2; echo "follow: $(systemctl is-active zl1-kmsg-follow.service)"'
+  ;;
+--follow-off)
+  guard
+  "${SSH[@]}" 'systemctl disable --now zl1-kmsg-follow.service >/dev/null 2>&1; echo "follow: $(systemctl is-active zl1-kmsg-follow.service)"'
   ;;
 --status)
   guard
   "${SSH[@]}" "
-    printf 'unit      : '; systemctl is-active zl1-kmsg-drain.service 2>&1
-    printf 'script    : '; ls -l $DIR/drain.sh 2>/dev/null || echo missing
-    printf 'boot.log  : '; wc -l < $DIR/boot.log 2>/dev/null || echo missing
-    printf 'kmsg.log  : '; wc -l < $DIR/kmsg.log 2>/dev/null || echo missing
-    printf 'ring now  : '; dmesg 2>/dev/null | wc -l"
+    printf 'snapshot unit : '; systemctl is-active zl1-kmsg-snapshot.service 2>&1
+    printf 'follow unit   : '; systemctl is-active zl1-kmsg-follow.service 2>&1
+    echo 'snapshots:'
+    for f in $DIR/boot-*.log; do
+      [ -f \"\$f\" ] || continue
+      printf '  %-28s %6s lines\n' \"\$(basename \$f)\" \"\$(wc -l < \$f)\"
+    done
+    printf 'ring right now : %s lines, earliest: ' \"\$(dmesg | wc -l)\"; dmesg | head -1"
   ;;
 --read)
   guard
-  n="${2:-200}"
-  # boot.log is the whole buffer as it stood when the drainer started; kmsg.log is
-  # everything since. Grepping both is how a driver's boot-time error finally becomes
-  # visible — that is the entire purpose of this script.
+  n="${2:-300}"
+  # Every snapshot and the live follow, grepped for the driver names the Wi-Fi work needs.
+  # This is the command docs/ubuntu-touch/51-* refers to.
   "${SSH[@]}" "
-    echo '=== boot.log | cnss/wlan/wcnss/qcacld ==='
-    grep -aiE 'cnss|wlan|wcnss|qca6174|ar6320|qcacld' $DIR/boot.log 2>/dev/null | tail -n $n
-    echo
-    echo '=== boot.log | tail ==='
-    tail -n $n $DIR/boot.log 2>/dev/null"
+    for f in $DIR/boot-*.log $DIR/kmsg.log; do
+      [ -f \"\$f\" ] || continue
+      n=\$(grep -aicE 'cnss|wlan|wcnss|qca6174|ar6320|qcacld' \"\$f\")
+      printf '=== %s  (%s matching lines) ===\n' \"\$f\" \"\$n\"
+      grep -aiE 'cnss|wlan|wcnss|qca6174|ar6320|qcacld' \"\$f\" | head -n $n
+      echo
+    done
+    echo '=== earliest snapshot, first 40 lines ==='
+    ls -t $DIR/boot-*.log 2>/dev/null | tail -1 | xargs -r head -40"
   ;;
 *)
-  sed -n '2,25p' "$0"; exit 1;;
+  sed -n '2,35p' "$0"; exit 1;;
 esac
