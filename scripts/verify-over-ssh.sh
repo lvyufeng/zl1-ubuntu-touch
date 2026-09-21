@@ -34,6 +34,10 @@ report="$(timeout 45 "${SSH[@]}" '
   ta=0; for tb in 99 98 97; do n=$(ip route show table $tb 2>/dev/null | wc -l); ta=$((ta + n)); done
   echo "t_all=$ta"
   echo "sshd=$(ss -ltn 2>/dev/null | grep -c ":22 " || echo 0)"
+  # rx_packets on rndis0. SSH working proves the host reached the device, so this is a
+  # corroborating number rather than a criterion — it is what tells a log reader later
+  # whether the host was ever really there during that boot.
+  echo "rxpkts=$(awk -v i=rndis0: "\$1==i{print \$3}" /proc/net/dev 2>/dev/null)"
 ' 2>/dev/null)"
 
 printf '%s\n' "$report" > "$OUT/verify.txt"
@@ -72,7 +76,8 @@ fi
 # The container being genuinely up is the point of Stage 2.3, so HAL processes is a
 # criterion rather than a note. A running lxc-start with no HAL processes means the
 # container started and died, which is the failure mode doc 33 describes.
-printf '  info container=%s coldboot_done=%s uptime=%s\n' "${lxc:-none}" "${cold:-?}" "${uptime:-?}"
+printf '  info container=%s coldboot_done=%s uptime=%s rxpkts=%s\n' \
+  "${lxc:-none}" "${cold:-?}" "${uptime:-?}" "$(get rxpkts)"
 if [[ "${hal:-0}" -ge 5 ]]; then
   printf '  OK   %-22s %s\n' "hal_processes" "$hal"
   pass=$((pass+1))

@@ -34,7 +34,31 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; 
 in_recovery() { [[ "$(adb devices 2>/dev/null | awk -v s="$SER" '$1==s{print $2}')" == "recovery" ]]; }
 has_gadget()  { lsusb -d 18d1:d001 >/dev/null 2>&1; }
 in_edl()      { lsusb | grep -q '05c6:9008'; }
+host_usb0()   { ip link show usb0 >/dev/null 2>&1; }
 wait_for()    { local d=$(( SECONDS + $1 )); while (( SECONDS < d )); do "$2" && return 0; sleep 5; done; return 1; }
+
+# The host side of the RNDIS link has to be configured while the device boots, and it has
+# to be configured by something that is already running when the gadget appears. The
+# device re-binds its gadget several times in the first seconds, so a one-shot `ip addr
+# add` only works by luck.
+#
+# This is not a nicety. The 2026-09-20 cold boot ran 14.7 hours with the device reporting
+# rx_packets=0 for the whole time: the last host-watcher run had ended 32 hours earlier.
+# From the device-side log alone that boot looks like a stall, and it was nothing of the
+# kind — the device had never been given a peer. Every cold boot now starts this first.
+HOSTWATCH_PID=""
+start_host_watch() {
+  [[ -n "$HOSTWATCH_PID" ]] && return 0
+  "$ROOT/scripts/host-watch-usb0.sh" 0 >>"$LOG" 2>&1 &
+  HOSTWATCH_PID=$!
+  log "host usb0 watcher started (pid $HOSTWATCH_PID); it configures usb0 on every rebind"
+}
+stop_host_watch() {
+  [[ -n "$HOSTWATCH_PID" ]] || return 0
+  kill "$HOSTWATCH_PID" 2>/dev/null
+  HOSTWATCH_PID=""
+}
+trap stop_host_watch EXIT
 
 # Wait for SSH, not for the gadget. The link appearing is not the same as the system
 # being up — on 2026-09-19 a check ran 20 s after RNDIS appeared and reported three
@@ -48,6 +72,15 @@ cold_boot() {  # cold_boot <n> <note>
     local n="$1" note="$2"
     log "=== cold boot #$n ==="
     adb -s "$SER" shell 'rm -f /data/zl1-netwatch.log; sync; reboot' >/dev/null 2>&1 || { log "reboot failed"; return 1; }
+    # Wait for the host to see the gadget before waiting for SSH. If usb0 never appears
+    # on this side, whatever the device is doing is unobservable, and a reported failure
+    # would be a statement about the host, not about the image.
+    if ! wait_for 240 host_usb0; then
+        log "cold boot #$n: the host never saw usb0 within 240 s — nothing to judge."
+        log "  Check the host watcher before counting this as a failed boot."
+        return 1
+    fi
+    log "cold boot #$n: host usb0 is present"
     if ! wait_for 300 ssh_ready; then
         log "cold boot #$n: SSH never came up within 300 s"
         if in_edl; then log "  and the device is in EDL"; fi
@@ -64,6 +97,9 @@ log "=== Stage 2.4 + 2.5 run; log $LOG ==="
 log "waiting for TWRP"
 wait_for "$WAIT_TWRP" in_recovery || { log "timed out waiting for TWRP"; exit 1; }
 log "TWRP up"
+# Start this before the first reboot, not after: the gadget appears at uptime ~4 s and
+# rebinds several times, so the watcher has to already be looping.
+start_host_watch
 
 # ---------------------------------------------------------------- step 1 ------
 log "=== 1. install the watchdog (integrity-checked, record-only, verified on device) ==="

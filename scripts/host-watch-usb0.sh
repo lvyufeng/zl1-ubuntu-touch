@@ -23,9 +23,48 @@ DEV_IPS=("192.168.2.15" "10.15.19.82")
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="/mnt/data/zl1-bb10/tmp-host-usb0-${STAMP}.log"
 
+# The zl1's Halium gadget. The unrelated Xiaomi that shares the bus enumerates as
+# 18d1:4ee7 (product "cancro"), so matching on the vendor 18d1 alone would be wrong.
+ZL1_ID="18d1:d001"
+
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 
+# The zl1's first USB interface as a sysfs driver-target name ("3-3:1.0"), or nothing.
+#
+# Why this exists: the 2026-09-21 cold boot ran 14.7 hours with the device's rndis0
+# reporting rx_packets=0 for its entire life. Nothing had ever reached it. The last
+# host-watcher run had ended 32 hours earlier — this script had simply not been running,
+# which is a different thing from the link being broken, and the device-side log alone
+# cannot tell the two apart. Cold-boot trials must therefore start it first.
+#
+# Matching by USB ID is not enough on its own: rndis_host can also fail to bind to a
+# freshly enumerated gadget, in which case no usb0 appears and a "no traffic" boot looks
+# exactly like a stalled one. So bind it explicitly, to the right device.
+zl1_iface() {
+  local d ifc
+  for d in /sys/bus/usb/devices/*; do
+    [ -r "$d/idVendor" ] || continue
+    [ "$(cat "$d/idVendor" 2>/dev/null)" = "18d1" ] || continue
+    [ "$(cat "$d/idProduct" 2>/dev/null)" = "d001" ] || continue
+    ifc="$(ls -d "$d":* 2>/dev/null | head -1)"
+    [ -n "$ifc" ] && { printf '%s' "${ifc##*/}"; return 0; }
+  done
+  return 1
+}
+
+bind_rndis() {
+  local ifc
+  sudo -n modprobe rndis_host 2>/dev/null
+  ifc="$(zl1_iface)" || return 1          # quiet: the caller polls this every few seconds
+  [ -e "/sys/bus/usb/drivers/rndis_host/$ifc" ] && return 1
+  log "  binding rndis_host to $ifc"
+  printf '%s' "$ifc" | sudo -n tee /sys/bus/usb/drivers/rndis_host/bind >/dev/null 2>&1 || true
+  sleep 1
+  [ -e "/sys/bus/usb/drivers/rndis_host/$ifc" ]
+}
+
 last_mac=""
+last_bind=0
 declare -A announced=()
 
 setup() {
@@ -83,6 +122,14 @@ while :; do
       last_mac=""
       unset announced
       declare -A announced=()
+    fi
+    # No usb0. That is either "the device has not booted yet" or "rndis_host never bound
+    # to it", and only the second one is fixable from here. Poll for it, quietly.
+    if (( SECONDS - last_bind >= 5 )); then
+      last_bind=$SECONDS
+      if bind_rndis; then
+        log "  rndis_host bound to the zl1 gadget; waiting for usb0"
+      fi
     fi
   fi
 

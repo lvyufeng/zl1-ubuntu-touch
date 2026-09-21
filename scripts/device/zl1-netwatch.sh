@@ -208,13 +208,23 @@ apply_policy_routing_fix() {
         log "policy routing fix: added $added route(s) across tables [$POLICY_TABLES]"
     fi
     # Report against the test that was failing, not against the routes simply existing.
-    if ip route get 192.168.2.100 2>&1 | grep -q "dev $IFACE"; then
-        [ "$policy_ok" = "1" ] || log "policy routing fix in place: route get 192.168.2.100 resolves via $IFACE"
-        policy_ok=1
-    else
-        [ "$policy_failed" = "1" ] || log "policy routing fix NOT working: $(ip route get 192.168.2.100 2>&1 | head -1)"
-        policy_failed=1
-    fi
+    #
+    # The lookup is captured ONCE and both the decision and the log line are made from
+    # that one string. The earlier version tested one invocation and logged a second one;
+    # on 2026-09-21 that produced a line reading "NOT working: 192.168.2.100 dev rndis0
+    # src 192.168.2.15" — a failure verdict printed next to a successful lookup, which is
+    # worse than no log line at all. A captured value cannot disagree with itself.
+    route_get=$(ip route get 192.168.2.100 2>&1 | head -1)
+    case "$route_get" in
+        *"dev $IFACE"*)
+            [ "$policy_ok" = "1" ] || log "policy routing fix in place: $route_get"
+            policy_ok=1
+            ;;
+        *)
+            [ "$policy_failed" = "1" ] || log "policy routing fix NOT working: $route_get"
+            policy_failed=1
+            ;;
+    esac
     return 0
 }
 
