@@ -92,6 +92,33 @@ and a watcher that records what the **hardware** actually reports. See
 | `device/zl1-watch-input.py` | Runs on the device. Opens **every** `/dev/input/event*` and logs every event, decoded, to `/userdata/zl1-input-watch.log`. Three deliberate choices: **no `EVIOCGRAB`** (grabbing would take the device away from the compositor, so the very input it is measuring would stop reaching the thing that is supposed to act on it, and the phone would look even deader while it ran); **no filtering** (a key press on this hardware arrives as a burst whose shape is part of the evidence); **one `select()` loop over all eight devices**, so inter-device ordering is real. Rescans `/dev/input` every 5 s (so a device created while it runs is picked up — that is what makes it testable) and drops a device on EOF rather than spinning on it. |
 | `device/zl1-inject-input.py` | Runs on the device. `--tap X Y` / `--swipe` / `--key CODE` / `--keys` / `--devices`, via `/dev/uinput` — so the injected event is a **kernel** evdev event and travels the same road a real one does. `make_touch()` sets `INPUT_PROP_DIRECT` so libinput calls it a touchscreen rather than a touchpad; without that the events arrive as relative pointer motion and nothing on the greeter reacts. `--keep-seconds N` holds the device open, which is how "did the compositor even take this device" gets answered (look for `/dev/input/eventN` in the compositor's `/proc/<pid>/fd`) — and `--repeat N --every MS` exists because a process that creates a device, uses it once and closes it **cannot be watched**: a reader only sees a device after it exists. Nothing is written anywhere but `/dev/uinput`; the worst case is a stuck key, which is why every action ends with the matching release. **The load-bearing negative result is in the header**: injection cannot drive this GUI, because the compositor opens all `event*` at startup and does not hotplug input devices afterwards (doc 68 §6). |
 
+## Measuring the sensor pipeline (three calls, not two)
+
+sensorfw is asked for a sensor in **three** steps, and skipping any of them produces a wrong answer
+rather than an error:
+
+```
+loadPlugin(name)          -> loads the plugin; (true,) / (false,)
+requestSensor(name, pid)  -> creates a session and the bus object; returns a session id, or -1
+<iface>.start(sessionId)  -> the session actually starts producing samples
+```
+
+`requestSensor` before `loadPlugin` answers `-1` with `requested sensor id 'x' not registered`, which
+reads like "this device has no sensor x"; and a sensor that was never `start()`ed still answers
+`isValid = true` with a legal `(timestamp, value)` — the value from the last time *someone else*
+started it, which reads like "the sensor is frozen". Both were mistaken for hardware faults on
+2026-09-22 and both were measurement bugs. See
+[`../docs/ubuntu-touch/71-the-sensors-stream-the-restart-kills-the-hal.md`](../docs/ubuntu-touch/71-the-sensors-stream-the-restart-kills-the-hal.md).
+
+The other half of the measurement is the **age** of a reading, not "did it change": sensorfw's value
+is `(timestamp_us, ...)` where the timestamp is the uptime in microseconds at which the *sample* was
+produced, so `now - timestamp` separates "40 s old" from "from a previous boot" — and those are
+different diseases that a two-read comparison cannot tell apart.
+
+| Script | Purpose |
+| --- | --- |
+| `device/zl1-sensorfw-probe.sh` | Runs on the device. `--load-all` / `--settle N` / `--gap N` / `--keep N`. Does all three calls per sensor and prints each reading's **age** in seconds, then judges `STREAMING` (a new sample arrived inside the window) / `SLOW` (none in the window, but the last one is fresh — the shape of an adaptor still spinning up: the measured first-sample latency after a `start` is 10-20 s) / `STALE` (with the age, so "40 s" and "from the last boot" are distinguishable). Reads only: it loads plugins, asks for sensors and reads properties, and it writes nothing. Two things it says about itself in its header, both measured: it **perturbs what it measures** (loading a plugin starts an adaptor, and an adaptor start is itself what makes this hardware emit a sample), and **it never restarts `sensorfwd`** — on this device one `systemctl restart sensorfwd` makes the container's sensors HAL kill itself and sensorfw is left holding a connection to the corpse (docs 71 §3). |
+
 ## Finding out *where* the device crashed
 
 | Script | Purpose |

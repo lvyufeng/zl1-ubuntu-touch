@@ -1,0 +1,201 @@
+### evidence captured 2026-09-22T17:10:47Z (host clock; device clock is wrong)
+Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+
+===== 1. sensorfwd restarts and the qti sensors HAL suicides, monotonic clock =====
+--- every sensorfwd stop/start in this boot (host journal):
+[ 4891.491349] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 4891.587224] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 4894.888389] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+[ 6524.937043] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 6524.975802] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 6526.297169] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+[ 6538.510909] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 6538.553143] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 6539.819839] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+[ 7242.664720] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7242.697187] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7243.968469] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+[ 7399.946394] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7399.994382] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7401.256378] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+[ 7798.273241] systemd[1]: Stopping sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7798.301913] systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+[ 7801.476065] systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+
+--- every ISensors::poll() re-entry and every HAL registration (container logcat, monotonic):
+    78.156   246   246 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+    78.712  1785  1785 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  1738.338  1785  1785 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  1738.920  3275  3275 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  1839.486  3275  3354 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  1840.037  3426  3426 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  4891.472  3426  3513 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  4891.983  5926  5926 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  6525.189  5926  5926 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  6525.605  7072  7072 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  6538.512  7072  7152 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  6538.899  7166  7166 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  7242.661  7166  7166 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  7243.074  7733  7733 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  7399.948  7733  7819 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  7400.368  8502  8502 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+  7798.273  8502  8590 E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry. I do not know what to do except killing myself.
+  7798.667  8886  8886 I android.hardware.sensors@1.0-service: Registration complete for android.hardware.sensors@1.0::ISensors/default.
+
+===== 2. the panel state and the shell orientation right now =====
+[ 6674.535612] lomiri[3769171]: [1970-02-10:09:58:02.971] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+[ 6675.880017] lomiri[3769171]: [1970-02-10:09:58:04.316] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+[ 7248.870029] lomiri[3769171]: [1970-02-10:10:07:37.306] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - unknown orientation.
+[ 7249.266209] lomiri[3769171]: [1970-02-10:10:07:37.702] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - unknown orientation.
+[ 8226.998042] lomiri[3769171]: [1970-02-10:10:23:55.434] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - unknown orientation.
+[ 8227.502398] lomiri[3769171]: [1970-02-10:10:23:55.938] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - unknown orientation.
+[ 8232.683451] lomiri[393309]: [1970-02-10:10:24:01.119] qtmir.sensor: Screen - initial currentOrientation is: Qt::PortraitOrientation
+[ 8239.695363] lomiri[393309]: [1970-02-10:10:24:08.105] qtmir.sensor: PlatformScreen[0x5cfe58b0d0]::customEvent() - unknown orientation.
+panel_status=panel_status=alive
+fb0/rotate=0
+
+===== 3. what flipped the shell to landscape at 6674 (power key -> display power change -> re-read) =====
+[ 6673.524983] systemd-logind[38653]: Power key pressed short.
+[ 6673.977621] lomiri[3769171]: [1970-02-10:09:58:02.413] qtmir.sensor: OrientationSensor::onDisplayPowerStateChanged
+[ 6673.985527] zl1-ns-exec[3884246]: sensorfw: minLimit: 0 0
+[ 6673.985527] zl1-ns-exec[3884246]: sensorfw: maxLimit: 2147483647 2147483647
+[ 6674.000970] lomiri[3769171]: [1970-02-10:09:58:02.437] qtmir.sensor: OrientationSensor::readingChanged
+[ 6674.001336] lomiri[3769171]: [1970-02-10:09:58:02.437] qtmir.sensor: PlatformScreen[0x5b8a785e80]::onOrientationReadingChanged()
+[ 6674.024872] lomiri[3769171]: [1970-02-10:09:58:02.461] qml: updateLightState: onDisplayStatusChanged, indicatorState: BATTERY_CHARGING, supportsMultiColorLed: true, hasMessages: false, icon: battery-caution-charging-symbolic, displayStatus: 1, deviceState: charging, batteryLevel: 0
+[ 6674.025265] lomiri[3769171]: [1970-02-10:09:58:02.461] qml: onIndicatorStateChange: INDICATOR_OFF
+[ 6674.025965] lomiri[3769171]: [1970-02-10:09:58:02.462] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - unknown orientation.
+[ 6674.026423] hfd-service[40290]: LedsDummy off
+[ 6674.534912] lomiri[3769171]: [1970-02-10:09:58:02.971] qtmir.sensor: OrientationSensor::readingChanged
+[ 6674.534912] lomiri[3769171]: [1970-02-10:09:58:02.971] qtmir.sensor: PlatformScreen[0x5b8a785e80]::onOrientationReadingChanged()
+[ 6674.535612] lomiri[3769171]: [1970-02-10:09:58:02.971] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+[ 6674.627384] systemd-logind[38653]: Power key pressed short.
+[ 6675.083481] lomiri[3769171]: [1970-02-10:09:58:03.519] qtmir.sensor: OrientationSensor::onDisplayPowerStateChanged
+[ 6675.091944] lomiri[3769171]: [1970-02-10:09:58:03.528] qml: updateLightState: onDisplayStatusChanged, indicatorState: INDICATOR_OFF, supportsMultiColorLed: true, hasMessages: false, icon: battery-caution-charging-symbolic, displayStatus: 0, deviceState: charging, batteryLevel: 0
+[ 6675.092383] lomiri[3769171]: [1970-02-10:09:58:03.528] qml: onIndicatorStateChange: BATTERY_CHARGING
+[ 6675.097735] hfd-service[40290]: LedsDummy on, color: 4294967295
+[ 6675.111978] NetworkManager[39423]: <info>  [3509883.5481] audit: op="statistics" interface="rndis0" ifindex=44 args="0" pid=69977 uid=32011 result="success"
+[ 6675.126503] NetworkManager[39423]: <info>  [3509883.5607] audit: op="statistics" interface="wlan0" ifindex=7 args="0" pid=69977 uid=32011 result="success"
+[ 6675.140209] lomiri[3769171]: pam_succeed_if(lightdm:auth): requirement "user ingroup nopasswdlogin" not met by user "phablet"
+[ 6675.233458] systemd-logind[38653]: Power key pressed short.
+[ 6675.374724] dbus-daemon[38446]: [system] Rejected send message, 0 matched rules; type="method_return", sender=":1.83" (uid=0 pid=55461 comm="/usr/sbin/lomiri-system-compositor --enable-num-fr") interface="(unset)" member="(unset)" error name="(unset)" requested_reply="0" destination=":1.3218" (uid=0 pid=1320231 comm="/usr/sbin/repowerd")
+[ 6675.832347] lomiri[3769171]: [1970-02-10:09:58:04.268] qtmir.sensor: OrientationSensor::onDisplayPowerStateChanged
+[ 6675.849916] lomiri[3769171]: [1970-02-10:09:58:04.286] qtmir.sensor: OrientationSensor::readingChanged
+[ 6675.850789] lomiri[3769171]: [1970-02-10:09:58:04.286] qtmir.sensor: PlatformScreen[0x5b8a785e80]::onOrientationReadingChanged()
+[ 6675.874875] lomiri[3769171]: [1970-02-10:09:58:04.310] qml: updateLightState: onDisplayStatusChanged, indicatorState: BATTERY_CHARGING, supportsMultiColorLed: true, hasMessages: false, icon: battery-caution-charging-symbolic, displayStatus: 1, deviceState: charging, batteryLevel: 0
+[ 6675.875820] lomiri[3769171]: [1970-02-10:09:58:04.311] qml: onIndicatorStateChange: INDICATOR_OFF
+[ 6675.877874] hfd-service[40290]: LedsDummy off
+[ 6675.880017] lomiri[3769171]: [1970-02-10:09:58:04.316] qtmir.sensor: PlatformScreen[0x5b8a785e80]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+
+===== 4. sensor state in the CURRENT sensorfwd (pid 216350) =====
+loadPlugin(accelerometersensor) = (true,)
+loadPlugin(orientationsensor)  = (true,)
+requestSensor(accel,436994)         = (6,)
+requestSensor(orient,436994)        = (7,)
+uptime=8344  orientation=(<(uint64 8227499150, uint32 6)>,)
+uptime=8344  accel.xyz  =(<(uint64 8313369053, -0.67528814077377319, 20.563613891601562, 1015.3563842773438)>,)
+uptime=8345  magnetom  =(<(uint64 7859993914, 3, -7560, -12899, -50880, -7560, -12899, -50880)>,)
+uptime=8353  orientation=(<(uint64 8227499150, uint32 6)>,)
+uptime=8353  accel.xyz  =(<(uint64 8313369053, -0.67528814077377319, 20.563613891601562, 1015.3563842773438)>,)
+uptime=8353  magnetom  =(<(uint64 7859993914, 3, -7560, -12899, -50880, -7560, -12899, -50880)>,)
+
+===== 5. is /etc/sensorfw writable? =====
+touch: cannot touch '/etc/sensorfw/.wtest': Read-only file system
+/dev/loop0 on / type ext4 (ro,relatime,data=ordered)
+tmpfs on /etc/fstab type tmpfs (rw,nosuid,noexec,relatime,size=1915204k,nr_inodes=478801,mode=755)
+/dev/sda10 on /etc/NetworkManager/system-connections type ext4 (rw,relatime,discard,nodelalloc,data=journal)
+/dev/sda10 on /etc/netplan type ext4 (rw,relatime,discard,nodelalloc,data=journal)
+/dev/sda10 on /etc/default/ufw type ext4 (rw,relatime,discard,nodelalloc,data=journal)
+/dev/sda10 on /etc/ufw type ext4 (rw,relatime,discard,nodelalloc,data=journal)
+
+===== 6. health after the measurements =====
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+
+0 loaded units listed.
+active
+active
+Name:           android
+State:          RUNNING
+PID:            35057
+ 216350       09:14
+1320231    01:50:13
+panel_status=panel_status=suspend
+
+===== 7. appended later: the three-call probe, with start() (uptime 8662-8707) =====
+Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+sensorfw probe: keeper pid 649181, settle 12s, gap 10s, keep 60s, uptime 8848s
+
+=== the sensors sensorfw currently exports ===
+
+--- /SensorManager/accelerometersensor
+    loadPlugin(accelerometersensor ) -> (true,)
+    requestSensor(pid 649181    ) -> (25,)
+    local.AccelerometerSensor.start(26) -> ()
+    local.AccelerometerSensor.xyz
+      read #1: (<(uint64 8860879500, -1.1623047590255737, 19.944339752197266, 1014.9425048828125)>,)   (last sample 0 s ago)
+      read #2: (<(uint64 8870977048, -2.5797874927520752, 20.828126907348633, 1015.010986328125)>,)   (last sample 0 s ago)
+      => STREAMING (a new sample arrived within 10s)
+
+--- /SensorManager/alssensor
+    loadPlugin(alssensor           ) -> (true,)
+    requestSensor(pid 649181    ) -> (27,)
+    local.ALSSensor.start(28) -> ()
+    local.ALSSensor.lux
+      read #1: (<(uint64 0, uint32 0)>,)   (last sample 8883 s ago)
+      read #2: (<(uint64 0, uint32 0)>,)   (last sample 8893 s ago)
+      => STALE     (no new sample in 10s; the last one is 8893s old)
+
+--- /SensorManager/gyroscopesensor
+    loadPlugin(gyroscopesensor     ) -> (true,)
+    requestSensor(pid 649181    ) -> (29,)
+    local.GyroscopeSensor.start(30) -> ()
+    local.GyroscopeSensor.value
+      read #1: (<(uint64 8905846534, 11.365434646606445, 3.4970569610595703, -20.982341766357422)>,)   (last sample 0 s ago)
+      read #2: (<(uint64 8915844081, -46.336002349853516, 3.4970569610595703, -49.833061218261719)>,)   (last sample 0 s ago)
+      => STREAMING (a new sample arrived within 10s)
+
+--- /SensorManager/magnetometersensor
+    loadPlugin(magnetometersensor  ) -> (true,)
+    requestSensor(pid 649181    ) -> (31,)
+    local.MagnetometerSensor.start(32) -> ()
+    local.MagnetometerSensor.magneticField
+      read #1: (<(uint64 8928124045, 3, -7980, -12959, -49920, -7980, -12959, -49920)>,)   (last sample 0 s ago)
+      read #2: (<(uint64 8938184663, 3, -7800, -12719, -49440, -7800, -12719, -49440)>,)   (last sample 0 s ago)
+      => STREAMING (a new sample arrived within 10s)
+
+--- /SensorManager/orientationsensor
+    loadPlugin(orientationsensor   ) -> (true,)
+    requestSensor(pid 649181    ) -> (33,)
+    local.OrientationSensor.start(34) -> ()
+    local.OrientationSensor.orientation
+      read #1: (<(uint64 8227499150, uint32 6)>,)   (last sample 722 s ago)
+      read #2: (<(uint64 8227499150, uint32 6)>,)   (last sample 732 s ago)
+      => STALE     (no new sample in 10s; the last one is 732s old)
+
+STALE means the adaptor is up and the value has not moved; it does not say why. Compare the
+age against the uptime above: an age in the thousands of seconds with an uptime only a few
+thousand seconds means the value came from an earlier boot, i.e. this sensorfw daemon has
+never received a sample from this sensor. Do NOT restart sensorfwd to 'fix' it -- on this
+device a sensorfwd restart is what kills the container's sensors HAL (docs 71).
+
+===== 8. the gyroscope after start(), and the value property signatures (uptime ~8767-8786) =====
+Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+--- /SensorManager/accelerometersensor
+readonly (tddd) xyz = (8960755127, -1.9496222734451294, 19.916332244873047, 1015.2661743164062);
+--- /SensorManager/alssensor
+readonly (tu) lux = (0, 0);
+--- /SensorManager/magnetometersensor
+readonly (tiiiiiii) magneticField = (8960860352, 3, -7859, -12959, -49139, -7859, -12959, -49139);
+--- /SensorManager/orientationsensor
+readonly (tu) orientation = (8227499150, 6);
+--- /SensorManager/gyroscopesensor
+readonly (tddd) value = (8960883088, -37.593360900878906, -0.87426424026489258, -27.102190017700195);
+--- sensorfwd options (-c is the new lever):
+ -l=N, --log-level=<level>        Use given logging level. Messages are logged for
+                                  the given and higher priority levels. Level
+                                  can also be notched up by sending SIGUSR1 to
+--
+ -c=P, --config-file=<path>       Load configuration from given path. By default
+                                  /etc/sensorfw/sensord.conf is used.
+
+--- panel/backlight: panel_status=alive / 200
+--- uptime 8960, sensorfwd pid 216350, repowerd pid 1320231

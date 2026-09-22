@@ -161,6 +161,8 @@ $ gdbus call --system ... /SensorManager/orientationsensor ... Get local.Orienta
 
 6 在 Qt 里是 `FaceDown`（屏幕朝下）。手机平放在桌上，正确的应该是 5（`FaceUp`）。而 `/etc/sensorfw/sensord.conf.d/30-hidl.conf` 给加速度计的坐标变换矩阵是**单位阵**：
 
+> **[后续，见 [`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)]**：这一节之后的测量补上了两端 —— 加速度计**是在流的**（当时以为它"没注册"是漏了 `start()` 这一步），而且 `orientationsensor` 在输入持续供数的情况下**自己不出值**（559 秒没有新样本）。"值恒为 6" 因此不是"姿态算对了没有"的问题，是方向这个虚拟传感器不出值、而 shell 会去重读那个缓存值。坐标矩阵这一条仍未定案。
+
 ```ini
 [accelerometer]
 transformation_matrix = "1,0,0,0,1,0,0,0,1"

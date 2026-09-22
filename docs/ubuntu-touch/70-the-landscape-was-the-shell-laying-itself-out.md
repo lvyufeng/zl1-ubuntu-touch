@@ -2,7 +2,7 @@
 
 **日期**: 2026-09-22
 **状态**: **竖屏回来了 —— 重启 `lomiri-full-greeter.service` 之后，新 shell 的 qtmir 报的是 `Screen - initial currentOrientation is: Qt::PortraitOrientation`，而且之后没有采纳过任何方向变化，所以版面是竖的。** 机制不是"读一个新值把屏幕扳回来"，而是 `OrientedShell.qml` 里的 `orientation` 只在 `physicalOrientation` **变化**时才被赋值 —— 传感器现在给不出 qtmir 认得的姿态，于是那个变量一直停在它的初值 0（Primary = 竖屏）。
-**但这是缓解，不是治本**：`orientationsensor` 现在恒报 `(uptime_µs, 6)`，6 是 `FaceDown`，而手机是平放朝上的；`accelerometersensor` 在 sensorfw 里**根本没注册**，而 `vsimd` 每 5 秒崩一次。方向这条线的根因在传感器数据通路上，§6 是它的现状和下一步。
+**但这是缓解，不是治本**：`orientationsensor` 恒报 `(uptime_µs, 6)` 而且**自己不出值**（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) 更正了这里原先"加速度计没注册"的判断：加速度计、磁力计、陀螺仪都在流，缺的是 `start()` 那一步），而 shell 每次亮/灭屏都会重读这个缓存值、把 `6` 采纳成横屏 —— **按一下电源键就可能横回去**；`vsimd` 每 5 秒崩一次。方向这条线的根因在方向传感器本身，§6 是它的现状和下一步。
 **接续**: [`69`](69-repowerd-died-on-a-startup-race-with-sensorfwd.md)（黑屏的因：repowerd 死了；屏一亮就露出这一层的横屏）、[`60`](60-sensorfwd-was-the-third-service-behind-the-same-wall.md)（sensorfwd 本身）、[`58`](58-one-cold-boot-where-the-secure-world-refused-and-three-firmwares-did-not-load.md)（安全世界/固件那条线）
 
 ---
@@ -112,7 +112,7 @@ qml: Calculating new usage mode. Pointer devices: 1 ... root width: 1080 height:
 
 ## 6. 底层还没修：传感器数据通路
 
-这一节是留给下一次的，写清楚是因为它是横屏的根，而且它同时是"所有的硬件都能驱动"的一部分。
+> **【更正，见 [`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)】**这一节 (1) 的结论是错的，错在量法：sensorfw 的调用是**三个**（`loadPlugin` → `requestSensor` → **`start(sessionId)`**），当时漏了第三个，于是把"会话没开始出数"读成了"没注册"。补上之后**加速度计、磁力计、陀螺仪都在流**（`xyz` 两个相隔 10 秒的读数是 `(8674999894, -1.56, 21.50, 1016.0)` 和 `(8684997475, -1.52, 23.35, 1017.2)`，手机平放，z ≈ 1 g）。§4 那个"竖着拿 20 秒"的分叉也因此有了答案：**不是姿态算错，是 `orientationsensor` 自己不出值** —— 输入在流，它 559 秒没有新样本，而 shell 每次亮灭屏都会去**重读那个缓存值**（这也是它横/竖切换的真正触发，§5 的缓解因此只是有条件的）。另外补一条当时不知道的：**(5) 每次 `systemctl restart sensorfwd` 都会让容器的 sensors HAL 自杀一次**（6/6，毫秒级同一时刻），所以"重启 sensorfwd 看看"这条在这一节之后**不再使用**。
 
 **（1）`accelerometersensor` 在 sensorfw 里没有注册。** `availableSensorPlugins` 有 9 个（`accelerometersensor alssensor compasssensor gyroscopesensor magnetometersensor orientationsensor pressuresensor proximitysensor rotationsensor`），但 `requestSensor` 的答复是：
 
