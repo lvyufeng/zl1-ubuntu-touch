@@ -1,0 +1,107 @@
+### thermal evidence, zl1, captured 2026-09-22 (host clock; the device clock is wrong and jumps)
+### Every block is a verbatim on-device measurement unless marked "inference".
+
+===== 1. the governor the image ships (before any change) =====
+cpu0 gov=performance cur=1132800 max=1132800
+cpu1 gov=performance cur=1132800 max=1132800
+cpu2 gov=performance cur=1363200 max=1363200
+cpu3 gov=performance cur=1363200 max=1363200
+$ cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors
+interactive conservative ondemand userspace powersave performance        <- no schedutil
+
+===== 2. after `echo interactive > scaling_governor` on all four cores =====
+(t+45 s, same load as before: ~6, i.e. the cores were still working)
+cpu0 gov=interactive cur=307200  max=1132800
+cpu1 gov=interactive cur=307200  max=1132800
+cpu2 gov=interactive cur=902400  max=1363200
+cpu3 gov=interactive cur=902400  max=1363200
+
+===== 3. the installer's own verification (systemctl cat is the only honest check) =====
+[Unit]
+Description=zl1: put the CPU cores on a scaling governor (the image ships 'performance')
+After=local-fs.target
+Before=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=ZL1_CPUFREQ_GOVERNOR=interactive
+ExecStart=/etc/systemd/system/zl1-cpufreq-governor.sh
+[Install]
+WantedBy=multi-user.target
+$ systemctl is-active zl1-cpufreq-governor.service   -> active
+$ systemctl show ... -p Result -p ExecMainStatus     -> Result=success  ExecMainStatus=0
+
+===== 4. the v63 debug keeper: what it is and what it costs =====
+$ tr '\0' ' ' < /proc/817/cmdline
+/bin/sh /usr/local/sbin/zl1-debug-net.sh
+$ ps -o pid=,ppid=,time= -p 817
+    817       1    02:31:26 00:10:35 S      <- ppid 1, orphaned; 10m35s of CPU in 2h31m
+$ systemctl status zl1-debug-net.service
+   Active: inactive (dead) ... Main PID: 34905 (code=exited, status=0/SUCCESS) ... Duration: 67ms
+   (the script daemonizes itself, so the unit believes it finished)
+$ a=$(awk '{print $14+$15}' /proc/817/stat); sleep 20; b=$(awk '{print $14+$15}' /proc/817/stat); echo $((b-a))
+132                                     <- 1.32 s of CPU in 20 s = 6.6% of one core, permanently
+
+its 1 Hz loop body (from the script itself):
+298: while :; do
+299:     write_runtime_systemd_units      # rewrites /run/systemd/system/zl1-debug-net.service every second
+300:     maybe_systemctl_mask_usb
+301:     if kill_usb_managers; then ...   # walks /proc/[0-9]*
+...
+110: maybe_systemctl_mask_usb() {
+112:     systemctl mask --runtime usb-moded.service >/dev/null 2>&1 || true
+113:     systemctl stop usb-moded.service >/dev/null 2>&1 || true
+                                                        ^^^ two systemctl calls, every single second
+
+===== 5. what that produces in the journal =====
+[ 6865.401165] systemd[1]: Reloading requested from client PID 4016322 ('systemctl') (unit init.scope)...
+[ 6867.481908] systemd[1]: Reloading finished in 2080 ms.
+[ 6872.667961] systemd[1]: Reloading requested from client PID 4019173 ('systemctl') (unit init.scope)...
+[ 6874.608859] systemd[1]: Reloading finished in 1940 ms.
+   ... one daemon-reload every ~6 s, ~2 s of systemd wall time each,
+       and the client's cgroup is always init.scope = an orphaned process
+
+===== 6. A/B: stopped -> resumed (kill -STOP / -CONT, with a 600 s self-reverting timer) =====
+before stop: load 6.66-7.36   keeper 132 ticks/20 s   reloads every ~6 s
+while stopped: last reload [9259.4]; load 5.38-6.02; tsens_tz_sensor1 538 -> 490 (53.8 -> 49.0 C),
+               pm8994_tz 48000 -> 46923 (46.9 C)
+after the timer resumed it (~[9850]):
+[ 9866.933682] systemd[1]: Reloading requested from client PID 840222 ('systemctl') (unit init.scope)...
+               ^^^ back within 5 s, because that is the first second of its loop
+
+===== 7. the quiet 5 minutes (keeper SIGSTOPped, nothing else run on the device) =====
+t0  uptime=9892  keeper=T  systemd_cpu=00:37:38  load=6.76
+    tsens_tz_sensor1=558 (55.8 C)  tsens_tz_sensor8=580 (58.0 C)  pm8994_tz=49125 (49.1 C)
+    msm_therm=49  quiet_therm=50  battery=42500 (42.5 C, CHARGING)
+sleep 300
+t1  uptime=10192 keeper=T  systemd_cpu=00:37:39  load=6.04
+    tsens_tz_sensor1=503 (50.3 C)  tsens_tz_sensor8=519 (51.9 C)  pm8994_tz=46434 (46.4 C)
+    msm_therm=46  quiet_therm=47  battery=42200 (42.2 C)
+reloads in the last 5 min: 0
+
+  -> systemd spent **1 second** of CPU in 300 s while the keeper was stopped.
+  -> the SoC cooled ~5.5 C (tsens1) / ~6.1 C (tsens8) / ~2.7 C (pm8994) in those 5 minutes,
+     while the battery was still charging.
+  inference (not measured): with 50 reloads in 300 s and `Reloading finished in ~2000 ms` each,
+     the reload storm alone represented ~100 s of systemd busy time per 300 s, i.e. ~1/3 of a core.
+     The direct measurement is the "1 second of systemd CPU in 300 s" above; the 100 s is arithmetics
+     on the wall time of a reload, and is labelled as an inference for that reason.
+
+===== 8. the other half: kernel time, and the container's memory =====
+20 s /proc/stat delta on the host: user 16.9%  idle 24.1%  sys+irq+softirq+iowait 59%
+   => ~3.0 of 4 cores busy, ~2.4 of them in the kernel
+container top:  400%cpu  19-27%user  108-215%sys  96-269%idle
+   8885 sensorfwd                 11.1%   (in the container's view)
+   8886 android.hardware.sensors@1.0-service  7.4%
+   1696 android.hardware.graphics.composer@2.1-service  3.7%
+container memory: 3867268k total, 3705148k used, 162120k free    <- 96% full
+ksoftirqd/0..3 accumulated ~6.5 min, rcu_preempt+rcu_sched ~6.7 min, in 2.6 h
+/tmp: no cooling devices at all -- `ls /sys/class/thermal/cooling_device*` is empty, so the kernel
+      has no throttling to tune
+
+===== 9. thermal zone units (three different conventions on one device) =====
+tsens_tz_sensor1..20        deci-degrees C   (490 = 49.0 C)
+pm8994_tz, battery          milli-degrees C  (46923 = 46.9 C)
+msm_therm, quiet_therm,     plain degrees C  (47 = 47 C)
+pa_therm0/1, emmc_therm
+=> `cat .../temp | sort -n | tail -1` picks the wrong maximum; read them by name.
