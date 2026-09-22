@@ -4,6 +4,7 @@
 **状态**: **`libis_compat_layer.so` 现在能在设备上加载了。** 在此之前它在 `android_input_stack_initialize()` 里必死：`err` 只有一行 `cannot locate symbol "_ZN7android9AVFactory17createMediaFilterEv" referenced by "/android/system/lib64/libavenhancements.so"`，`out` 是空的，退出码 139。原因不是缺一个符号，是 **DT_NEEDED 是传递的**：本模块链 `libinputservice.so`，而它链 `libhwui.so`，`libhwui` 链 `libheif.so`，`libheif` 链 `libmedia.so`，`libmedia` 链 `libavenhancements.so` —— 一个 vendor 预编译库，导入一个**这个镜像上没有任何库提供**的符号。修法是把这个依赖去掉（不是补那个符号）：`libinputservice` 在本树里只有两个源文件，把它们编进本模块即可。验收：新 `.so` 的 DT_NEEDED 里没有 `libinputservice`/`libhwui`/`libheif`/`libmedia`，三个 `Pointer/SpriteController` 符号改为本模块自己定义，导出的 `android_input_*` 仍然是 6 个；设备上同一条命令不再 139。
 
 **接续**: [`65`](65-the-camera-was-blocked-on-four-system-server-services.md)（四个 system_server 服务 + reply 路径读 binder 的自伤）
+**后续**: [`67`](67-the-preview-started-it-was-a-sched-fifo-request.md) —— 输入层能加载之后真正挡住 `startPreview` 的不是 HAL，是第五个 system_server 服务 `scheduling_policy`；**第 6 节那条 `error_code = 0` 的结论要按 `67` 第 7 节修正**（它是下游，不是死因）
 
 ---
 
@@ -127,6 +128,8 @@ stub 日志零增长、cameraserver 什么都没问、`dumpsys` 也拿不到东�
 
 ## 6. 现在卡在哪：HAL 发了一个非法 error notify，cameraserver 于是把相机关掉
 
+> **这一节的结论在 [`67`](67-the-preview-started-it-was-a-sched-fifo-request.md) 被量翻了**：那个 `notifyError: Error condition 0` 不是死因，是**下游**。真正挡住客户端的是 `Camera3Device::configureStreamsLocked → android::requestPriority → checkService("scheduling_policy") → sleep(1)`——一个没有 system_server 就没有出口的循环，它睡在正在服务 `startPreview` 的那个线程上；60 秒后 HAL 超时报的那条错误是它之后的第二个症状。补上第五个服务之后：`Set real time priority for request queue thread` + `Started camera preview.` 都出现了，而 `error_code = 0` 依然会出现 —— 它现在的触发点是**预览流（stream 0）的 native window 一上来就是 EPIPE**（`Can't dequeue next output buffer: Broken pipe (-32)`、`the native window died from under us`）。所以下面这段现场描述仍然准确，只是因果顺序要按新的这份读。
+
 输入层这一堵墙拆掉之后，相机侧的现场变成（同一次运行）：
 
 ```
@@ -192,6 +195,6 @@ scripts/android-fw-stubs/run-camera-test.sh --line-buffered        # 跑相机
 
 ## 8. 下一步
 
-1. **HAL 那条 `error_code = 0`**：要确定它是"客户端要的流/参数它不支持"还是"它自己的状态坏了"。可用的杠杆：hybris 侧 `halium/libhybris/compat/camera/camera_compatibility_layer.cpp` 是我们自己构建的，可以改它请求的流配置（现在客户端要 4 条流，其中一条是 `type=1` 的输入流、还有一条 BLOB 的 dataspace 对不上）逐项排除。
+1. ~~**HAL 那条 `error_code = 0`**：要确定它是"客户端要的流/参数它不支持"还是"它自己的状态坏了"。~~ 见 [`67`](67-the-preview-started-it-was-a-sched-fifo-request.md)：它既不是"参数不支持"也不是状态坏，是**预览流的 native window 死了**之后的第一个报警。可用的杠杆还是这条：hybris 侧 `compat/camera/camera_compatibility_layer.cpp` 是我们自己构建的，可以改它请求/交给 HAL 的流与 Surface（现在客户端要 4 条流，其中一条是 `type=1` 的输入流、还有一条 BLOB 的 dataspace 对不上）。
 2. **daemon 的 abort**：先确认它是不是"daemon 正常退出时的 vendor 竞态"（也就是无害噪音），办法是看它是否**只在**会话收尾时发生；如果不是，再看 `mct_controller_destroy` 是被谁触发的。
-3. 上面两条清了之后才是 `65` 第 7 节剩的那件事：`Started camera preview.` 真正打出来、以及 UT 侧 `libcamera.so.1` 的取帧路径。
+3. ~~上面两条清了之后才是 `65` 第 7 节剩的那件事：`Started camera preview.` 真正打出来、以及 UT 侧 `libcamera.so.1` 的取帧路径。~~ `Started camera preview.` 已经打出来了（[`67`](67-the-preview-started-it-was-a-sched-fifo-request.md)），剩下的是**取帧**：预览流那条 native window 死在谁手上。另外 `67` 第 2 节量出一件输入层自己的事：`obtainPointerController()` 无条件构造 `DisplayEventReceiver`/`SpriteController`，于是任何走 hybris 输入栈的进程，`input` 线程永远停在 `ComposerService::connectLocked()` 等 SurfaceFlinger（这台设备的 GUI 在主机侧，没有 SurfaceFlinger）—— `test_camera` 的"点屏拍照"走的就是它。

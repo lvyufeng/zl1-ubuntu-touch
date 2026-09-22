@@ -11,17 +11,20 @@
 #     -> mAllowedUsers.find(clientUserId)               <- filled only by notifySystemEvent()
 #        -> (inside that event) CameraUidPolicy::registerSelf -> checkService("activity")
 #   connectHelper -> handleEvictionsLocked -> ProcessInfoService -> checkService("processinfo")
+#   ... and then, once a client is connected, its startPreview
+#     -> Camera3Device::configureStreamsLocked -> requestPriority -> checkService("scheduling_policy")
 #
-# -- and all four of `permission`, `appops`, `activity` and `processinfo` are registered by
-# system_server, and mAllowedUsers is only ever written when system_server tells cameraserver which
-# device users may connect. Without the first, checkPermission() spins in an untimed retry loop
-# while holding CameraService::mServiceLock, so every later connect queues forever behind it;
-# without the second, connect() is rejected with 'Access ... has been restricted'; without the third
-# the user switch is never applied and connect() is rejected with "cannot connect from device user
-# 0, currently allowed device users: "; without the fourth it fails with -110 (ETIMEDOUT).
-# service-stub.c is all four, and it also sends the oneway notifySystemEvent(EVENT_USER_SWITCHED,
-# {0}) that system_server would have sent. Its header has the device evidence for each, and the
-# exact transactions.
+# -- and all five of `permission`, `appops`, `activity`, `processinfo` and `scheduling_policy` are
+# registered by system_server, and mAllowedUsers is only ever written when system_server tells
+# cameraserver which device users may connect. Without the first, checkPermission() spins in an
+# untimed retry loop while holding CameraService::mServiceLock, so every later connect queues
+# forever behind it; without the second, connect() is rejected with 'Access ... has been
+# restricted'; without the third the user switch is never applied and connect() is rejected with
+# "cannot connect from device user 0, currently allowed device users: "; without the fourth it
+# fails with -110 (ETIMEDOUT); without the fifth the connect succeeds and the *preview* hangs,
+# because that one is asked for inside the client's startPreview() call. service-stub.c is all
+# five, and it also sends the oneway notifySystemEvent(EVENT_USER_SWITCHED, {0}) that system_server
+# would have sent. Its header has the device evidence for each, and the exact transactions.
 #
 # Why it has to run inside the container's PID namespace: servicemanager's SELinux hook calls
 # selinux_check_access() with getpidcon(pid). From the host that pid is not resolvable and
@@ -58,8 +61,11 @@ PIDFILE=$DIR/service-stub.pid
 # CameraUidPolicy::registerSelf() waits for inside notifySystemEvent, before the user switch that
 # makes a client connectable is applied; "processinfo" is what CameraService::handleEvictionsLocked
 # asks for the state and OOM score of every client holding a camera, and answers ETIMEDOUT after
-# BINDER_ATTEMPT_LIMIT one-second retries without it. See service-stub.c for both.
-SERVICES=(permission appops activity processinfo)
+# BINDER_ATTEMPT_LIMIT one-second retries without it; "scheduling_policy" is the one asked for
+# *inside* a client's startPreview -- Camera3Device::configureStreamsLocked boosts its request
+# thread to SCHED_FIFO through it, on a loop with no timeout, so without it the preview never
+# starts. See service-stub.c for all of them.
+SERVICES=(permission appops activity processinfo scheduling_policy)
 # Every call to the device is bounded. A device that is rebooting, or one hung service, must not be
 # able to hang this script: `service list` (an app_process script) blocks for as long as its own
 # binder calls do, which is how an earlier version of this file waited forever on the camera fix it
@@ -185,9 +191,10 @@ cat <<EOF
 
 == where this leaves the camera
 
-The two names are answered and cameraserver has been told which users may connect, so the next
-connect() should get all the way through validateClientPermissionsLocked. Run it, under the CFI
-preload that is what lets libcamera.so.1 load at all:
+The five names are answered and cameraserver has been told which users may connect, so connect()
+gets all the way through validateClientPermissionsLocked, and the preview gets past the SCHED_FIFO
+boost that configureStreamsLocked asks "scheduling_policy" for. Run it, under the CFI preload that
+is what lets libcamera.so.1 load at all:
 
   scripts/android-fw-stubs/run-camera-test.sh        (or by hand:)
   ssh root@$DEV_HOST 'nsenter -t \$(lxc-info -n android -pH) -p -- \\
@@ -195,7 +202,7 @@ preload that is what lets libcamera.so.1 load at all:
         LD_PRELOAD="/usr/lib/aarch64-linux-gnu/libtls-padding.so /userdata/zl1-hybris/lib/libcfi-shadow-init.so" \\
     /usr/bin/test_camera'
 
-then: $0 --status    (the request for "permission" is the one that was missing)
+then: $0 --status    (the request for "permission" is the first name that is missing without this)
 
 last log lines:
 $tail_note

@@ -21,12 +21,18 @@
 #      open, so without the layer the program dies of SIGSEGV (exit 139) right there.
 #
 # Usage:
-#   run-camera-test.sh [--timeout SECONDS] [--no-input-stack] [extra test_camera args...]
+#   run-camera-test.sh [--timeout SECONDS] [--no-input-stack] [--crash-dump] [test_camera args...]
 #
 # --no-input-stack is the measurement mode: the camera without the input stack in the same process
 # (no-input-stack.so, see scripts/android-fw-stubs/no-input-stack.c). It is how the camera is
 # measured while the input layer has a problem of its own, and it is labelled as such in the output
 # rather than being the way this is meant to run.
+#
+# --crash-dump adds crash-dump.so (scripts/crash-dump), which turns a SIGSEGV into a report on stderr
+# -- the signal, /proc/self/maps, and a backtrace -- and exits 70 instead of 139. A crash here kills
+# the process with an empty `out` and no message, and the code that dies is Android code loaded by
+# hybris, which nothing on the device can symbolise. The maps are what make it readable: the top
+# frame of the backtrace is the faulting instruction and the maps say which library it is in.
 #
 # Output goes to /userdata/zl1-camera/<date>/ on the device, filtered: libtls-padding.so prints a
 # block of 'c' padding and a tlsfix2 line per thread, which would otherwise be most of the file.
@@ -53,6 +59,10 @@ while [ $# -gt 0 ]; do
   --line-buffered) PREFIX="stdbuf -oL "; shift ;;
   --no-input-stack)
     PRELOAD="$PRELOAD /userdata/zl1-hybris/lib/no-input-stack.so"
+    shift
+    ;;
+  --crash-dump)
+    PRELOAD="$PRELOAD /userdata/zl1-hybris/lib/crash-dump.so"
     shift
     ;;
   *) args+=("$1"); shift ;;

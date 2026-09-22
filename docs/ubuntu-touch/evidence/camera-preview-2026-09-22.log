@@ -1,0 +1,53 @@
+Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+# the run whose log this is: scripts/android-fw-stubs/run-camera-test.sh --timeout 90, after camera-stack-reset.sh
+# (the stub was deployed with all five names; cameraserver pid 34305, app pid 34322)
+
+## the camera service, in order, over that run
+E/Camera3-OutputStream(34305): getBufferLockedCommon: Stream 0: Can't dequeue next output buffer: Broken pipe (-32)
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 3 due to buffer error.
+W/Camera2Client(34305): notifyError: Received recoverable error 3 from HAL - ignoring, requestId 10000002
+E/Camera2Client(34305): notifyError: Error condition 0 reported by HAL, requestId -1
+E/Surface (34305): queueBuffer: error queuing buffer to SurfaceTexture, -32
+E/Camera3-OutputStream(34305): returnBufferCheckedLocked: Stream 0: Error queueing buffer to native window: Broken pipe (-32)
+W/Camera2Client(34305): notifyError: Received recoverable error 5 from HAL - ignoring, requestId 10000002
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 3 due to buffer error.
+W/Camera2Client(34305): notifyError: Received recoverable error 5 from HAL - ignoring, requestId 10000002
+W/Camera2Client(34305): notifyError: Received recoverable error 5 from HAL - ignoring, requestId 10000002
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 3 due to buffer error.
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 0 due to buffer error.
+E/QCamera (34120): <HAL><ERROR> notifyErrorForPendingRequests: 10318: Sending ERROR REQUEST for all pending requests
+E/QCamera (34120): <HAL><ERROR> notifyErrorForPendingRequests: 10321: Sending ERROR REQUEST for frame 2556
+W/Camera2Client(34305): notifyError: Received recoverable error 3 from HAL - ignoring, requestId 10000002
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 3 due to buffer error.
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 0 due to buffer error.
+E/QCamera (34120): <HAL><ERROR> notifyErrorForPendingRequests: 10318: Sending ERROR REQUEST for all pending requests
+E/QCamera (34120): <HAL><ERROR> notifyErrorForPendingRequests: 10321: Sending ERROR REQUEST for frame 2557
+W/Camera2Client(34305): notifyError: Received recoverable error 3 from HAL - ignoring, requestId 10000002
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 3 due to buffer error.
+W/Camera3-OutputStream(34305): returnBufferCheckedLocked: A frame is dropped for stream 0 due to buffer error.
+W/Camera3-OutputStream(34305): disconnectLocked: While disconnecting stream 0 from native window, the native window died from under us
+I/Camera2ClientBase(34305): Closed Camera 1. Client was: hybris (PID 34322, UID 0)
+
+## the stub, from its start: five names, the user switch, and the boost
+fwsvc[34315] addService("permission"): 124 bytes, object at +92
+fwsvc[34315]   -> the name resolves
+fwsvc[34315] registering "appops" as node 0x5e21 cookie 0x5ea2
+fwsvc[34315] addService("appops"): 116 bytes, object at +84
+fwsvc[34315]   -> the name resolves
+fwsvc[34315] registering "activity" as node 0x5e31 cookie 0x5e32
+fwsvc[34315] addService("activity"): 120 bytes, object at +88
+fwsvc[34315]   -> the name resolves
+fwsvc[34315] registering "processinfo" as node 0x5e41 cookie 0x5e42
+fwsvc[34315] addService("processinfo"): 124 bytes, object at +92
+fwsvc[34315]   -> the name resolves
+fwsvc[34315] registering "scheduling_policy" as node 0x5e51 cookie 0x5e52
+fwsvc[34315] addService("scheduling_policy"): 136 bytes, object at +104
+fwsvc[34315]   -> the name resolves
+fwsvc[34315] notifySystemEvent(EVENT_USER_SWITCHED, {0}) to "media.camera": 
+fwsvc[34315] scheduling_policy: method 1 requestPriority pid=34305 tid=34373 prio=1 isForApp=0: SCHED_FIFO set
+
+## dumpsys media.camera, taken after the run
+    Number of camera devices: 2 / Active Camera Clients: [] / Allowed user IDs: 0
+    events: USER_SWITCH previous allowed user IDs: <None>, current allowed user IDs: 0
+            CONNECT device 1 client for package hybris (PID 34322)
+            DIED client(s) with PID 34305, reason: (Binder died unexpectedly)

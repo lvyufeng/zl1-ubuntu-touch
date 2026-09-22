@@ -33,3 +33,6 @@ out/
 *.swp
 *~
 .DS_Store
+
+# Scratch working directory at repo root (build logs, per-iteration captures)
+/tmp/

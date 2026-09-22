@@ -89,6 +89,50 @@
  * "processinfo" libbinder retries for BINDER_ATTEMPT_LIMIT seconds and then returns ETIMEDOUT, so
  * connect() fails with -110. See serve_processinfo.
  *
+ * And a fifth, which is the one that hangs the *preview* rather than the connect. Unlike the other
+ * four it is asked for from inside a client call, on a loop with no timeout, no log and no exit:
+ *
+ *   Camera3Device::configureStreamsLocked (Camera3Device.cpp:2565-2582), the last thing it does
+ *   after the client's streams have been handed to the HAL --
+ *     property_get("camera.fifo.disable", value, "0");
+ *     if (disableFifo != 1) {
+ *         res = requestPriority(getpid(), mRequestThread->getTid(), kRequestThreadPriority, ...)
+ *   -> android::requestPriority (frameworks/av/media/utils/SchedulingPolicyService.cpp:31)
+ *     for (;;) {
+ *         sp<IBinder> binder = defaultServiceManager()->checkService(_scheduling_policy);
+ *         if (binder == 0) { sleep(1); continue; }
+ *
+ * The thread asleep in that sleep(1) is the one serving the client's startPreview (ICamera's
+ * START_PREVIEW, binder code 5), so the client waits for a reply that never comes. Measured on the
+ * device with the camera stack reset, one snapshot of both processes:
+ *
+ *   app  main thread   binder_thread_read                 <- waiting for the reply to code 5
+ *   app  input thread  nanosleep, 100 ms at a time         <- the input layer; a separate problem
+ *   cs   Binder:_3     nanosleep({tv_sec=1}) forever       <- requestPriority's sleep(1)
+ *
+ * and the binder tracepoints named the transaction that sleep sits between:
+ *
+ *   binder_transaction: dest_node=43 dest_proc=<servicemanager> reply=0 flags=0x10 code=0x2
+ *   binder_transaction_alloc_buf: data_size=104 offsets_size=0
+ *
+ * -- a synchronous CHECK_SERVICE_TRANSACTION to servicemanager every 1.0002 s, which is the
+ * checkService above. The 104 bytes give the name without reading the payload: 4 strict-mode + 60
+ * (the 27-char token "android.os.IServiceManager" with its NUL, 4+56) + 4 + pad4(2L+2) = 104, so
+ * pad4(2L+2) = 36, i.e. 16 or 17 characters. Read out of cameraserver's own /proc/<pid>/mem beside
+ * that token the name is 17: "scheduling_policy". The same arithmetic on the app's own poll -- the
+ * input layer waiting for SurfaceFlinger -- gives 100 bytes and 14 characters, and the app's log
+ * says SurfaceFlinger, which is the check on the method.
+ *
+ * What the call is for is the only thing the camera wants that has nothing to do with the camera:
+ * SCHED_FIFO for its request-processing thread. This container has no system_server, so the name
+ * resolves to nothing and the loop never gets past its first branch. serve_scheduling_policy
+ * answers it and does the boost it asked for.
+ *
+ * The same three lines carry an escape hatch: camera.fifo.disable=1 skips the call entirely. That
+ * is a way to prove this is the blocker (set the property, restart cameraserver, watch the preview
+ * start) and it is not how this port fixes it -- the property would have to live in the container's
+ * build, and a phone has the service.
+ *
  * Answering:
  *   permission   android.os.IPermissionController  checkPermission -> true,
  *                                                  isRuntimePermission -> true,
@@ -102,6 +146,12 @@
  *                                                  accepted and never called back, everything else 0
  *   processinfo  android.os.IProcessInfoService    every pid it asks about exists and is in the
  *                                                  foreground: state 2 (PROCESS_STATE_TOP), score 0
+ *   scheduling_policy
+ *                android.os.ISchedulingPolicyService
+ *                                                  requestPriority -> SCHED_FIFO is set on the tid
+ *                                                  it names (best effort; OK is replied either way),
+ *                                                  requestCpusetBoost -> OK, nothing moved
+
  *
  * Why raw binder rather than a C++ service: a BnPermissionController subclass would have to be
  * built against the container's libbinder/libutils ABI (this image is a *different build* of the
@@ -265,6 +315,26 @@ void *memset(void *dst, int c, unsigned long n) {
 #define IPROCESSINFOSERVICE_GET_STATES_AND_SCORES 2U
 #define PROCESSINFO_SERVICE_NAME "processinfo"
 #define PROCESS_STATE_TOP 2U
+
+/* android.os.ISchedulingPolicyService, from frameworks/av/media/utils/ISchedulingPolicyService.h
+ * ("keep in sync with frameworks/base/core/java/android/os/ISchedulingPolicyService.aidl"):
+ *   1 int requestPriority(int32 pid, int32 tid, int32 prio, bool isForApp, bool asynchronous)
+ *   2 int requestCpusetBoost(bool enable, IBinder client)
+ * system_server registers it as "scheduling_policy" (SystemServer.java:828) -- the fifth name this
+ * container has no system_server to provide. Unlike the other four it is asked for *from inside* a
+ * client's call and on a loop with no timeout and no log; the header has the measurement.
+ *
+ * Both methods reply writeNoException() and then an int32 status (the Bp side in
+ * ISchedulingPolicyService.cpp ends with reply.readInt32()); the second one's `client` argument is
+ * a binder and therefore arrives in the offsets array, which this program does not need to read. */
+#define ISCHEDULINGPOLICYSERVICE_DESC "android.os.ISchedulingPolicyService"
+#define ISCHEDULINGPOLICY_REQUEST_PRIORITY 1U
+#define ISCHEDULINGPOLICY_REQUEST_CPUSET_BOOST 2U
+#define SCHEDULING_POLICY_SERVICE_NAME "scheduling_policy"
+/* sched_setscheduler(2) on aarch64, and the policy the camera asks for -- the same thing the real
+ * service does for this call. */
+#define SYS_sched_setscheduler 119
+#define SCHED_FIFO 1
 
 /* BR_* are matched on (type, nr) only. The kernel encodes them _IOW('r', nr, ...) and libbinder
  * mirrors that, but the direction bit is not worth betting the program on. */
@@ -478,6 +548,7 @@ static void answer(int fd, const struct binder_transaction_data *tr, const u8 *d
 static const char *service_name(u64 cookie);
 static void serve_activity(u32 code, const u8 *d, u64 len, struct pbuf *p);
 static void serve_processinfo(u32 code, const u8 *d, u64 len, struct pbuf *p);
+static void serve_scheduling_policy(u32 code, const u8 *d, u64 len, struct pbuf *p);
 
 /* Give a binder buffer back. libbinder does this from the Parcel that owns it; here it is explicit,
  * because every buffer left unreleased stays allocated in this process's binder mapping until the
@@ -698,6 +769,7 @@ static int check_service(int fd, const char *name) {
 #define COOKIE_APPOPS 0x5ea2u
 #define COOKIE_ACTIVITY 0x5e32u
 #define COOKIE_PROCESSINFO 0x5e42u
+#define COOKIE_SCHEDULING_POLICY 0x5e52u
 
 /* What the runner registers, by name: the node pointer has to be unique per name (it is the
  * driver's key for the node) and the cookie is what comes back with every transaction. */
@@ -710,6 +782,7 @@ static const struct {
     {"appops", 0x5e21, COOKIE_APPOPS},
     {"activity", 0x5e31, COOKIE_ACTIVITY},
     {"processinfo", 0x5e41, COOKIE_PROCESSINFO},
+    {"scheduling_policy", 0x5e51, COOKIE_SCHEDULING_POLICY},
     {0, 0, 0},
 };
 
@@ -722,6 +795,8 @@ static const char *service_name(u64 cookie) {
     return "activity";
   if ((u32)cookie == COOKIE_PROCESSINFO)
     return "processinfo";
+  if ((u32)cookie == COOKIE_SCHEDULING_POLICY)
+    return "scheduling_policy";
   return "?";
 }
 
@@ -888,6 +963,7 @@ static void answer(int fd, const struct binder_transaction_data *tr, const u8 *d
     p_str16(&p, cookie == COOKIE_APPOPS      ? "android.app.IAppOpsService"
                : cookie == COOKIE_ACTIVITY   ? IACTIVITYMANAGER_DESC
                : cookie == COOKIE_PROCESSINFO ? IPROCESSINFOSERVICE_DESC
+               : cookie == COOKIE_SCHEDULING_POLICY ? ISCHEDULINGPOLICYSERVICE_DESC
                                              : "android.os.IPermissionController");
   } else if (tr->code == DUMP_TRANSACTION) {
     p_u32(&p, 0);
@@ -899,6 +975,8 @@ static void answer(int fd, const struct binder_transaction_data *tr, const u8 *d
     serve_activity(tr->code, d, len, &p);
   } else if (cookie == COOKIE_PROCESSINFO) {
     serve_processinfo(tr->code, d, len, &p);
+  } else if (cookie == COOKIE_SCHEDULING_POLICY) {
+    serve_scheduling_policy(tr->code, d, len, &p);
   } else {
     logbegin("transaction for an unknown cookie ");
     loghex(cookie);
@@ -1010,6 +1088,73 @@ static void serve_processinfo(u32 code, const u8 *d, u64 len, struct pbuf *p) {
     for (i = 0; i < n; i++)
       p_u32(p, 0); /* an oom score of 0: the most important process there is */
   }
+}
+
+/* android.os.ISchedulingPolicyService -- see the header for why the camera needs this one and how
+ * it was found. The call that matters is made from Camera3Device::configureStreamsLocked, so a
+ * client's startPreview() is blocked until this answers.
+ *
+ * requestPriority(pid, tid, prio, isForApp) is answered by doing what the service is for: the
+ * SCHED_FIFO boost is applied to the thread it names. The real service checks first that the caller
+ * is allowed to touch that thread (frameworks/native/services/schedulerservice checks the uid); the
+ * one caller here is cameraserver and the thread is cameraserver's own request thread, so the only
+ * question left is whether the syscall itself works, and the answer is logged rather than assumed.
+ * The reply is OK either way: the boost is best effort, a refusal costs a warning in cameraserver's
+ * log and nothing else, and withholding the reply would put the client back where it was. */
+static void serve_scheduling_policy(u32 code, const u8 *d, u64 len, struct pbuf *p) {
+  u64 o = args_start(d, len);
+  logbegin("scheduling_policy: method ");
+  lognum((long)code);
+
+  if (code == ISCHEDULINGPOLICY_REQUEST_PRIORITY) {
+    u32 pid = 0, tid = 0, prio = 0, is_for_app = 0;
+    int param;
+    long rc;
+    if (len >= o + 4)
+      pid = *(const u32 *)(const void *)(d + o);
+    if (len >= o + 8)
+      tid = *(const u32 *)(const void *)(d + o + 4);
+    if (len >= o + 12)
+      prio = *(const u32 *)(const void *)(d + o + 8);
+    if (len >= o + 16)
+      is_for_app = *(const u32 *)(const void *)(d + o + 12);
+    logstr(" requestPriority pid=");
+    lognum((long)pid);
+    logstr(" tid=");
+    lognum((long)tid);
+    logstr(" prio=");
+    lognum((long)prio);
+    logstr(" isForApp=");
+    lognum((long)is_for_app);
+    logstr(": ");
+    /* struct sched_param is a bare int in the aarch64 uapi, and the tid is this namespace's, which
+     * is the caller's too: this program runs inside the container. */
+    param = (int)prio;
+    rc = sys6(SYS_sched_setscheduler, (long)(int)tid, SCHED_FIFO, (long)(unsigned long)&param, 0, 0,
+              0);
+    if (rc == 0) {
+      logstr("SCHED_FIFO set");
+    } else {
+      logstr("sched_setscheduler refused, rc=");
+      lognum(rc);
+    }
+    logflush();
+    p_u32(p, 0);
+    return;
+  }
+
+  if (code == ISCHEDULINGPOLICY_REQUEST_CPUSET_BOOST) {
+    /* Nothing in the camera path asks for this (ResourceManagerService does), there is no cpuset
+     * policy in this container, and there is nothing to move either way. */
+    logstr(" requestCpusetBoost: no cpuset policy here, replied OK");
+    logflush();
+    p_u32(p, 0);
+    return;
+  }
+
+  logstr(" (no such method, replied OK)");
+  logflush();
+  p_u32(p, 0);
 }
 
 /* ------------------------------------------------------------------- the camera user switch ---- */
@@ -1128,7 +1273,7 @@ int service_stub_main(int argc, char **argv) {
     if (!service_table[t].name) {
       logbegin("no such service in the table: \"");
       logstr(argv[i]);
-      logstr("\" (want one of permission, appops, activity)");
+      logstr("\" (want one of permission, appops, activity, processinfo, scheduling_policy)");
       logflush();
       continue;
     }

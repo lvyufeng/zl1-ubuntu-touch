@@ -3,6 +3,7 @@
 **日期**: 2026-09-22
 **状态**: **Android 侧整条相机链路已经打通。** `/usr/bin/test_camera` 的 `connect()` 现在能走完 `validateClientPermissionsLocked`，cameraserver 会把 camera 1 真正打开交给它（`QCamera: openCamera`、`mm-camera` daemon 起 `init mods done`），客户端退出后再干净地关掉（`closeCamera ... rc: 0`）。**相机还没有出图**，最后一堵墙在客户端侧而不是 Android 侧：`libcamera_compat_layer.so` 需要 `libis_compat_layer.so`（libhybris 的 input-system 兼容层），设备上没有 —— §7。设备没有变砖，GUI 照常。
 **接续**: [`64`](64-the-last-unit-was-not-failing-it-was-obeying.md)、[`48`](48-the-tls-fault-was-killing-seven-system-services.md)
+**后续**: [`66`](66-the-input-layer-vendor-symbol-was-libinputservice.md)（输入层那堵墙）、[`67`](67-the-preview-started-it-was-a-sched-fifo-request.md)（第五个服务 `scheduling_policy`：`Started camera preview.` 已经打出来）
 
 ---
 
@@ -56,6 +57,8 @@ tid=49944   cameraserver   futex_wait 0xf504d008
 | `appops` | `android.app.IAppOpsService` | `Client::startCameraOps` → `startOpNoThrow` | `APP_OPS_MANAGER_UNAVAILABLE_MODE = MODE_IGNORED` → 返回 `-EACCES`：`Access ... has been restricted` |
 | `activity` | `android.app.IActivityManager` | `notifySystemEvent` → `CameraUidPolicy::registerSelf` | 用户切换事件永远落不了地（§4） |
 | `processinfo` | `android.os.IProcessInfoService` | `handleEvictionsLocked` → `ProcessInfoService` | 40 次 1 秒重试后 `TIMED_OUT` → `-110`（§5） |
+
+> 第五个不在 `connect()` 这条路上，所以这张表当时是对的：它在客户端**已经连上之后**的 `startPreview` 里被问，见 [`67`](67-the-preview-started-it-was-a-sched-fifo-request.md)。
 
 ### 2.1 `mAllowedUsers` 永远是空的（第三个洞）
 
@@ -232,5 +235,5 @@ scripts/android-fw-stubs/run-camera-test.sh        # 跑相机
 
 1. ~~构建并部署 `libis_compat_layer.so`~~ —— 做完了，见 [`66`](66-the-input-layer-vendor-symbol-was-libinputservice.md)：它卡的不是 `libskia` 那一步，而是 `libinputservice → libhwui → libheif → libmedia → libavenhancements` 这条传递依赖，链尾是一个这个镜像上没人定义的 vendor 符号。修法是把 `libinputservice` 整个去掉（它的两个源文件编进本模块）。
 2. 输入层能加载之后，现在卡在 HAL：它发了一个 `error_code = 0` 的非法 error notify，cameraserver 按设备级错误处理并关掉会话；同一个栈里 `mm-qcamera-daemon` 收尾时 FORTIFY abort。证据和下一步都在 `66` 的第 6、8 节。
-3. 然后才是真正的出图：`test_camera` 拿到的帧、以及 UT 侧 `libcamera.so.1` 的取帧路径。
+3. ~~然后才是真正的出图：`test_camera` 拿到的帧、以及 UT 侧 `libcamera.so.1` 的取帧路径。~~ 这一条分成了两半：`connect()` 之后的**预览已经能起来**（`Started camera preview.`），卡住它的不是 HAL、也不是输入层，而是第五个 system_server 服务 —— 见 [`67`](67-the-preview-started-it-was-a-sched-fifo-request.md)；现在是"能起预览、还拿不到帧"（预览流的 native window 一上来就是 EPIPE），`67` 第 7 节。
 4. stub 现在还是手工起的运行时安装；要长期存在得做成一个 systemd unit（和 `zl1-ns-exec` 那批一样），但那属于"确认有用之后"的事。
