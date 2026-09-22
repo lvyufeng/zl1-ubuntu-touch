@@ -28,6 +28,10 @@
 #   zl1-inject-input.py --swipe X1 Y1 X2 Y2        a drag; --ms N sets the duration (default 250)
 #   zl1-inject-input.py --key CODE                 press and release one key; --hold-ms N (default 60)
 #   zl1-inject-input.py --keys CODE,CODE,...       several, in order
+#   zl1-inject-input.py --tap X Y --repeat N --every MS   the same tap N times, one device for all of
+#                                                  them; a device that is created, used and destroyed
+#                                                  in one go cannot be watched, because a reader only
+#                                                  sees a device after it exists (see zl1-watch-input.py)
 #   zl1-inject-input.py --devices                  create both virtual devices and just report what
 #                                                  the kernel made of them, then exit (a smoke test
 #                                                  for whether uinput works on this kernel at all)
@@ -194,8 +198,11 @@ def main(argv):
         x, y = int(positional[0]), int(positional[1])
         fd = make_touch()
         time.sleep(0.3)
-        touch(fd, x, y, 0)
-        print("tapped (%d, %d)" % (x, y))
+        for n in range(int(opts.get("--repeat", "1"))):
+            if n:
+                time.sleep(float(opts.get("--every", "1000")) / 1000.0)
+            touch(fd, x, y, 0)
+            print("tapped (%d, %d)%s" % (x, y, " #%d" % (n + 1) if n else ""))
     elif act == "--swipe":
         x1, y1, x2, y2 = (int(v) for v in positional[:4])
         ms = int(opts.get("--ms", "250"))

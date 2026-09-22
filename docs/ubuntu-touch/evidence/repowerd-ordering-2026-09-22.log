@@ -1,0 +1,93 @@
+repowerd died at boot and the ordering fix — evidence, 2026-09-22
+device: le_zl1 / MSM 8996pro + PMI8996, serial 33e80afe
+clock is wrong; all timestamps are monotonic seconds (journalctl -b -o short-monotonic)
+
+=== 1. the failed boot: repowerd's whole life, and sensorfwd's READY it never waited for ===
+--- (from the archived boot journal, tmp/repowerd-69/boot.log)
+  [   42.365731] ubuntu-phablet systemd[1]: Starting repowerd.service - monitor and control system power state...
+  [   42.420230] ubuntu-phablet systemd[1]: Starting sensorfwd.service - Sensor daemon for the sensor framework...
+  [   42.450425] ubuntu-phablet repowerd[38558]: main: Starting repowerd 2025.09
+  [   42.716069] ubuntu-phablet dbus-daemon[38446]: [system] Activating systemd to hand-off: service name='com.nokia.SensorService' unit='dbus-com.nokia.SensorService.service' requested by ':1.1' (uid=0 pid=38558 comm="/usr/sbin/repowerd")
+  [   52.724265] ubuntu-phablet repowerd[38558]: Sensorfw: failed to call load_plugin: Timeout was reached
+  [   52.725601] ubuntu-phablet repowerd[38558]: g_variant_unref: assertion 'value != NULL' failed
+  [   52.727406] ubuntu-phablet repowerd[38558]: DefaultDaemonConfig: Failed to create SensorfwLightSensor: Could not create sensorfw backend
+  [   52.727751] ubuntu-phablet repowerd[38558]: DefaultDaemonConfig: Falling back to NullLightSensor
+  [   55.701017] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [   55.717542] ubuntu-phablet systemd[1]: repowerd.service: Main process exited, code=killed, status=11/SEGV
+  [   55.720948] ubuntu-phablet systemd[1]: repowerd.service: Failed with result 'signal'.
+  [   55.721516] ubuntu-phablet systemd[1]: Failed to start repowerd.service - monitor and control system power state.
+
+=== 2. sensorfwd's churn after its first READY (it is not settled until t=84) ===
+  [   55.701017] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [   63.638356] ubuntu-phablet systemd[1]: sensorfwd.service: Scheduled restart job, restart counter is at 1.
+  [   64.380778] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [   71.407709] ubuntu-phablet systemd[1]: sensorfwd.service: Scheduled restart job, restart counter is at 2.
+  [   75.807874] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [   83.391525] ubuntu-phablet systemd[1]: sensorfwd.service: Scheduled restart job, restart counter is at 3.
+  [   84.017547] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [ 1739.422482] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+  [ 1841.041820] ubuntu-phablet systemd[1]: Started sensorfwd.service - Sensor daemon for the sensor framework.
+
+=== 3. the same race won by hand, before the drop-in existed: a manual `systemctl start` at t=1340 ===
+  [ 1340.364414] systemd: Starting repowerd.service
+  [ 1340.402335] repowerd[1006137]: main: Starting repowerd 2025.09
+  [ 1340.587955] systemd: Started repowerd.service       <- 0.19 s, no stall, no timeout, no SEGV
+  [ 1340.6885xx] repowerd: Falling back to NullHBM / NullPerformanceBooster   <- benign, same in both runs
+  and it stayed up: `systemctl is-active repowerd` = active, com.lomiri.Repowerd on the system bus.
+  Difference from the failed boot: sensorfwd had already been READY for ~1250 s.
+  (It was 1296.086085 that the first manual attempt started; that one is not in this log because the
+   boot journal's early lines had already been rotated past. The 1340 one is the one on record.)
+
+=== 4. the drop-in that fixes it (installed at /etc/systemd/system/repowerd.service.d/) ===
+  [Unit]
+  After=sensorfwd.service
+  Wants=sensorfwd.service
+  
+  [Service]
+  Restart=on-failure
+  RestartSec=5
+
+=== 5. the live proof: stop both, ask for repowerd alone, watch the jobs ===
+    systemctl stop repowerd; systemctl stop sensorfwd
+    systemctl start repowerd &
+    t=1  jobs: 23234 sensorfwd.service start running | 23105 repowerd.service start waiting
+
+=== 6. that run's journal: ordering honoured, load_plugin succeeded, no SEGV ===
+  [ 1739.394428] sensorfw: Hybris sensor manager initialized
+  [ 1739.422482] systemd: Started sensorfwd.service
+  [ 1739.445080] systemd: Starting repowerd.service          <- 23 ms after sensorfwd's READY
+  [ 1739.460103] sensorfw: minLimit: 0 0                     <- the load_plugin success signature
+  [ 1739.460667] sensorfw: maxLimit: 2147483647 2147483647
+  [ 1739.487316] repowerd: main: Starting repowerd 2025.09
+  [ 1739.857200] systemd: Started repowerd.service           <- no 10 s stall, no timeout
+
+  the load_plugin signature appears exactly twice in the whole boot: t=112 (after the shell
+  had already given up) and t=1739 (this run). Once per successful load_plugin, never per attempt.
+
+=== 7. after 24 minutes: repowerd alive, its names on the system bus ===
+  repowerd: active   pid 1320231
+  :1.3208..:1.3218                      1320231 repowerd  repowerd.service
+  com.canonical.Unity.Screen            1320231 repowerd  repowerd.service
+  com.lomiri.Repowerd                   1320231 repowerd  repowerd.service
+  com.lomiri.Repowerd.Settings          1320231 repowerd  repowerd.service
+
+=== 8. the display policy that came back with it (the reversible lever) ===
+    before: ActiveOutputs=(ii) 0 0  backlight=0  panel_status=suspend
+    busctl --system call com.lomiri.Repowerd /com/canonical/Unity/Screen \
+      com.canonical.Unity.Screen keepDisplayOn
+    after:  ActiveOutputs=(ii) 1 0  backlight=118  panel_status=alive   (held for 30 s+)
+
+=== 9. the landscape layout the black screen had been hiding ===
+  [  103.678292] ubuntu-phablet lomiri[65879]: [1970-02-10 08:08:32.112986] <information> mirserver: . |_ Logical size 1080x1920
+  [  103.773843] ubuntu-phablet lomiri[65879]: [1970-02-10:08:08:32.209] qtmir.screens: PlatformScreen(0x5e3d6b5eb0) - id: 1 geometry: QRect(0,0 1080x1920) window: 0x0 type: "LVDS-1" scale: 2.25
+  [  112.182619] ubuntu-phablet lomiri[65879]: [1970-02-10:08:08:40.617] qtmir.screens: PlatformScreen(0x5e3d6b5eb0) - id: 1 geometry: QRect(0,0 1080x1920) window: 0x5e3d807750 type: "LVDS-1" scale: 2.25
+  [  112.538465] ubuntu-phablet lomiri[65879]: [1970-02-10:08:08:40.965] qtmir.screens: PlatformScreen(0x5e3d6b5eb0) - id: 1 geometry: QRect(0,0 1080x1920) window: 0x5e3d807750 type: "LVDS-1" scale: 2.25
+  [  115.332982] ubuntu-phablet lomiri[65879]: [1970-02-10:08:08:43.747] qtmir.sensor: PlatformScreen[0x5e3d6b5eb0]::customEvent() - unknown orientation.
+  [  115.587090] ubuntu-phablet lomiri[65879]: [1970-02-10:08:08:44.012] qtmir.sensor: PlatformScreen[0x5e3d6b5eb0]::customEvent() - unknown orientation.
+  [  385.663429] ubuntu-phablet lomiri[65879]: [1970-02-10:08:13:14.098] qtmir.sensor: PlatformScreen[0x5e3d6b5eb0]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+  [  404.197702] ubuntu-phablet lomiri[65879]: [1970-02-10:08:13:32.633] qtmir.sensor: PlatformScreen[0x5e3d6b5eb0]::customEvent() - unknown orientation.
+
+  the only accepted orientation change in the whole boot:
+    [  385.663429] ubuntu-phablet lomiri[65879]: [1970-02-10:08:13:14.098] qtmir.sensor: PlatformScreen[0x5e3d6b5eb0]::customEvent() - new orientation=Qt::InvertedLandscapeOrientation
+  lines containing 1920x1080 anywhere in the boot: 0
+  i.e. the compositor never changed geometry: the shell rearranges its own layout internally.
