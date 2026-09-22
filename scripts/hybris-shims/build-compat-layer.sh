@@ -272,14 +272,27 @@ patch_tree() {
     # (this one was written twice: the first cut linked the sprite controllers in, which needs libui
     # as well, and the link stopped on two symbols the second time) still converges on the current
     # one. The guard names both halves so that a half-applied tree is not mistaken for a done one.
-    if grep -q '^LOCAL_SRC_FILES += SpriteController.cpp' "$mk" &&
-       grep -q '^LOCAL_SHARED_LIBRARIES += libui$' "$mk"; then
+    #
+    # Both halves of the guard were wrong until this port's camera work needed the module rebuilt a
+    # second time, and the way they were wrong is worth keeping: the guard asked for
+    # `LOCAL_SRC_FILES += SpriteController.cpp` and `LOCAL_SHARED_LIBRARIES += libui`, neither of
+    # which this patch ever writes -- it writes the two sources as continuation lines of
+    # `LOCAL_SRC_FILES += \` and the libraries as `+= libinputflinger libui`. So the guard never
+    # passed, the patch ran on every invocation, and the first thing it does when it runs is delete
+    # its own previous output: the drop below ate the two source lines, the insert below then had
+    # nothing to match (the line it keys on had already been rewritten to the libui form), and the
+    # module came out with PointerController/SpriteController neither linked nor compiled --
+    # three undefined references at link time, in a tree that had built this module successfully an
+    # hour earlier. It converged the first time only because the first time is the one run where the
+    # pristine text is what is on disk. The guard now names the text this patch installs.
+    if grep -q '^LOCAL_SHARED_LIBRARIES += libinputflinger libui$' "$mk" &&
+       grep -q 'SpriteController\.cpp$' "$mk"; then
       echo "== tree patch: $mk (libinputservice) already applied"
     else
       awk '
         /^# zl1: libinputservice is deliberately not linked\./ { drop = 1; next }
         drop { if ($0 ~ /SpriteController\.cpp$/) drop = 0; next }
-        /^LOCAL_SHARED_LIBRARIES \+= libinputflinger( libinputservice)?$/ {
+        /^LOCAL_SHARED_LIBRARIES \+= libinputflinger( libinputservice| libui)?$/ {
           print "LOCAL_SHARED_LIBRARIES += libinputflinger libui"
           print "# zl1: libinputservice is deliberately not linked. Its two sources are compiled"
           print "# into this module instead; see build-compat-layer.sh. It is the only reason this"
@@ -334,6 +347,184 @@ patch_tree() {
       { print }
       ' "$cpp.zl1-orig" > "$cpp"
       echo "== tree patch: $cpp (setDisplayInfo -> setPhysicalDisplayViewport; original at $cpp.zl1-orig)"
+    fi
+
+    # The sixth patch is not about this module's code being wrong; it is about the *tree* not being
+    # the tree the phone's Android was built from. InputReaderConfiguration is a struct this module
+    # constructs and the device's libinputflinger.so reads, so its layout is an ABI, and the two
+    # disagree by exactly one member:
+    #
+    #   this tree (and so this module)         the device's libinputflinger.so
+    #     disabledDevices      160 .. 200        disabledDevices      160 .. 200
+    #     volumeKeysRotationMode     200           mInternalDisplay         200
+    #     mInternalDisplay     208 .. 264        mExternalDisplay         256
+    #     mExternalDisplay     264 .. 320        mVirtualDisplays         312
+    #     mVirtualDisplays     320 .. 360
+    #
+    # Measured, not guessed, and measured from the device's side: its
+    # InputReaderConfiguration::setPhysicalDisplayViewport (0x44fac) stores the viewport at 200/216/232
+    # and calls String8::setTo(this+0xf8), its getDisplayViewport and KeyboardInputMapper::configure
+    # read displayId at [config+200] (`ldr w9, [x8, #200]!`), its setVirtualDisplayViewports tail-calls
+    # VectorImpl::operator= with x0+0x138, and its dump() reads the virtual display vector's storage at
+    # [config+320]. The same four readings in the tree's own build are 208, 0x100, 0x140 and 328.
+    # volumeKeysRotationMode is a backport this tree has and the phone's image does not: its
+    # KeyboardInputMapper has no mRotationMapOffset either (it keeps mOrientation at 32 where this
+    # tree puts it at 36, after the rotation offset), and its Change flag set stops at 1<<9.
+    #
+    # That single member missing is what the input stack's SIGSEGV was. The device's
+    # setPhysicalDisplayViewport writes the new uniqueId String8 at *its* offset, 248, which in this
+    # module's layout is the middle of a DisplayViewport -- the two int32s at 248/252 that
+    # setNonDisplayViewport() had just set to the input area's width and height. With those 0, the
+    # String8::setTo() that the call ends in does SharedBuffer::release(nullptr), and `bufferFromData`
+    # answers 0 for a null data pointer, so it is a load from address 0 and a SIGSEGV with an empty
+    # stdout -- from a call that was only ever meant to set a viewport.
+    #
+    # The guards are use-site rather than tree-wide: this is the only module in the tree that hands
+    # these structures to the phone's inputflinger -- nothing else here is built against the device's
+    # ABI except the other compat layers, and they do not take this header.
+    h="$TREE/frameworks/native/services/inputflinger/InputReader.h"
+    if grep -q 'ZL1_DEVICE_INPUTFLINGER_ABI' "$h"; then
+      echo "== tree patch: $h already applied"
+    else
+      [ -f "$h.zl1-orig" ] || cp -a "$h" "$h.zl1-orig"
+      awk '
+        /^    int volumeKeysRotationMode;$/ {
+          print "#if !defined(ZL1_DEVICE_INPUTFLINGER_ABI)"
+          print "    /* zl1: the phone'"'"'s libinputflinger.so has no volumeKeysRotationMode, and this"
+          print "     * member is 8 bytes (member plus alignment padding) that move every offset after"
+          print "     * it. Do not compile this module without the guard -- build-compat-layer.sh has"
+          print "     * the four device-side readings that fix the layout it has to match. */"
+          print $0
+          print "#endif"
+          next
+        }
+        /^            showTouches\(false\),$/ {
+          print "            showTouches(false)"
+          print "#if !defined(ZL1_DEVICE_INPUTFLINGER_ABI)"
+          print "            , volumeKeysRotationMode(0)"
+          print "#endif"
+          drop_init = 1
+          next
+        }
+        drop_init { drop_init = 0; print "            { }"; next }
+        { print }
+      ' "$h.zl1-orig" > "$h"
+      echo "== tree patch: $h (volumeKeysRotationMode guarded; original at $h.zl1-orig)"
+    fi
+
+    # The macro itself, and it goes in LOCAL_CFLAGS rather than on the make command line so that a
+    # plain `m libis_compat_layer` in the tree builds the same thing this script does. Independent
+    # guard for the reason given above: the Android.mk is rewritten from its pristine copy whenever
+    # the first patch finds one of its own five lines missing, which drops this one with it.
+    if grep -q 'ZL1_DEVICE_INPUTFLINGER_ABI' "$mk"; then
+      echo "== tree patch: $mk (device ABI macro) already applied"
+    else
+      awk '
+        /^LOCAL_CFLAGS \+= -Wno-unused-parameter/ {
+          print
+          print "LOCAL_CFLAGS += -DZL1_DEVICE_INPUTFLINGER_ABI"
+          print "# zl1: ^ compile the input stack against the ABI of the *device'"'"'s* libinputflinger.so,"
+          print "# which is not this tree'"'"'s: it has no InputReaderConfiguration::volumeKeysRotationMode."
+          print "# See build-compat-layer.sh and the guard in"
+          print "# frameworks/native/services/inputflinger/InputReader.h."
+          next
+        }
+        { print }
+      ' "$mk" > "$mk.zl1-new" && mv "$mk.zl1-new" "$mk"
+      echo "== tree patch: $mk (device ABI macro added)"
+    fi
+
+    # And the code that keeps the two from drifting apart again. The struct's layout is now a
+    # constant this module asserts instead of a thing it hopes, and the assert names the numbers the
+    # device's own disassembly gave, so a header that moves again fails the build here rather than
+    # segfaulting on the phone.
+    #
+    # 64-bit only, because the module is built for both ABIs and the two layouts are different -- the
+    # 32-bit copy has a 4-byte String8 and a 52-byte DisplayViewport, and it is not the one anything
+    # here loads: the process that opens this layer is aarch64 (test_camera, libcamera.so.1), and
+    # aarch64 is the only ABI the phone's libinputflinger.so is present in under the paths hybris
+    # searches (/system/lib64 -- there is no 32-bit inputflinger in this image's /system/lib).
+    #
+    # The block is written to converge: an earlier version of it (without the __LP64__ guard) is
+    # dropped before the current one goes in, which is the same shape as the libinputservice patch
+    # above and for the same reason -- the guard below names the *current* text, so a tree that has
+    # only the old text is re-patched rather than passed over.
+    if grep -q 'ZL1_DEVICE_INPUTFLINGER_ABI sizeof (64-bit' "$cpp"; then
+      echo "== tree patch: $cpp (device ABI asserts) already applied"
+    else
+      awk '
+        /^\/\* zl1: this module and the phone/ { in_old = 1; next }
+        in_old && /^namespace$/ { in_old = 0 }
+        in_old { next }
+        /^namespace$/ && !ns_done {
+          print "/* zl1: this module and the phone'"'"'s libinputflinger.so share these two types, and the"
+          print " * phone'"'"'s copy is the one that counts -- see build-compat-layer.sh for the readings"
+          print " * from its disassembly (uniqueId at 48, DisplayViewport 56 bytes, and 352 for the"
+          print " * configuration, which is this module'"'"'s layout with volumeKeysRotationMode left out)."
+          print " * Asserted here so that a header that moves again fails the build here rather than"
+          print " * segfaults on the phone: the failure mode is a String8::setTo() on a NULL mString and"
+          print " * an empty stdout, which says nothing about a struct layout at all."
+          print " *"
+          print " * ZL1_DEVICE_INPUTFLINGER_ABI sizeof (64-bit only; the loading process is aarch64, and"
+          print " * the 32-bit copy this module also builds is not what anything here opens). */"
+          print "#if defined(__LP64__)"
+          print "#include <stddef.h>"
+          print ""
+          print "static_assert(offsetof(android::DisplayViewport, displayId) == 0,"
+          print "        \"ZL1_DEVICE_INPUTFLINGER_ABI sizeof: DisplayViewport::displayId has moved\");"
+          print "static_assert(offsetof(android::DisplayViewport, uniqueId) == 48,"
+          print "        \"ZL1_DEVICE_INPUTFLINGER_ABI sizeof: DisplayViewport::uniqueId has moved\");"
+          print "static_assert(sizeof(android::DisplayViewport) == 56,"
+          print "        \"ZL1_DEVICE_INPUTFLINGER_ABI sizeof: DisplayViewport has changed size\");"
+          print "static_assert(sizeof(android::InputReaderConfiguration) == 352,"
+          print "        \"ZL1_DEVICE_INPUTFLINGER_ABI sizeof: InputReaderConfiguration has changed size\");"
+          print "#endif"
+          print ""
+          ns_done = 1
+        }
+        { print }
+      ' "$cpp" > "$cpp.zl1-new" && mv "$cpp.zl1-new" "$cpp"
+      echo "== tree patch: $cpp (device ABI asserts)"
+    fi
+
+    # And a live one, because the asserts only pin this side of the ABI. setPhysicalDisplayViewport
+    # is the device's code writing into an object this module allocated, so reading the viewport back
+    # afterwards asks the device's code to hand these numbers back to this module's code -- the one
+    # measurement that says the two layouts agree, in the run's own log, every run. deviceHeight is
+    # the field to check rather than the obvious ones: it is at 44, the last int before the String8,
+    # so it is the field that moves first when the layout does.
+    if grep -q 'ZL1_DEVICE_INPUTFLINGER_ABI check' "$cpp"; then
+      echo "== tree patch: $cpp (device ABI readback check) already applied"
+    else
+      awk '
+        /^\t\tdefault_configuration\.setPhysicalDisplayViewport\(android::ViewportType::VIEWPORT_INTERNAL, viewport\);$/ {
+          print
+          print "\t\t/* zl1: ZL1_DEVICE_INPUTFLINGER_ABI check -- see build-compat-layer.sh. Reading"
+          print "\t\t * the viewport back through the device'"'"'s own getDisplayViewport() is the only"
+          print "\t\t * thing that proves the two InputReaderConfiguration layouts agree; a silent"
+          print "\t\t * mismatch here is what the input stack died of, and it left no trace beyond a"
+          print "\t\t * SIGSEGV inside String8::setTo(). */"
+          print "\t\tandroid::DisplayViewport readback;"
+          print "\t\tif (default_configuration.getDisplayViewport("
+          print "\t\t\t\tandroid::ViewportType::VIEWPORT_INTERNAL, NULL, &readback)) {"
+          print "\t\t\tif (readback.displayId == viewport.displayId &&"
+          print "\t\t\t    readback.logicalRight == viewport.logicalRight &&"
+          print "\t\t\t    readback.deviceHeight == viewport.deviceHeight) {"
+          print "\t\t\t\tALOGI(\"zl1: input ABI check: the internal viewport read back as displayId=%d logicalRight=%d deviceHeight=%d, so this module and the device inputflinger agree\","
+          print "\t\t\t\t\t\treadback.displayId, readback.logicalRight, readback.deviceHeight);"
+          print "\t\t\t} else {"
+          print "\t\t\t\tALOGE(\"zl1: input ABI check FAILED: wrote displayId=%d logicalRight=%d deviceHeight=%d but read back %d/%d/%d -- this module and the device inputflinger disagree about InputReaderConfiguration\","
+          print "\t\t\t\t\t\tviewport.displayId, viewport.logicalRight, viewport.deviceHeight,"
+          print "\t\t\t\t\t\treadback.displayId, readback.logicalRight, readback.deviceHeight);"
+          print "\t\t\t}"
+          print "\t\t} else {"
+          print "\t\t\tALOGE(\"zl1: input ABI check: the internal viewport was not stored at all\");"
+          print "\t\t}"
+          next
+        }
+        { print }
+      ' "$cpp" > "$cpp.zl1-new" && mv "$cpp.zl1-new" "$cpp"
+      echo "== tree patch: $cpp (device ABI readback check)"
     fi
     ;;
   esac
