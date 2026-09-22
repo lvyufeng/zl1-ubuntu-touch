@@ -139,7 +139,9 @@
  *                                                  getPackagesForUid -> one synthetic package,
  *                                                  noteOp -> MODE_ALLOWED
  *   appops       android.app.IAppOpsService        startOperation/checkOperation -> MODE_ALLOWED(0),
- *                                                  getToken -> a binder of our own,
+ *                                                  getToken -> a binder of our own, carrying this
+ *                                                  node's cookie (a mismatch is rejected by the
+ *                                                  driver, see the note above the service table),
  *                                                  everything else -> success, no data
  *   activity     android.app.IActivityManager      isUidActive -> true (the answer CameraUidPolicy
  *                                                  itself gives for a system uid), registerUidObserver
@@ -772,7 +774,28 @@ static int check_service(int fd, const char *name) {
 #define COOKIE_SCHEDULING_POLICY 0x5e52u
 
 /* What the runner registers, by name: the node pointer has to be unique per name (it is the
- * driver's key for the node) and the cookie is what comes back with every transaction. */
+ * driver's key for the node) and the cookie is what comes back with every transaction.
+ *
+ * That second clause is an invariant, not a convention: any flat_binder_object this process sends
+ * for one of these nodes must carry the same cookie that addService registered, or the driver
+ * refuses the *whole* transaction. Measured, because it is not a message any Android log carries --
+ * only dmesg does, and only with BINDER_DEBUG_USER_ERROR/FailedTransaction on:
+ *
+ *   binder: 1363507:1363507 sending u0000000000005e21 node 1069323, cookie mismatch
+ *           0000000000005e22 != 0000000000005ea2
+ *   binder: 1363507:1363507 transaction failed 29201/-22, size 28-8 line 3211
+ *   binder: send failed reply for transaction 1186067 to 1362231:1362261
+ *
+ * "u...5e21 node 1069323" is the appops node, "cookie mismatch 5e22 != 5ea2" is this table's ptr
+ * sent with 0x5e22 where COOKIE_APPOPS (0x5ea2) was registered -- an earlier getToken reply had
+ * written the *pattern* 0x5e21/0x5e22 by hand instead of using the table. size 28-8 is the parcel
+ * that failed (4 bytes of writeNoException + one 24-byte flat_binder_object, 8 bytes of offsets),
+ * and 1186067 is the getToken call it was the reply to. binder_translate_binder() in
+ * drivers/android/binder.c is the check: an existing node for that ptr with a different cookie
+ * returns -EINVAL and the transaction is answered with BR_FAILED_REPLY -- so cameraserver's
+ * AppOpsManager::getToken() never got a token, and every later startOperation/finishOperation
+ * carried a null one. Nothing in this stub's own log could show that: it wrote the reply
+ * successfully and the driver rejected it on the way out. */
 static const struct {
   const char *name;
   u64 ptr;
@@ -896,8 +919,12 @@ static void serve_appops(u32 code, const u8 *d, u64 len, struct pbuf *p) {
     lognum((long)*(const u32 *)(const void *)(d + o + 4));
   }
   logflush();
-  if (code == 7) { /* getToken -> an IBinder of our own */
-    p_fbo(p, 0x5e21, 0x5e22);
+  if (code == 7) { /* getToken -> an IBinder of our own, and it has to be *this* node's cookie:
+                    * the driver keys nodes by the ptr in the flat_binder_object and rejects a
+                    * transaction whose cookie does not match what addService registered (see the
+                    * note above the service table). AppOpsManager::getToken() keeps the result and
+                    * passes it back as the token of every startOperation/finishOperation. */
+    p_fbo(p, 0x5e21, COOKIE_APPOPS);
     return;
   }
   if (code == 1 || code == 2 || code == 3 || code == 8) {

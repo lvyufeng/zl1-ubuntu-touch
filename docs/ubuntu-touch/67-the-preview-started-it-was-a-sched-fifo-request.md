@@ -3,6 +3,8 @@
 **日期**: 2026-09-22
 **状态**: **`Started camera preview.` 真的打出来了**，而且是可以重复的：`connect()` 走完 → cameraserver 打开 camera 1 → 客户端的 `startPreview`（`ICamera::START_PREVIEW`，binder code 5）**返回** → `test_camera` 进入它的 GL 循环。挡住它的那件事与相机无关：`Camera3Device::configureStreamsLocked` 在把流交给 HAL 之后，会为请求线程要一次 SCHED_FIFO 提升，走 `android::requestPriority → checkService("scheduling_policy")`，而这个名字在 Halium 容器里没有 system_server 去注册，那条循环是 `sleep(1)` 且**没有超时、没有日志、没有出口**。`service-stub` 现在也回答这个名字（第五个），设备上 `Set real time priority for request queue thread` 和 `Started camera preview.` 都出现了。
 **还没到出图**：预览流（cameraserver 的 stream 0）的 native window 一上来就是死的 —— `getBufferLockedCommon: Stream 0: Can't dequeue next output buffer: Broken pipe (-32)`、`disconnectLocked: ... the native window died from under us`，HAL 随后 `notifyErrorForPendingRequests`。这是下一堵墙，§7。
+
+> **本节这两条结论都在 [`68`](68-the-camera-stage-was-one-cookie-in-the-stub.md) 被量翻了，读的时候要连着那份一起看。** (1) 那串 `-32` **不是**"native window 一上来就是死的"，是**客户端已经死了之后**的尸检报告 —— 这次故意 `kill -9` 客户端，逐行复现了同一串日志（顺序都一样），而在客户端活着的时候一条都没有。(2) 真正挡住出图的是 stub 自己：`IAppOpsService.getToken` 的回复里 `flat_binder_object` 的 cookie 和注册时不一致，内核按不变量把**整条回复**判成 `-EINVAL`。修掉之后：60 秒 2173 帧、零 camera3 错误、dmesg 无 binder 消息。
 **接续**: [`66`](66-the-input-layer-vendor-symbol-was-libinputservice.md)、[`65`](65-the-camera-was-blocked-on-four-system-server-services.md)
 
 ---
@@ -191,7 +193,7 @@ W/Camera3-OutputStream: disconnectLocked: While disconnecting stream 0 from nati
 
 `66` 第 6 节的结论要按这条改：`error_code = 0` 不是死因，是**下游**（以前它在挂起 60 秒后才出现，现在它出现在流建立之后、由 stream 0 的 buffer 错误触发），而且 `66` 里那张"客户端拿不到图所以报 connect 失败"的图景其实是"客户端永远卡在 startPreview + cameraserver 会话被拆掉"的两种表现。
 
-1. **stream 0 的 native window 死在谁手上**：hybris 侧 `compat/camera/camera_compatibility_layer.cpp` 是我们自己构建的，可以从"它交给 HAL 的 SurfaceTexture 是谁、谁把它 release 了"量起（`android_camera_set_preview_texture` 那条路）。
+1. **stream 0 的 native window 死在谁手上** —— 量出来了，见 [`68`](68-the-camera-stage-was-one-cookie-in-the-stub.md)：客户端活着的时候它不死；那串 `-32` 是客户端死后的日志（故意 `kill -9` 复现）。挡住出图的是 stub 里 `getToken` 的 cookie。
 2. **输入层的 SurfaceFlinger 死循环**（§2）：让 `obtainPointerController()` 在没有 SurfaceFlinger 时也能返回一个可用的控制器 —— 注意 `InputReader.cpp:2854`、`5265-5300` 是不判空解引用的。
 3. **`camera-stack-reset.sh` 的假警告**已经修掉：它原来用 `grep -A2 'checkService("media.camera")' | grep 'the name resolves'` 判定用户切换，而 `notifySystemEvent` 那条路径本来就不打 `the name resolves`，于是每次都误报 `WARNING: media.camera did not resolve`。现在按**最后一段** notify 的 `sent (oneway)` / `no such service` 判定。
 
