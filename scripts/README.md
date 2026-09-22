@@ -123,6 +123,31 @@ different diseases that a two-read comparison cannot tell apart.
 | `device/zl1-quiet-debug-keeper.sh` | `--stop` / `--resume` / `--status` / `--wait N`. Runs on the device. Silences the v63 debug network keeper (`/usr/local/sbin/zl1-debug-net.sh`) **without touching the boot path** — measured cost: **a full core** (a 15 s A/B gives busy 0.87 cores stopped vs 1.84 running; the first estimate of "6.6% of a core" counted only the keeper's own ticks and missed its `systemctl` children and pid 1's daemon-reloads), and it runs `systemctl mask --runtime usb-moded.service` and `systemctl stop usb-moded.service` **every second**, which makes systemd daemon-reload every ~6 s at ~2 s each. With it SIGSTOPped: **systemd used 1 s of CPU in 300 s**, zero reloads, load 6.76 → 6.04, and the SoC fell 5.5/6.1/2.7 °C (tsens1/tsens8/pm8994) *while the battery was still charging*. It is a **signal, not a mask, on purpose**: the keeper is also what gives `rndis0` its addresses at boot, `systemctl` cannot manage the process at all (the script daemonizes, so its unit thinks it exited after 67 ms), and a boot without the keeper is unverified — so this only changes the running state, is reversible with `--resume`, and comes back after a reboot. Our own `zl1-netwatch.sh` (45 s stall detector + `restore_addrs()`) is the net that keeps the network up in the meantime. See [`../docs/ubuntu-touch/72-the-heat-was-the-governor-and-a-debug-keeper.md`](../docs/ubuntu-touch/72-the-heat-was-the-governor-and-a-debug-keeper.md). |
 | `device/zl1-sensorfw-probe.sh` | Runs on the device. `--load-all` / `--settle N` / `--gap N` / `--keep N`. Does all three calls per sensor and prints each reading's **age** in seconds, then judges `STREAMING` (a new sample arrived inside the window) / `SLOW` (none in the window, but the last one is fresh — the shape of an adaptor still spinning up: the measured first-sample latency after a `start` is 10-20 s) / `STALE` (with the age, so "40 s" and "from the last boot" are distinguishable). Reads only: it loads plugins, asks for sensors and reads properties, and it writes nothing. Two things it says about itself in its header, both measured: it **perturbs what it measures** (loading a plugin starts an adaptor, and an adaptor start is itself what makes this hardware emit a sample), and **it never restarts `sensorfwd`** — on this device one `systemctl restart sensorfwd` makes the container's sensors HAL kill itself and sensorfw is left holding a connection to the corpse (docs 71 §3). |
 
+## Measuring the audio path (the speaker)
+
+The chain is `paplay -> pulseaudio sink.primary_output (module-droid-card, Active Port
+output-speaker) -> android.hardware.audio@2.0-service in the container -> snd_device(2:
+speaker-stereo) + mixer path "low-latency-playback smartpa" -> the MSM8996 `TERT_MI2S_RX` backend`,
+i.e. the audio leaves the SoC over the **tertiary MI2S to an external smart amplifier**, not through
+the internal WCD9335 speaker PA. Every link of that has been read back on 2026-09-22 and none of it
+is broken (doc 74); what no measurement here can decide is whether the speaker is **audible** — that
+needs the user's ear, and the test script is built to be run while they are holding the phone.
+
+Two traps, both recorded because both produce a wrong answer rather than an error:
+
+* **The host's `amixer` cannot read this card** (`amixer -c 0` -> "Mixer load sysdefault:0 error: No
+  such device"), while `/system/bin/tinymix` runs straight from the host (Halium symlinks
+  `/system -> /android/system`) and prints all 2392 controls. Reaching for `amixer` here concludes
+  "no codec". And unlike the sensors HAL, reading the codec needs **no** `nsenter` — do not carry
+  that rule over.
+* **A 440 Hz test tone is not a fair audibility test** on a small phone speaker; the first attempt
+  used one at amplitude 12000/32767 and silence there would prove nothing. Use ~2 kHz at high
+  amplitude.
+
+| Script | Purpose |
+| --- | --- |
+| `device/zl1-audio-test.sh` | Runs on the device. `--seconds N` / `--hz F` / `--amp A` / `--sink NAME` / `--status`. Plays a generated tone through the normal PulseAudio path and reads the codec **during** playback and again after it, so the two columns show whether the HAL actually configured the amplifier (playing: `MultiMedia5` On, `Speaker Volume 5`, `Digital Gain 56`, `Boost 9V`, channel enables On; idle: Off / 1 / 40 / 6.5V / Off). `--status` is read-only. See [`../docs/ubuntu-touch/74-the-speaker-path-is-complete-in-software.md`](../docs/ubuntu-touch/74-the-speaker-path-is-complete-in-software.md). |
+
 ## Finding out *where* the device crashed
 
 | Script | Purpose |

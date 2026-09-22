@@ -1,0 +1,102 @@
+### audio path evidence, zl1, 2026-09-22
+### Question: user asked for "音频：让扬声器真的出声". What can be proven without an ear?
+
+===== 1. the software stack is already wired, and to the right port =====
+$ pactl list short sinks            (as phablet, XDG_RUNTIME_DIR=/run/user/32011)
+0  sink.fake.sco        module-null-sink.c    s16le 1ch 8000Hz   SUSPENDED
+1  sink.primary_output  module-droid-card.c    s16le 2ch 44100Hz  SUSPENDED     <- default sink
+   Active Port: output-speaker        Mute: no      Volume: 65536 / 100% / 0.00 dB
+
+$ pactl list short modules | grep droid
+6  module-droid-discover   voice_virtual_stream=true hidl_args='helper=false'
+7  module-droid-card-28    voice_virtual_stream=true quirks=-output_deep_buffer
+8  module-droid-hidl       helper=false
+
+So: one droid card, one output, its active port is already the speaker, unmuted, at full volume,
+and the HIDL bridge module is loaded. (helper=false -- this port does not use the
+audiosystem-passthrough helper process for the output path.)
+
+===== 2. pulseaudio feeds it, and the Android HAL routes it to the speaker =====
+$ paplay --device=sink.primary_output /tmp/zl1-audio-test.wav     (12 s, 440 Hz)
+   during playback:  sink.primary_output ... RUNNING
+   after:            sink.primary_output ... SUSPENDED      (module-suspend-on-idle, normal)
+
+container logcat, audio_hw_primary, one line per playback:
+  start_output_stream: enter: stream(0x5f2b556090)usecase(1: low-latency-playback) devices(0x2)
+  select_devices: out_snd_device(2: speaker-stereo) in_snd_device(0: )
+  enable_snd_device: snd_device(2: speaker-stereo)
+  enable_audio_route: apply mixer and update path: low-latency-playback smartpa
+  start_output_stream: exit
+  ... then at standby:
+  out_standby: enter: stream ... usecase(1: low-latency-playback)
+  disable_audio_route: reset and update mixer path: low-latency-playback smartpa
+  disable_snd_device: snd_device(2: speaker-stereo)
+devices(0x2) = AUDIO_DEVICE_OUT_SPEAKER. No error, no fallback, no "(none)" device.
+
+===== 3. the codec really is configured for the speaker while it plays, and torn down after =====
+read with /system/bin/tinymix (see §4 for why not amixer)
+
+  control                                      during playback      at idle
+  TERT_MI2S_RX Audio Mixer MultiMedia5         On                   Off
+  Speaker Volume                               5                    1
+  Digital Gain                                 56                   40
+  Boost Output Voltage                         9V                   6.5V
+  Left Channel Enable                          On                   Off
+  Right Channel Enable                         On                   Off
+  Left Feedback Enable                         ON                   ON
+  Right Feedback Enable                        ON                   ON
+  AIF4_VI Mixer SPKR_VI_1 / _2                 Off                  Off
+
+  -> the backend is TERT_MI2S_RX, i.e. **the tertiary MI2S**, not SLIMBUS_0_RX (the internal
+     WCD9335 codec). On the `speaker` path of /vendor/etc/mixer_paths_tasha.xml the same controls
+     are set to exactly these playback values (Boost 9V, Volume 5, Digital Gain 56, both channel
+     enables 1), so the HAL is applying that path and then un-applying it at standby -- the
+     difference between the two columns IS the evidence that playback configured the amp.
+  -> SPKR_VI_1/2 (the amplifier's voltage/current sense input to the codec, i.e. speaker
+     protection) stays Off in both columns. Whether it is required for output on this board is
+     not established here.
+
+===== 4. the host PCM that carries it =====
+while the tone played, exactly one host PCM was RUNNING:
+  /proc/asound/card0/pcm15p/sub0/status: state: RUNNING
+device 15 = MultiMedia5, which is the PCM the TERT_MI2S_RX route above feeds. The digital path
+therefore reaches the SoC's MI2S output port and the kernel's DMA, not just the HAL.
+
+===== 5. the amplifier is a known backend, and its calibration loads =====
+logcat at boot:
+  msm8974_platform: platform_set_snd_device_backend: backend_tag_table[speaker]: old = null new = smartpa
+  msm8974_platform: platform_set_snd_device_backend: backend_tag_table[voice-speaker]: old = null new = smartpa
+  ACDB-LOADER: ACDB -> Load file: /vendor/etc/acdbdata/MTP/MTP_Speaker_cal.acdb
+  ThermalEngine: Found section 'SPEAKER-CAL' / Parsing section SPEAKER-CAL
+So the platform driver maps the speaker to a "smartpa" backend and the MTP speaker calibration
+file is loaded without error.
+
+===== 6. a tool trap worth recording: the host's amixer cannot read this card =====
+$ amixer -c 0 scontrols
+amixer: Mixer sysdefault:0 load error: No such device
+$ amixer -D hw:0 scontrols
+amixer: Mixer hw:0 load error: No such device
+$ amixer -c 0 info
+Card sysdefault:0 'msm8996tashamtp'/'msm8996-tasha-mtp-snd-card'   Mixer name : ''
+but:
+$ /system/bin/tinymix            # straight from the host, no nsenter
+Mixer name: 'msm8996-tasha-mtp-snd-card'
+Number of controls: 2392
+So this is a *tool* difference, not a namespace one: Halium symlinks /system -> /android/system,
+the Android tinymix runs as-is, and no PID-namespace change is needed to read the codec (unlike
+the sensors HAL, which does need one). Anyone reaching for amixer here will wrongly conclude the
+codec is absent.
+
+===== 7. what is NOT proven =====
+Whether any sound is actually audible. Nothing above can measure that; the phone's speaker is the
+only instrument, and it belongs to the user. Note also that the first attempt used a 440 Hz tone
+at amplitude 12000/32767 -- a small phone speaker is very inefficient at 440 Hz, so "quiet or
+silent" at 440 Hz is not evidence of a fault. The audible test used 1.8 kHz / 2.4 kHz beeps at
+amplitude 30000.
+
+If it is audible, the software chain is complete end to end and nothing here needs changing.
+If it is silent, the remaining suspects are all downstream of the codec and all outside this
+software path: the external smart amplifier's power enable, its I2C probe/configuration, or its
+firmware -- which needs the boot-time kernel log, and this device's kernel log is **not** kept
+(`journalctl -k -b` -> "No entries"; the ring buffer wraps in about a minute), so that would have
+to be captured during a boot.
