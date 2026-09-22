@@ -1,10 +1,10 @@
-# 73 — 用户的手指把三件事同时定案了：**返回键在内核这一层是好的**（shell 只在三个界面上用它）、**会话是活的**（点一下就把 gallery 拉起来了）、以及 qbt1000 那颗键控器从来不出声
+# 73 — 用户的手指把三件事同时定案了：**返回键在内核这一层是好的**（shell 里根本没有它的处理器）、**会话是活的**（点一下就把 gallery 拉起来了）、以及 qbt1000 那颗键控器从来不出声
 
 **日期**: 2026-09-22
 **状态**: **用户拿着手机操作了 51 秒，`zl1-watch-input.py`（不抓取）把这 51 秒的每一个 evdev 事件都记了下来 —— 3146 行、64 次触摸手势、154 个按键事件。三条结论都是这份记录直接给出的，不是推断：**
 
 1. **返回键的硬件和内核是好的。** `synaptics_dsx`（触摸屏）上真实地出现了 `KEY BACK(158)` 的按下/抬起（t=505.974/506.051、506.659/506.792），还有 `KEY HOMEPAGE(172)` 9 次、`KEY APPSELECT` 1 次；电源键 `KEY POWER(116)` 在 `qpnp_pon` 上。**所以"返回键不能用"不是硬件、不是驱动、不是触摸屏的问题，`[`70`](70-the-landscape-was-the-shell-laying-itself-out.md)`/`[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)` 之前怀疑的对象全部可以排除。**
-2. **而 shell 那边：`Key_Back` 在整个 `/usr/share/lomiri/` 里只出现在三个文件**（`PinLockscreen.qml`、`Launcher.qml`、`Stage/Spread/Spread.qml`），**应用窗口里没有处理器**。实测对上了：用户在 gallery 在前台时按了两次 BACK，shell 的日志在那 11 秒里**一条都没有**（既不关应用、也不切前台、也没有任何 session 事件）。**这就是"返回键不能用"的准确形状：它在设计上只属于锁屏/启动器/应用铺开那三个界面。**
+2. **而 shell 那边：它一个 `Qt.Key_Back` 处理器都没有**（§3 的更正：一开始误把 `Key_Backtab`/`Key_Backspace` 当成了 `Key_Back`），所以键到了 shell 也没有人接。实测对上了：用户在 gallery 在前台时按了两次 BACK，shell 的日志在那 11 秒里**一条都没有**（既不关应用、也不切前台、也没有任何 session 事件）。**这就是"返回键不能用"的准确形状：shell 里没有任何人接这个键。**
 3. **`qbt1000_key_input` 一个事件都没出** —— 它声明了 225 个键（那个 `0xfe` 重复模式），但整个 51 秒里 0 个事件。**过去一直在看错的设备**：这颗手机的两颗电容键是触摸屏报的，不是键控器报的。（电容键同时声明在 `synaptics_dsx` 的能力位图里 —— 见 `[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)` 之后新增的 `zl1-input-devices.py`。）
 4. **顺带推翻 [`68`](68-the-camera-stage-was-one-cookie-in-the-stub.md) §7 的前提**："手机停在锁屏 greeter，解不开就没人能看见任何窗口" —— **不是这样**。用户在这一窗口里点开了两个应用：`lomiri-gallery-app`（11663.97）和 `lomiri-filemanager-app`（11678.25），both 拿到了 Mir 的 `SessionAuthorizer::connection_is_allowed`、开始渲染（`Last frame took 41 ms` / `Mir buffer is gl:TextureSource`），shell 甚至给它们加了启动器图标（`Received a surface count changed event from an app that's not in the Launcher model, creating icon...`，11682.04）。**会话是活的、可交互的，能启动应用。**
 
@@ -47,14 +47,25 @@ t=521.512 … 527.361        synaptics_dsx  KEY HOMEPAGE   1/0  ×8   <- 连按
 
 ## 3. 断点在 shell，而且断得很具体
 
-```
-$ grep -rl "Key_Back" /usr/share/lomiri/
-/usr/share/lomiri/Components/PinLockscreen.qml
-/usr/share/lomiri/Launcher/Launcher.qml
-/usr/share/lomiri/Stage/Spread/Spread.qml
-```
-
-**只有这三处。** 也就是说 Lomiri 对返回键的定义是：PIN 锁屏、启动器、应用铺开（spread）。**一个普通应用窗口在前台时，返回键没有任何处理器** —— 而实测完全对上：
+> **【更正，同一个会话晚些时候量清楚的】**我一开始跑的是 `grep -rl "Key_Back"`，它命中的其实是 **`Key_Backtab` 和 `Key_Backspace`** 这两个无关的键 —— 这台设备**没有 `strings(1)`**，我第一次在二进制里找 `XF86Back` 也因此全部落空（要用 `grep -a`）。用词边界重查之后：
+>
+> ```
+> $ grep -rn "Qt\.Key_Back\b" /usr/share/lomiri/          # 空
+> ```
+>
+> **Lomiri 的 shell 里一个 `Qt.Key_Back` 处理器都没有**（那三个文件处理的是 Backtab/Backspace）。所以"断点在 shell"这个方向是对的，但"只在三个界面里接它"是错的 —— **它在任何地方都不接**。真正会接返回键的是**应用自己**（拨号盘、短信、浏览器、计算器、终端这几个 QML 应用里有），所以图库在前台时这个键就是到了没人接：键的硬件和内核是好的，断点不在设备、不在驱动，而是 **shell 根本没有这个键的处理器**。
+>
+> handler 该放的位置也一并找到了：`Shell.qml` 里所有硬件键都走同一个入口 ——
+>
+> ```qml
+> WindowInputFilter {
+>     id: inputFilter
+>     Keys.onPressed: physicalKeysMapper.onKeyPressed(event, lastInputTimestamp);
+> ```
+>
+> 电源键和音量键就是从这条路进 `PhysicalKeysMapper` 的（应用在前台时也照样），所以返回键的处理器就加在这一行上，动作是这台 shell 上"返回"的两个含义：**铺开界面开着就关掉，否则把当前应用最小化**（调的就是窗口最小化按钮调的那个 `Stage.onMinimizeClicked()` → `requestMinimize()`）。安装它的脚本是 `scripts/install-shell-back-key.sh`（把一份改过的 `Shell.qml` bind-mount 到只读镜像上，运行时生效、重启即还原、`qmllint` 两个文件对比过确认没引入新错误）。
+>
+> 原始观察仍然成立，实测完全对上：
 
 ```
 BACK 按下发生在 uptime 11668.4 / 11669.1
@@ -64,7 +75,7 @@ shell(pid 901569) 的日志在 11668–11670 之间：一条都没有
 
 对比同一次会话里 HOMEPAGE 的效果：用户连按之后，11690.73 立刻有一帧渲染（`Last frame took 42 ms`），说明**它确实被 shell 接住了**（切到启动器/spread，会重绘）。所以两个键的差别不是"能不能送达"，而是**"有没有人接"**。
 
-> 这一条同时解释了用户最早那句 **"返回键似乎不能用"**：在应用里按它，按设计就是没反应；而在启动器/PIN/铺开界面里按它是有反应的。要"返回"，Lomiri 的手势是**从左边缘往右划**（日志里 `EdgeBarrierSettings: min=2gu(36px)…` 就是这套边缘手势的配置）。
+> 这一条同时解释了用户最早那句 **"返回键似乎不能用"**：这个 shell 里没有任何人接它，所以按到哪儿都没反应；真正接它的是应用自己（拨号盘/短信/浏览器/计算器/终端）。要"返回"，Lomiri 的手势是**从左边缘往右划**（日志里 `EdgeBarrierSettings: min=2gu(36px)…` 就是这套边缘手势的配置）。
 
 ## 4. 会话是活的：用户点开了两个应用（推翻 `68` §7 的前提）
 
