@@ -1,0 +1,75 @@
+### thermal evidence, second pass, zl1, 2026-09-22
+### Context: doc 72 said "~3.0 of 4 cores busy, 2.4 of them in the kernel, no conclusion".
+### This pass measures the same thing again, two changes later, and resolves it.
+### All numbers are verbatim from /proc/stat and /proc/<pid>; nothing here is inferred
+### except where a line says "inference".
+
+===== 1. what changed between the two passes =====
+  a) the v63 debug keeper (/usr/local/sbin/zl1-debug-net.sh, pid 817) was SIGSTOPped after doc 72
+     (its unit thinks it exited, so systemctl cannot manage it; SIGSTOP is the only handle)
+  b) scaling_governor went performance -> interactive on all four cores
+     (install-cpufreq-governor.sh, installed as a boot unit)
+  c) the container's sensors HAL was restarted once during this pass (ctl.stop / ctl.start,
+     A/B below) and is running again
+
+===== 2. A/B of the keeper, 15 s windows, same everything else =====
+method: /proc/stat delta; busy = (total - idle)/total * 4; reloads counted from the journal
+
+K0  keeper STOPPED (kill -STOP 817)
+    user=5.6%  sys=15.0%  idle=78.3%   -> busy = 0.87 cores    reloads in window: 0
+
+K1  keeper RUNNING (kill -CONT 817, then measured)
+    user=11.6%  sys=32.7%  idle=54.0%  -> busy = 1.84 cores    reloads in window: 1
+
+    => the keeper costs **0.97 cores**, i.e. ~24% of this 4-core SoC, on top of everything else.
+       (The reload count is the weaker number: `journalctl -n 3000` truncates, and the storm's
+        measured cadence from doc 72 is `Reloading finished in 2044 ms` every ~6 s, i.e. ~2 per
+        15 s. The CPU number is the robust one.)
+    => back to STOPPED immediately after: pid 817 state=T.
+
+===== 3. the load average is not CPU: it is kernel threads parked in driver sleeps =====
+load average: 5.02 5.35 5.54        while only 0.87 cores were busy and iowait was 0%
+
+process states on the host: {S: 586, R: 3, D: 5, T: 1, Z: 3}
+the 5 D-state tasks, with wchan and stack:
+  pid 45       (workqueue worker)  process_one_work -> worker_thread -> kthread
+  pid 154      mdss_dsi_event      wchan dsi_event_thread
+  pid 415      msm-core:sampling   wchan do_sampling
+  pid 932451   mdss_fb0            wchan __mdss_fb_display_thread
+  pid 3509113  kworker/3:0         wchan usleep_range, stack tsens_poll -> process_one_work
+
+  read: all five are normal periodic kernel work (display event/frame threads, CPU+thermal
+  sampling, thermal sensor polling). They sleep inside driver calls, which this kernel accounts
+  as D, so they inflate the load average while consuming ~0% CPU.
+  => "load 5-6" on this device means "a handful of driver threads are sleeping", NOT "5 cores
+     of work". Do not read it as heat.
+  => and the container is not the source either: container states {D: 0, R: 0, S: 118}.
+
+===== 4. the sensors HAL A/B was inconclusive at this granularity =====
+  A (HAL running, before):   user=9.2%  sys=21.3%  idle=68.4%
+  B (ctl.stop vendor.sensors-hal-1-0, 6 s later): user=4.3%  sys=12.6%  idle=82.0%  -> busy 0.72
+  C (ctl.start, HAL back):   user=5.5%  sys=13.9%  idle=79.4%  -> busy 0.82
+  read: A is not comparable to B/C -- A was taken immediately after several journalctl greps on
+  this device, which are themselves a CPU spike. B vs C differ by 0.1 cores, i.e. within the
+  noise of a 15 s window. **No conclusion**: the HAL costs something, but this method cannot say
+  how much. (Killing it is not a fix anyway -- the accelerometer/magnetometer/gyroscope stream
+  through it, doc 71.)
+
+===== 5. temperatures at the end of the pass (three different units, see doc 72 §1) =====
+tsens_tz_sensor1 = 519   (51.9 C)     was 558 (55.8 C) when doc 72 started
+tsens_tz_sensor8 = 535   (53.5 C)     was 580 (58.0 C)
+pm8994_tz        = 45945 (45.9 C)     was 49125 (49.1 C)
+battery          = 41200 (41.2 C)     was 42500 (42.5 C)
+msm_therm        = 46    quiet_therm = 47
+panel: alive, backlight 57..200 (driven by repowerd's own interface during this session)
+
+===== 6. what an idle-ish device looks like now =====
+busy 0.87 of 4 cores = 22%, idle 78%, iowait 0%, sys 15.0%
+top kernel-side consumers by context switches per 10 s (host):
+  rcu_preempt 7415 | ksoftirqd/2 3282 | rcu_sched 2795 | ksoftirqd/3 2560 | ksoftirqd/0 1869
+  sensorfwd 1590 (372 of them involuntary) | ksoftirqd/1 1414 | kworker/u8:8 1281
+  systemd-journald 695 | sensors@1.0-service 440 (78 threads)
+  total 29244 context switches / 10 s across 602 tasks and 1587 threads.
+  ie. ~83% of all context switches are the kernel's own (RCU, softirq, kworkers), and the only
+  large userspace one is sensorfwd + the sensors HAL -- the doc-71 pair. There is no single
+  runaway userspace process left to blame for the rest.
