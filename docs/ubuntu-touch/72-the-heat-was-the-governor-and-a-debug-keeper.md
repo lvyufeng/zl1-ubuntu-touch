@@ -133,7 +133,7 @@ $ systemctl status zl1-debug-net.service
 
 ## 6. 下一步
 
-1. **把 keeper 换掉，然后重启验证**（§3）。做法上有一条比"遮蔽 unit"更好的路：它的 unit 文件在 `/etc/systemd/system/zl1-debug-net.service` —— **是可写的**，所以不用去碰只读镜像里的脚本，改 unit 的 `ExecStart` 指向一个我们自己写的、开机只跑一次的 bring-up（持久地 `systemctl mask usb-moded.service` + 强制 gadget + 配地址 + ARP 宣告），再让 netwatch 的 45 秒 stall 自愈兜底。验证必须包含**一次真正的重启**，而且要用户在（万一 RNDIS 没起来，需要人手；主机侧有 udev 规则会自动 bind `rndis_host`，但设备侧的地址只有设备自己能配）。**这一步要用户点头再做。**
+1. **把 keeper 换掉，然后重启验证**（§3）。做法上有一条比"遮蔽 unit"更好的路：它的 unit 文件在 `/etc/systemd/system/zl1-debug-net.service` —— **是可写的**，所以不用去碰只读镜像里的脚本，改 unit 的 `ExecStart` 指向一个我们自己写的、开机只跑一次的 bring-up（持久地 `systemctl mask usb-moded.service` + 强制 gadget + 配地址 + ARP 宣告），再让 netwatch 的 45 秒 stall 自愈兜底。验证必须包含**一次真正的重启**，而且要用户在（万一 RNDIS 没起来，需要人手；主机侧有 udev 规则会自动 bind `rndis_host`，但设备侧的地址只有设备自己能配）。**这一步要用户点头再做。**（2026-09-22 用户的选择：**先不重启**，就维持"运行时停着"这个状态，所以本次到这里为止；`scripts/device/zl1-quiet-debug-keeper.sh` 是它的开关。）
 2. **那 2.4 个核的内核态**（§4）：先查清是谁 —— 容器内存压力（可以试 `--memory` 之外的手段，或者把容器的 swap 用起来）、binder/QMI 的 churn、还是 HAL 的 poll 自旋（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) §3 那条线的另一半：**HAL 每 13~700 秒自杀一次**，重连期间在烧 CPU）。`perf` 在这台设备上没有，但 `/proc/<pid>/stack`、`/proc/interrupts` 的差分、`/proc/vmstat` 的 `pgscan`/`pgsteal` 都还在。
 3. `orientationsensor` 那条（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) §7）：`sensorfwd -c=<path>` 这个杠杆还没用；`orientationsensor=False` = 稳定竖屏、没有自动旋转，是取舍，等用户决定。
 
@@ -141,6 +141,7 @@ $ systemctl status zl1-debug-net.service
 
 | 文件 | 作用 |
 |---|---|
+| `scripts/device/zl1-quiet-debug-keeper.sh` | `--stop` / `--resume` / `--status`。把 §3 的 keeper 停住/恢复（SIGSTOP/SIGCONT），**不碰开机路径**：它是只读镜像里的脚本、`systemctl` 管不到那个进程、而"没有 keeper 的开机能不能拿到地址"还没验过，所以只能动运行时。重启之后它会回来，重跑 `--stop` 即可 |
 | `scripts/install-cpufreq-governor.sh` | `--install` / `--remove` / `--status` / `--governor NAME`。头部写着为什么（`performance` 钉高频）、装了什么、**没有**动什么（max_freq、trip point、容器），以及第二个热源的完整数字 |
 | `docs/ubuntu-touch/evidence/thermal-2026-09-22.log` | 本次证据：governor 前后、keeper 的 CPU 差分、reload 的 A/B、热区原始读数、安静 5 分钟 |
 
