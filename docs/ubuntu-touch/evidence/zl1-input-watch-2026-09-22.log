@@ -1,0 +1,3146 @@
+=== watch v3 started, 8 devices (NOT grabbed), 1800s, every event type logged ===
+--- /dev/input/event0 = qpnp_pon
+--- /dev/input/event1 = HDMI CEC User or Deck Control
+--- /dev/input/event2 = qbt1000_key_input
+--- /dev/input/event3 = synaptics_dsx
+--- /dev/input/event4 = hbtp_vm
+--- /dev/input/event5 = gpio-keys
+--- /dev/input/event6 = msm8996-tasha-mtp-snd-card Headset Jack
+--- /dev/input/event7 = msm8996-tasha-mtp-snd-card Button Jack
+--- alive at t=300s ---
+[497.166] qpnp_pon         KEY POWER          1
+[497.167] qpnp_pon         SYN            0
+[497.325] qpnp_pon         KEY POWER          0
+[497.325] qpnp_pon         SYN            0
+[498.072] synaptics_dsx    ABS MT_TRACKING_ID 172
+[498.073] synaptics_dsx    KEY BTN_TOUCH      1
+[498.073] synaptics_dsx    KEY key:325        1
+[498.073] synaptics_dsx    ABS MT_POSX        576
+[498.073] synaptics_dsx    ABS MT_POSY        1680
+[498.074] synaptics_dsx    ABS abs:0x30       12
+[498.085] synaptics_dsx    ABS abs:0x31       11
+[498.085] synaptics_dsx    SYN            0
+[498.085] synaptics_dsx    ABS MT_POSX        575
+[498.085] synaptics_dsx    ABS MT_POSY        1675
+[498.085] synaptics_dsx    SYN            0
+[498.093] synaptics_dsx    ABS MT_POSX        572
+[498.094] synaptics_dsx    ABS MT_POSY        1655
+[498.094] synaptics_dsx    ABS abs:0x30       13
+[498.094] synaptics_dsx    SYN            0
+[498.102] synaptics_dsx    ABS MT_POSX        569
+[498.102] synaptics_dsx    ABS MT_POSY        1608
+[498.102] synaptics_dsx    ABS abs:0x31       12
+[498.102] synaptics_dsx    SYN            0
+[498.111] synaptics_dsx    ABS MT_POSY        1550
+[498.111] synaptics_dsx    ABS abs:0x31       11
+[498.112] synaptics_dsx    SYN            0
+[498.121] synaptics_dsx    ABS MT_POSX        574
+[498.121] synaptics_dsx    ABS MT_POSY        1487
+[498.121] synaptics_dsx    SYN            0
+[498.132] synaptics_dsx    ABS MT_POSX        584
+[498.132] synaptics_dsx    ABS MT_POSY        1420
+[498.132] synaptics_dsx    ABS abs:0x30       12
+[498.132] synaptics_dsx    ABS abs:0x31       10
+[498.133] synaptics_dsx    SYN            0
+[498.138] synaptics_dsx    ABS MT_POSX        603
+[498.138] synaptics_dsx    ABS MT_POSY        1352
+[498.138] synaptics_dsx    ABS abs:0x31       11
+[498.138] synaptics_dsx    SYN            0
+[498.146] synaptics_dsx    ABS MT_POSX        624
+[498.146] synaptics_dsx    ABS MT_POSY        1287
+[498.147] synaptics_dsx    SYN            0
+[498.155] synaptics_dsx    ABS MT_POSX        650
+[498.155] synaptics_dsx    ABS MT_POSY        1222
+[498.155] synaptics_dsx    SYN            0
+[498.164] synaptics_dsx    ABS MT_POSX        679
+[498.164] synaptics_dsx    ABS MT_POSY        1159
+[498.164] synaptics_dsx    ABS abs:0x30       13
+[498.164] synaptics_dsx    SYN            0
+[498.173] synaptics_dsx    ABS MT_POSX        711
+[498.173] synaptics_dsx    ABS MT_POSY        1103
+[498.173] synaptics_dsx    ABS abs:0x31       12
+[498.173] synaptics_dsx    SYN            0
+[498.181] synaptics_dsx    ABS MT_POSX        742
+[498.181] synaptics_dsx    ABS MT_POSY        1055
+[498.182] synaptics_dsx    ABS abs:0x30       14
+[498.182] synaptics_dsx    ABS abs:0x31       11
+[498.182] synaptics_dsx    SYN            0
+[498.191] synaptics_dsx    ABS MT_POSX        771
+[498.192] synaptics_dsx    ABS MT_POSY        1016
+[498.192] synaptics_dsx    ABS abs:0x30       15
+[498.192] synaptics_dsx    ABS abs:0x31       12
+[498.192] synaptics_dsx    SYN            0
+[498.199] synaptics_dsx    ABS MT_POSX        803
+[498.200] synaptics_dsx    ABS MT_POSY        978
+[498.200] synaptics_dsx    ABS abs:0x30       13
+[498.200] synaptics_dsx    ABS abs:0x31       10
+[498.200] synaptics_dsx    SYN            0
+[498.208] synaptics_dsx    ABS MT_POSX        842
+[498.208] synaptics_dsx    ABS MT_POSY        939
+[498.208] synaptics_dsx    ABS abs:0x30       12
+[498.208] synaptics_dsx    ABS abs:0x31       7
+[498.208] synaptics_dsx    SYN            0
+[498.216] synaptics_dsx    ABS MT_TRACKING_ID -1
+[498.216] synaptics_dsx    KEY BTN_TOUCH      0
+[498.216] synaptics_dsx    KEY key:325        0
+[498.216] synaptics_dsx    SYN            0
+[498.675] synaptics_dsx    ABS MT_TRACKING_ID 173
+[498.675] synaptics_dsx    KEY BTN_TOUCH      1
+[498.675] synaptics_dsx    KEY key:325        1
+[498.675] synaptics_dsx    ABS MT_POSX        683
+[498.675] synaptics_dsx    ABS MT_POSY        1511
+[498.675] synaptics_dsx    ABS abs:0x30       13
+[498.675] synaptics_dsx    ABS abs:0x31       12
+[498.675] synaptics_dsx    SYN            0
+[498.700] synaptics_dsx    ABS MT_POSX        682
+[498.701] synaptics_dsx    ABS MT_POSY        1507
+[498.701] synaptics_dsx    ABS abs:0x31       11
+[498.701] synaptics_dsx    SYN            0
+[498.709] synaptics_dsx    ABS MT_POSY        1490
+[498.709] synaptics_dsx    ABS abs:0x30       12
+[498.709] synaptics_dsx    SYN            0
+[498.719] synaptics_dsx    ABS MT_POSX        683
+[498.719] synaptics_dsx    ABS MT_POSY        1464
+[498.719] synaptics_dsx    SYN            0
+[498.727] synaptics_dsx    ABS MT_POSX        685
+[498.727] synaptics_dsx    ABS MT_POSY        1427
+[498.727] synaptics_dsx    ABS abs:0x30       13
+[498.728] synaptics_dsx    SYN            0
+[498.737] synaptics_dsx    ABS MT_POSX        689
+[498.737] synaptics_dsx    ABS MT_POSY        1382
+[498.737] synaptics_dsx    ABS abs:0x30       12
+[498.737] synaptics_dsx    SYN            0
+[498.747] synaptics_dsx    ABS MT_POSX        696
+[498.747] synaptics_dsx    ABS MT_POSY        1329
+[498.750] synaptics_dsx    ABS abs:0x30       11
+[498.751] synaptics_dsx    SYN            0
+[498.753] synaptics_dsx    ABS MT_POSX        708
+[498.754] synaptics_dsx    ABS MT_POSY        1272
+[498.754] synaptics_dsx    ABS abs:0x31       10
+[498.754] synaptics_dsx    SYN            0
+[498.765] synaptics_dsx    ABS MT_POSX        727
+[498.766] synaptics_dsx    ABS MT_POSY        1207
+[498.766] synaptics_dsx    ABS abs:0x31       11
+[498.766] synaptics_dsx    SYN            0
+[498.772] synaptics_dsx    ABS MT_POSX        749
+[498.772] synaptics_dsx    ABS MT_POSY        1144
+[498.772] synaptics_dsx    ABS abs:0x30       12
+[498.772] synaptics_dsx    SYN            0
+[498.786] synaptics_dsx    ABS MT_POSX        776
+[498.787] synaptics_dsx    ABS MT_POSY        1086
+[498.787] synaptics_dsx    SYN            0
+[498.790] synaptics_dsx    ABS MT_POSX        804
+[498.790] synaptics_dsx    ABS MT_POSY        1028
+[498.790] synaptics_dsx    ABS abs:0x31       10
+[498.790] synaptics_dsx    SYN            0
+[498.798] synaptics_dsx    ABS MT_POSX        836
+[498.798] synaptics_dsx    ABS MT_POSY        971
+[498.799] synaptics_dsx    ABS abs:0x30       10
+[498.799] synaptics_dsx    ABS abs:0x31       9
+[498.799] synaptics_dsx    SYN            0
+[498.807] synaptics_dsx    ABS MT_TRACKING_ID -1
+[498.807] synaptics_dsx    KEY BTN_TOUCH      0
+[498.807] synaptics_dsx    KEY key:325        0
+[498.807] synaptics_dsx    SYN            0
+[499.246] synaptics_dsx    ABS MT_TRACKING_ID 174
+[499.247] synaptics_dsx    KEY BTN_TOUCH      1
+[499.247] synaptics_dsx    KEY key:325        1
+[499.247] synaptics_dsx    ABS MT_POSX        378
+[499.248] synaptics_dsx    ABS MT_POSY        1192
+[499.248] synaptics_dsx    ABS abs:0x30       16
+[499.248] synaptics_dsx    ABS abs:0x31       14
+[499.248] synaptics_dsx    SYN            0
+[499.274] synaptics_dsx    ABS MT_POSY        1191
+[499.274] synaptics_dsx    ABS abs:0x30       15
+[499.274] synaptics_dsx    SYN            0
+[499.282] synaptics_dsx    ABS MT_POSX        386
+[499.282] synaptics_dsx    SYN            0
+[499.290] synaptics_dsx    ABS MT_POSX        401
+[499.290] synaptics_dsx    ABS MT_POSY        1190
+[499.290] synaptics_dsx    SYN            0
+[499.307] synaptics_dsx    ABS MT_POSX        430
+[499.307] synaptics_dsx    ABS MT_POSY        1188
+[499.307] synaptics_dsx    ABS abs:0x30       14
+[499.308] synaptics_dsx    ABS abs:0x31       13
+[499.308] synaptics_dsx    SYN            0
+[499.308] synaptics_dsx    ABS MT_POSX        470
+[499.308] synaptics_dsx    ABS MT_POSY        1186
+[499.308] synaptics_dsx    ABS abs:0x30       13
+[499.308] synaptics_dsx    ABS abs:0x31       12
+[499.308] synaptics_dsx    SYN            0
+[499.317] synaptics_dsx    ABS MT_POSX        513
+[499.317] synaptics_dsx    ABS MT_POSY        1184
+[499.317] synaptics_dsx    ABS abs:0x30       12
+[499.317] synaptics_dsx    ABS abs:0x31       11
+[499.318] synaptics_dsx    SYN            0
+[499.325] synaptics_dsx    ABS MT_POSX        560
+[499.325] synaptics_dsx    ABS abs:0x30       11
+[499.325] synaptics_dsx    SYN            0
+[499.333] synaptics_dsx    ABS MT_POSX        614
+[499.334] synaptics_dsx    ABS MT_POSY        1185
+[499.334] synaptics_dsx    ABS abs:0x30       10
+[499.334] synaptics_dsx    ABS abs:0x31       10
+[499.334] synaptics_dsx    SYN            0
+[499.342] synaptics_dsx    ABS MT_POSX        674
+[499.342] synaptics_dsx    ABS MT_POSY        1188
+[499.342] synaptics_dsx    ABS abs:0x31       9
+[499.342] synaptics_dsx    SYN            0
+[499.351] synaptics_dsx    ABS MT_POSX        735
+[499.351] synaptics_dsx    ABS MT_POSY        1192
+[499.351] synaptics_dsx    ABS abs:0x30       9
+[499.351] synaptics_dsx    SYN            0
+[499.360] synaptics_dsx    ABS MT_POSX        789
+[499.365] synaptics_dsx    ABS MT_POSY        1196
+[499.365] synaptics_dsx    ABS abs:0x31       8
+[499.365] synaptics_dsx    SYN            0
+[499.369] synaptics_dsx    ABS MT_POSX        832
+[499.370] synaptics_dsx    ABS MT_POSY        1200
+[499.370] synaptics_dsx    ABS abs:0x31       6
+[499.370] synaptics_dsx    SYN            0
+[499.379] synaptics_dsx    ABS MT_POSX        867
+[499.379] synaptics_dsx    ABS MT_POSY        1207
+[499.379] synaptics_dsx    ABS abs:0x31       8
+[499.379] synaptics_dsx    SYN            0
+[499.388] synaptics_dsx    ABS MT_POSX        893
+[499.388] synaptics_dsx    ABS MT_POSY        1216
+[499.388] synaptics_dsx    ABS abs:0x30       7
+[499.389] synaptics_dsx    ABS abs:0x31       7
+[499.389] synaptics_dsx    SYN            0
+[499.398] synaptics_dsx    ABS MT_POSX        907
+[499.398] synaptics_dsx    ABS MT_POSY        1221
+[499.399] synaptics_dsx    ABS abs:0x30       5
+[499.399] synaptics_dsx    ABS abs:0x31       4
+[499.399] synaptics_dsx    SYN            0
+[499.404] synaptics_dsx    ABS MT_POSX        925
+[499.404] synaptics_dsx    ABS MT_POSY        1228
+[499.404] synaptics_dsx    SYN            0
+[499.413] synaptics_dsx    ABS MT_TRACKING_ID -1
+[499.413] synaptics_dsx    KEY BTN_TOUCH      0
+[499.413] synaptics_dsx    KEY key:325        0
+[499.413] synaptics_dsx    SYN            0
+[500.865] synaptics_dsx    ABS MT_TRACKING_ID 175
+[500.865] synaptics_dsx    KEY BTN_TOUCH      1
+[500.866] synaptics_dsx    KEY key:325        1
+[500.866] synaptics_dsx    ABS MT_POSX        103
+[500.866] synaptics_dsx    ABS MT_POSY        967
+[500.866] synaptics_dsx    ABS abs:0x30       17
+[500.866] synaptics_dsx    ABS abs:0x31       15
+[500.866] synaptics_dsx    SYN            0
+[500.942] synaptics_dsx    ABS MT_TRACKING_ID -1
+[500.942] synaptics_dsx    KEY BTN_TOUCH      0
+[500.943] synaptics_dsx    KEY key:325        0
+[500.943] synaptics_dsx    SYN            0
+[504.295] synaptics_dsx    KEY HOMEPAGE       1
+[504.295] synaptics_dsx    SYN            0
+[504.382] synaptics_dsx    KEY HOMEPAGE       0
+[504.384] synaptics_dsx    SYN            0
+[505.111] synaptics_dsx    KEY HOMEPAGE       1
+[505.111] synaptics_dsx    SYN            0
+[505.208] synaptics_dsx    KEY HOMEPAGE       0
+[505.208] synaptics_dsx    SYN            0
+[505.974] synaptics_dsx    KEY BACK           1
+[505.975] synaptics_dsx    SYN            0
+[506.051] synaptics_dsx    KEY BACK           0
+[506.051] synaptics_dsx    SYN            0
+[506.659] synaptics_dsx    KEY BACK           1
+[506.661] synaptics_dsx    SYN            0
+[506.792] synaptics_dsx    KEY BACK           0
+[506.792] synaptics_dsx    SYN            0
+[507.274] synaptics_dsx    KEY APPSELECT      1
+[507.274] synaptics_dsx    SYN            0
+[507.388] synaptics_dsx    KEY APPSELECT      0
+[507.388] synaptics_dsx    SYN            0
+[507.865] synaptics_dsx    ABS MT_TRACKING_ID 176
+[507.865] synaptics_dsx    KEY BTN_TOUCH      1
+[507.865] synaptics_dsx    KEY key:325        1
+[507.865] synaptics_dsx    ABS MT_POSX        1054
+[507.866] synaptics_dsx    ABS MT_POSY        1137
+[507.866] synaptics_dsx    ABS abs:0x30       14
+[507.866] synaptics_dsx    ABS abs:0x31       12
+[507.867] synaptics_dsx    SYN            0
+[507.873] synaptics_dsx    ABS MT_POSX        966
+[507.874] synaptics_dsx    ABS MT_POSY        1157
+[507.874] synaptics_dsx    ABS abs:0x30       11
+[507.874] synaptics_dsx    ABS abs:0x31       10
+[507.874] synaptics_dsx    SYN            0
+[507.882] synaptics_dsx    ABS MT_POSX        803
+[507.882] synaptics_dsx    ABS MT_POSY        1200
+[507.882] synaptics_dsx    ABS abs:0x30       10
+[507.882] synaptics_dsx    ABS abs:0x31       8
+[507.882] synaptics_dsx    SYN            0
+[507.890] synaptics_dsx    ABS MT_TRACKING_ID -1
+[507.890] synaptics_dsx    KEY BTN_TOUCH      0
+[507.890] synaptics_dsx    KEY key:325        0
+[507.890] synaptics_dsx    SYN            0
+[508.718] synaptics_dsx    ABS MT_TRACKING_ID 177
+[508.719] synaptics_dsx    KEY BTN_TOUCH      1
+[508.719] synaptics_dsx    KEY key:325        1
+[508.719] synaptics_dsx    ABS MT_POSX        37
+[508.719] synaptics_dsx    ABS MT_POSY        1329
+[508.719] synaptics_dsx    ABS abs:0x30       13
+[508.720] synaptics_dsx    ABS abs:0x31       12
+[508.720] synaptics_dsx    SYN            0
+[508.730] synaptics_dsx    ABS MT_POSX        113
+[508.730] synaptics_dsx    ABS MT_POSY        1298
+[508.731] synaptics_dsx    ABS abs:0x30       12
+[508.731] synaptics_dsx    ABS abs:0x31       9
+[508.731] synaptics_dsx    SYN            0
+[508.735] synaptics_dsx    ABS MT_POSX        241
+[508.736] synaptics_dsx    ABS MT_POSY        1251
+[508.736] synaptics_dsx    ABS abs:0x30       9
+[508.736] synaptics_dsx    SYN            0
+[508.743] synaptics_dsx    ABS MT_TRACKING_ID -1
+[508.743] synaptics_dsx    KEY BTN_TOUCH      0
+[508.744] synaptics_dsx    KEY key:325        0
+[508.744] synaptics_dsx    SYN            0
+[509.342] synaptics_dsx    ABS MT_TRACKING_ID 178
+[509.342] synaptics_dsx    KEY BTN_TOUCH      1
+[509.342] synaptics_dsx    KEY key:325        1
+[509.342] synaptics_dsx    ABS MT_POSX        33
+[509.342] synaptics_dsx    ABS MT_POSY        1343
+[509.342] synaptics_dsx    ABS abs:0x31       8
+[509.342] synaptics_dsx    SYN            0
+[509.350] synaptics_dsx    ABS MT_POSX        105
+[509.350] synaptics_dsx    ABS MT_POSY        1331
+[509.350] synaptics_dsx    ABS abs:0x30       8
+[509.350] synaptics_dsx    ABS abs:0x31       7
+[509.350] synaptics_dsx    SYN            0
+[509.359] synaptics_dsx    ABS MT_POSX        223
+[509.359] synaptics_dsx    ABS MT_POSY        1316
+[509.359] synaptics_dsx    ABS abs:0x30       5
+[509.359] synaptics_dsx    ABS abs:0x31       4
+[509.359] synaptics_dsx    SYN            0
+[509.367] synaptics_dsx    ABS MT_TRACKING_ID -1
+[509.368] synaptics_dsx    KEY BTN_TOUCH      0
+[509.368] synaptics_dsx    KEY key:325        0
+[509.368] synaptics_dsx    SYN            0
+[509.746] synaptics_dsx    ABS MT_TRACKING_ID 179
+[509.746] synaptics_dsx    KEY BTN_TOUCH      1
+[509.746] synaptics_dsx    KEY key:325        1
+[509.746] synaptics_dsx    ABS MT_POSX        31
+[509.746] synaptics_dsx    ABS MT_POSY        1298
+[509.746] synaptics_dsx    ABS abs:0x30       12
+[509.746] synaptics_dsx    ABS abs:0x31       11
+[509.746] synaptics_dsx    SYN            0
+[509.754] synaptics_dsx    ABS MT_POSY        1297
+[509.758] synaptics_dsx    ABS abs:0x30       13
+[509.759] synaptics_dsx    SYN            0
+[509.764] synaptics_dsx    ABS MT_POSX        32
+[509.764] synaptics_dsx    ABS MT_POSY        1295
+[509.764] synaptics_dsx    SYN            0
+[509.772] synaptics_dsx    ABS MT_POSX        37
+[509.772] synaptics_dsx    ABS MT_POSY        1292
+[509.772] synaptics_dsx    SYN            0
+[509.786] synaptics_dsx    ABS MT_POSX        47
+[509.787] synaptics_dsx    ABS MT_POSY        1287
+[509.787] synaptics_dsx    ABS abs:0x31       10
+[509.787] synaptics_dsx    SYN            0
+[509.791] synaptics_dsx    ABS MT_POSX        57
+[509.791] synaptics_dsx    ABS MT_POSY        1283
+[509.792] synaptics_dsx    ABS abs:0x30       12
+[509.792] synaptics_dsx    SYN            0
+[509.799] synaptics_dsx    ABS MT_POSX        68
+[509.799] synaptics_dsx    ABS MT_POSY        1280
+[509.799] synaptics_dsx    ABS abs:0x31       11
+[509.799] synaptics_dsx    SYN            0
+[509.807] synaptics_dsx    ABS MT_POSX        80
+[509.816] synaptics_dsx    ABS MT_POSY        1276
+[509.816] synaptics_dsx    SYN            0
+[509.816] synaptics_dsx    ABS MT_POSX        93
+[509.816] synaptics_dsx    ABS MT_POSY        1273
+[509.816] synaptics_dsx    ABS abs:0x31       10
+[509.817] synaptics_dsx    SYN            0
+[509.825] synaptics_dsx    ABS MT_POSX        105
+[509.825] synaptics_dsx    ABS MT_POSY        1270
+[509.825] synaptics_dsx    ABS abs:0x31       9
+[509.825] synaptics_dsx    SYN            0
+[509.833] synaptics_dsx    ABS MT_POSX        119
+[509.833] synaptics_dsx    ABS MT_POSY        1268
+[509.833] synaptics_dsx    ABS abs:0x30       11
+[509.834] synaptics_dsx    ABS abs:0x31       10
+[509.834] synaptics_dsx    SYN            0
+[509.843] synaptics_dsx    ABS MT_POSX        131
+[509.843] synaptics_dsx    ABS MT_POSY        1266
+[509.843] synaptics_dsx    SYN            0
+[509.851] synaptics_dsx    ABS MT_POSX        145
+[509.851] synaptics_dsx    ABS MT_POSY        1264
+[509.851] synaptics_dsx    SYN            0
+[509.863] synaptics_dsx    ABS MT_POSX        159
+[509.863] synaptics_dsx    ABS MT_POSY        1262
+[509.863] synaptics_dsx    ABS abs:0x31       9
+[509.863] synaptics_dsx    SYN            0
+[509.868] synaptics_dsx    ABS MT_POSX        172
+[509.869] synaptics_dsx    ABS MT_POSY        1261
+[509.869] synaptics_dsx    SYN            0
+[509.877] synaptics_dsx    ABS MT_POSX        184
+[509.877] synaptics_dsx    ABS MT_POSY        1259
+[509.878] synaptics_dsx    ABS abs:0x31       10
+[509.878] synaptics_dsx    SYN            0
+[509.886] synaptics_dsx    ABS MT_POSX        195
+[509.886] synaptics_dsx    ABS MT_POSY        1258
+[509.886] synaptics_dsx    SYN            0
+[509.896] synaptics_dsx    ABS MT_POSX        204
+[509.896] synaptics_dsx    ABS MT_POSY        1257
+[509.896] synaptics_dsx    SYN            0
+[509.906] synaptics_dsx    ABS MT_POSX        213
+[509.907] synaptics_dsx    ABS MT_POSY        1256
+[509.907] synaptics_dsx    SYN            0
+[509.912] synaptics_dsx    ABS MT_POSX        222
+[509.913] synaptics_dsx    SYN            0
+[509.922] synaptics_dsx    ABS MT_POSX        232
+[509.922] synaptics_dsx    ABS MT_POSY        1255
+[509.922] synaptics_dsx    SYN            0
+[509.931] synaptics_dsx    ABS MT_POSX        242
+[509.931] synaptics_dsx    ABS abs:0x30       12
+[509.931] synaptics_dsx    SYN            0
+[509.939] synaptics_dsx    ABS MT_POSX        252
+[509.939] synaptics_dsx    ABS MT_POSY        1254
+[509.939] synaptics_dsx    SYN            0
+[509.949] synaptics_dsx    ABS MT_POSX        262
+[509.949] synaptics_dsx    ABS abs:0x31       11
+[509.949] synaptics_dsx    SYN            0
+[509.956] synaptics_dsx    ABS MT_POSX        272
+[509.957] synaptics_dsx    ABS MT_POSY        1253
+[509.957] synaptics_dsx    SYN            0
+[509.967] synaptics_dsx    ABS MT_POSX        283
+[509.967] synaptics_dsx    SYN            0
+[509.974] synaptics_dsx    ABS MT_POSX        294
+[509.975] synaptics_dsx    ABS abs:0x31       10
+[509.975] synaptics_dsx    SYN            0
+[509.983] synaptics_dsx    ABS MT_POSX        306
+[509.983] synaptics_dsx    ABS abs:0x30       11
+[509.983] synaptics_dsx    SYN            0
+[509.992] synaptics_dsx    ABS MT_POSX        318
+[509.993] synaptics_dsx    SYN            0
+[510.003] synaptics_dsx    ABS MT_POSX        329
+[510.004] synaptics_dsx    ABS abs:0x31       11
+[510.004] synaptics_dsx    SYN            0
+[510.011] synaptics_dsx    ABS MT_POSX        340
+[510.011] synaptics_dsx    ABS abs:0x31       10
+[510.011] synaptics_dsx    SYN            0
+[510.019] synaptics_dsx    ABS MT_POSX        352
+[510.019] synaptics_dsx    ABS MT_POSY        1254
+[510.019] synaptics_dsx    ABS abs:0x30       10
+[510.021] synaptics_dsx    ABS abs:0x31       9
+[510.021] synaptics_dsx    SYN            0
+[510.027] synaptics_dsx    ABS MT_POSX        362
+[510.027] synaptics_dsx    ABS abs:0x30       11
+[510.027] synaptics_dsx    SYN            0
+[510.035] synaptics_dsx    ABS MT_POSX        372
+[510.037] synaptics_dsx    ABS abs:0x30       10
+[510.037] synaptics_dsx    SYN            0
+[510.044] synaptics_dsx    ABS MT_POSX        382
+[510.045] synaptics_dsx    ABS abs:0x31       10
+[510.045] synaptics_dsx    SYN            0
+[510.054] synaptics_dsx    ABS MT_POSX        391
+[510.054] synaptics_dsx    SYN            0
+[510.063] synaptics_dsx    ABS MT_POSX        400
+[510.063] synaptics_dsx    SYN            0
+[510.072] synaptics_dsx    ABS MT_POSX        408
+[510.073] synaptics_dsx    ABS abs:0x30       9
+[510.073] synaptics_dsx    ABS abs:0x31       9
+[510.073] synaptics_dsx    SYN            0
+[510.079] synaptics_dsx    ABS MT_POSX        416
+[510.080] synaptics_dsx    ABS abs:0x30       8
+[510.080] synaptics_dsx    ABS abs:0x31       7
+[510.080] synaptics_dsx    SYN            0
+[510.088] synaptics_dsx    ABS MT_POSX        422
+[510.089] synaptics_dsx    ABS abs:0x30       5
+[510.089] synaptics_dsx    ABS abs:0x31       4
+[510.089] synaptics_dsx    SYN            0
+[510.097] synaptics_dsx    ABS MT_TRACKING_ID -1
+[510.100] synaptics_dsx    KEY BTN_TOUCH      0
+[510.100] synaptics_dsx    KEY key:325        0
+[510.100] synaptics_dsx    SYN            0
+[510.670] synaptics_dsx    ABS MT_TRACKING_ID 180
+[510.671] synaptics_dsx    KEY BTN_TOUCH      1
+[510.671] synaptics_dsx    KEY key:325        1
+[510.671] synaptics_dsx    ABS MT_POSX        68
+[510.671] synaptics_dsx    ABS MT_POSY        1611
+[510.671] synaptics_dsx    ABS abs:0x30       15
+[510.671] synaptics_dsx    ABS abs:0x31       12
+[510.671] synaptics_dsx    SYN            0
+[510.671] synaptics_dsx    ABS MT_POSY        1610
+[510.672] synaptics_dsx    ABS abs:0x30       16
+[510.672] synaptics_dsx    SYN            0
+[510.679] synaptics_dsx    ABS MT_POSY        1605
+[510.679] synaptics_dsx    ABS abs:0x31       13
+[510.679] synaptics_dsx    SYN            0
+[510.686] synaptics_dsx    ABS MT_POSX        69
+[510.687] synaptics_dsx    ABS MT_POSY        1595
+[510.688] synaptics_dsx    SYN            0
+[510.695] synaptics_dsx    ABS MT_POSX        72
+[510.696] synaptics_dsx    ABS MT_POSY        1580
+[510.696] synaptics_dsx    SYN            0
+[510.705] synaptics_dsx    ABS MT_POSX        77
+[510.705] synaptics_dsx    ABS MT_POSY        1563
+[510.705] synaptics_dsx    SYN            0
+[510.713] synaptics_dsx    ABS MT_POSX        83
+[510.713] synaptics_dsx    ABS MT_POSY        1541
+[510.713] synaptics_dsx    ABS abs:0x31       14
+[510.713] synaptics_dsx    SYN            0
+[510.722] synaptics_dsx    ABS MT_POSX        90
+[510.722] synaptics_dsx    ABS MT_POSY        1518
+[510.722] synaptics_dsx    SYN            0
+[510.731] synaptics_dsx    ABS MT_POSX        97
+[510.731] synaptics_dsx    ABS MT_POSY        1492
+[510.731] synaptics_dsx    SYN            0
+[510.739] synaptics_dsx    ABS MT_POSX        104
+[510.740] synaptics_dsx    ABS MT_POSY        1471
+[510.740] synaptics_dsx    SYN            0
+[510.748] synaptics_dsx    ABS MT_POSX        109
+[510.748] synaptics_dsx    ABS MT_POSY        1452
+[510.748] synaptics_dsx    SYN            0
+[510.758] synaptics_dsx    ABS MT_POSX        113
+[510.759] synaptics_dsx    ABS MT_POSY        1434
+[510.759] synaptics_dsx    ABS abs:0x30       17
+[510.759] synaptics_dsx    SYN            0
+[510.767] synaptics_dsx    ABS MT_POSX        117
+[510.767] synaptics_dsx    ABS MT_POSY        1419
+[510.767] synaptics_dsx    ABS abs:0x30       16
+[510.767] synaptics_dsx    SYN            0
+[510.775] synaptics_dsx    ABS MT_POSX        119
+[510.775] synaptics_dsx    ABS MT_POSY        1406
+[510.775] synaptics_dsx    SYN            0
+[510.783] synaptics_dsx    ABS MT_POSX        121
+[510.783] synaptics_dsx    ABS MT_POSY        1394
+[510.783] synaptics_dsx    SYN            0
+[510.792] synaptics_dsx    ABS MT_POSX        124
+[510.792] synaptics_dsx    ABS MT_POSY        1384
+[510.792] synaptics_dsx    ABS abs:0x30       17
+[510.792] synaptics_dsx    SYN            0
+[510.801] synaptics_dsx    ABS MT_POSX        125
+[510.801] synaptics_dsx    ABS MT_POSY        1375
+[510.801] synaptics_dsx    SYN            0
+[510.809] synaptics_dsx    ABS MT_POSX        127
+[510.809] synaptics_dsx    ABS MT_POSY        1367
+[510.810] synaptics_dsx    ABS abs:0x31       15
+[510.810] synaptics_dsx    SYN            0
+[510.818] synaptics_dsx    ABS MT_POSX        129
+[510.818] synaptics_dsx    ABS MT_POSY        1359
+[510.818] synaptics_dsx    ABS abs:0x31       14
+[510.818] synaptics_dsx    SYN            0
+[510.827] synaptics_dsx    ABS MT_POSX        132
+[510.827] synaptics_dsx    ABS MT_POSY        1351
+[510.827] synaptics_dsx    ABS abs:0x31       15
+[510.827] synaptics_dsx    SYN            0
+[510.836] synaptics_dsx    ABS MT_POSX        135
+[510.836] synaptics_dsx    ABS MT_POSY        1343
+[510.836] synaptics_dsx    SYN            0
+[510.846] synaptics_dsx    ABS MT_POSX        139
+[510.846] synaptics_dsx    ABS MT_POSY        1335
+[510.846] synaptics_dsx    SYN            0
+[510.853] synaptics_dsx    ABS MT_POSX        142
+[510.854] synaptics_dsx    ABS MT_POSY        1328
+[510.854] synaptics_dsx    ABS abs:0x30       16
+[510.854] synaptics_dsx    SYN            0
+[510.863] synaptics_dsx    ABS MT_POSX        145
+[510.863] synaptics_dsx    ABS MT_POSY        1322
+[510.863] synaptics_dsx    SYN            0
+[510.872] synaptics_dsx    ABS MT_POSX        149
+[510.872] synaptics_dsx    ABS MT_POSY        1317
+[510.872] synaptics_dsx    ABS abs:0x31       14
+[510.872] synaptics_dsx    SYN            0
+[510.881] synaptics_dsx    ABS MT_POSX        152
+[510.881] synaptics_dsx    ABS MT_POSY        1313
+[510.881] synaptics_dsx    SYN            0
+[510.888] synaptics_dsx    ABS MT_POSX        155
+[510.889] synaptics_dsx    ABS MT_POSY        1309
+[510.889] synaptics_dsx    SYN            0
+[510.897] synaptics_dsx    ABS MT_POSX        157
+[510.897] synaptics_dsx    ABS MT_POSY        1305
+[510.897] synaptics_dsx    ABS abs:0x30       15
+[510.898] synaptics_dsx    ABS abs:0x31       13
+[510.898] synaptics_dsx    SYN            0
+[510.906] synaptics_dsx    ABS MT_POSX        160
+[510.906] synaptics_dsx    ABS MT_POSY        1302
+[510.906] synaptics_dsx    ABS abs:0x30       14
+[510.906] synaptics_dsx    ABS abs:0x31       12
+[510.906] synaptics_dsx    SYN            0
+[510.915] synaptics_dsx    ABS MT_POSX        164
+[510.915] synaptics_dsx    ABS MT_POSY        1298
+[510.915] synaptics_dsx    ABS abs:0x30       12
+[510.915] synaptics_dsx    ABS abs:0x31       11
+[510.915] synaptics_dsx    SYN            0
+[510.926] synaptics_dsx    ABS MT_POSX        167
+[510.926] synaptics_dsx    ABS MT_POSY        1295
+[510.926] synaptics_dsx    ABS abs:0x30       10
+[510.926] synaptics_dsx    ABS abs:0x31       9
+[510.926] synaptics_dsx    SYN            0
+[510.932] synaptics_dsx    ABS MT_TRACKING_ID -1
+[510.932] synaptics_dsx    KEY BTN_TOUCH      0
+[510.932] synaptics_dsx    KEY key:325        0
+[510.932] synaptics_dsx    SYN            0
+[513.519] synaptics_dsx    ABS MT_TRACKING_ID 181
+[513.522] synaptics_dsx    KEY BTN_TOUCH      1
+[513.522] synaptics_dsx    KEY key:325        1
+[513.522] synaptics_dsx    ABS MT_POSX        122
+[513.522] synaptics_dsx    ABS MT_POSY        1862
+[513.522] synaptics_dsx    ABS abs:0x30       14
+[513.522] synaptics_dsx    ABS abs:0x31       12
+[513.522] synaptics_dsx    SYN            0
+[513.605] synaptics_dsx    ABS MT_TRACKING_ID -1
+[513.605] synaptics_dsx    KEY BTN_TOUCH      0
+[513.605] synaptics_dsx    KEY key:325        0
+[513.605] synaptics_dsx    SYN            0
+[515.147] synaptics_dsx    ABS MT_TRACKING_ID 182
+[515.147] synaptics_dsx    KEY BTN_TOUCH      1
+[515.148] synaptics_dsx    KEY key:325        1
+[515.148] synaptics_dsx    ABS MT_POSX        653
+[515.148] synaptics_dsx    ABS MT_POSY        431
+[515.148] synaptics_dsx    ABS abs:0x30       16
+[515.148] synaptics_dsx    ABS abs:0x31       14
+[515.149] synaptics_dsx    SYN            0
+[515.215] synaptics_dsx    ABS MT_TRACKING_ID -1
+[515.216] synaptics_dsx    KEY BTN_TOUCH      0
+[515.216] synaptics_dsx    KEY key:325        0
+[515.217] synaptics_dsx    SYN            0
+[521.512] synaptics_dsx    KEY HOMEPAGE       1
+[521.512] synaptics_dsx    SYN            0
+[521.705] synaptics_dsx    KEY HOMEPAGE       0
+[521.705] synaptics_dsx    SYN            0
+[522.277] synaptics_dsx    KEY HOMEPAGE       1
+[522.277] synaptics_dsx    SYN            0
+[522.443] synaptics_dsx    KEY HOMEPAGE       0
+[522.443] synaptics_dsx    SYN            0
+[522.832] synaptics_dsx    KEY HOMEPAGE       1
+[522.832] synaptics_dsx    SYN            0
+[522.928] synaptics_dsx    KEY HOMEPAGE       0
+[522.928] synaptics_dsx    SYN            0
+[523.094] synaptics_dsx    KEY HOMEPAGE       1
+[523.094] synaptics_dsx    SYN            0
+[523.200] synaptics_dsx    KEY HOMEPAGE       0
+[523.200] synaptics_dsx    SYN            0
+[523.613] synaptics_dsx    KEY HOMEPAGE       1
+[523.613] synaptics_dsx    SYN            0
+[523.692] synaptics_dsx    KEY HOMEPAGE       0
+[523.692] synaptics_dsx    SYN            0
+[524.238] synaptics_dsx    KEY HOMEPAGE       1
+[524.238] synaptics_dsx    SYN            0
+[524.316] synaptics_dsx    KEY HOMEPAGE       0
+[524.316] synaptics_dsx    SYN            0
+[524.757] synaptics_dsx    ABS MT_TRACKING_ID 183
+[524.758] synaptics_dsx    KEY BTN_TOUCH      1
+[524.758] synaptics_dsx    KEY key:325        1
+[524.758] synaptics_dsx    ABS MT_POSX        969
+[524.758] synaptics_dsx    ABS MT_POSY        1196
+[524.758] synaptics_dsx    ABS abs:0x30       9
+[524.758] synaptics_dsx    ABS abs:0x31       7
+[524.758] synaptics_dsx    SYN            0
+[524.782] synaptics_dsx    ABS MT_TRACKING_ID -1
+[524.783] synaptics_dsx    KEY BTN_TOUCH      0
+[524.783] synaptics_dsx    KEY key:325        0
+[524.783] synaptics_dsx    SYN            0
+[525.004] synaptics_dsx    ABS MT_TRACKING_ID 184
+[525.004] synaptics_dsx    KEY BTN_TOUCH      1
+[525.004] synaptics_dsx    KEY key:325        1
+[525.005] synaptics_dsx    ABS MT_POSX        1064
+[525.005] synaptics_dsx    ABS MT_POSY        1133
+[525.005] synaptics_dsx    ABS abs:0x30       17
+[525.006] synaptics_dsx    ABS abs:0x31       15
+[525.006] synaptics_dsx    SYN            0
+[525.013] synaptics_dsx    ABS MT_POSX        989
+[525.013] synaptics_dsx    ABS MT_POSY        1159
+[525.014] synaptics_dsx    SYN            0
+[525.021] synaptics_dsx    ABS MT_POSX        862
+[525.022] synaptics_dsx    ABS MT_POSY        1206
+[525.022] synaptics_dsx    ABS abs:0x30       16
+[525.022] synaptics_dsx    SYN            0
+[525.030] synaptics_dsx    ABS MT_POSX        751
+[525.030] synaptics_dsx    ABS MT_POSY        1250
+[525.030] synaptics_dsx    ABS abs:0x30       17
+[525.031] synaptics_dsx    ABS abs:0x31       14
+[525.031] synaptics_dsx    SYN            0
+[525.039] synaptics_dsx    ABS MT_POSX        698
+[525.039] synaptics_dsx    ABS MT_POSY        1274
+[525.039] synaptics_dsx    ABS abs:0x30       16
+[525.039] synaptics_dsx    SYN            0
+[525.047] synaptics_dsx    ABS MT_POSX        684
+[525.048] synaptics_dsx    ABS MT_POSY        1284
+[525.048] synaptics_dsx    SYN            0
+[525.056] synaptics_dsx    ABS MT_POSX        668
+[525.057] synaptics_dsx    ABS MT_POSY        1293
+[525.057] synaptics_dsx    ABS abs:0x30       14
+[525.058] synaptics_dsx    ABS abs:0x31       13
+[525.058] synaptics_dsx    SYN            0
+[525.065] synaptics_dsx    ABS MT_POSX        652
+[525.065] synaptics_dsx    ABS MT_POSY        1304
+[525.065] synaptics_dsx    ABS abs:0x30       12
+[525.066] synaptics_dsx    ABS abs:0x31       10
+[525.066] synaptics_dsx    SYN            0
+[525.073] synaptics_dsx    ABS MT_POSX        634
+[525.074] synaptics_dsx    ABS MT_POSY        1313
+[525.074] synaptics_dsx    ABS abs:0x30       10
+[525.074] synaptics_dsx    ABS abs:0x31       9
+[525.074] synaptics_dsx    SYN            0
+[525.082] synaptics_dsx    ABS MT_TRACKING_ID -1
+[525.083] synaptics_dsx    KEY BTN_TOUCH      0
+[525.083] synaptics_dsx    KEY key:325        0
+[525.083] synaptics_dsx    SYN            0
+[526.025] synaptics_dsx    ABS MT_TRACKING_ID 185
+[526.025] synaptics_dsx    KEY BTN_TOUCH      1
+[526.025] synaptics_dsx    KEY key:325        1
+[526.026] synaptics_dsx    ABS MT_POSX        1062
+[526.026] synaptics_dsx    ABS MT_POSY        1230
+[526.026] synaptics_dsx    ABS abs:0x30       15
+[526.026] synaptics_dsx    ABS abs:0x31       13
+[526.027] synaptics_dsx    SYN            0
+[526.033] synaptics_dsx    ABS MT_POSX        1044
+[526.033] synaptics_dsx    ABS MT_POSY        1239
+[526.034] synaptics_dsx    ABS abs:0x31       12
+[526.034] synaptics_dsx    SYN            0
+[526.042] synaptics_dsx    ABS MT_POSX        979
+[526.042] synaptics_dsx    ABS MT_POSY        1272
+[526.042] synaptics_dsx    ABS abs:0x30       14
+[526.042] synaptics_dsx    SYN            0
+[526.050] synaptics_dsx    ABS MT_POSX        882
+[526.050] synaptics_dsx    ABS MT_POSY        1320
+[526.051] synaptics_dsx    ABS abs:0x30       13
+[526.051] synaptics_dsx    ABS abs:0x31       11
+[526.051] synaptics_dsx    SYN            0
+[526.059] synaptics_dsx    ABS MT_POSX        805
+[526.059] synaptics_dsx    ABS MT_POSY        1357
+[526.060] synaptics_dsx    SYN            0
+[526.067] synaptics_dsx    ABS MT_POSX        776
+[526.068] synaptics_dsx    ABS MT_POSY        1369
+[526.068] synaptics_dsx    ABS abs:0x30       12
+[526.068] synaptics_dsx    ABS abs:0x31       10
+[526.068] synaptics_dsx    SYN            0
+[526.077] synaptics_dsx    ABS MT_POSX        758
+[526.077] synaptics_dsx    ABS MT_POSY        1376
+[526.077] synaptics_dsx    ABS abs:0x30       11
+[526.077] synaptics_dsx    ABS abs:0x31       9
+[526.078] synaptics_dsx    SYN            0
+[526.085] synaptics_dsx    ABS MT_POSX        747
+[526.085] synaptics_dsx    ABS MT_POSY        1381
+[526.085] synaptics_dsx    ABS abs:0x30       10
+[526.085] synaptics_dsx    ABS abs:0x31       8
+[526.086] synaptics_dsx    SYN            0
+[526.093] synaptics_dsx    ABS MT_TRACKING_ID -1
+[526.093] synaptics_dsx    KEY BTN_TOUCH      0
+[526.093] synaptics_dsx    KEY key:325        0
+[526.093] synaptics_dsx    SYN            0
+[526.613] synaptics_dsx    ABS MT_TRACKING_ID 186
+[526.613] synaptics_dsx    KEY BTN_TOUCH      1
+[526.613] synaptics_dsx    KEY key:325        1
+[526.614] synaptics_dsx    ABS MT_POSX        711
+[526.614] synaptics_dsx    ABS MT_POSY        1911
+[526.614] synaptics_dsx    SYN            0
+[526.630] synaptics_dsx    ABS MT_POSX        710
+[526.630] synaptics_dsx    ABS MT_POSY        1909
+[526.630] synaptics_dsx    ABS abs:0x30       13
+[526.631] synaptics_dsx    ABS abs:0x31       10
+[526.631] synaptics_dsx    SYN            0
+[526.638] synaptics_dsx    ABS MT_POSX        708
+[526.639] synaptics_dsx    ABS MT_POSY        1903
+[526.639] synaptics_dsx    ABS abs:0x31       11
+[526.639] synaptics_dsx    SYN            0
+[526.647] synaptics_dsx    ABS MT_POSX        704
+[526.648] synaptics_dsx    ABS MT_POSY        1888
+[526.648] synaptics_dsx    ABS abs:0x30       14
+[526.648] synaptics_dsx    ABS abs:0x31       12
+[526.648] synaptics_dsx    SYN            0
+[526.656] synaptics_dsx    ABS MT_POSX        700
+[526.656] synaptics_dsx    ABS MT_POSY        1863
+[526.656] synaptics_dsx    SYN            0
+[526.665] synaptics_dsx    ABS MT_POSX        697
+[526.665] synaptics_dsx    ABS MT_POSY        1825
+[526.665] synaptics_dsx    ABS abs:0x30       13
+[526.665] synaptics_dsx    SYN            0
+[526.674] synaptics_dsx    ABS MT_POSX        695
+[526.675] synaptics_dsx    ABS MT_POSY        1783
+[526.675] synaptics_dsx    ABS abs:0x31       13
+[526.675] synaptics_dsx    SYN            0
+[526.683] synaptics_dsx    ABS MT_POSY        1741
+[526.683] synaptics_dsx    ABS abs:0x30       15
+[526.684] synaptics_dsx    SYN            0
+[526.694] synaptics_dsx    ABS MT_POSX        697
+[526.694] synaptics_dsx    ABS MT_POSY        1699
+[526.695] synaptics_dsx    ABS abs:0x31       14
+[526.695] synaptics_dsx    SYN            0
+[526.700] synaptics_dsx    ABS MT_POSX        699
+[526.700] synaptics_dsx    ABS MT_POSY        1664
+[526.701] synaptics_dsx    SYN            0
+[526.709] synaptics_dsx    ABS MT_POSX        702
+[526.710] synaptics_dsx    ABS MT_POSY        1631
+[526.710] synaptics_dsx    SYN            0
+[526.718] synaptics_dsx    ABS MT_POSX        705
+[526.718] synaptics_dsx    ABS MT_POSY        1604
+[526.719] synaptics_dsx    ABS abs:0x30       16
+[526.719] synaptics_dsx    ABS abs:0x31       15
+[526.719] synaptics_dsx    SYN            0
+[526.726] synaptics_dsx    ABS MT_POSX        708
+[526.727] synaptics_dsx    ABS MT_POSY        1581
+[526.727] synaptics_dsx    SYN            0
+[526.737] synaptics_dsx    ABS MT_POSX        711
+[526.737] synaptics_dsx    ABS MT_POSY        1559
+[526.738] synaptics_dsx    SYN            0
+[526.745] synaptics_dsx    ABS MT_POSX        713
+[526.745] synaptics_dsx    ABS MT_POSY        1539
+[526.745] synaptics_dsx    ABS abs:0x31       16
+[526.745] synaptics_dsx    SYN            0
+[526.753] synaptics_dsx    ABS MT_POSX        716
+[526.753] synaptics_dsx    ABS MT_POSY        1522
+[526.754] synaptics_dsx    ABS abs:0x30       17
+[526.754] synaptics_dsx    SYN            0
+[526.762] synaptics_dsx    ABS MT_POSX        718
+[526.763] synaptics_dsx    ABS MT_POSY        1504
+[526.763] synaptics_dsx    SYN            0
+[526.771] synaptics_dsx    ABS MT_POSX        721
+[526.771] synaptics_dsx    ABS MT_POSY        1487
+[526.772] synaptics_dsx    SYN            0
+[526.780] synaptics_dsx    ABS MT_POSX        723
+[526.780] synaptics_dsx    ABS MT_POSY        1469
+[526.780] synaptics_dsx    SYN            0
+[526.789] synaptics_dsx    ABS MT_POSX        726
+[526.789] synaptics_dsx    ABS MT_POSY        1456
+[526.790] synaptics_dsx    SYN            0
+[526.796] synaptics_dsx    ABS MT_POSX        728
+[526.797] synaptics_dsx    ABS MT_POSY        1444
+[526.797] synaptics_dsx    ABS abs:0x30       18
+[526.797] synaptics_dsx    SYN            0
+[526.805] synaptics_dsx    ABS MT_POSX        729
+[526.805] synaptics_dsx    ABS MT_POSY        1432
+[526.806] synaptics_dsx    SYN            0
+[526.815] synaptics_dsx    ABS MT_POSX        731
+[526.816] synaptics_dsx    ABS MT_POSY        1421
+[526.816] synaptics_dsx    SYN            0
+[526.824] synaptics_dsx    ABS MT_POSY        1411
+[526.824] synaptics_dsx    ABS abs:0x31       17
+[526.824] synaptics_dsx    SYN            0
+[526.832] synaptics_dsx    ABS MT_POSX        732
+[526.832] synaptics_dsx    ABS MT_POSY        1402
+[526.832] synaptics_dsx    SYN            0
+[526.841] synaptics_dsx    ABS MT_POSX        733
+[526.841] synaptics_dsx    ABS MT_POSY        1395
+[526.841] synaptics_dsx    SYN            0
+[526.849] synaptics_dsx    ABS MT_POSX        734
+[526.849] synaptics_dsx    ABS MT_POSY        1388
+[526.850] synaptics_dsx    SYN            0
+[526.858] synaptics_dsx    ABS MT_POSY        1381
+[526.858] synaptics_dsx    SYN            0
+[526.867] synaptics_dsx    ABS MT_POSX        735
+[526.867] synaptics_dsx    ABS MT_POSY        1376
+[526.867] synaptics_dsx    ABS abs:0x31       16
+[526.867] synaptics_dsx    SYN            0
+[526.877] synaptics_dsx    ABS MT_POSX        736
+[526.877] synaptics_dsx    ABS MT_POSY        1370
+[526.877] synaptics_dsx    SYN            0
+[526.884] synaptics_dsx    ABS MT_POSX        738
+[526.885] synaptics_dsx    ABS MT_POSY        1366
+[526.885] synaptics_dsx    ABS abs:0x30       17
+[526.885] synaptics_dsx    ABS abs:0x31       15
+[526.885] synaptics_dsx    SYN            0
+[526.895] synaptics_dsx    ABS MT_POSX        740
+[526.895] synaptics_dsx    ABS MT_POSY        1361
+[526.895] synaptics_dsx    SYN            0
+[526.902] synaptics_dsx    ABS MT_POSX        742
+[526.902] synaptics_dsx    ABS MT_POSY        1356
+[526.902] synaptics_dsx    ABS abs:0x30       16
+[526.902] synaptics_dsx    ABS abs:0x31       14
+[526.902] synaptics_dsx    SYN            0
+[526.911] synaptics_dsx    ABS MT_POSX        746
+[526.911] synaptics_dsx    ABS MT_POSY        1350
+[526.911] synaptics_dsx    ABS abs:0x30       14
+[526.911] synaptics_dsx    ABS abs:0x31       12
+[526.912] synaptics_dsx    SYN            0
+[526.922] synaptics_dsx    ABS MT_POSX        753
+[526.923] synaptics_dsx    ABS MT_POSY        1342
+[526.923] synaptics_dsx    ABS abs:0x30       11
+[526.923] synaptics_dsx    ABS abs:0x31       9
+[526.923] synaptics_dsx    SYN            0
+[526.928] synaptics_dsx    ABS MT_POSX        760
+[526.929] synaptics_dsx    ABS MT_POSY        1331
+[526.929] synaptics_dsx    ABS abs:0x30       9
+[526.929] synaptics_dsx    ABS abs:0x31       6
+[526.929] synaptics_dsx    SYN            0
+[526.936] synaptics_dsx    ABS MT_TRACKING_ID -1
+[526.936] synaptics_dsx    KEY BTN_TOUCH      0
+[526.937] synaptics_dsx    KEY key:325        0
+[526.937] synaptics_dsx    SYN            0
+[527.262] synaptics_dsx    KEY HOMEPAGE       1
+[527.263] synaptics_dsx    SYN            0
+[527.351] synaptics_dsx    ABS MT_TRACKING_ID 187
+[527.351] synaptics_dsx    KEY BTN_TOUCH      1
+[527.352] synaptics_dsx    KEY key:325        1
+[527.352] synaptics_dsx    ABS MT_POSX        507
+[527.352] synaptics_dsx    ABS MT_POSY        1919
+[527.352] synaptics_dsx    ABS abs:0x30       11
+[527.352] synaptics_dsx    ABS abs:0x31       8
+[527.352] synaptics_dsx    SYN            0
+[527.360] synaptics_dsx    ABS MT_POSX        506
+[527.360] synaptics_dsx    ABS MT_POSY        1917
+[527.360] synaptics_dsx    ABS abs:0x30       15
+[527.360] synaptics_dsx    ABS abs:0x31       13
+[527.361] synaptics_dsx    SYN            0
+[527.361] synaptics_dsx    KEY HOMEPAGE       0
+[527.361] synaptics_dsx    SYN            0
+[527.369] synaptics_dsx    ABS MT_POSX        504
+[527.369] synaptics_dsx    ABS MT_POSY        1911
+[527.369] synaptics_dsx    ABS abs:0x31       15
+[527.370] synaptics_dsx    SYN            0
+[527.378] synaptics_dsx    ABS MT_POSX        499
+[527.378] synaptics_dsx    ABS MT_POSY        1893
+[527.378] synaptics_dsx    ABS abs:0x30       16
+[527.379] synaptics_dsx    ABS abs:0x31       16
+[527.379] synaptics_dsx    SYN            0
+[527.387] synaptics_dsx    ABS MT_POSX        493
+[527.387] synaptics_dsx    ABS MT_POSY        1860
+[527.388] synaptics_dsx    ABS abs:0x30       17
+[527.388] synaptics_dsx    SYN            0
+[527.398] synaptics_dsx    ABS MT_POSX        489
+[527.398] synaptics_dsx    ABS MT_POSY        1825
+[527.399] synaptics_dsx    SYN            0
+[527.404] synaptics_dsx    ABS MT_POSX        487
+[527.405] synaptics_dsx    ABS MT_POSY        1790
+[527.405] synaptics_dsx    ABS abs:0x31       17
+[527.405] synaptics_dsx    SYN            0
+[527.414] synaptics_dsx    ABS MT_POSX        486
+[527.414] synaptics_dsx    ABS MT_POSY        1751
+[527.414] synaptics_dsx    SYN            0
+[527.421] synaptics_dsx    ABS MT_POSY        1717
+[527.421] synaptics_dsx    ABS abs:0x30       18
+[527.422] synaptics_dsx    SYN            0
+[527.431] synaptics_dsx    ABS MT_POSX        488
+[527.431] synaptics_dsx    ABS MT_POSY        1683
+[527.431] synaptics_dsx    SYN            0
+[527.440] synaptics_dsx    ABS MT_POSX        491
+[527.440] synaptics_dsx    ABS MT_POSY        1655
+[527.440] synaptics_dsx    SYN            0
+[527.448] synaptics_dsx    ABS MT_POSX        497
+[527.448] synaptics_dsx    ABS MT_POSY        1623
+[527.448] synaptics_dsx    SYN            0
+[527.457] synaptics_dsx    ABS MT_POSX        504
+[527.457] synaptics_dsx    ABS MT_POSY        1596
+[527.457] synaptics_dsx    SYN            0
+[527.466] synaptics_dsx    ABS MT_POSX        511
+[527.467] synaptics_dsx    ABS MT_POSY        1569
+[527.467] synaptics_dsx    ABS abs:0x30       19
+[527.467] synaptics_dsx    SYN            0
+[527.474] synaptics_dsx    ABS MT_POSX        517
+[527.474] synaptics_dsx    ABS MT_POSY        1544
+[527.474] synaptics_dsx    ABS abs:0x30       18
+[527.474] synaptics_dsx    SYN            0
+[527.483] synaptics_dsx    ABS MT_POSX        524
+[527.483] synaptics_dsx    ABS MT_POSY        1523
+[527.483] synaptics_dsx    SYN            0
+[527.491] synaptics_dsx    ABS MT_POSX        530
+[527.492] synaptics_dsx    ABS MT_POSY        1504
+[527.492] synaptics_dsx    SYN            0
+[527.500] synaptics_dsx    ABS MT_POSX        536
+[527.501] synaptics_dsx    ABS MT_POSY        1483
+[527.501] synaptics_dsx    SYN            0
+[527.510] synaptics_dsx    ABS MT_POSX        542
+[527.510] synaptics_dsx    ABS MT_POSY        1465
+[527.510] synaptics_dsx    SYN            0
+[527.518] synaptics_dsx    ABS MT_POSX        549
+[527.518] synaptics_dsx    ABS MT_POSY        1445
+[527.518] synaptics_dsx    ABS abs:0x31       16
+[527.518] synaptics_dsx    SYN            0
+[527.527] synaptics_dsx    ABS MT_POSX        557
+[527.527] synaptics_dsx    ABS MT_POSY        1424
+[527.528] synaptics_dsx    ABS abs:0x30       17
+[527.528] synaptics_dsx    ABS abs:0x31       15
+[527.528] synaptics_dsx    SYN            0
+[527.536] synaptics_dsx    ABS MT_POSX        566
+[527.539] synaptics_dsx    ABS MT_POSY        1401
+[527.539] synaptics_dsx    ABS abs:0x30       15
+[527.539] synaptics_dsx    ABS abs:0x31       14
+[527.539] synaptics_dsx    SYN            0
+[527.545] synaptics_dsx    ABS MT_POSX        576
+[527.545] synaptics_dsx    ABS MT_POSY        1377
+[527.545] synaptics_dsx    ABS abs:0x30       13
+[527.545] synaptics_dsx    ABS abs:0x31       12
+[527.545] synaptics_dsx    SYN            0
+[527.553] synaptics_dsx    ABS MT_POSX        585
+[527.553] synaptics_dsx    ABS MT_POSY        1351
+[527.553] synaptics_dsx    ABS abs:0x30       12
+[527.553] synaptics_dsx    ABS abs:0x31       10
+[527.553] synaptics_dsx    SYN            0
+[527.561] synaptics_dsx    ABS MT_TRACKING_ID -1
+[527.561] synaptics_dsx    KEY BTN_TOUCH      0
+[527.561] synaptics_dsx    KEY key:325        0
+[527.561] synaptics_dsx    SYN            0
+[528.056] synaptics_dsx    ABS MT_TRACKING_ID 188
+[528.057] synaptics_dsx    KEY BTN_TOUCH      1
+[528.057] synaptics_dsx    KEY key:325        1
+[528.058] synaptics_dsx    ABS MT_POSX        389
+[528.058] synaptics_dsx    ABS MT_POSY        23
+[528.058] synaptics_dsx    ABS abs:0x30       11
+[528.058] synaptics_dsx    ABS abs:0x31       9
+[528.058] synaptics_dsx    SYN            0
+[528.107] synaptics_dsx    ABS MT_POSX        387
+[528.108] synaptics_dsx    ABS abs:0x30       13
+[528.108] synaptics_dsx    ABS abs:0x31       12
+[528.108] synaptics_dsx    SYN            0
+[528.116] synaptics_dsx    ABS MT_POSX        381
+[528.116] synaptics_dsx    ABS MT_POSY        25
+[528.116] synaptics_dsx    ABS abs:0x30       14
+[528.116] synaptics_dsx    ABS abs:0x31       13
+[528.116] synaptics_dsx    SYN            0
+[528.125] synaptics_dsx    ABS MT_POSX        373
+[528.126] synaptics_dsx    ABS MT_POSY        29
+[528.126] synaptics_dsx    ABS abs:0x31       14
+[528.126] synaptics_dsx    SYN            0
+[528.135] synaptics_dsx    ABS MT_POSX        362
+[528.135] synaptics_dsx    ABS MT_POSY        34
+[528.136] synaptics_dsx    ABS abs:0x30       15
+[528.136] synaptics_dsx    SYN            0
+[528.143] synaptics_dsx    ABS MT_POSX        351
+[528.143] synaptics_dsx    ABS MT_POSY        45
+[528.143] synaptics_dsx    ABS abs:0x30       16
+[528.143] synaptics_dsx    ABS abs:0x31       16
+[528.143] synaptics_dsx    SYN            0
+[528.151] synaptics_dsx    ABS MT_POSX        334
+[528.152] synaptics_dsx    ABS MT_POSY        71
+[528.152] synaptics_dsx    ABS abs:0x30       18
+[528.152] synaptics_dsx    SYN            0
+[528.160] synaptics_dsx    ABS MT_POSX        316
+[528.160] synaptics_dsx    ABS MT_POSY        103
+[528.160] synaptics_dsx    SYN            0
+[528.168] synaptics_dsx    ABS MT_POSX        299
+[528.169] synaptics_dsx    ABS MT_POSY        140
+[528.169] synaptics_dsx    SYN            0
+[528.177] synaptics_dsx    ABS MT_POSX        285
+[528.177] synaptics_dsx    ABS MT_POSY        178
+[528.177] synaptics_dsx    SYN            0
+[528.186] synaptics_dsx    ABS MT_POSX        271
+[528.187] synaptics_dsx    ABS MT_POSY        220
+[528.187] synaptics_dsx    SYN            0
+[528.195] synaptics_dsx    ABS MT_POSX        259
+[528.195] synaptics_dsx    ABS MT_POSY        260
+[528.195] synaptics_dsx    ABS abs:0x30       17
+[528.195] synaptics_dsx    SYN            0
+[528.204] synaptics_dsx    ABS MT_POSX        247
+[528.204] synaptics_dsx    ABS MT_POSY        304
+[528.204] synaptics_dsx    SYN            0
+[528.212] synaptics_dsx    ABS MT_POSX        237
+[528.212] synaptics_dsx    ABS MT_POSY        350
+[528.212] synaptics_dsx    SYN            0
+[528.221] synaptics_dsx    ABS MT_POSX        228
+[528.222] synaptics_dsx    ABS MT_POSY        398
+[528.222] synaptics_dsx    ABS abs:0x30       18
+[528.222] synaptics_dsx    SYN            0
+[528.230] synaptics_dsx    ABS MT_POSX        220
+[528.230] synaptics_dsx    ABS MT_POSY        445
+[528.230] synaptics_dsx    ABS abs:0x30       17
+[528.230] synaptics_dsx    SYN            0
+[528.239] synaptics_dsx    ABS MT_POSX        214
+[528.240] synaptics_dsx    ABS MT_POSY        497
+[528.240] synaptics_dsx    SYN            0
+[528.248] synaptics_dsx    ABS MT_POSX        210
+[528.248] synaptics_dsx    ABS MT_POSY        545
+[528.248] synaptics_dsx    ABS abs:0x30       18
+[528.248] synaptics_dsx    SYN            0
+[528.257] synaptics_dsx    ABS MT_POSX        206
+[528.258] synaptics_dsx    ABS MT_POSY        592
+[528.258] synaptics_dsx    SYN            0
+[528.266] synaptics_dsx    ABS MT_POSX        205
+[528.266] synaptics_dsx    ABS MT_POSY        635
+[528.266] synaptics_dsx    ABS abs:0x30       17
+[528.266] synaptics_dsx    SYN            0
+[528.274] synaptics_dsx    ABS MT_POSY        675
+[528.275] synaptics_dsx    ABS abs:0x30       18
+[528.275] synaptics_dsx    SYN            0
+[528.287] synaptics_dsx    ABS MT_POSY        713
+[528.288] synaptics_dsx    SYN            0
+[528.293] synaptics_dsx    ABS MT_POSX        207
+[528.294] synaptics_dsx    ABS MT_POSY        750
+[528.294] synaptics_dsx    ABS abs:0x31       17
+[528.294] synaptics_dsx    SYN            0
+[528.304] synaptics_dsx    ABS MT_POSX        209
+[528.305] synaptics_dsx    ABS MT_POSY        781
+[528.305] synaptics_dsx    SYN            0
+[528.310] synaptics_dsx    ABS MT_POSX        212
+[528.311] synaptics_dsx    ABS MT_POSY        811
+[528.311] synaptics_dsx    SYN            0
+[528.318] synaptics_dsx    ABS MT_POSX        214
+[528.319] synaptics_dsx    ABS MT_POSY        837
+[528.319] synaptics_dsx    SYN            0
+[528.327] synaptics_dsx    ABS MT_POSX        217
+[528.328] synaptics_dsx    ABS MT_POSY        861
+[528.328] synaptics_dsx    SYN            0
+[528.336] synaptics_dsx    ABS MT_POSX        219
+[528.336] synaptics_dsx    ABS MT_POSY        884
+[528.336] synaptics_dsx    SYN            0
+[528.345] synaptics_dsx    ABS MT_POSX        222
+[528.346] synaptics_dsx    ABS MT_POSY        904
+[528.346] synaptics_dsx    SYN            0
+[528.354] synaptics_dsx    ABS MT_POSX        224
+[528.354] synaptics_dsx    ABS MT_POSY        922
+[528.354] synaptics_dsx    ABS abs:0x30       19
+[528.354] synaptics_dsx    SYN            0
+[528.363] synaptics_dsx    ABS MT_POSX        227
+[528.363] synaptics_dsx    ABS MT_POSY        938
+[528.363] synaptics_dsx    SYN            0
+[528.371] synaptics_dsx    ABS MT_POSX        230
+[528.371] synaptics_dsx    ABS MT_POSY        953
+[528.372] synaptics_dsx    ABS abs:0x30       18
+[528.372] synaptics_dsx    SYN            0
+[528.380] synaptics_dsx    ABS MT_POSX        233
+[528.381] synaptics_dsx    ABS MT_POSY        968
+[528.381] synaptics_dsx    SYN            0
+[528.389] synaptics_dsx    ABS MT_POSX        237
+[528.389] synaptics_dsx    ABS MT_POSY        981
+[528.389] synaptics_dsx    SYN            0
+[528.398] synaptics_dsx    ABS MT_POSX        240
+[528.398] synaptics_dsx    ABS MT_POSY        993
+[528.398] synaptics_dsx    SYN            0
+[528.406] synaptics_dsx    ABS MT_POSX        244
+[528.407] synaptics_dsx    ABS MT_POSY        1004
+[528.407] synaptics_dsx    ABS abs:0x30       19
+[528.407] synaptics_dsx    SYN            0
+[528.417] synaptics_dsx    ABS MT_POSX        249
+[528.418] synaptics_dsx    ABS MT_POSY        1016
+[528.418] synaptics_dsx    SYN            0
+[528.424] synaptics_dsx    ABS MT_POSX        253
+[528.424] synaptics_dsx    ABS MT_POSY        1027
+[528.424] synaptics_dsx    ABS abs:0x30       18
+[528.425] synaptics_dsx    SYN            0
+[528.432] synaptics_dsx    ABS MT_POSX        257
+[528.434] synaptics_dsx    ABS MT_POSY        1038
+[528.435] synaptics_dsx    SYN            0
+[528.442] synaptics_dsx    ABS MT_POSX        261
+[528.442] synaptics_dsx    ABS MT_POSY        1046
+[528.442] synaptics_dsx    SYN            0
+[528.451] synaptics_dsx    ABS MT_POSX        264
+[528.451] synaptics_dsx    ABS MT_POSY        1055
+[528.452] synaptics_dsx    SYN            0
+[528.459] synaptics_dsx    ABS MT_POSX        267
+[528.460] synaptics_dsx    ABS MT_POSY        1062
+[528.460] synaptics_dsx    SYN            0
+[528.469] synaptics_dsx    ABS MT_POSX        270
+[528.469] synaptics_dsx    ABS MT_POSY        1068
+[528.469] synaptics_dsx    SYN            0
+[528.477] synaptics_dsx    ABS MT_POSX        272
+[528.477] synaptics_dsx    ABS MT_POSY        1072
+[528.477] synaptics_dsx    SYN            0
+[528.486] synaptics_dsx    ABS MT_POSX        273
+[528.486] synaptics_dsx    ABS MT_POSY        1076
+[528.486] synaptics_dsx    SYN            0
+[528.494] synaptics_dsx    ABS MT_POSX        275
+[528.495] synaptics_dsx    ABS MT_POSY        1080
+[528.495] synaptics_dsx    SYN            0
+[528.503] synaptics_dsx    ABS MT_POSX        276
+[528.503] synaptics_dsx    ABS MT_POSY        1082
+[528.503] synaptics_dsx    SYN            0
+[528.517] synaptics_dsx    ABS MT_POSX        277
+[528.518] synaptics_dsx    ABS MT_POSY        1085
+[528.518] synaptics_dsx    ABS abs:0x30       19
+[528.518] synaptics_dsx    SYN            0
+[528.521] synaptics_dsx    ABS MT_POSX        278
+[528.521] synaptics_dsx    ABS MT_POSY        1086
+[528.522] synaptics_dsx    ABS abs:0x30       18
+[528.522] synaptics_dsx    SYN            0
+[528.530] synaptics_dsx    ABS MT_POSX        279
+[528.530] synaptics_dsx    ABS MT_POSY        1088
+[528.530] synaptics_dsx    SYN            0
+[528.539] synaptics_dsx    ABS MT_POSX        280
+[528.540] synaptics_dsx    ABS MT_POSY        1089
+[528.540] synaptics_dsx    SYN            0
+[528.556] synaptics_dsx    ABS MT_POSY        1090
+[528.556] synaptics_dsx    SYN            0
+[528.565] synaptics_dsx    ABS MT_POSX        281
+[528.565] synaptics_dsx    SYN            0
+[528.575] synaptics_dsx    ABS MT_POSX        282
+[528.576] synaptics_dsx    ABS abs:0x30       17
+[528.576] synaptics_dsx    ABS abs:0x31       16
+[528.576] synaptics_dsx    SYN            0
+[528.582] synaptics_dsx    ABS MT_POSX        283
+[528.583] synaptics_dsx    ABS MT_POSY        1088
+[528.583] synaptics_dsx    ABS abs:0x30       18
+[528.583] synaptics_dsx    SYN            0
+[528.592] synaptics_dsx    ABS MT_POSX        286
+[528.592] synaptics_dsx    ABS MT_POSY        1083
+[528.593] synaptics_dsx    ABS abs:0x30       17
+[528.593] synaptics_dsx    SYN            0
+[528.601] synaptics_dsx    ABS MT_POSX        291
+[528.601] synaptics_dsx    ABS MT_POSY        1075
+[528.601] synaptics_dsx    SYN            0
+[528.609] synaptics_dsx    ABS MT_POSX        298
+[528.609] synaptics_dsx    ABS MT_POSY        1060
+[528.609] synaptics_dsx    ABS abs:0x30       18
+[528.609] synaptics_dsx    SYN            0
+[528.618] synaptics_dsx    ABS MT_POSX        305
+[528.619] synaptics_dsx    ABS MT_POSY        1043
+[528.619] synaptics_dsx    ABS abs:0x30       17
+[528.619] synaptics_dsx    SYN            0
+[528.626] synaptics_dsx    ABS MT_POSX        311
+[528.627] synaptics_dsx    ABS MT_POSY        1026
+[528.627] synaptics_dsx    SYN            0
+[528.635] synaptics_dsx    ABS MT_POSX        317
+[528.635] synaptics_dsx    ABS MT_POSY        1006
+[528.635] synaptics_dsx    SYN            0
+[528.645] synaptics_dsx    ABS MT_POSX        323
+[528.645] synaptics_dsx    ABS MT_POSY        986
+[528.645] synaptics_dsx    SYN            0
+[528.652] synaptics_dsx    ABS MT_POSX        328
+[528.653] synaptics_dsx    ABS MT_POSY        967
+[528.653] synaptics_dsx    ABS abs:0x31       17
+[528.653] synaptics_dsx    SYN            0
+[528.662] synaptics_dsx    ABS MT_POSX        333
+[528.662] synaptics_dsx    ABS MT_POSY        948
+[528.662] synaptics_dsx    ABS abs:0x30       18
+[528.662] synaptics_dsx    SYN            0
+[528.670] synaptics_dsx    ABS MT_POSX        338
+[528.670] synaptics_dsx    ABS MT_POSY        928
+[528.670] synaptics_dsx    ABS abs:0x30       17
+[528.670] synaptics_dsx    ABS abs:0x31       16
+[528.670] synaptics_dsx    SYN            0
+[528.679] synaptics_dsx    ABS MT_POSX        342
+[528.679] synaptics_dsx    ABS MT_POSY        912
+[528.679] synaptics_dsx    ABS abs:0x31       17
+[528.679] synaptics_dsx    SYN            0
+[528.687] synaptics_dsx    ABS MT_POSX        345
+[528.688] synaptics_dsx    ABS MT_POSY        898
+[528.688] synaptics_dsx    SYN            0
+[528.696] synaptics_dsx    ABS MT_POSX        347
+[528.696] synaptics_dsx    ABS MT_POSY        887
+[528.696] synaptics_dsx    ABS abs:0x30       18
+[528.696] synaptics_dsx    SYN            0
+[528.705] synaptics_dsx    ABS MT_POSX        349
+[528.705] synaptics_dsx    ABS MT_POSY        879
+[528.705] synaptics_dsx    SYN            0
+[528.714] synaptics_dsx    ABS MT_POSX        351
+[528.714] synaptics_dsx    ABS MT_POSY        872
+[528.714] synaptics_dsx    SYN            0
+[528.723] synaptics_dsx    ABS MT_POSX        352
+[528.723] synaptics_dsx    ABS MT_POSY        868
+[528.723] synaptics_dsx    SYN            0
+[528.732] synaptics_dsx    ABS MT_POSY        865
+[528.732] synaptics_dsx    SYN            0
+[528.740] synaptics_dsx    ABS MT_POSX        353
+[528.740] synaptics_dsx    ABS MT_POSY        863
+[528.740] synaptics_dsx    SYN            0
+[528.749] synaptics_dsx    ABS MT_POSY        861
+[528.749] synaptics_dsx    ABS abs:0x31       18
+[528.749] synaptics_dsx    SYN            0
+[528.767] synaptics_dsx    ABS MT_POSX        354
+[528.768] synaptics_dsx    ABS MT_POSY        860
+[528.768] synaptics_dsx    ABS abs:0x31       17
+[528.768] synaptics_dsx    SYN            0
+[528.784] synaptics_dsx    ABS MT_POSY        859
+[528.784] synaptics_dsx    ABS abs:0x30       19
+[528.785] synaptics_dsx    ABS abs:0x31       18
+[528.785] synaptics_dsx    SYN            0
+[528.812] synaptics_dsx    ABS MT_POSY        860
+[528.812] synaptics_dsx    SYN            0
+[528.820] synaptics_dsx    ABS MT_POSY        861
+[528.820] synaptics_dsx    ABS abs:0x31       17
+[528.820] synaptics_dsx    SYN            0
+[528.829] synaptics_dsx    ABS MT_POSY        864
+[528.830] synaptics_dsx    SYN            0
+[528.838] synaptics_dsx    ABS MT_POSY        869
+[528.838] synaptics_dsx    ABS abs:0x30       18
+[528.838] synaptics_dsx    SYN            0
+[528.846] synaptics_dsx    ABS MT_POSX        355
+[528.846] synaptics_dsx    ABS MT_POSY        877
+[528.846] synaptics_dsx    ABS abs:0x30       19
+[528.846] synaptics_dsx    SYN            0
+[528.856] synaptics_dsx    ABS MT_POSY        891
+[528.856] synaptics_dsx    ABS abs:0x30       18
+[528.856] synaptics_dsx    SYN            0
+[528.864] synaptics_dsx    ABS MT_POSY        905
+[528.864] synaptics_dsx    SYN            0
+[528.873] synaptics_dsx    ABS MT_POSX        356
+[528.874] synaptics_dsx    ABS MT_POSY        921
+[528.874] synaptics_dsx    ABS abs:0x30       17
+[528.874] synaptics_dsx    ABS abs:0x31       16
+[528.874] synaptics_dsx    SYN            0
+[528.882] synaptics_dsx    ABS MT_POSX        357
+[528.882] synaptics_dsx    ABS MT_POSY        938
+[528.882] synaptics_dsx    ABS abs:0x30       18
+[528.882] synaptics_dsx    SYN            0
+[528.890] synaptics_dsx    ABS MT_POSX        358
+[528.891] synaptics_dsx    ABS MT_POSY        956
+[528.891] synaptics_dsx    ABS abs:0x30       17
+[528.891] synaptics_dsx    SYN            0
+[528.900] synaptics_dsx    ABS MT_POSX        359
+[528.900] synaptics_dsx    ABS MT_POSY        972
+[528.901] synaptics_dsx    SYN            0
+[528.908] synaptics_dsx    ABS MT_POSX        360
+[528.908] synaptics_dsx    ABS MT_POSY        986
+[528.908] synaptics_dsx    SYN            0
+[528.918] synaptics_dsx    ABS MT_POSX        362
+[528.918] synaptics_dsx    ABS MT_POSY        1001
+[528.918] synaptics_dsx    ABS abs:0x30       18
+[528.919] synaptics_dsx    SYN            0
+[528.926] synaptics_dsx    ABS MT_POSX        363
+[528.926] synaptics_dsx    ABS MT_POSY        1014
+[528.926] synaptics_dsx    SYN            0
+[528.935] synaptics_dsx    ABS MT_POSX        365
+[528.935] synaptics_dsx    ABS MT_POSY        1027
+[528.935] synaptics_dsx    ABS abs:0x30       17
+[528.935] synaptics_dsx    SYN            0
+[528.943] synaptics_dsx    ABS MT_POSX        366
+[528.949] synaptics_dsx    ABS MT_POSY        1039
+[528.949] synaptics_dsx    SYN            0
+[528.952] synaptics_dsx    ABS MT_POSX        367
+[528.952] synaptics_dsx    ABS MT_POSY        1048
+[528.952] synaptics_dsx    SYN            0
+[528.960] synaptics_dsx    ABS MT_POSX        368
+[528.960] synaptics_dsx    ABS MT_POSY        1056
+[528.960] synaptics_dsx    SYN            0
+[528.969] synaptics_dsx    ABS MT_POSY        1063
+[528.969] synaptics_dsx    SYN            0
+[528.977] synaptics_dsx    ABS MT_POSX        369
+[528.978] synaptics_dsx    ABS MT_POSY        1069
+[528.978] synaptics_dsx    SYN            0
+[528.986] synaptics_dsx    ABS MT_POSY        1074
+[528.986] synaptics_dsx    SYN            0
+[528.995] synaptics_dsx    ABS MT_POSY        1080
+[528.995] synaptics_dsx    ABS abs:0x30       18
+[528.995] synaptics_dsx    SYN            0
+[529.004] synaptics_dsx    ABS MT_POSY        1084
+[529.004] synaptics_dsx    SYN            0
+[529.013] synaptics_dsx    ABS MT_POSY        1089
+[529.013] synaptics_dsx    SYN            0
+[529.021] synaptics_dsx    ABS MT_POSY        1094
+[529.022] synaptics_dsx    SYN            0
+[529.030] synaptics_dsx    ABS MT_POSY        1100
+[529.030] synaptics_dsx    SYN            0
+[529.039] synaptics_dsx    ABS MT_POSX        370
+[529.039] synaptics_dsx    ABS MT_POSY        1106
+[529.039] synaptics_dsx    ABS abs:0x30       17
+[529.039] synaptics_dsx    SYN            0
+[529.048] synaptics_dsx    ABS MT_POSY        1113
+[529.048] synaptics_dsx    SYN            0
+[529.057] synaptics_dsx    ABS MT_POSY        1120
+[529.057] synaptics_dsx    ABS abs:0x31       15
+[529.057] synaptics_dsx    SYN            0
+[529.066] synaptics_dsx    ABS MT_POSX        371
+[529.066] synaptics_dsx    ABS MT_POSY        1127
+[529.066] synaptics_dsx    SYN            0
+[529.074] synaptics_dsx    ABS MT_POSY        1136
+[529.075] synaptics_dsx    SYN            0
+[529.083] synaptics_dsx    ABS MT_POSX        372
+[529.083] synaptics_dsx    ABS MT_POSY        1146
+[529.083] synaptics_dsx    SYN            0
+[529.092] synaptics_dsx    ABS MT_POSY        1157
+[529.092] synaptics_dsx    SYN            0
+[529.101] synaptics_dsx    ABS MT_POSX        373
+[529.101] synaptics_dsx    ABS MT_POSY        1168
+[529.101] synaptics_dsx    ABS abs:0x30       16
+[529.101] synaptics_dsx    SYN            0
+[529.109] synaptics_dsx    ABS MT_POSX        375
+[529.110] synaptics_dsx    ABS MT_POSY        1180
+[529.110] synaptics_dsx    SYN            0
+[529.118] synaptics_dsx    ABS MT_POSX        376
+[529.118] synaptics_dsx    ABS MT_POSY        1194
+[529.119] synaptics_dsx    ABS abs:0x30       17
+[529.119] synaptics_dsx    SYN            0
+[529.127] synaptics_dsx    ABS MT_POSX        378
+[529.127] synaptics_dsx    ABS MT_POSY        1208
+[529.127] synaptics_dsx    SYN            0
+[529.138] synaptics_dsx    ABS MT_POSX        380
+[529.138] synaptics_dsx    ABS MT_POSY        1222
+[529.138] synaptics_dsx    ABS abs:0x30       16
+[529.139] synaptics_dsx    SYN            0
+[529.145] synaptics_dsx    ABS MT_POSX        382
+[529.145] synaptics_dsx    ABS MT_POSY        1234
+[529.146] synaptics_dsx    SYN            0
+[529.156] synaptics_dsx    ABS MT_POSX        383
+[529.156] synaptics_dsx    ABS MT_POSY        1245
+[529.156] synaptics_dsx    SYN            0
+[529.163] synaptics_dsx    ABS MT_POSX        385
+[529.163] synaptics_dsx    ABS MT_POSY        1255
+[529.163] synaptics_dsx    ABS abs:0x30       17
+[529.163] synaptics_dsx    SYN            0
+[529.172] synaptics_dsx    ABS MT_POSX        387
+[529.172] synaptics_dsx    ABS MT_POSY        1264
+[529.173] synaptics_dsx    SYN            0
+[529.180] synaptics_dsx    ABS MT_POSX        388
+[529.180] synaptics_dsx    ABS MT_POSY        1270
+[529.180] synaptics_dsx    SYN            0
+[529.189] synaptics_dsx    ABS MT_POSX        389
+[529.190] synaptics_dsx    ABS MT_POSY        1276
+[529.190] synaptics_dsx    ABS abs:0x31       16
+[529.190] synaptics_dsx    SYN            0
+[529.198] synaptics_dsx    ABS MT_POSX        390
+[529.198] synaptics_dsx    ABS MT_POSY        1280
+[529.198] synaptics_dsx    SYN            0
+[529.206] synaptics_dsx    ABS MT_POSY        1283
+[529.207] synaptics_dsx    ABS abs:0x31       15
+[529.207] synaptics_dsx    SYN            0
+[529.215] synaptics_dsx    ABS MT_POSX        391
+[529.215] synaptics_dsx    ABS MT_POSY        1285
+[529.215] synaptics_dsx    SYN            0
+[529.224] synaptics_dsx    ABS MT_POSY        1287
+[529.225] synaptics_dsx    SYN            0
+[529.233] synaptics_dsx    ABS MT_POSY        1289
+[529.233] synaptics_dsx    ABS abs:0x30       16
+[529.233] synaptics_dsx    SYN            0
+[529.243] synaptics_dsx    ABS MT_POSY        1290
+[529.243] synaptics_dsx    SYN            0
+[529.250] synaptics_dsx    ABS MT_POSY        1291
+[529.251] synaptics_dsx    SYN            0
+[529.268] synaptics_dsx    ABS MT_POSY        1292
+[529.268] synaptics_dsx    ABS abs:0x31       14
+[529.268] synaptics_dsx    SYN            0
+[529.286] synaptics_dsx    ABS MT_POSY        1293
+[529.286] synaptics_dsx    SYN            0
+[529.312] synaptics_dsx    ABS MT_POSY        1294
+[529.312] synaptics_dsx    ABS abs:0x30       15
+[529.313] synaptics_dsx    SYN            0
+[529.365] synaptics_dsx    ABS MT_POSX        390
+[529.365] synaptics_dsx    ABS MT_POSY        1295
+[529.365] synaptics_dsx    SYN            0
+[529.533] synaptics_dsx    ABS MT_POSY        1296
+[529.534] synaptics_dsx    ABS abs:0x30       16
+[529.534] synaptics_dsx    SYN            0
+[529.585] synaptics_dsx    ABS MT_POSY        1297
+[529.586] synaptics_dsx    SYN            0
+[529.613] synaptics_dsx    ABS MT_POSY        1298
+[529.613] synaptics_dsx    SYN            0
+[529.631] synaptics_dsx    ABS MT_POSY        1299
+[529.631] synaptics_dsx    SYN            0
+[529.648] synaptics_dsx    ABS MT_POSY        1300
+[529.648] synaptics_dsx    SYN            0
+[529.665] synaptics_dsx    ABS MT_POSY        1301
+[529.665] synaptics_dsx    ABS abs:0x31       15
+[529.665] synaptics_dsx    SYN            0
+[529.692] synaptics_dsx    ABS MT_POSY        1302
+[529.692] synaptics_dsx    SYN            0
+[529.708] synaptics_dsx    ABS MT_POSY        1303
+[529.708] synaptics_dsx    SYN            0
+[529.778] synaptics_dsx    ABS MT_POSY        1301
+[529.778] synaptics_dsx    ABS abs:0x30       15
+[529.778] synaptics_dsx    ABS abs:0x31       14
+[529.778] synaptics_dsx    SYN            0
+[529.786] synaptics_dsx    ABS MT_POSY        1299
+[529.786] synaptics_dsx    ABS abs:0x30       16
+[529.787] synaptics_dsx    SYN            0
+[529.795] synaptics_dsx    ABS MT_POSX        389
+[529.796] synaptics_dsx    ABS MT_POSY        1294
+[529.796] synaptics_dsx    SYN            0
+[529.805] synaptics_dsx    ABS MT_POSY        1288
+[529.805] synaptics_dsx    SYN            0
+[529.813] synaptics_dsx    ABS MT_POSY        1282
+[529.813] synaptics_dsx    ABS abs:0x30       15
+[529.813] synaptics_dsx    SYN            0
+[529.822] synaptics_dsx    ABS MT_POSX        388
+[529.822] synaptics_dsx    ABS MT_POSY        1277
+[529.822] synaptics_dsx    ABS abs:0x30       16
+[529.822] synaptics_dsx    SYN            0
+[529.831] synaptics_dsx    ABS MT_POSY        1271
+[529.831] synaptics_dsx    SYN            0
+[529.839] synaptics_dsx    ABS MT_POSY        1267
+[529.839] synaptics_dsx    SYN            0
+[529.848] synaptics_dsx    ABS MT_POSY        1264
+[529.848] synaptics_dsx    ABS abs:0x31       15
+[529.848] synaptics_dsx    SYN            0
+[529.857] synaptics_dsx    ABS MT_POSX        387
+[529.857] synaptics_dsx    ABS MT_POSY        1262
+[529.857] synaptics_dsx    SYN            0
+[529.866] synaptics_dsx    ABS MT_POSY        1259
+[529.866] synaptics_dsx    SYN            0
+[529.876] synaptics_dsx    ABS MT_POSY        1258
+[529.876] synaptics_dsx    SYN            0
+[529.886] synaptics_dsx    ABS MT_POSY        1257
+[529.887] synaptics_dsx    SYN            0
+[529.893] synaptics_dsx    ABS MT_POSY        1256
+[529.894] synaptics_dsx    ABS abs:0x30       17
+[529.894] synaptics_dsx    SYN            0
+[529.912] synaptics_dsx    ABS MT_POSX        388
+[529.913] synaptics_dsx    SYN            0
+[529.919] synaptics_dsx    ABS MT_POSY        1257
+[529.919] synaptics_dsx    ABS abs:0x30       16
+[529.919] synaptics_dsx    SYN            0
+[529.928] synaptics_dsx    ABS MT_POSX        391
+[529.928] synaptics_dsx    ABS MT_POSY        1262
+[529.928] synaptics_dsx    SYN            0
+[529.936] synaptics_dsx    ABS MT_POSX        396
+[529.936] synaptics_dsx    ABS MT_POSY        1274
+[529.936] synaptics_dsx    ABS abs:0x30       15
+[529.936] synaptics_dsx    ABS abs:0x31       13
+[529.937] synaptics_dsx    SYN            0
+[529.946] synaptics_dsx    ABS MT_POSX        407
+[529.946] synaptics_dsx    ABS MT_POSY        1301
+[529.946] synaptics_dsx    ABS abs:0x30       13
+[529.946] synaptics_dsx    ABS abs:0x31       12
+[529.946] synaptics_dsx    SYN            0
+[529.954] synaptics_dsx    ABS MT_POSX        423
+[529.955] synaptics_dsx    ABS MT_POSY        1340
+[529.955] synaptics_dsx    ABS abs:0x31       11
+[529.955] synaptics_dsx    SYN            0
+[529.963] synaptics_dsx    ABS MT_POSX        446
+[529.964] synaptics_dsx    ABS MT_POSY        1386
+[529.965] synaptics_dsx    ABS abs:0x30       11
+[529.965] synaptics_dsx    ABS abs:0x31       9
+[529.965] synaptics_dsx    SYN            0
+[529.972] synaptics_dsx    ABS MT_POSX        473
+[529.972] synaptics_dsx    ABS MT_POSY        1435
+[529.972] synaptics_dsx    ABS abs:0x30       10
+[529.972] synaptics_dsx    SYN            0
+[529.981] synaptics_dsx    ABS MT_POSX        500
+[529.981] synaptics_dsx    ABS MT_POSY        1475
+[529.982] synaptics_dsx    ABS abs:0x30       9
+[529.982] synaptics_dsx    ABS abs:0x31       7
+[529.982] synaptics_dsx    SYN            0
+[529.988] synaptics_dsx    ABS MT_TRACKING_ID -1
+[529.988] synaptics_dsx    KEY BTN_TOUCH      0
+[529.988] synaptics_dsx    KEY key:325        0
+[529.989] synaptics_dsx    SYN            0
+[530.421] synaptics_dsx    ABS MT_TRACKING_ID 189
+[530.421] synaptics_dsx    KEY BTN_TOUCH      1
+[530.421] synaptics_dsx    KEY key:325        1
+[530.422] synaptics_dsx    ABS MT_POSX        893
+[530.422] synaptics_dsx    ABS MT_POSY        1065
+[530.422] synaptics_dsx    ABS abs:0x30       14
+[530.422] synaptics_dsx    ABS abs:0x31       12
+[530.422] synaptics_dsx    SYN            0
+[530.438] synaptics_dsx    ABS MT_POSX        891
+[530.438] synaptics_dsx    ABS MT_POSY        1064
+[530.438] synaptics_dsx    ABS abs:0x30       15
+[530.439] synaptics_dsx    ABS abs:0x31       14
+[530.439] synaptics_dsx    SYN            0
+[530.447] synaptics_dsx    ABS MT_POSX        882
+[530.448] synaptics_dsx    ABS abs:0x31       13
+[530.448] synaptics_dsx    SYN            0
+[530.457] synaptics_dsx    ABS MT_POSX        862
+[530.457] synaptics_dsx    ABS MT_POSY        1066
+[530.458] synaptics_dsx    ABS abs:0x31       14
+[530.458] synaptics_dsx    SYN            0
+[530.464] synaptics_dsx    ABS MT_POSX        836
+[530.465] synaptics_dsx    ABS MT_POSY        1070
+[530.465] synaptics_dsx    ABS abs:0x31       13
+[530.465] synaptics_dsx    SYN            0
+[530.473] synaptics_dsx    ABS MT_POSX        803
+[530.473] synaptics_dsx    ABS MT_POSY        1077
+[530.473] synaptics_dsx    ABS abs:0x30       14
+[530.474] synaptics_dsx    ABS abs:0x31       14
+[530.474] synaptics_dsx    SYN            0
+[530.482] synaptics_dsx    ABS MT_POSX        768
+[530.483] synaptics_dsx    ABS MT_POSY        1086
+[530.483] synaptics_dsx    ABS abs:0x30       13
+[530.483] synaptics_dsx    ABS abs:0x31       12
+[530.483] synaptics_dsx    SYN            0
+[530.491] synaptics_dsx    ABS MT_POSX        729
+[530.491] synaptics_dsx    ABS MT_POSY        1096
+[530.491] synaptics_dsx    ABS abs:0x30       12
+[530.491] synaptics_dsx    ABS abs:0x31       11
+[530.492] synaptics_dsx    SYN            0
+[530.499] synaptics_dsx    ABS MT_POSX        695
+[530.499] synaptics_dsx    ABS MT_POSY        1105
+[530.500] synaptics_dsx    ABS abs:0x30       10
+[530.500] synaptics_dsx    ABS abs:0x31       10
+[530.500] synaptics_dsx    SYN            0
+[530.509] synaptics_dsx    ABS MT_POSX        666
+[530.509] synaptics_dsx    ABS MT_POSY        1113
+[530.510] synaptics_dsx    ABS abs:0x30       9
+[530.510] synaptics_dsx    ABS abs:0x31       8
+[530.510] synaptics_dsx    SYN            0
+[530.518] synaptics_dsx    ABS MT_TRACKING_ID -1
+[530.518] synaptics_dsx    KEY BTN_TOUCH      0
+[530.518] synaptics_dsx    KEY key:325        0
+[530.518] synaptics_dsx    SYN            0
+[531.001] synaptics_dsx    ABS MT_TRACKING_ID 190
+[531.002] synaptics_dsx    KEY BTN_TOUCH      1
+[531.002] synaptics_dsx    KEY key:325        1
+[531.002] synaptics_dsx    ABS MT_POSX        861
+[531.002] synaptics_dsx    ABS MT_POSY        972
+[531.002] synaptics_dsx    ABS abs:0x30       15
+[531.002] synaptics_dsx    ABS abs:0x31       13
+[531.002] synaptics_dsx    SYN            0
+[531.018] synaptics_dsx    ABS MT_POSX        860
+[531.019] synaptics_dsx    SYN            0
+[531.027] synaptics_dsx    ABS MT_POSX        857
+[531.027] synaptics_dsx    SYN            0
+[531.035] synaptics_dsx    ABS MT_POSX        851
+[531.036] synaptics_dsx    SYN            0
+[531.044] synaptics_dsx    ABS MT_POSX        841
+[531.044] synaptics_dsx    ABS MT_POSY        973
+[531.044] synaptics_dsx    ABS abs:0x31       14
+[531.045] synaptics_dsx    SYN            0
+[531.054] synaptics_dsx    ABS MT_POSX        826
+[531.054] synaptics_dsx    ABS MT_POSY        976
+[531.054] synaptics_dsx    ABS abs:0x30       14
+[531.055] synaptics_dsx    ABS abs:0x31       12
+[531.055] synaptics_dsx    SYN            0
+[531.062] synaptics_dsx    ABS MT_POSX        808
+[531.062] synaptics_dsx    ABS MT_POSY        981
+[531.062] synaptics_dsx    SYN            0
+[531.071] synaptics_dsx    ABS MT_POSX        784
+[531.071] synaptics_dsx    ABS MT_POSY        989
+[531.071] synaptics_dsx    ABS abs:0x30       13
+[531.071] synaptics_dsx    ABS abs:0x31       11
+[531.071] synaptics_dsx    SYN            0
+[531.080] synaptics_dsx    ABS MT_POSX        760
+[531.080] synaptics_dsx    ABS MT_POSY        997
+[531.080] synaptics_dsx    SYN            0
+[531.088] synaptics_dsx    ABS MT_POSX        736
+[531.089] synaptics_dsx    ABS MT_POSY        1006
+[531.089] synaptics_dsx    ABS abs:0x30       12
+[531.089] synaptics_dsx    ABS abs:0x31       9
+[531.089] synaptics_dsx    SYN            0
+[531.097] synaptics_dsx    ABS MT_POSX        716
+[531.097] synaptics_dsx    ABS MT_POSY        1014
+[531.097] synaptics_dsx    ABS abs:0x30       11
+[531.097] synaptics_dsx    SYN            0
+[531.106] synaptics_dsx    ABS MT_POSX        699
+[531.106] synaptics_dsx    ABS MT_POSY        1019
+[531.106] synaptics_dsx    ABS abs:0x30       10
+[531.106] synaptics_dsx    SYN            0
+[531.114] synaptics_dsx    ABS MT_POSX        688
+[531.115] synaptics_dsx    ABS MT_POSY        1022
+[531.115] synaptics_dsx    ABS abs:0x30       9
+[531.115] synaptics_dsx    ABS abs:0x31       8
+[531.115] synaptics_dsx    SYN            0
+[531.123] synaptics_dsx    ABS MT_POSX        673
+[531.123] synaptics_dsx    ABS MT_POSY        1028
+[531.123] synaptics_dsx    ABS abs:0x30       6
+[531.123] synaptics_dsx    ABS abs:0x31       4
+[531.123] synaptics_dsx    SYN            0
+[531.132] synaptics_dsx    ABS MT_TRACKING_ID -1
+[531.132] synaptics_dsx    KEY BTN_TOUCH      0
+[531.132] synaptics_dsx    KEY key:325        0
+[531.132] synaptics_dsx    SYN            0
+[531.513] synaptics_dsx    ABS MT_TRACKING_ID 191
+[531.513] synaptics_dsx    KEY BTN_TOUCH      1
+[531.514] synaptics_dsx    KEY key:325        1
+[531.514] synaptics_dsx    ABS MT_POSX        724
+[531.514] synaptics_dsx    ABS MT_POSY        1012
+[531.514] synaptics_dsx    ABS abs:0x30       14
+[531.515] synaptics_dsx    ABS abs:0x31       12
+[531.515] synaptics_dsx    SYN            0
+[531.529] synaptics_dsx    ABS MT_POSX        725
+[531.529] synaptics_dsx    ABS MT_POSY        1011
+[531.529] synaptics_dsx    ABS abs:0x30       13
+[531.529] synaptics_dsx    SYN            0
+[531.538] synaptics_dsx    ABS MT_POSX        729
+[531.538] synaptics_dsx    SYN            0
+[531.547] synaptics_dsx    ABS MT_POSX        739
+[531.547] synaptics_dsx    ABS MT_POSY        1010
+[531.548] synaptics_dsx    ABS abs:0x31       11
+[531.548] synaptics_dsx    SYN            0
+[531.555] synaptics_dsx    ABS MT_POSX        756
+[531.556] synaptics_dsx    ABS MT_POSY        1009
+[531.556] synaptics_dsx    ABS abs:0x30       12
+[531.556] synaptics_dsx    SYN            0
+[531.564] synaptics_dsx    ABS MT_POSX        776
+[531.564] synaptics_dsx    ABS MT_POSY        1008
+[531.565] synaptics_dsx    ABS abs:0x31       10
+[531.565] synaptics_dsx    SYN            0
+[531.573] synaptics_dsx    ABS MT_POSX        803
+[531.573] synaptics_dsx    ABS MT_POSY        1007
+[531.573] synaptics_dsx    ABS abs:0x30       11
+[531.573] synaptics_dsx    SYN            0
+[531.581] synaptics_dsx    ABS MT_POSX        833
+[531.581] synaptics_dsx    ABS MT_POSY        1006
+[531.581] synaptics_dsx    ABS abs:0x30       9
+[531.582] synaptics_dsx    ABS abs:0x31       7
+[531.582] synaptics_dsx    SYN            0
+[531.590] synaptics_dsx    ABS MT_POSX        866
+[531.590] synaptics_dsx    ABS abs:0x30       8
+[531.591] synaptics_dsx    ABS abs:0x31       8
+[531.591] synaptics_dsx    SYN            0
+[531.598] synaptics_dsx    ABS MT_TRACKING_ID -1
+[531.598] synaptics_dsx    KEY BTN_TOUCH      0
+[531.599] synaptics_dsx    KEY key:325        0
+[531.599] synaptics_dsx    SYN            0
+[531.961] synaptics_dsx    ABS MT_TRACKING_ID 192
+[531.961] synaptics_dsx    KEY BTN_TOUCH      1
+[531.961] synaptics_dsx    KEY key:325        1
+[531.962] synaptics_dsx    ABS MT_POSX        230
+[531.962] synaptics_dsx    ABS MT_POSY        1322
+[531.962] synaptics_dsx    ABS abs:0x30       16
+[531.962] synaptics_dsx    ABS abs:0x31       15
+[531.962] synaptics_dsx    SYN            0
+[532.038] synaptics_dsx    ABS MT_TRACKING_ID -1
+[532.038] synaptics_dsx    KEY BTN_TOUCH      0
+[532.038] synaptics_dsx    KEY key:325        0
+[532.039] synaptics_dsx    SYN            0
+[532.478] synaptics_dsx    ABS MT_TRACKING_ID 193
+[532.478] synaptics_dsx    KEY BTN_TOUCH      1
+[532.478] synaptics_dsx    KEY key:325        1
+[532.478] synaptics_dsx    ABS MT_POSX        1058
+[532.478] synaptics_dsx    ABS MT_POSY        825
+[532.478] synaptics_dsx    ABS abs:0x30       17
+[532.479] synaptics_dsx    ABS abs:0x31       12
+[532.479] synaptics_dsx    SYN            0
+[532.486] synaptics_dsx    ABS MT_POSX        1049
+[532.487] synaptics_dsx    ABS MT_POSY        828
+[532.487] synaptics_dsx    ABS abs:0x30       18
+[532.487] synaptics_dsx    ABS abs:0x31       15
+[532.487] synaptics_dsx    SYN            0
+[532.495] synaptics_dsx    ABS MT_POSX        1016
+[532.495] synaptics_dsx    ABS MT_POSY        839
+[532.495] synaptics_dsx    ABS abs:0x30       17
+[532.495] synaptics_dsx    SYN            0
+[532.504] synaptics_dsx    ABS MT_POSX        959
+[532.504] synaptics_dsx    ABS MT_POSY        857
+[532.504] synaptics_dsx    ABS abs:0x31       16
+[532.504] synaptics_dsx    SYN            0
+[532.512] synaptics_dsx    ABS MT_POSX        899
+[532.513] synaptics_dsx    ABS MT_POSY        877
+[532.513] synaptics_dsx    ABS abs:0x30       16
+[532.513] synaptics_dsx    ABS abs:0x31       14
+[532.513] synaptics_dsx    SYN            0
+[532.522] synaptics_dsx    ABS MT_POSX        858
+[532.522] synaptics_dsx    ABS MT_POSY        889
+[532.522] synaptics_dsx    ABS abs:0x30       17
+[532.523] synaptics_dsx    ABS abs:0x31       15
+[532.523] synaptics_dsx    SYN            0
+[532.532] synaptics_dsx    ABS MT_POSX        826
+[532.532] synaptics_dsx    ABS MT_POSY        900
+[532.532] synaptics_dsx    SYN            0
+[532.540] synaptics_dsx    ABS MT_POSX        798
+[532.541] synaptics_dsx    ABS MT_POSY        911
+[532.541] synaptics_dsx    ABS abs:0x30       16
+[532.542] synaptics_dsx    SYN            0
+[532.549] synaptics_dsx    ABS MT_POSX        771
+[532.549] synaptics_dsx    ABS MT_POSY        921
+[532.550] synaptics_dsx    ABS abs:0x31       14
+[532.550] synaptics_dsx    SYN            0
+[532.558] synaptics_dsx    ABS MT_POSX        750
+[532.558] synaptics_dsx    ABS MT_POSY        930
+[532.558] synaptics_dsx    ABS abs:0x30       15
+[532.559] synaptics_dsx    SYN            0
+[532.567] synaptics_dsx    ABS MT_POSX        728
+[532.567] synaptics_dsx    ABS MT_POSY        939
+[532.567] synaptics_dsx    ABS abs:0x31       13
+[532.567] synaptics_dsx    SYN            0
+[532.575] synaptics_dsx    ABS MT_POSX        707
+[532.576] synaptics_dsx    ABS MT_POSY        948
+[532.576] synaptics_dsx    ABS abs:0x30       14
+[532.577] synaptics_dsx    ABS abs:0x31       12
+[532.577] synaptics_dsx    SYN            0
+[532.583] synaptics_dsx    ABS MT_POSX        686
+[532.583] synaptics_dsx    ABS MT_POSY        957
+[532.583] synaptics_dsx    ABS abs:0x30       12
+[532.584] synaptics_dsx    ABS abs:0x31       11
+[532.584] synaptics_dsx    SYN            0
+[532.592] synaptics_dsx    ABS MT_POSX        667
+[532.592] synaptics_dsx    ABS MT_POSY        967
+[532.592] synaptics_dsx    ABS abs:0x30       10
+[532.592] synaptics_dsx    ABS abs:0x31       9
+[532.592] synaptics_dsx    SYN            0
+[532.601] synaptics_dsx    ABS MT_POSX        648
+[532.601] synaptics_dsx    ABS MT_POSY        975
+[532.601] synaptics_dsx    ABS abs:0x30       9
+[532.601] synaptics_dsx    ABS abs:0x31       8
+[532.601] synaptics_dsx    SYN            0
+[532.609] synaptics_dsx    ABS MT_TRACKING_ID -1
+[532.609] synaptics_dsx    KEY BTN_TOUCH      0
+[532.609] synaptics_dsx    KEY key:325        0
+[532.609] synaptics_dsx    SYN            0
+[533.516] synaptics_dsx    ABS MT_TRACKING_ID 194
+[533.516] synaptics_dsx    KEY BTN_TOUCH      1
+[533.516] synaptics_dsx    KEY key:325        1
+[533.516] synaptics_dsx    ABS MT_POSX        414
+[533.516] synaptics_dsx    ABS MT_POSY        19
+[533.516] synaptics_dsx    ABS abs:0x31       7
+[533.516] synaptics_dsx    SYN            0
+[533.550] synaptics_dsx    ABS MT_POSX        411
+[533.550] synaptics_dsx    ABS abs:0x30       10
+[533.551] synaptics_dsx    ABS abs:0x31       9
+[533.551] synaptics_dsx    SYN            0
+[533.559] synaptics_dsx    ABS MT_POSX        407
+[533.560] synaptics_dsx    ABS abs:0x30       11
+[533.560] synaptics_dsx    ABS abs:0x31       10
+[533.560] synaptics_dsx    SYN            0
+[533.569] synaptics_dsx    ABS MT_POSX        400
+[533.569] synaptics_dsx    ABS MT_POSY        21
+[533.569] synaptics_dsx    ABS abs:0x30       12
+[533.570] synaptics_dsx    ABS abs:0x31       11
+[533.570] synaptics_dsx    SYN            0
+[533.577] synaptics_dsx    ABS MT_POSX        389
+[533.577] synaptics_dsx    ABS MT_POSY        24
+[533.578] synaptics_dsx    ABS abs:0x30       13
+[533.578] synaptics_dsx    ABS abs:0x31       12
+[533.578] synaptics_dsx    SYN            0
+[533.585] synaptics_dsx    ABS MT_POSX        377
+[533.586] synaptics_dsx    ABS MT_POSY        28
+[533.586] synaptics_dsx    ABS abs:0x30       14
+[533.586] synaptics_dsx    ABS abs:0x31       13
+[533.586] synaptics_dsx    SYN            0
+[533.595] synaptics_dsx    ABS MT_POSX        360
+[533.595] synaptics_dsx    ABS MT_POSY        33
+[533.595] synaptics_dsx    ABS abs:0x30       15
+[533.595] synaptics_dsx    ABS abs:0x31       15
+[533.595] synaptics_dsx    SYN            0
+[533.606] synaptics_dsx    ABS MT_POSX        345
+[533.606] synaptics_dsx    ABS MT_POSY        39
+[533.606] synaptics_dsx    ABS abs:0x30       16
+[533.606] synaptics_dsx    SYN            0
+[533.612] synaptics_dsx    ABS MT_POSX        330
+[533.612] synaptics_dsx    ABS MT_POSY        51
+[533.612] synaptics_dsx    ABS abs:0x30       17
+[533.613] synaptics_dsx    ABS abs:0x31       17
+[533.613] synaptics_dsx    SYN            0
+[533.624] synaptics_dsx    ABS MT_POSX        312
+[533.625] synaptics_dsx    ABS MT_POSY        72
+[533.625] synaptics_dsx    ABS abs:0x30       18
+[533.625] synaptics_dsx    ABS abs:0x31       16
+[533.625] synaptics_dsx    SYN            0
+[533.631] synaptics_dsx    ABS MT_POSX        291
+[533.631] synaptics_dsx    ABS MT_POSY        101
+[533.631] synaptics_dsx    ABS abs:0x30       19
+[533.631] synaptics_dsx    ABS abs:0x31       17
+[533.632] synaptics_dsx    SYN            0
+[533.638] synaptics_dsx    ABS MT_POSX        270
+[533.638] synaptics_dsx    ABS MT_POSY        137
+[533.639] synaptics_dsx    ABS abs:0x30       18
+[533.639] synaptics_dsx    SYN            0
+[533.648] synaptics_dsx    ABS MT_POSX        249
+[533.648] synaptics_dsx    ABS MT_POSY        179
+[533.648] synaptics_dsx    ABS abs:0x31       16
+[533.649] synaptics_dsx    SYN            0
+[533.656] synaptics_dsx    ABS MT_POSX        230
+[533.656] synaptics_dsx    ABS MT_POSY        225
+[533.656] synaptics_dsx    SYN            0
+[533.665] synaptics_dsx    ABS MT_POSX        213
+[533.665] synaptics_dsx    ABS MT_POSY        274
+[533.665] synaptics_dsx    SYN            0
+[533.674] synaptics_dsx    ABS MT_POSX        198
+[533.674] synaptics_dsx    ABS MT_POSY        326
+[533.676] synaptics_dsx    SYN            0
+[533.683] synaptics_dsx    ABS MT_POSX        185
+[533.683] synaptics_dsx    ABS MT_POSY        375
+[533.683] synaptics_dsx    ABS abs:0x30       17
+[533.683] synaptics_dsx    SYN            0
+[533.691] synaptics_dsx    ABS MT_POSX        176
+[533.691] synaptics_dsx    ABS MT_POSY        424
+[533.691] synaptics_dsx    SYN            0
+[533.700] synaptics_dsx    ABS MT_POSX        169
+[533.700] synaptics_dsx    ABS MT_POSY        465
+[533.700] synaptics_dsx    ABS abs:0x30       18
+[533.700] synaptics_dsx    SYN            0
+[533.718] synaptics_dsx    ABS MT_POSX        160
+[533.718] synaptics_dsx    ABS MT_POSY        538
+[533.718] synaptics_dsx    SYN            0
+[533.726] synaptics_dsx    ABS MT_POSX        158
+[533.727] synaptics_dsx    ABS MT_POSY        570
+[533.727] synaptics_dsx    ABS abs:0x30       17
+[533.727] synaptics_dsx    ABS abs:0x31       17
+[533.727] synaptics_dsx    SYN            0
+[533.735] synaptics_dsx    ABS MT_POSX        156
+[533.735] synaptics_dsx    ABS MT_POSY        598
+[533.735] synaptics_dsx    ABS abs:0x30       18
+[533.735] synaptics_dsx    SYN            0
+[533.745] synaptics_dsx    ABS MT_POSX        155
+[533.745] synaptics_dsx    ABS MT_POSY        626
+[533.745] synaptics_dsx    SYN            0
+[533.753] synaptics_dsx    ABS MT_POSX        154
+[533.753] synaptics_dsx    ABS MT_POSY        652
+[533.753] synaptics_dsx    ABS abs:0x30       17
+[533.753] synaptics_dsx    SYN            0
+[533.762] synaptics_dsx    ABS MT_POSY        678
+[533.762] synaptics_dsx    ABS abs:0x30       18
+[533.762] synaptics_dsx    SYN            0
+[533.771] synaptics_dsx    ABS MT_POSY        703
+[533.771] synaptics_dsx    SYN            0
+[533.779] synaptics_dsx    ABS MT_POSX        155
+[533.779] synaptics_dsx    ABS MT_POSY        729
+[533.779] synaptics_dsx    SYN            0
+[533.788] synaptics_dsx    ABS MT_POSX        156
+[533.788] synaptics_dsx    ABS MT_POSY        753
+[533.788] synaptics_dsx    SYN            0
+[533.797] synaptics_dsx    ABS MT_POSX        157
+[533.797] synaptics_dsx    ABS MT_POSY        776
+[533.798] synaptics_dsx    ABS abs:0x30       17
+[533.798] synaptics_dsx    SYN            0
+[533.806] synaptics_dsx    ABS MT_POSX        159
+[533.806] synaptics_dsx    ABS MT_POSY        799
+[533.806] synaptics_dsx    ABS abs:0x30       18
+[533.806] synaptics_dsx    ABS abs:0x31       16
+[533.806] synaptics_dsx    SYN            0
+[533.814] synaptics_dsx    ABS MT_POSX        162
+[533.814] synaptics_dsx    ABS MT_POSY        821
+[533.814] synaptics_dsx    SYN            0
+[533.824] synaptics_dsx    ABS MT_POSX        164
+[533.824] synaptics_dsx    ABS MT_POSY        841
+[533.824] synaptics_dsx    ABS abs:0x30       17
+[533.824] synaptics_dsx    SYN            0
+[533.832] synaptics_dsx    ABS MT_POSX        167
+[533.832] synaptics_dsx    ABS MT_POSY        858
+[533.832] synaptics_dsx    ABS abs:0x30       18
+[533.832] synaptics_dsx    SYN            0
+[533.842] synaptics_dsx    ABS MT_POSX        170
+[533.842] synaptics_dsx    ABS MT_POSY        876
+[533.842] synaptics_dsx    SYN            0
+[533.850] synaptics_dsx    ABS MT_POSX        173
+[533.851] synaptics_dsx    ABS MT_POSY        893
+[533.851] synaptics_dsx    ABS abs:0x30       17
+[533.851] synaptics_dsx    SYN            0
+[533.858] synaptics_dsx    ABS MT_POSX        175
+[533.859] synaptics_dsx    ABS MT_POSY        907
+[533.859] synaptics_dsx    SYN            0
+[533.867] synaptics_dsx    ABS MT_POSX        178
+[533.867] synaptics_dsx    ABS MT_POSY        919
+[533.868] synaptics_dsx    SYN            0
+[533.876] synaptics_dsx    ABS MT_POSX        180
+[533.876] synaptics_dsx    ABS MT_POSY        931
+[533.876] synaptics_dsx    ABS abs:0x30       18
+[533.876] synaptics_dsx    SYN            0
+[533.885] synaptics_dsx    ABS MT_POSX        181
+[533.885] synaptics_dsx    ABS MT_POSY        942
+[533.885] synaptics_dsx    SYN            0
+[533.893] synaptics_dsx    ABS MT_POSX        183
+[533.894] synaptics_dsx    ABS MT_POSY        952
+[533.894] synaptics_dsx    SYN            0
+[533.902] synaptics_dsx    ABS MT_POSX        185
+[533.902] synaptics_dsx    ABS MT_POSY        963
+[533.903] synaptics_dsx    SYN            0
+[533.911] synaptics_dsx    ABS MT_POSX        186
+[533.911] synaptics_dsx    ABS MT_POSY        973
+[533.912] synaptics_dsx    ABS abs:0x30       17
+[533.912] synaptics_dsx    SYN            0
+[533.920] synaptics_dsx    ABS MT_POSX        188
+[533.920] synaptics_dsx    ABS MT_POSY        981
+[533.920] synaptics_dsx    SYN            0
+[533.929] synaptics_dsx    ABS MT_POSX        189
+[533.929] synaptics_dsx    ABS MT_POSY        990
+[533.929] synaptics_dsx    ABS abs:0x30       18
+[533.929] synaptics_dsx    SYN            0
+[533.939] synaptics_dsx    ABS MT_POSX        190
+[533.939] synaptics_dsx    ABS MT_POSY        999
+[533.939] synaptics_dsx    SYN            0
+[533.948] synaptics_dsx    ABS MT_POSX        192
+[533.948] synaptics_dsx    ABS MT_POSY        1007
+[533.949] synaptics_dsx    SYN            0
+[533.960] synaptics_dsx    ABS MT_POSX        193
+[533.960] synaptics_dsx    ABS MT_POSY        1014
+[533.960] synaptics_dsx    SYN            0
+[533.964] synaptics_dsx    ABS MT_POSX        194
+[533.964] synaptics_dsx    ABS MT_POSY        1020
+[533.964] synaptics_dsx    SYN            0
+[533.975] synaptics_dsx    ABS MT_POSX        196
+[533.975] synaptics_dsx    ABS MT_POSY        1025
+[533.975] synaptics_dsx    SYN            0
+[533.982] synaptics_dsx    ABS MT_POSX        197
+[533.982] synaptics_dsx    ABS MT_POSY        1030
+[533.982] synaptics_dsx    SYN            0
+[533.990] synaptics_dsx    ABS MT_POSX        198
+[533.990] synaptics_dsx    ABS MT_POSY        1034
+[533.990] synaptics_dsx    SYN            0
+[533.999] synaptics_dsx    ABS MT_POSY        1037
+[533.999] synaptics_dsx    ABS abs:0x30       19
+[533.999] synaptics_dsx    ABS abs:0x31       17
+[533.999] synaptics_dsx    SYN            0
+[534.014] synaptics_dsx    ABS MT_POSX        199
+[534.014] synaptics_dsx    ABS MT_POSY        1039
+[534.014] synaptics_dsx    ABS abs:0x30       18
+[534.014] synaptics_dsx    ABS abs:0x31       16
+[534.015] synaptics_dsx    SYN            0
+[534.017] synaptics_dsx    ABS MT_POSX        200
+[534.018] synaptics_dsx    ABS MT_POSY        1041
+[534.018] synaptics_dsx    SYN            0
+[534.034] synaptics_dsx    ABS MT_POSY        1042
+[534.034] synaptics_dsx    SYN            0
+[534.052] synaptics_dsx    ABS MT_POSX        201
+[534.052] synaptics_dsx    ABS abs:0x30       17
+[534.052] synaptics_dsx    ABS abs:0x31       17
+[534.052] synaptics_dsx    SYN            0
+[534.061] synaptics_dsx    ABS MT_POSX        202
+[534.061] synaptics_dsx    ABS MT_POSY        1041
+[534.061] synaptics_dsx    ABS abs:0x31       16
+[534.061] synaptics_dsx    SYN            0
+[534.069] synaptics_dsx    ABS MT_POSX        203
+[534.069] synaptics_dsx    ABS MT_POSY        1038
+[534.070] synaptics_dsx    SYN            0
+[534.078] synaptics_dsx    ABS MT_POSX        206
+[534.078] synaptics_dsx    ABS MT_POSY        1030
+[534.078] synaptics_dsx    SYN            0
+[534.087] synaptics_dsx    ABS MT_POSX        210
+[534.087] synaptics_dsx    ABS MT_POSY        1018
+[534.087] synaptics_dsx    SYN            0
+[534.097] synaptics_dsx    ABS MT_POSX        215
+[534.098] synaptics_dsx    ABS MT_POSY        997
+[534.098] synaptics_dsx    SYN            0
+[534.105] synaptics_dsx    ABS MT_POSX        223
+[534.105] synaptics_dsx    ABS MT_POSY        970
+[534.105] synaptics_dsx    SYN            0
+[534.114] synaptics_dsx    ABS MT_POSX        234
+[534.114] synaptics_dsx    ABS MT_POSY        934
+[534.114] synaptics_dsx    SYN            0
+[534.122] synaptics_dsx    ABS MT_POSX        247
+[534.123] synaptics_dsx    ABS MT_POSY        894
+[534.123] synaptics_dsx    SYN            0
+[534.131] synaptics_dsx    ABS MT_POSX        260
+[534.131] synaptics_dsx    ABS MT_POSY        854
+[534.131] synaptics_dsx    SYN            0
+[534.141] synaptics_dsx    ABS MT_POSX        273
+[534.141] synaptics_dsx    ABS MT_POSY        809
+[534.141] synaptics_dsx    SYN            0
+[534.149] synaptics_dsx    ABS MT_POSX        288
+[534.149] synaptics_dsx    ABS MT_POSY        766
+[534.149] synaptics_dsx    ABS abs:0x31       15
+[534.149] synaptics_dsx    SYN            0
+[534.158] synaptics_dsx    ABS MT_POSX        299
+[534.158] synaptics_dsx    ABS MT_POSY        729
+[534.158] synaptics_dsx    ABS abs:0x30       16
+[534.158] synaptics_dsx    SYN            0
+[534.167] synaptics_dsx    ABS MT_POSX        309
+[534.168] synaptics_dsx    ABS MT_POSY        697
+[534.168] synaptics_dsx    ABS abs:0x30       17
+[534.168] synaptics_dsx    ABS abs:0x31       16
+[534.168] synaptics_dsx    SYN            0
+[534.175] synaptics_dsx    ABS MT_POSX        316
+[534.175] synaptics_dsx    ABS MT_POSY        669
+[534.175] synaptics_dsx    SYN            0
+[534.185] synaptics_dsx    ABS MT_POSX        321
+[534.185] synaptics_dsx    ABS MT_POSY        647
+[534.185] synaptics_dsx    SYN            0
+[534.193] synaptics_dsx    ABS MT_POSX        325
+[534.193] synaptics_dsx    ABS MT_POSY        628
+[534.193] synaptics_dsx    SYN            0
+[534.201] synaptics_dsx    ABS MT_POSX        329
+[534.201] synaptics_dsx    ABS MT_POSY        608
+[534.201] synaptics_dsx    SYN            0
+[534.210] synaptics_dsx    ABS MT_POSX        333
+[534.210] synaptics_dsx    ABS MT_POSY        589
+[534.210] synaptics_dsx    SYN            0
+[534.219] synaptics_dsx    ABS MT_POSX        338
+[534.219] synaptics_dsx    ABS MT_POSY        568
+[534.219] synaptics_dsx    SYN            0
+[534.228] synaptics_dsx    ABS MT_POSX        347
+[534.229] synaptics_dsx    ABS MT_POSY        542
+[534.229] synaptics_dsx    ABS abs:0x30       16
+[534.229] synaptics_dsx    ABS abs:0x31       15
+[534.229] synaptics_dsx    SYN            0
+[534.237] synaptics_dsx    ABS MT_POSX        359
+[534.238] synaptics_dsx    ABS MT_POSY        513
+[534.238] synaptics_dsx    ABS abs:0x31       14
+[534.238] synaptics_dsx    SYN            0
+[534.245] synaptics_dsx    ABS MT_POSX        375
+[534.245] synaptics_dsx    ABS MT_POSY        477
+[534.246] synaptics_dsx    ABS abs:0x31       15
+[534.246] synaptics_dsx    SYN            0
+[534.255] synaptics_dsx    ABS MT_POSX        396
+[534.255] synaptics_dsx    ABS MT_POSY        438
+[534.255] synaptics_dsx    ABS abs:0x30       15
+[534.255] synaptics_dsx    ABS abs:0x31       13
+[534.257] synaptics_dsx    SYN            0
+[534.263] synaptics_dsx    ABS MT_POSX        419
+[534.263] synaptics_dsx    ABS MT_POSY        397
+[534.263] synaptics_dsx    ABS abs:0x30       14
+[534.263] synaptics_dsx    ABS abs:0x31       12
+[534.263] synaptics_dsx    SYN            0
+[534.274] synaptics_dsx    ABS MT_POSX        442
+[534.275] synaptics_dsx    ABS MT_POSY        355
+[534.275] synaptics_dsx    ABS abs:0x30       13
+[534.275] synaptics_dsx    ABS abs:0x31       11
+[534.275] synaptics_dsx    SYN            0
+[534.280] synaptics_dsx    ABS MT_POSX        467
+[534.281] synaptics_dsx    ABS MT_POSY        307
+[534.281] synaptics_dsx    ABS abs:0x30       11
+[534.281] synaptics_dsx    ABS abs:0x31       10
+[534.281] synaptics_dsx    SYN            0
+[534.292] synaptics_dsx    ABS MT_POSX        485
+[534.292] synaptics_dsx    ABS MT_POSY        266
+[534.292] synaptics_dsx    ABS abs:0x30       9
+[534.292] synaptics_dsx    ABS abs:0x31       8
+[534.293] synaptics_dsx    SYN            0
+[534.298] synaptics_dsx    ABS MT_TRACKING_ID -1
+[534.298] synaptics_dsx    KEY BTN_TOUCH      0
+[534.298] synaptics_dsx    KEY key:325        0
+[534.298] synaptics_dsx    SYN            0
+[534.720] synaptics_dsx    ABS MT_TRACKING_ID 195
+[534.720] synaptics_dsx    KEY BTN_TOUCH      1
+[534.720] synaptics_dsx    KEY key:325        1
+[534.720] synaptics_dsx    ABS MT_POSX        242
+[534.721] synaptics_dsx    ABS MT_POSY        18
+[534.721] synaptics_dsx    SYN            0
+[534.746] synaptics_dsx    ABS MT_POSX        239
+[534.746] synaptics_dsx    ABS abs:0x30       11
+[534.746] synaptics_dsx    ABS abs:0x31       9
+[534.746] synaptics_dsx    SYN            0
+[534.755] synaptics_dsx    ABS MT_POSX        236
+[534.755] synaptics_dsx    ABS MT_POSY        19
+[534.755] synaptics_dsx    SYN            0
+[534.764] synaptics_dsx    ABS MT_POSX        232
+[534.764] synaptics_dsx    ABS abs:0x30       12
+[534.764] synaptics_dsx    ABS abs:0x31       10
+[534.764] synaptics_dsx    SYN            0
+[534.773] synaptics_dsx    ABS MT_POSX        227
+[534.773] synaptics_dsx    ABS MT_POSY        21
+[534.773] synaptics_dsx    ABS abs:0x30       13
+[534.773] synaptics_dsx    ABS abs:0x31       11
+[534.773] synaptics_dsx    SYN            0
+[534.782] synaptics_dsx    ABS MT_POSX        222
+[534.782] synaptics_dsx    ABS MT_POSY        22
+[534.782] synaptics_dsx    ABS abs:0x31       12
+[534.782] synaptics_dsx    SYN            0
+[534.791] synaptics_dsx    ABS MT_POSX        216
+[534.792] synaptics_dsx    ABS MT_POSY        24
+[534.792] synaptics_dsx    ABS abs:0x30       14
+[534.792] synaptics_dsx    ABS abs:0x31       13
+[534.792] synaptics_dsx    SYN            0
+[534.800] synaptics_dsx    ABS MT_POSX        209
+[534.800] synaptics_dsx    ABS MT_POSY        26
+[534.800] synaptics_dsx    ABS abs:0x31       14
+[534.801] synaptics_dsx    SYN            0
+[534.808] synaptics_dsx    ABS MT_POSX        204
+[534.808] synaptics_dsx    ABS MT_POSY        29
+[534.809] synaptics_dsx    ABS abs:0x30       15
+[534.809] synaptics_dsx    SYN            0
+[534.817] synaptics_dsx    ABS MT_POSX        199
+[534.817] synaptics_dsx    ABS MT_POSY        31
+[534.817] synaptics_dsx    ABS abs:0x31       15
+[534.817] synaptics_dsx    SYN            0
+[534.825] synaptics_dsx    ABS MT_POSX        194
+[534.825] synaptics_dsx    ABS MT_POSY        34
+[534.826] synaptics_dsx    SYN            0
+[534.835] synaptics_dsx    ABS MT_POSX        189
+[534.835] synaptics_dsx    ABS MT_POSY        37
+[534.835] synaptics_dsx    ABS abs:0x30       16
+[534.835] synaptics_dsx    SYN            0
+[534.843] synaptics_dsx    ABS MT_POSX        184
+[534.844] synaptics_dsx    ABS MT_POSY        39
+[534.844] synaptics_dsx    SYN            0
+[534.852] synaptics_dsx    ABS MT_POSX        178
+[534.852] synaptics_dsx    ABS MT_POSY        42
+[534.852] synaptics_dsx    SYN            0
+[534.861] synaptics_dsx    ABS MT_POSX        171
+[534.861] synaptics_dsx    ABS MT_POSY        47
+[534.861] synaptics_dsx    ABS abs:0x30       17
+[534.861] synaptics_dsx    ABS abs:0x31       16
+[534.861] synaptics_dsx    SYN            0
+[534.870] synaptics_dsx    ABS MT_POSX        164
+[534.871] synaptics_dsx    ABS MT_POSY        54
+[534.871] synaptics_dsx    ABS abs:0x31       17
+[534.871] synaptics_dsx    SYN            0
+[534.879] synaptics_dsx    ABS MT_POSX        155
+[534.879] synaptics_dsx    ABS MT_POSY        65
+[534.879] synaptics_dsx    ABS abs:0x30       18
+[534.879] synaptics_dsx    SYN            0
+[534.887] synaptics_dsx    ABS MT_POSX        145
+[534.888] synaptics_dsx    ABS MT_POSY        79
+[534.888] synaptics_dsx    ABS abs:0x30       19
+[534.888] synaptics_dsx    ABS abs:0x31       18
+[534.888] synaptics_dsx    SYN            0
+[534.896] synaptics_dsx    ABS MT_POSX        135
+[534.896] synaptics_dsx    ABS MT_POSY        97
+[534.897] synaptics_dsx    ABS abs:0x30       20
+[534.897] synaptics_dsx    SYN            0
+[534.906] synaptics_dsx    ABS MT_POSX        125
+[534.906] synaptics_dsx    ABS MT_POSY        116
+[534.907] synaptics_dsx    ABS abs:0x30       19
+[534.907] synaptics_dsx    SYN            0
+[534.915] synaptics_dsx    ABS MT_POSX        115
+[534.915] synaptics_dsx    ABS MT_POSY        141
+[534.915] synaptics_dsx    ABS abs:0x30       18
+[534.916] synaptics_dsx    SYN            0
+[534.924] synaptics_dsx    ABS MT_POSX        104
+[534.924] synaptics_dsx    ABS MT_POSY        165
+[534.925] synaptics_dsx    SYN            0
+[534.932] synaptics_dsx    ABS MT_POSX        95
+[534.932] synaptics_dsx    ABS MT_POSY        191
+[534.932] synaptics_dsx    ABS abs:0x31       17
+[534.932] synaptics_dsx    SYN            0
+[534.940] synaptics_dsx    ABS MT_POSX        86
+[534.940] synaptics_dsx    ABS MT_POSY        218
+[534.940] synaptics_dsx    SYN            0
+[534.949] synaptics_dsx    ABS MT_POSX        78
+[534.949] synaptics_dsx    ABS MT_POSY        247
+[534.949] synaptics_dsx    ABS abs:0x30       17
+[534.949] synaptics_dsx    SYN            0
+[534.958] synaptics_dsx    ABS MT_POSX        72
+[534.958] synaptics_dsx    ABS MT_POSY        279
+[534.958] synaptics_dsx    SYN            0
+[534.966] synaptics_dsx    ABS MT_POSX        69
+[534.967] synaptics_dsx    ABS MT_POSY        312
+[534.967] synaptics_dsx    ABS abs:0x31       16
+[534.967] synaptics_dsx    SYN            0
+[534.975] synaptics_dsx    ABS MT_POSX        67
+[534.975] synaptics_dsx    ABS MT_POSY        346
+[534.975] synaptics_dsx    ABS abs:0x31       17
+[534.975] synaptics_dsx    SYN            0
+[534.984] synaptics_dsx    ABS MT_POSY        382
+[534.985] synaptics_dsx    ABS abs:0x31       16
+[534.985] synaptics_dsx    SYN            0
+[534.993] synaptics_dsx    ABS MT_POSX        70
+[534.993] synaptics_dsx    ABS MT_POSY        417
+[534.993] synaptics_dsx    SYN            0
+[535.002] synaptics_dsx    ABS MT_POSX        73
+[535.002] synaptics_dsx    ABS MT_POSY        451
+[535.002] synaptics_dsx    SYN            0
+[535.011] synaptics_dsx    ABS MT_POSX        77
+[535.011] synaptics_dsx    ABS MT_POSY        484
+[535.011] synaptics_dsx    ABS abs:0x31       17
+[535.011] synaptics_dsx    SYN            0
+[535.019] synaptics_dsx    ABS MT_POSX        81
+[535.019] synaptics_dsx    ABS MT_POSY        512
+[535.019] synaptics_dsx    ABS abs:0x31       16
+[535.019] synaptics_dsx    SYN            0
+[535.028] synaptics_dsx    ABS MT_POSX        86
+[535.029] synaptics_dsx    ABS MT_POSY        537
+[535.029] synaptics_dsx    ABS abs:0x30       16
+[535.029] synaptics_dsx    SYN            0
+[535.037] synaptics_dsx    ABS MT_POSX        91
+[535.037] synaptics_dsx    ABS MT_POSY        560
+[535.038] synaptics_dsx    ABS abs:0x31       15
+[535.038] synaptics_dsx    SYN            0
+[535.046] synaptics_dsx    ABS MT_POSX        97
+[535.046] synaptics_dsx    ABS MT_POSY        578
+[535.046] synaptics_dsx    ABS abs:0x31       14
+[535.047] synaptics_dsx    SYN            0
+[535.055] synaptics_dsx    ABS MT_POSX        101
+[535.056] synaptics_dsx    ABS MT_POSY        591
+[535.057] synaptics_dsx    SYN            0
+[535.067] synaptics_dsx    ABS MT_POSX        106
+[535.068] synaptics_dsx    ABS MT_POSY        603
+[535.068] synaptics_dsx    SYN            0
+[535.072] synaptics_dsx    ABS MT_POSX        110
+[535.073] synaptics_dsx    ABS MT_POSY        612
+[535.073] synaptics_dsx    SYN            0
+[535.082] synaptics_dsx    ABS MT_POSX        114
+[535.082] synaptics_dsx    ABS MT_POSY        619
+[535.082] synaptics_dsx    ABS abs:0x31       15
+[535.082] synaptics_dsx    SYN            0
+[535.090] synaptics_dsx    ABS MT_POSX        117
+[535.090] synaptics_dsx    ABS MT_POSY        626
+[535.090] synaptics_dsx    SYN            0
+[535.099] synaptics_dsx    ABS MT_POSX        120
+[535.099] synaptics_dsx    ABS MT_POSY        631
+[535.099] synaptics_dsx    ABS abs:0x30       17
+[535.099] synaptics_dsx    SYN            0
+[535.107] synaptics_dsx    ABS MT_POSX        123
+[535.108] synaptics_dsx    ABS MT_POSY        635
+[535.108] synaptics_dsx    SYN            0
+[535.116] synaptics_dsx    ABS MT_POSX        125
+[535.117] synaptics_dsx    ABS MT_POSY        640
+[535.117] synaptics_dsx    SYN            0
+[535.125] synaptics_dsx    ABS MT_POSX        128
+[535.126] synaptics_dsx    ABS MT_POSY        644
+[535.126] synaptics_dsx    SYN            0
+[535.134] synaptics_dsx    ABS MT_POSX        130
+[535.135] synaptics_dsx    ABS MT_POSY        648
+[535.135] synaptics_dsx    SYN            0
+[535.143] synaptics_dsx    ABS MT_POSX        133
+[535.143] synaptics_dsx    ABS MT_POSY        652
+[535.143] synaptics_dsx    ABS abs:0x30       16
+[535.143] synaptics_dsx    SYN            0
+[535.151] synaptics_dsx    ABS MT_POSX        135
+[535.151] synaptics_dsx    ABS MT_POSY        657
+[535.151] synaptics_dsx    SYN            0
+[535.160] synaptics_dsx    ABS MT_POSX        138
+[535.160] synaptics_dsx    ABS MT_POSY        662
+[535.161] synaptics_dsx    ABS abs:0x30       15
+[535.161] synaptics_dsx    SYN            0
+[535.169] synaptics_dsx    ABS MT_POSX        142
+[535.169] synaptics_dsx    ABS MT_POSY        668
+[535.169] synaptics_dsx    ABS abs:0x30       16
+[535.169] synaptics_dsx    ABS abs:0x31       14
+[535.169] synaptics_dsx    SYN            0
+[535.178] synaptics_dsx    ABS MT_POSX        146
+[535.179] synaptics_dsx    ABS MT_POSY        675
+[535.179] synaptics_dsx    SYN            0
+[535.186] synaptics_dsx    ABS MT_POSX        150
+[535.186] synaptics_dsx    ABS MT_POSY        683
+[535.186] synaptics_dsx    SYN            0
+[535.195] synaptics_dsx    ABS MT_POSX        156
+[535.195] synaptics_dsx    ABS MT_POSY        697
+[535.195] synaptics_dsx    SYN            0
+[535.204] synaptics_dsx    ABS MT_POSX        162
+[535.204] synaptics_dsx    ABS MT_POSY        712
+[535.204] synaptics_dsx    ABS abs:0x30       15
+[535.205] synaptics_dsx    SYN            0
+[535.213] synaptics_dsx    ABS MT_POSX        168
+[535.213] synaptics_dsx    ABS MT_POSY        730
+[535.214] synaptics_dsx    ABS abs:0x31       13
+[535.214] synaptics_dsx    SYN            0
+[535.222] synaptics_dsx    ABS MT_POSX        175
+[535.223] synaptics_dsx    ABS MT_POSY        753
+[535.223] synaptics_dsx    ABS abs:0x31       14
+[535.223] synaptics_dsx    SYN            0
+[535.233] synaptics_dsx    ABS MT_POSX        183
+[535.233] synaptics_dsx    ABS MT_POSY        777
+[535.233] synaptics_dsx    SYN            0
+[535.240] synaptics_dsx    ABS MT_POSX        193
+[535.241] synaptics_dsx    ABS MT_POSY        804
+[535.241] synaptics_dsx    SYN            0
+[535.248] synaptics_dsx    ABS MT_POSX        204
+[535.249] synaptics_dsx    ABS MT_POSY        831
+[535.249] synaptics_dsx    ABS abs:0x31       13
+[535.249] synaptics_dsx    SYN            0
+[535.257] synaptics_dsx    ABS MT_POSX        214
+[535.258] synaptics_dsx    ABS MT_POSY        859
+[535.258] synaptics_dsx    SYN            0
+[535.266] synaptics_dsx    ABS MT_POSX        224
+[535.266] synaptics_dsx    ABS MT_POSY        886
+[535.266] synaptics_dsx    SYN            0
+[535.275] synaptics_dsx    ABS MT_POSX        234
+[535.276] synaptics_dsx    ABS MT_POSY        912
+[535.276] synaptics_dsx    SYN            0
+[535.283] synaptics_dsx    ABS MT_POSX        245
+[535.284] synaptics_dsx    ABS MT_POSY        937
+[535.284] synaptics_dsx    SYN            0
+[535.292] synaptics_dsx    ABS MT_POSX        255
+[535.293] synaptics_dsx    ABS MT_POSY        960
+[535.293] synaptics_dsx    ABS abs:0x30       14
+[535.293] synaptics_dsx    SYN            0
+[535.301] synaptics_dsx    ABS MT_POSX        264
+[535.302] synaptics_dsx    ABS MT_POSY        980
+[535.302] synaptics_dsx    SYN            0
+[535.310] synaptics_dsx    ABS MT_POSX        272
+[535.310] synaptics_dsx    ABS MT_POSY        998
+[535.311] synaptics_dsx    SYN            0
+[535.319] synaptics_dsx    ABS MT_POSX        279
+[535.319] synaptics_dsx    ABS MT_POSY        1013
+[535.319] synaptics_dsx    ABS abs:0x30       15
+[535.319] synaptics_dsx    SYN            0
+[535.328] synaptics_dsx    ABS MT_POSX        284
+[535.328] synaptics_dsx    ABS MT_POSY        1026
+[535.328] synaptics_dsx    ABS abs:0x30       14
+[535.328] synaptics_dsx    SYN            0
+[535.337] synaptics_dsx    ABS MT_POSX        288
+[535.337] synaptics_dsx    ABS MT_POSY        1037
+[535.338] synaptics_dsx    ABS abs:0x30       15
+[535.338] synaptics_dsx    SYN            0
+[535.346] synaptics_dsx    ABS MT_POSX        292
+[535.347] synaptics_dsx    ABS MT_POSY        1045
+[535.347] synaptics_dsx    SYN            0
+[535.354] synaptics_dsx    ABS MT_POSX        294
+[535.354] synaptics_dsx    ABS MT_POSY        1051
+[535.355] synaptics_dsx    SYN            0
+[535.363] synaptics_dsx    ABS MT_POSX        297
+[535.364] synaptics_dsx    ABS MT_POSY        1056
+[535.364] synaptics_dsx    ABS abs:0x30       14
+[535.364] synaptics_dsx    SYN            0
+[535.371] synaptics_dsx    ABS MT_POSX        298
+[535.372] synaptics_dsx    ABS MT_POSY        1059
+[535.372] synaptics_dsx    ABS abs:0x31       12
+[535.372] synaptics_dsx    SYN            0
+[535.381] synaptics_dsx    ABS MT_POSX        300
+[535.381] synaptics_dsx    ABS MT_POSY        1061
+[535.381] synaptics_dsx    ABS abs:0x30       13
+[535.382] synaptics_dsx    ABS abs:0x31       11
+[535.382] synaptics_dsx    SYN            0
+[535.389] synaptics_dsx    ABS MT_POSX        304
+[535.389] synaptics_dsx    ABS abs:0x30       9
+[535.390] synaptics_dsx    ABS abs:0x31       8
+[535.390] synaptics_dsx    SYN            0
+[535.397] synaptics_dsx    ABS MT_TRACKING_ID -1
+[535.398] synaptics_dsx    KEY BTN_TOUCH      0
+[535.398] synaptics_dsx    KEY key:325        0
+[535.398] synaptics_dsx    SYN            0
+[535.635] synaptics_dsx    ABS MT_TRACKING_ID 196
+[535.636] synaptics_dsx    KEY BTN_TOUCH      1
+[535.636] synaptics_dsx    KEY key:325        1
+[535.636] synaptics_dsx    ABS MT_POSX        855
+[535.636] synaptics_dsx    ABS MT_POSY        34
+[535.636] synaptics_dsx    ABS abs:0x30       10
+[535.637] synaptics_dsx    SYN            0
+[535.653] synaptics_dsx    ABS MT_POSX        854
+[535.653] synaptics_dsx    ABS MT_POSY        33
+[535.654] synaptics_dsx    ABS abs:0x30       12
+[535.654] synaptics_dsx    ABS abs:0x31       10
+[535.654] synaptics_dsx    SYN            0
+[535.662] synaptics_dsx    ABS MT_POSX        851
+[535.662] synaptics_dsx    ABS abs:0x30       13
+[535.662] synaptics_dsx    ABS abs:0x31       11
+[535.662] synaptics_dsx    SYN            0
+[535.672] synaptics_dsx    ABS MT_POSX        844
+[535.672] synaptics_dsx    ABS MT_POSY        35
+[535.673] synaptics_dsx    ABS abs:0x30       14
+[535.673] synaptics_dsx    ABS abs:0x31       13
+[535.673] synaptics_dsx    SYN            0
+[535.680] synaptics_dsx    ABS MT_POSX        835
+[535.681] synaptics_dsx    ABS MT_POSY        39
+[535.681] synaptics_dsx    ABS abs:0x31       14
+[535.681] synaptics_dsx    SYN            0
+[535.688] synaptics_dsx    ABS MT_POSX        823
+[535.688] synaptics_dsx    ABS MT_POSY        48
+[535.688] synaptics_dsx    ABS abs:0x30       15
+[535.688] synaptics_dsx    SYN            0
+[535.697] synaptics_dsx    ABS MT_POSX        807
+[535.697] synaptics_dsx    ABS MT_POSY        69
+[535.698] synaptics_dsx    ABS abs:0x30       16
+[535.698] synaptics_dsx    SYN            0
+[535.705] synaptics_dsx    ABS MT_POSX        788
+[535.705] synaptics_dsx    ABS MT_POSY        100
+[535.705] synaptics_dsx    ABS abs:0x30       17
+[535.706] synaptics_dsx    ABS abs:0x31       15
+[535.706] synaptics_dsx    SYN            0
+[535.714] synaptics_dsx    ABS MT_POSX        769
+[535.715] synaptics_dsx    ABS MT_POSY        139
+[535.715] synaptics_dsx    ABS abs:0x30       16
+[535.715] synaptics_dsx    SYN            0
+[535.723] synaptics_dsx    ABS MT_POSX        754
+[535.723] synaptics_dsx    ABS MT_POSY        178
+[535.723] synaptics_dsx    ABS abs:0x30       15
+[535.723] synaptics_dsx    ABS abs:0x31       14
+[535.723] synaptics_dsx    SYN            0
+[535.732] synaptics_dsx    ABS MT_POSX        742
+[535.732] synaptics_dsx    ABS MT_POSY        216
+[535.732] synaptics_dsx    ABS abs:0x30       16
+[535.732] synaptics_dsx    SYN            0
+[535.740] synaptics_dsx    ABS MT_POSX        731
+[535.740] synaptics_dsx    ABS MT_POSY        252
+[535.740] synaptics_dsx    ABS abs:0x30       15
+[535.740] synaptics_dsx    SYN            0
+[535.750] synaptics_dsx    ABS MT_POSX        722
+[535.750] synaptics_dsx    ABS MT_POSY        289
+[535.751] synaptics_dsx    ABS abs:0x31       13
+[535.751] synaptics_dsx    SYN            0
+[535.758] synaptics_dsx    ABS MT_POSX        715
+[535.758] synaptics_dsx    ABS MT_POSY        321
+[535.758] synaptics_dsx    SYN            0
+[535.766] synaptics_dsx    ABS MT_POSX        710
+[535.767] synaptics_dsx    ABS MT_POSY        351
+[535.767] synaptics_dsx    SYN            0
+[535.777] synaptics_dsx    ABS MT_POSX        705
+[535.777] synaptics_dsx    ABS MT_POSY        380
+[535.777] synaptics_dsx    SYN            0
+[535.787] synaptics_dsx    ABS MT_POSX        700
+[535.788] synaptics_dsx    ABS MT_POSY        407
+[535.788] synaptics_dsx    ABS abs:0x31       14
+[535.788] synaptics_dsx    SYN            0
+[535.793] synaptics_dsx    ABS MT_POSX        695
+[535.793] synaptics_dsx    ABS MT_POSY        436
+[535.793] synaptics_dsx    ABS abs:0x31       13
+[535.793] synaptics_dsx    SYN            0
+[535.803] synaptics_dsx    ABS MT_POSX        692
+[535.803] synaptics_dsx    ABS MT_POSY        462
+[535.803] synaptics_dsx    ABS abs:0x31       14
+[535.804] synaptics_dsx    SYN            0
+[535.811] synaptics_dsx    ABS MT_POSX        688
+[535.811] synaptics_dsx    ABS MT_POSY        488
+[535.811] synaptics_dsx    SYN            0
+[535.820] synaptics_dsx    ABS MT_POSX        685
+[535.820] synaptics_dsx    ABS MT_POSY        515
+[535.820] synaptics_dsx    SYN            0
+[535.828] synaptics_dsx    ABS MT_POSX        682
+[535.828] synaptics_dsx    ABS MT_POSY        541
+[535.828] synaptics_dsx    SYN            0
+[535.837] synaptics_dsx    ABS MT_POSX        679
+[535.837] synaptics_dsx    ABS MT_POSY        566
+[535.837] synaptics_dsx    SYN            0
+[535.846] synaptics_dsx    ABS MT_POSX        676
+[535.846] synaptics_dsx    ABS MT_POSY        590
+[535.847] synaptics_dsx    SYN            0
+[535.854] synaptics_dsx    ABS MT_POSX        672
+[535.854] synaptics_dsx    ABS MT_POSY        614
+[535.855] synaptics_dsx    ABS abs:0x31       15
+[535.855] synaptics_dsx    SYN            0
+[535.863] synaptics_dsx    ABS MT_POSX        669
+[535.863] synaptics_dsx    ABS MT_POSY        637
+[535.863] synaptics_dsx    ABS abs:0x31       14
+[535.864] synaptics_dsx    SYN            0
+[535.872] synaptics_dsx    ABS MT_POSX        665
+[535.873] synaptics_dsx    ABS MT_POSY        659
+[535.873] synaptics_dsx    ABS abs:0x31       15
+[535.873] synaptics_dsx    SYN            0
+[535.881] synaptics_dsx    ABS MT_POSX        662
+[535.881] synaptics_dsx    ABS MT_POSY        678
+[535.881] synaptics_dsx    ABS abs:0x30       16
+[535.881] synaptics_dsx    ABS abs:0x31       14
+[535.881] synaptics_dsx    SYN            0
+[535.891] synaptics_dsx    ABS MT_POSX        659
+[535.891] synaptics_dsx    ABS MT_POSY        698
+[535.891] synaptics_dsx    ABS abs:0x30       15
+[535.891] synaptics_dsx    SYN            0
+[535.899] synaptics_dsx    ABS MT_POSX        656
+[535.899] synaptics_dsx    ABS MT_POSY        716
+[535.899] synaptics_dsx    SYN            0
+[535.908] synaptics_dsx    ABS MT_POSX        653
+[535.908] synaptics_dsx    ABS MT_POSY        734
+[535.908] synaptics_dsx    SYN            0
+[535.916] synaptics_dsx    ABS MT_POSX        650
+[535.916] synaptics_dsx    ABS MT_POSY        755
+[535.916] synaptics_dsx    SYN            0
+[535.925] synaptics_dsx    ABS MT_POSX        648
+[535.926] synaptics_dsx    ABS MT_POSY        775
+[535.926] synaptics_dsx    SYN            0
+[535.934] synaptics_dsx    ABS MT_POSX        647
+[535.934] synaptics_dsx    ABS MT_POSY        797
+[535.934] synaptics_dsx    SYN            0
+[535.942] synaptics_dsx    ABS MT_POSX        646
+[535.943] synaptics_dsx    ABS MT_POSY        820
+[535.943] synaptics_dsx    SYN            0
+[535.952] synaptics_dsx    ABS MT_POSY        839
+[535.952] synaptics_dsx    SYN            0
+[535.960] synaptics_dsx    ABS MT_POSY        862
+[535.961] synaptics_dsx    ABS abs:0x30       14
+[535.961] synaptics_dsx    SYN            0
+[535.969] synaptics_dsx    ABS MT_POSX        647
+[535.969] synaptics_dsx    ABS MT_POSY        885
+[535.969] synaptics_dsx    ABS abs:0x31       13
+[535.969] synaptics_dsx    SYN            0
+[535.978] synaptics_dsx    ABS MT_POSX        648
+[535.978] synaptics_dsx    ABS MT_POSY        904
+[535.978] synaptics_dsx    SYN            0
+[535.987] synaptics_dsx    ABS MT_POSX        649
+[535.987] synaptics_dsx    ABS MT_POSY        923
+[535.987] synaptics_dsx    SYN            0
+[535.997] synaptics_dsx    ABS MT_POSX        650
+[535.997] synaptics_dsx    ABS MT_POSY        941
+[535.997] synaptics_dsx    SYN            0
+[536.005] synaptics_dsx    ABS MT_POSY        958
+[536.006] synaptics_dsx    SYN            0
+[536.013] synaptics_dsx    ABS MT_POSX        651
+[536.013] synaptics_dsx    ABS MT_POSY        974
+[536.014] synaptics_dsx    SYN            0
+[536.022] synaptics_dsx    ABS MT_POSY        989
+[536.022] synaptics_dsx    SYN            0
+[536.031] synaptics_dsx    ABS MT_POSY        1005
+[536.031] synaptics_dsx    SYN            0
+[536.039] synaptics_dsx    ABS MT_POSY        1020
+[536.039] synaptics_dsx    ABS abs:0x30       13
+[536.040] synaptics_dsx    ABS abs:0x31       12
+[536.040] synaptics_dsx    SYN            0
+[536.049] synaptics_dsx    ABS MT_POSX        652
+[536.049] synaptics_dsx    ABS MT_POSY        1033
+[536.049] synaptics_dsx    ABS abs:0x30       14
+[536.049] synaptics_dsx    SYN            0
+[536.057] synaptics_dsx    ABS MT_POSY        1044
+[536.057] synaptics_dsx    SYN            0
+[536.065] synaptics_dsx    ABS MT_POSX        651
+[536.066] synaptics_dsx    ABS MT_POSY        1054
+[536.066] synaptics_dsx    ABS abs:0x30       13
+[536.066] synaptics_dsx    SYN            0
+[536.074] synaptics_dsx    ABS MT_POSY        1062
+[536.074] synaptics_dsx    SYN            0
+[536.083] synaptics_dsx    ABS MT_POSY        1069
+[536.084] synaptics_dsx    SYN            0
+[536.094] synaptics_dsx    ABS MT_POSX        650
+[536.094] synaptics_dsx    ABS MT_POSY        1074
+[536.094] synaptics_dsx    SYN            0
+[536.103] synaptics_dsx    ABS MT_POSY        1079
+[536.105] synaptics_dsx    SYN            0
+[536.110] synaptics_dsx    ABS MT_POSY        1083
+[536.110] synaptics_dsx    SYN            0
+[536.118] synaptics_dsx    ABS MT_POSX        649
+[536.118] synaptics_dsx    ABS MT_POSY        1086
+[536.118] synaptics_dsx    SYN            0
+[536.128] synaptics_dsx    ABS MT_POSY        1089
+[536.128] synaptics_dsx    SYN            0
+[536.137] synaptics_dsx    ABS MT_POSY        1092
+[536.137] synaptics_dsx    SYN            0
+[536.146] synaptics_dsx    ABS MT_POSY        1095
+[536.147] synaptics_dsx    SYN            0
+[536.154] synaptics_dsx    ABS MT_POSY        1098
+[536.154] synaptics_dsx    SYN            0
+[536.162] synaptics_dsx    ABS MT_POSY        1101
+[536.162] synaptics_dsx    SYN            0
+[536.173] synaptics_dsx    ABS MT_POSX        648
+[536.173] synaptics_dsx    ABS MT_POSY        1105
+[536.173] synaptics_dsx    SYN            0
+[536.180] synaptics_dsx    ABS MT_POSY        1108
+[536.180] synaptics_dsx    SYN            0
+[536.189] synaptics_dsx    ABS MT_POSY        1111
+[536.189] synaptics_dsx    SYN            0
+[536.197] synaptics_dsx    ABS MT_POSY        1115
+[536.198] synaptics_dsx    SYN            0
+[536.206] synaptics_dsx    ABS MT_POSX        647
+[536.207] synaptics_dsx    ABS MT_POSY        1118
+[536.207] synaptics_dsx    ABS abs:0x30       14
+[536.207] synaptics_dsx    SYN            0
+[536.215] synaptics_dsx    ABS MT_POSY        1122
+[536.215] synaptics_dsx    SYN            0
+[536.224] synaptics_dsx    ABS MT_POSY        1126
+[536.224] synaptics_dsx    SYN            0
+[536.233] synaptics_dsx    ABS MT_POSY        1131
+[536.233] synaptics_dsx    ABS abs:0x30       13
+[536.233] synaptics_dsx    SYN            0
+[536.241] synaptics_dsx    ABS MT_POSY        1138
+[536.241] synaptics_dsx    SYN            0
+[536.250] synaptics_dsx    ABS MT_POSY        1145
+[536.250] synaptics_dsx    SYN            0
+[536.259] synaptics_dsx    ABS MT_POSY        1153
+[536.260] synaptics_dsx    ABS abs:0x30       12
+[536.260] synaptics_dsx    SYN            0
+[536.268] synaptics_dsx    ABS MT_POSY        1162
+[536.269] synaptics_dsx    ABS abs:0x31       11
+[536.269] synaptics_dsx    SYN            0
+[536.277] synaptics_dsx    ABS MT_POSY        1170
+[536.277] synaptics_dsx    ABS abs:0x30       13
+[536.277] synaptics_dsx    SYN            0
+[536.286] synaptics_dsx    ABS MT_POSX        648
+[536.286] synaptics_dsx    ABS MT_POSY        1178
+[536.286] synaptics_dsx    SYN            0
+[536.294] synaptics_dsx    ABS MT_POSY        1186
+[536.295] synaptics_dsx    SYN            0
+[536.303] synaptics_dsx    ABS MT_POSY        1192
+[536.303] synaptics_dsx    SYN            0
+[536.313] synaptics_dsx    ABS MT_POSX        649
+[536.313] synaptics_dsx    ABS MT_POSY        1198
+[536.313] synaptics_dsx    ABS abs:0x30       12
+[536.314] synaptics_dsx    SYN            0
+[536.322] synaptics_dsx    ABS MT_POSY        1203
+[536.323] synaptics_dsx    SYN            0
+[536.330] synaptics_dsx    ABS MT_POSY        1207
+[536.330] synaptics_dsx    ABS abs:0x30       13
+[536.331] synaptics_dsx    SYN            0
+[536.338] synaptics_dsx    ABS MT_POSY        1210
+[536.338] synaptics_dsx    ABS abs:0x30       12
+[536.338] synaptics_dsx    SYN            0
+[536.347] synaptics_dsx    ABS MT_POSY        1213
+[536.347] synaptics_dsx    ABS abs:0x30       13
+[536.347] synaptics_dsx    ABS abs:0x31       12
+[536.347] synaptics_dsx    SYN            0
+[536.355] synaptics_dsx    ABS MT_POSY        1217
+[536.356] synaptics_dsx    ABS abs:0x30       12
+[536.356] synaptics_dsx    SYN            0
+[536.364] synaptics_dsx    ABS MT_POSY        1220
+[536.364] synaptics_dsx    SYN            0
+[536.373] synaptics_dsx    ABS MT_POSY        1224
+[536.373] synaptics_dsx    SYN            0
+[536.382] synaptics_dsx    ABS MT_POSY        1228
+[536.383] synaptics_dsx    SYN            0
+[536.391] synaptics_dsx    ABS MT_POSY        1231
+[536.391] synaptics_dsx    SYN            0
+[536.399] synaptics_dsx    ABS MT_POSY        1235
+[536.400] synaptics_dsx    ABS abs:0x30       13
+[536.400] synaptics_dsx    SYN            0
+[536.408] synaptics_dsx    ABS MT_POSY        1239
+[536.408] synaptics_dsx    SYN            0
+[536.417] synaptics_dsx    ABS MT_POSY        1243
+[536.417] synaptics_dsx    SYN            0
+[536.426] synaptics_dsx    ABS MT_POSX        650
+[536.426] synaptics_dsx    ABS MT_POSY        1248
+[536.426] synaptics_dsx    SYN            0
+[536.435] synaptics_dsx    ABS MT_POSY        1255
+[536.435] synaptics_dsx    SYN            0
+[536.445] synaptics_dsx    ABS MT_POSX        652
+[536.445] synaptics_dsx    ABS MT_POSY        1267
+[536.445] synaptics_dsx    ABS abs:0x30       12
+[536.445] synaptics_dsx    ABS abs:0x31       11
+[536.445] synaptics_dsx    SYN            0
+[536.452] synaptics_dsx    ABS MT_POSX        656
+[536.453] synaptics_dsx    ABS MT_POSY        1286
+[536.453] synaptics_dsx    ABS abs:0x31       10
+[536.453] synaptics_dsx    SYN            0
+[536.461] synaptics_dsx    ABS MT_POSX        663
+[536.462] synaptics_dsx    ABS MT_POSY        1315
+[536.462] synaptics_dsx    ABS abs:0x30       10
+[536.462] synaptics_dsx    ABS abs:0x31       9
+[536.462] synaptics_dsx    SYN            0
+[536.471] synaptics_dsx    ABS MT_POSX        673
+[536.471] synaptics_dsx    ABS MT_POSY        1349
+[536.471] synaptics_dsx    SYN            0
+[536.479] synaptics_dsx    ABS MT_POSX        685
+[536.479] synaptics_dsx    ABS MT_POSY        1385
+[536.480] synaptics_dsx    ABS abs:0x30       9
+[536.480] synaptics_dsx    ABS abs:0x31       8
+[536.480] synaptics_dsx    SYN            0
+[536.487] synaptics_dsx    ABS MT_POSX        701
+[536.488] synaptics_dsx    ABS MT_POSY        1418
+[536.488] synaptics_dsx    ABS abs:0x30       8
+[536.488] synaptics_dsx    ABS abs:0x31       7
+[536.488] synaptics_dsx    SYN            0
+[536.497] synaptics_dsx    ABS MT_TRACKING_ID -1
+[536.497] synaptics_dsx    KEY BTN_TOUCH      0
+[536.497] synaptics_dsx    KEY key:325        0
+[536.498] synaptics_dsx    SYN            0
+[537.482] synaptics_dsx    ABS MT_TRACKING_ID 197
+[537.482] synaptics_dsx    KEY BTN_TOUCH      1
+[537.482] synaptics_dsx    KEY key:325        1
+[537.482] synaptics_dsx    ABS MT_POSX        930
+[537.482] synaptics_dsx    ABS MT_POSY        888
+[537.482] synaptics_dsx    ABS abs:0x30       12
+[537.482] synaptics_dsx    ABS abs:0x31       10
+[537.482] synaptics_dsx    SYN            0
+[537.499] synaptics_dsx    ABS MT_POSX        929
+[537.499] synaptics_dsx    ABS abs:0x30       13
+[537.499] synaptics_dsx    ABS abs:0x31       11
+[537.499] synaptics_dsx    SYN            0
+[537.508] synaptics_dsx    ABS MT_POSX        926
+[537.508] synaptics_dsx    ABS abs:0x31       12
+[537.508] synaptics_dsx    SYN            0
+[537.518] synaptics_dsx    ABS MT_POSX        921
+[537.518] synaptics_dsx    ABS MT_POSY        889
+[537.518] synaptics_dsx    ABS abs:0x30       14
+[537.518] synaptics_dsx    SYN            0
+[537.525] synaptics_dsx    ABS MT_POSX        916
+[537.525] synaptics_dsx    ABS MT_POSY        890
+[537.525] synaptics_dsx    SYN            0
+[537.536] synaptics_dsx    ABS MT_POSX        910
+[537.537] synaptics_dsx    ABS MT_POSY        891
+[537.537] synaptics_dsx    ABS abs:0x31       13
+[537.537] synaptics_dsx    SYN            0
+[537.543] synaptics_dsx    ABS MT_POSX        902
+[537.543] synaptics_dsx    ABS MT_POSY        893
+[537.543] synaptics_dsx    SYN            0
+[537.554] synaptics_dsx    ABS MT_POSX        892
+[537.554] synaptics_dsx    ABS MT_POSY        895
+[537.554] synaptics_dsx    SYN            0
+[537.562] synaptics_dsx    ABS MT_POSX        880
+[537.562] synaptics_dsx    ABS MT_POSY        899
+[537.562] synaptics_dsx    SYN            0
+[537.569] synaptics_dsx    ABS MT_POSX        864
+[537.569] synaptics_dsx    ABS MT_POSY        904
+[537.569] synaptics_dsx    SYN            0
+[537.579] synaptics_dsx    ABS MT_POSX        844
+[537.580] synaptics_dsx    ABS MT_POSY        912
+[537.580] synaptics_dsx    SYN            0
+[537.587] synaptics_dsx    ABS MT_POSX        824
+[537.587] synaptics_dsx    ABS MT_POSY        922
+[537.587] synaptics_dsx    SYN            0
+[537.596] synaptics_dsx    ABS MT_POSX        803
+[537.596] synaptics_dsx    ABS MT_POSY        933
+[537.596] synaptics_dsx    SYN            0
+[537.604] synaptics_dsx    ABS MT_POSX        781
+[537.605] synaptics_dsx    ABS MT_POSY        946
+[537.605] synaptics_dsx    ABS abs:0x30       13
+[537.605] synaptics_dsx    ABS abs:0x31       12
+[537.606] synaptics_dsx    SYN            0
+[537.617] synaptics_dsx    ABS MT_POSX        762
+[537.618] synaptics_dsx    ABS MT_POSY        958
+[537.618] synaptics_dsx    ABS abs:0x30       12
+[537.618] synaptics_dsx    SYN            0
+[537.622] synaptics_dsx    ABS MT_POSX        742
+[537.622] synaptics_dsx    ABS MT_POSY        971
+[537.622] synaptics_dsx    ABS abs:0x31       11
+[537.622] synaptics_dsx    SYN            0
+[537.631] synaptics_dsx    ABS MT_POSX        723
+[537.631] synaptics_dsx    ABS MT_POSY        983
+[537.631] synaptics_dsx    ABS abs:0x31       10
+[537.631] synaptics_dsx    SYN            0
+[537.640] synaptics_dsx    ABS MT_POSX        707
+[537.640] synaptics_dsx    ABS MT_POSY        995
+[537.641] synaptics_dsx    ABS abs:0x30       10
+[537.641] synaptics_dsx    ABS abs:0x31       9
+[537.641] synaptics_dsx    SYN            0
+[537.650] synaptics_dsx    ABS MT_POSX        689
+[537.650] synaptics_dsx    ABS MT_POSY        1006
+[537.650] synaptics_dsx    ABS abs:0x30       9
+[537.650] synaptics_dsx    ABS abs:0x31       8
+[537.651] synaptics_dsx    SYN            0
+[537.657] synaptics_dsx    ABS MT_POSX        679
+[537.657] synaptics_dsx    ABS MT_POSY        1013
+[537.657] synaptics_dsx    ABS abs:0x30       7
+[537.657] synaptics_dsx    ABS abs:0x31       7
+[537.657] synaptics_dsx    SYN            0
+[537.666] synaptics_dsx    ABS MT_TRACKING_ID -1
+[537.666] synaptics_dsx    KEY BTN_TOUCH      0
+[537.666] synaptics_dsx    KEY key:325        0
+[537.666] synaptics_dsx    SYN            0
+[538.415] synaptics_dsx    ABS MT_TRACKING_ID 198
+[538.416] synaptics_dsx    KEY BTN_TOUCH      1
+[538.416] synaptics_dsx    KEY key:325        1
+[538.416] synaptics_dsx    ABS MT_POSX        956
+[538.416] synaptics_dsx    ABS MT_POSY        47
+[538.416] synaptics_dsx    ABS abs:0x30       13
+[538.417] synaptics_dsx    ABS abs:0x31       11
+[538.417] synaptics_dsx    SYN            0
+[538.475] synaptics_dsx    ABS MT_POSY        46
+[538.476] synaptics_dsx    ABS abs:0x30       9
+[538.476] synaptics_dsx    ABS abs:0x31       7
+[538.476] synaptics_dsx    SYN            0
+[538.483] synaptics_dsx    ABS MT_TRACKING_ID -1
+[538.484] synaptics_dsx    KEY BTN_TOUCH      0
+[538.484] synaptics_dsx    KEY key:325        0
+[538.485] synaptics_dsx    SYN            0
+[539.303] synaptics_dsx    ABS MT_TRACKING_ID 199
+[539.304] synaptics_dsx    KEY BTN_TOUCH      1
+[539.304] synaptics_dsx    KEY key:325        1
+[539.304] synaptics_dsx    ABS MT_POSX        1059
+[539.304] synaptics_dsx    ABS MT_POSY        40
+[539.305] synaptics_dsx    ABS abs:0x31       8
+[539.305] synaptics_dsx    SYN            0
+[539.345] synaptics_dsx    ABS MT_TRACKING_ID -1
+[539.345] synaptics_dsx    KEY BTN_TOUCH      0
+[539.345] synaptics_dsx    KEY key:325        0
+[539.345] synaptics_dsx    SYN            0
+[539.883] synaptics_dsx    ABS MT_TRACKING_ID 200
+[539.884] synaptics_dsx    KEY BTN_TOUCH      1
+[539.884] synaptics_dsx    KEY key:325        1
+[539.884] synaptics_dsx    ABS MT_POSX        918
+[539.884] synaptics_dsx    ABS MT_POSY        62
+[539.884] synaptics_dsx    ABS abs:0x30       12
+[539.885] synaptics_dsx    ABS abs:0x31       12
+[539.885] synaptics_dsx    SYN            0
+[539.892] synaptics_dsx    ABS MT_POSX        917
+[539.892] synaptics_dsx    SYN            0
+[539.899] synaptics_dsx    ABS MT_POSX        916
+[539.900] synaptics_dsx    ABS abs:0x30       13
+[539.900] synaptics_dsx    SYN            0
+[539.908] synaptics_dsx    ABS MT_POSX        905
+[539.908] synaptics_dsx    ABS MT_POSY        65
+[539.909] synaptics_dsx    SYN            0
+[539.917] synaptics_dsx    ABS MT_POSX        881
+[539.917] synaptics_dsx    ABS MT_POSY        74
+[539.917] synaptics_dsx    ABS abs:0x30       14
+[539.917] synaptics_dsx    ABS abs:0x31       13
+[539.917] synaptics_dsx    SYN            0
+[539.926] synaptics_dsx    ABS MT_POSX        850
+[539.926] synaptics_dsx    ABS MT_POSY        85
+[539.926] synaptics_dsx    ABS abs:0x31       12
+[539.926] synaptics_dsx    SYN            0
+[539.935] synaptics_dsx    ABS MT_POSX        820
+[539.935] synaptics_dsx    ABS MT_POSY        96
+[539.935] synaptics_dsx    ABS abs:0x30       15
+[539.935] synaptics_dsx    ABS abs:0x31       13
+[539.935] synaptics_dsx    SYN            0
+[539.943] synaptics_dsx    ABS MT_POSX        786
+[539.944] synaptics_dsx    ABS MT_POSY        108
+[539.944] synaptics_dsx    ABS abs:0x30       14
+[539.944] synaptics_dsx    ABS abs:0x31       12
+[539.944] synaptics_dsx    SYN            0
+[539.952] synaptics_dsx    ABS MT_POSX        758
+[539.952] synaptics_dsx    ABS MT_POSY        119
+[539.952] synaptics_dsx    SYN            0
+[539.961] synaptics_dsx    ABS MT_POSX        731
+[539.961] synaptics_dsx    ABS MT_POSY        129
+[539.961] synaptics_dsx    ABS abs:0x31       13
+[539.961] synaptics_dsx    SYN            0
+[539.970] synaptics_dsx    ABS MT_POSX        703
+[539.970] synaptics_dsx    ABS MT_POSY        142
+[539.970] synaptics_dsx    ABS abs:0x31       12
+[539.970] synaptics_dsx    SYN            0
+[539.979] synaptics_dsx    ABS MT_POSX        684
+[539.979] synaptics_dsx    ABS MT_POSY        151
+[539.979] synaptics_dsx    SYN            0
+[539.987] synaptics_dsx    ABS MT_POSX        666
+[539.987] synaptics_dsx    ABS MT_POSY        159
+[539.987] synaptics_dsx    SYN            0
+[539.996] synaptics_dsx    ABS MT_POSX        652
+[539.996] synaptics_dsx    ABS MT_POSY        165
+[539.996] synaptics_dsx    SYN            0
+[540.005] synaptics_dsx    ABS MT_POSX        640
+[540.005] synaptics_dsx    ABS MT_POSY        170
+[540.005] synaptics_dsx    SYN            0
+[540.017] synaptics_dsx    ABS MT_POSX        629
+[540.017] synaptics_dsx    ABS MT_POSY        175
+[540.017] synaptics_dsx    SYN            0
+[540.023] synaptics_dsx    ABS MT_POSX        621
+[540.023] synaptics_dsx    ABS MT_POSY        179
+[540.023] synaptics_dsx    SYN            0
+[540.032] synaptics_dsx    ABS MT_POSX        612
+[540.033] synaptics_dsx    ABS MT_POSY        183
+[540.033] synaptics_dsx    SYN            0
+[540.040] synaptics_dsx    ABS MT_POSX        605
+[540.040] synaptics_dsx    ABS MT_POSY        186
+[540.041] synaptics_dsx    ABS abs:0x31       13
+[540.041] synaptics_dsx    SYN            0
+[540.049] synaptics_dsx    ABS MT_POSX        598
+[540.050] synaptics_dsx    ABS MT_POSY        189
+[540.050] synaptics_dsx    SYN            0
+[540.058] synaptics_dsx    ABS MT_POSX        592
+[540.058] synaptics_dsx    ABS MT_POSY        192
+[540.058] synaptics_dsx    ABS abs:0x30       13
+[540.058] synaptics_dsx    ABS abs:0x31       12
+[540.058] synaptics_dsx    SYN            0
+[540.067] synaptics_dsx    ABS MT_POSX        587
+[540.067] synaptics_dsx    ABS MT_POSY        194
+[540.067] synaptics_dsx    ABS abs:0x30       14
+[540.068] synaptics_dsx    ABS abs:0x31       13
+[540.068] synaptics_dsx    SYN            0
+[540.075] synaptics_dsx    ABS MT_POSX        582
+[540.076] synaptics_dsx    ABS MT_POSY        196
+[540.076] synaptics_dsx    SYN            0
+[540.087] synaptics_dsx    ABS MT_POSX        578
+[540.087] synaptics_dsx    ABS MT_POSY        198
+[540.087] synaptics_dsx    ABS abs:0x30       15
+[540.087] synaptics_dsx    ABS abs:0x31       14
+[540.087] synaptics_dsx    SYN            0
+[540.093] synaptics_dsx    ABS MT_POSX        575
+[540.094] synaptics_dsx    ABS MT_POSY        199
+[540.094] synaptics_dsx    ABS abs:0x31       13
+[540.094] synaptics_dsx    SYN            0
+[540.103] synaptics_dsx    ABS MT_POSX        572
+[540.106] synaptics_dsx    ABS MT_POSY        200
+[540.106] synaptics_dsx    ABS abs:0x31       14
+[540.106] synaptics_dsx    SYN            0
+[540.111] synaptics_dsx    ABS MT_POSX        570
+[540.111] synaptics_dsx    ABS MT_POSY        201
+[540.112] synaptics_dsx    SYN            0
+[540.119] synaptics_dsx    ABS MT_POSX        568
+[540.120] synaptics_dsx    ABS MT_POSY        202
+[540.120] synaptics_dsx    SYN            0
+[540.129] synaptics_dsx    ABS MT_POSX        566
+[540.129] synaptics_dsx    ABS MT_POSY        203
+[540.129] synaptics_dsx    SYN            0
+[540.137] synaptics_dsx    ABS MT_POSX        564
+[540.138] synaptics_dsx    ABS MT_POSY        204
+[540.138] synaptics_dsx    SYN            0
+[540.151] synaptics_dsx    ABS MT_POSX        562
+[540.151] synaptics_dsx    SYN            0
+[540.155] synaptics_dsx    ABS MT_POSX        561
+[540.155] synaptics_dsx    ABS MT_POSY        205
+[540.155] synaptics_dsx    ABS abs:0x31       13
+[540.155] synaptics_dsx    SYN            0
+[540.164] synaptics_dsx    ABS MT_POSX        560
+[540.164] synaptics_dsx    ABS abs:0x30       14
+[540.165] synaptics_dsx    SYN            0
+[540.173] synaptics_dsx    ABS MT_POSX        559
+[540.173] synaptics_dsx    ABS MT_POSY        206
+[540.173] synaptics_dsx    SYN            0
+[540.190] synaptics_dsx    ABS MT_POSX        558
+[540.190] synaptics_dsx    ABS abs:0x30       13
+[540.191] synaptics_dsx    ABS abs:0x31       10
+[540.191] synaptics_dsx    SYN            0
+[540.200] synaptics_dsx    ABS MT_POSX        557
+[540.200] synaptics_dsx    ABS abs:0x30       11
+[540.200] synaptics_dsx    ABS abs:0x31       9
+[540.201] synaptics_dsx    SYN            0
+[540.207] synaptics_dsx    ABS MT_POSY        207
+[540.208] synaptics_dsx    ABS abs:0x30       9
+[540.208] synaptics_dsx    ABS abs:0x31       8
+[540.208] synaptics_dsx    SYN            0
+[540.216] synaptics_dsx    ABS MT_TRACKING_ID -1
+[540.216] synaptics_dsx    KEY BTN_TOUCH      0
+[540.216] synaptics_dsx    KEY key:325        0
+[540.216] synaptics_dsx    SYN            0
+[540.736] synaptics_dsx    ABS MT_TRACKING_ID 201
+[540.736] synaptics_dsx    KEY BTN_TOUCH      1
+[540.736] synaptics_dsx    KEY key:325        1
+[540.736] synaptics_dsx    ABS MT_POSX        794
+[540.736] synaptics_dsx    ABS MT_POSY        342
+[540.736] synaptics_dsx    ABS abs:0x30       13
+[540.736] synaptics_dsx    ABS abs:0x31       12
+[540.736] synaptics_dsx    SYN            0
+[540.753] synaptics_dsx    ABS MT_POSX        793
+[540.753] synaptics_dsx    SYN            0
+[540.762] synaptics_dsx    ABS MT_POSX        790
+[540.762] synaptics_dsx    SYN            0
+[540.771] synaptics_dsx    ABS MT_POSX        786
+[540.771] synaptics_dsx    ABS MT_POSY        343
+[540.771] synaptics_dsx    ABS abs:0x30       12
+[540.771] synaptics_dsx    ABS abs:0x31       11
+[540.772] synaptics_dsx    SYN            0
+[540.779] synaptics_dsx    ABS MT_POSX        780
+[540.779] synaptics_dsx    ABS MT_POSY        345
+[540.779] synaptics_dsx    ABS abs:0x31       12
+[540.779] synaptics_dsx    SYN            0
+[540.788] synaptics_dsx    ABS MT_POSX        769
+[540.788] synaptics_dsx    ABS MT_POSY        349
+[540.788] synaptics_dsx    ABS abs:0x30       13
+[540.788] synaptics_dsx    ABS abs:0x31       11
+[540.788] synaptics_dsx    SYN            0
+[540.796] synaptics_dsx    ABS MT_POSX        757
+[540.797] synaptics_dsx    ABS MT_POSY        354
+[540.797] synaptics_dsx    SYN            0
+[540.806] synaptics_dsx    ABS MT_POSX        742
+[540.806] synaptics_dsx    ABS MT_POSY        360
+[540.806] synaptics_dsx    SYN            0
+[540.814] synaptics_dsx    ABS MT_POSX        728
+[540.814] synaptics_dsx    ABS MT_POSY        366
+[540.814] synaptics_dsx    SYN            0
+[540.824] synaptics_dsx    ABS MT_POSX        713
+[540.824] synaptics_dsx    ABS MT_POSY        372
+[540.824] synaptics_dsx    ABS abs:0x30       12
+[540.824] synaptics_dsx    SYN            0
+[540.831] synaptics_dsx    ABS MT_POSX        700
+[540.832] synaptics_dsx    ABS MT_POSY        378
+[540.832] synaptics_dsx    SYN            0
+[540.842] synaptics_dsx    ABS MT_POSX        690
+[540.842] synaptics_dsx    ABS MT_POSY        384
+[540.842] synaptics_dsx    SYN            0
+[540.849] synaptics_dsx    ABS MT_POSX        681
+[540.849] synaptics_dsx    ABS MT_POSY        388
+[540.849] synaptics_dsx    SYN            0
+[540.858] synaptics_dsx    ABS MT_POSX        674
+[540.858] synaptics_dsx    ABS MT_POSY        391
+[540.858] synaptics_dsx    SYN            0
+[540.868] synaptics_dsx    ABS MT_POSX        669
+[540.868] synaptics_dsx    ABS MT_POSY        394
+[540.868] synaptics_dsx    ABS abs:0x30       13
+[540.868] synaptics_dsx    SYN            0
+[540.875] synaptics_dsx    ABS MT_POSX        664
+[540.876] synaptics_dsx    ABS MT_POSY        397
+[540.876] synaptics_dsx    ABS abs:0x31       12
+[540.876] synaptics_dsx    SYN            0
+[540.885] synaptics_dsx    ABS MT_POSX        659
+[540.885] synaptics_dsx    ABS MT_POSY        400
+[540.885] synaptics_dsx    SYN            0
+[540.893] synaptics_dsx    ABS MT_POSX        654
+[540.894] synaptics_dsx    ABS MT_POSY        402
+[540.894] synaptics_dsx    SYN            0
+[540.902] synaptics_dsx    ABS MT_POSX        650
+[540.905] synaptics_dsx    ABS MT_POSY        405
+[540.905] synaptics_dsx    SYN            0
+[540.911] synaptics_dsx    ABS MT_POSX        646
+[540.911] synaptics_dsx    ABS MT_POSY        407
+[540.911] synaptics_dsx    SYN            0
+[540.920] synaptics_dsx    ABS MT_POSX        642
+[540.920] synaptics_dsx    ABS MT_POSY        409
+[540.920] synaptics_dsx    SYN            0
+[540.928] synaptics_dsx    ABS MT_POSX        638
+[540.929] synaptics_dsx    ABS MT_POSY        411
+[540.929] synaptics_dsx    ABS abs:0x30       14
+[540.929] synaptics_dsx    SYN            0
+[540.938] synaptics_dsx    ABS MT_POSX        634
+[540.938] synaptics_dsx    ABS MT_POSY        413
+[540.938] synaptics_dsx    SYN            0
+[540.946] synaptics_dsx    ABS MT_POSX        631
+[540.946] synaptics_dsx    ABS MT_POSY        415
+[540.946] synaptics_dsx    ABS abs:0x30       13
+[540.946] synaptics_dsx    SYN            0
+[540.955] synaptics_dsx    ABS MT_POSX        628
+[540.957] synaptics_dsx    ABS MT_POSY        417
+[540.957] synaptics_dsx    SYN            0
+[540.964] synaptics_dsx    ABS MT_POSX        625
+[540.964] synaptics_dsx    ABS MT_POSY        419
+[540.964] synaptics_dsx    SYN            0
+[540.973] synaptics_dsx    ABS MT_POSX        622
+[540.973] synaptics_dsx    ABS MT_POSY        420
+[540.973] synaptics_dsx    ABS abs:0x30       14
+[540.973] synaptics_dsx    SYN            0
+[540.981] synaptics_dsx    ABS MT_POSX        620
+[540.981] synaptics_dsx    ABS MT_POSY        422
+[540.981] synaptics_dsx    SYN            0
+[540.990] synaptics_dsx    ABS MT_POSX        617
+[540.990] synaptics_dsx    ABS MT_POSY        423
+[540.990] synaptics_dsx    SYN            0
+[540.999] synaptics_dsx    ABS MT_POSX        615
+[540.999] synaptics_dsx    ABS MT_POSY        424
+[540.999] synaptics_dsx    SYN            0
+[541.008] synaptics_dsx    ABS MT_POSX        612
+[541.008] synaptics_dsx    ABS MT_POSY        426
+[541.008] synaptics_dsx    SYN            0
+[541.016] synaptics_dsx    ABS MT_POSX        610
+[541.017] synaptics_dsx    ABS MT_POSY        427
+[541.017] synaptics_dsx    SYN            0
+[541.025] synaptics_dsx    ABS MT_POSX        608
+[541.026] synaptics_dsx    ABS MT_POSY        428
+[541.026] synaptics_dsx    SYN            0
+[541.034] synaptics_dsx    ABS MT_POSX        606
+[541.034] synaptics_dsx    ABS MT_POSY        429
+[541.034] synaptics_dsx    SYN            0
+[541.054] synaptics_dsx    ABS MT_POSX        605
+[541.054] synaptics_dsx    ABS MT_POSY        430
+[541.054] synaptics_dsx    SYN            0
+[541.054] synaptics_dsx    ABS MT_POSX        603
+[541.054] synaptics_dsx    ABS MT_POSY        431
+[541.054] synaptics_dsx    SYN            0
+[541.060] synaptics_dsx    ABS MT_POSX        601
+[541.061] synaptics_dsx    ABS MT_POSY        432
+[541.061] synaptics_dsx    SYN            0
+[541.069] synaptics_dsx    ABS MT_POSX        600
+[541.069] synaptics_dsx    ABS MT_POSY        433
+[541.069] synaptics_dsx    SYN            0
+[541.078] synaptics_dsx    ABS MT_POSX        599
+[541.078] synaptics_dsx    ABS MT_POSY        434
+[541.078] synaptics_dsx    SYN            0
+[541.087] synaptics_dsx    ABS MT_POSX        597
+[541.087] synaptics_dsx    SYN            0
+[541.097] synaptics_dsx    ABS MT_POSX        596
+[541.097] synaptics_dsx    ABS MT_POSY        435
+[541.097] synaptics_dsx    SYN            0
+[541.104] synaptics_dsx    ABS MT_POSX        595
+[541.104] synaptics_dsx    ABS MT_POSY        436
+[541.104] synaptics_dsx    SYN            0
+[541.113] synaptics_dsx    ABS MT_POSX        594
+[541.113] synaptics_dsx    SYN            0
+[541.122] synaptics_dsx    ABS MT_POSX        593
+[541.122] synaptics_dsx    ABS MT_POSY        437
+[541.122] synaptics_dsx    SYN            0
+[541.131] synaptics_dsx    ABS MT_POSX        592
+[541.131] synaptics_dsx    SYN            0
+[541.140] synaptics_dsx    ABS MT_POSY        438
+[541.140] synaptics_dsx    SYN            0
+[541.148] synaptics_dsx    ABS MT_POSX        591
+[541.148] synaptics_dsx    SYN            0
+[541.157] synaptics_dsx    ABS MT_POSX        590
+[541.157] synaptics_dsx    SYN            0
+[541.166] synaptics_dsx    ABS MT_POSY        439
+[541.166] synaptics_dsx    SYN            0
+[541.175] synaptics_dsx    ABS MT_POSX        589
+[541.175] synaptics_dsx    SYN            0
+[541.192] synaptics_dsx    ABS MT_POSX        588
+[541.193] synaptics_dsx    ABS MT_POSY        440
+[541.193] synaptics_dsx    SYN            0
+[541.210] synaptics_dsx    ABS MT_POSX        587
+[541.210] synaptics_dsx    SYN            0
+[541.229] synaptics_dsx    ABS MT_POSY        441
+[541.230] synaptics_dsx    SYN            0
+[541.236] synaptics_dsx    ABS MT_POSX        586
+[541.236] synaptics_dsx    SYN            0
+[541.254] synaptics_dsx    ABS MT_POSX        585
+[541.254] synaptics_dsx    SYN            0
+[541.263] synaptics_dsx    ABS MT_POSY        442
+[541.263] synaptics_dsx    ABS abs:0x31       13
+[541.263] synaptics_dsx    SYN            0
+[541.280] synaptics_dsx    ABS MT_POSX        584
+[541.281] synaptics_dsx    ABS abs:0x31       12
+[541.281] synaptics_dsx    SYN            0
+[541.325] synaptics_dsx    ABS MT_POSX        583
+[541.325] synaptics_dsx    ABS MT_POSY        443
+[541.325] synaptics_dsx    ABS abs:0x31       13
+[541.325] synaptics_dsx    SYN            0
+[541.377] synaptics_dsx    ABS MT_POSX        582
+[541.377] synaptics_dsx    ABS abs:0x30       13
+[541.377] synaptics_dsx    ABS abs:0x31       11
+[541.377] synaptics_dsx    SYN            0
+[541.402] synaptics_dsx    ABS MT_TRACKING_ID -1
+[541.403] synaptics_dsx    KEY BTN_TOUCH      0
+[541.403] synaptics_dsx    KEY key:325        0
+[541.403] synaptics_dsx    SYN            0
+[542.249] synaptics_dsx    ABS MT_TRACKING_ID 202
+[542.249] synaptics_dsx    KEY BTN_TOUCH      1
+[542.249] synaptics_dsx    KEY key:325        1
+[542.249] synaptics_dsx    ABS MT_POSX        1007
+[542.249] synaptics_dsx    ABS MT_POSY        437
+[542.249] synaptics_dsx    ABS abs:0x30       12
+[542.249] synaptics_dsx    ABS abs:0x31       10
+[542.249] synaptics_dsx    SYN            0
+[542.300] synaptics_dsx    ABS MT_TRACKING_ID -1
+[542.301] synaptics_dsx    KEY BTN_TOUCH      0
+[542.301] synaptics_dsx    KEY key:325        0
+[542.301] synaptics_dsx    SYN            0
+[548.264] synaptics_dsx    ABS MT_TRACKING_ID 203
+[548.265] synaptics_dsx    KEY BTN_TOUCH      1
+[548.265] synaptics_dsx    KEY key:325        1
+[548.265] synaptics_dsx    ABS MT_POSX        25
+[548.265] synaptics_dsx    ABS MT_POSY        1670
+[548.265] synaptics_dsx    ABS abs:0x30       14
+[548.266] synaptics_dsx    ABS abs:0x31       12
+[548.266] synaptics_dsx    SYN            0
+[548.272] synaptics_dsx    ABS MT_POSX        75
+[548.272] synaptics_dsx    ABS MT_POSY        1666
+[548.273] synaptics_dsx    SYN            0
+[548.281] synaptics_dsx    ABS MT_POSX        168
+[548.281] synaptics_dsx    ABS MT_POSY        1659
+[548.281] synaptics_dsx    ABS abs:0x30       13
+[548.282] synaptics_dsx    ABS abs:0x31       11
+[548.282] synaptics_dsx    SYN            0
+[548.290] synaptics_dsx    ABS MT_POSX        262
+[548.290] synaptics_dsx    ABS MT_POSY        1656
+[548.291] synaptics_dsx    SYN            0
+[548.298] synaptics_dsx    ABS MT_POSX        310
+[548.299] synaptics_dsx    ABS MT_POSY        1658
+[548.299] synaptics_dsx    ABS abs:0x30       12
+[548.299] synaptics_dsx    ABS abs:0x31       10
+[548.299] synaptics_dsx    SYN            0
+[548.308] synaptics_dsx    ABS MT_POSX        316
+[548.308] synaptics_dsx    ABS MT_POSY        1659
+[548.309] synaptics_dsx    ABS abs:0x31       9
+[548.309] synaptics_dsx    SYN            0
+[548.317] synaptics_dsx    ABS MT_POSX        318
+[548.317] synaptics_dsx    ABS abs:0x30       13
+[548.318] synaptics_dsx    SYN            0
+[548.342] synaptics_dsx    ABS MT_POSX        317
+[548.343] synaptics_dsx    ABS abs:0x31       11
+[548.343] synaptics_dsx    SYN            0
+[548.351] synaptics_dsx    ABS MT_POSX        316
+[548.352] synaptics_dsx    ABS MT_POSY        1658
+[548.352] synaptics_dsx    SYN            0
+[548.360] synaptics_dsx    ABS MT_POSX        315
+[548.361] synaptics_dsx    ABS abs:0x30       14
+[548.361] synaptics_dsx    SYN            0
+[548.369] synaptics_dsx    ABS MT_POSX        313
+[548.369] synaptics_dsx    ABS MT_POSY        1657
+[548.369] synaptics_dsx    ABS abs:0x30       13
+[548.369] synaptics_dsx    SYN            0
+[548.377] synaptics_dsx    ABS MT_POSY        1656
+[548.377] synaptics_dsx    SYN            0
+[548.386] synaptics_dsx    ABS MT_POSX        312
+[548.386] synaptics_dsx    ABS abs:0x31       10
+[548.386] synaptics_dsx    SYN            0
+[548.394] synaptics_dsx    ABS MT_POSX        311
+[548.395] synaptics_dsx    ABS MT_POSY        1655
+[548.395] synaptics_dsx    ABS abs:0x30       12
+[548.395] synaptics_dsx    ABS abs:0x31       9
+[548.395] synaptics_dsx    SYN            0
+[548.403] synaptics_dsx    ABS MT_POSY        1654
+[548.403] synaptics_dsx    ABS abs:0x30       10
+[548.403] synaptics_dsx    ABS abs:0x31       8
+[548.403] synaptics_dsx    SYN            0
+[548.412] synaptics_dsx    ABS MT_POSX        310
+[548.412] synaptics_dsx    ABS abs:0x30       9
+[548.412] synaptics_dsx    ABS abs:0x31       7
+[548.412] synaptics_dsx    SYN            0
+[548.421] synaptics_dsx    ABS MT_POSX        309
+[548.421] synaptics_dsx    ABS MT_POSY        1653
+[548.421] synaptics_dsx    ABS abs:0x30       5
+[548.421] synaptics_dsx    ABS abs:0x31       4
+[548.421] synaptics_dsx    SYN            0
+[548.429] synaptics_dsx    ABS MT_TRACKING_ID -1
+[548.429] synaptics_dsx    KEY BTN_TOUCH      0
+[548.429] synaptics_dsx    KEY key:325        0
+[548.429] synaptics_dsx    SYN            0
+--- alive at t=603s ---
