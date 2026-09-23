@@ -72,6 +72,7 @@
  * object is linked with -nostdlib; every one of these resolves at load time from the libc.so.6 the
  * process already has. */
 extern void *dlsym(void *handle, const char *symbol);
+extern void *dlopen(const char *path, int flags);
 extern void *mmap(void *addr, unsigned long length, int prot, int flags, int fd, long offset);
 extern int open(const char *path, int flags, ...);
 extern long read(int fd, void *buf, unsigned long count);
@@ -91,6 +92,7 @@ typedef unsigned long u64;
 #define O_CREAT 0100
 #define O_APPEND 02000
 #define RTLD_NOW 2
+#define RTLD_GLOBAL 0x100
 
 /* bionic/libc/private/CFIShadow.h */
 #define SHADOW_GRANULARITY 18
@@ -281,8 +283,59 @@ static void scan_maps(u64 *out_lo, u64 *out_hi, int *out_count) {
     *out_count = count;
 }
 
-/* What the linker would have done in InitialLinkDone() -> MaybeInit() -> NotifyLibDl(). */
-static void prime(void) {
+/* Resolve the real hybris entry points this shim forwards to.
+ *
+ * RTLD_NEXT is the right first try -- it is how this was written, and it is what works for
+ * test_camera, where libcamera.so.1 is a DT_NEEDED of the executable and libhybris-common.so.1 is
+ * therefore in the *global* scope before the first call. It is not enough in general:
+ * libhybris-common can also arrive inside the *local* scope of a library glvnd dlopens
+ * (libEGL_libhybris.so.0 is dlopened by libEGL.so.1 in every Qt process), and RTLD_NEXT cannot see
+ * a local scope. When that happens dlsym(RTLD_NEXT) returns NULL, and because android_dlopen()
+ * below forwards through real_dlopen, the shim then fails *every* hybris dlopen in the process.
+ *
+ * That is not hypothetical: it is what broke the UT camera app (docs/ubuntu-touch/80). The log said
+ * "no android_dlopen/android_dlsym after this object -- not priming", libEGL_libhybris.so.0 could
+ * no longer resolve its Android dependencies, glvnd fell through to Mesa (which wants /dev/dri and
+ * cannot work here at all), and the app died in eglInitialize -- while libhybris' EGL itself was
+ * fine, as the same probe without this preload shows.
+ *
+ * So: fall back to loading libhybris-common.so.1 by name -- it is on the host's ld path, and
+ * RTLD_GLOBAL puts it in the scope every later lookup uses -- and take the two symbols from that
+ * handle. Idempotent; returns non-zero when both are resolved.
+ */
+static int resolve_real(void) {
+  if (!real_dlopen)
+    real_dlopen = (dlopen_fn)dlsym(RTLD_NEXT, "android_dlopen");
+  if (!real_dlsym)
+    real_dlsym = (dlsym_fn)dlsym(RTLD_NEXT, "android_dlsym");
+  if (real_dlopen && real_dlsym)
+    return 1;
+  {
+    void *h = dlopen("libhybris-common.so.1", RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+      logbegin("RTLD_NEXT could not see android_dlopen and dlopen(\"libhybris-common.so.1\") failed");
+      logflush();
+      return 0;
+    }
+    if (!real_dlopen)
+      real_dlopen = (dlopen_fn)dlsym(h, "android_dlopen");
+    if (!real_dlsym)
+      real_dlsym = (dlsym_fn)dlsym(h, "android_dlsym");
+    if (real_dlopen && real_dlsym) {
+      logbegin("resolved android_dlopen via dlopen(\"libhybris-common.so.1\") -- "
+               "RTLD_NEXT could not see it (libhybris-common is not in the global scope)");
+      logflush();
+      return 1;
+    }
+    logbegin("libhybris-common.so.1 exports no android_dlopen/android_dlsym");
+    logflush();
+  }
+  return 0;
+}
+
+/* What the linker would have done in InitialLinkDone() -> MaybeInit() -> NotifyLibDl(). Returns 1
+ * when the shadow was primed, 0 when this call could not (so the caller can try again later). */
+static int prime(void) {
   typedef u64 *(*cfi_init_fn)(u64);
   cfi_init_fn cfi_init;
   void *h;
@@ -290,13 +343,11 @@ static void prime(void) {
   int count = 0;
 
   inside = 1;
-  real_dlopen = (dlopen_fn)dlsym(RTLD_NEXT, "android_dlopen");
-  real_dlsym = (dlsym_fn)dlsym(RTLD_NEXT, "android_dlsym");
-  if (!real_dlopen || !real_dlsym) {
-    logbegin("no android_dlopen/android_dlsym after this object -- not priming");
+  if (!resolve_real()) {
+    logbegin("no android_dlopen/android_dlsym available -- not priming");
     logflush();
     inside = 0;
-    return;
+    return 0;
   }
 
   /* libdl.so is standalone-loadable and defines __cfi_init. Loading it by name here, rather than
@@ -306,14 +357,14 @@ static void prime(void) {
     logbegin("android_dlopen(\"libdl.so\") failed -- not priming");
     logflush();
     inside = 0;
-    return;
+    return 0;
   }
   cfi_init = (cfi_init_fn)real_dlsym(h, "__cfi_init");
   if (!cfi_init) {
     logbegin("libdl.so exports no __cfi_init -- not priming");
     logflush();
     inside = 0;
-    return;
+    return 0;
   }
 
   shadow = (char *)mmap((void *)0, K_SHADOW_SIZE, PROT_READ | PROT_WRITE,
@@ -323,7 +374,7 @@ static void prime(void) {
     logbegin("mmap of the 2 GiB shadow failed -- not priming");
     logflush();
     inside = 0;
-    return;
+    return 0;
   }
 
   logbegin("shadow at ");
@@ -347,18 +398,29 @@ static void prime(void) {
     loghex(hi);
     logflush();
   }
+  return 1;
 }
 
 void *android_dlopen(const char *name, int flags) {
-  if (!inside && state == 0) {
+  if (!inside && __atomic_load_n(&state, __ATOMIC_ACQUIRE) == 0) {
     if (__atomic_exchange_n(&state, 1, __ATOMIC_ACQ_REL) == 0) {
-      prime();
-      __atomic_store_n(&state, 2, __ATOMIC_RELEASE);
+      /* A "not yet" must not be cached as "never": the first call can arrive before
+       * libhybris-common is in any scope resolve_real() can reach, and caching that as final is the
+       * bug this shim hit on 2026-09-23 (see resolve_real). Failed attempts leave state at 0, so the
+       * next call tries again. */
+      int ok = prime();
+      __atomic_store_n(&state, ok ? 2 : 0, __ATOMIC_RELEASE);
     } else {
       /* Another thread is priming. It is not waiting on us, so spinning is safe. */
       while (__atomic_load_n(&state, __ATOMIC_ACQUIRE) == 1)
         ;
     }
+  }
+  if (!real_dlopen) {
+    /* Nothing to forward to; try to resolve it now rather than fail the process's dlopens. */
+    inside = 1;
+    resolve_real();
+    inside = 0;
   }
   if (!real_dlopen)
     return (void *)0;

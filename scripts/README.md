@@ -203,6 +203,25 @@ name-based match silently falls back to a stale core from a previous boot. On
 2026-09-21 that stale core analysed perfectly and reproduced doc 45's Mir fault in
 a different process; see [`../docs/ubuntu-touch/49-two-cores-that-are-not-tls-wifi-stuck-at-wcnss-and-a-trip-into-edl.md`](../docs/ubuntu-touch/49-two-cores-that-are-not-tls-wifi-stuck-at-wcnss-and-a-trip-into-edl.md).
 
+## Starting a UT app from the host (and the EGL underneath it)
+
+An app is not `test_camera`: it is a Qt process whose EGL goes through the glvnd dispatcher
+(`libEGL.so.1.1.0` → `/usr/share/glvnd/egl_vendor.d/10_libhybris.json` first, `50_mesa.json` second),
+whereas the shell and `test_camera` either bypass glvnd (Mir's own platform plugins dlopen
+`libEGL_libhybris.so.0` directly) or are raw Wayland clients. There is **no wayland QPA plugin** on
+this rootfs, so `ubuntumirclient` is the only platform plugin a Qt app here can use. Three things
+have to be right at once — the container's PID namespace, **the running session's own environment**
+(read from `/proc/<shell pid>/environ`; a hand-built environment reproduces the EGL assertion), and
+running **as the session's uid** (`ZL1_AS_UID=32011`; the session bus rejects any other peer) — and
+getting them wrong looks like a platform fault. See
+[`../docs/ubuntu-touch/80-the-ut-camera-app-starts-and-our-preload-was-breaking-egl.md`](../docs/ubuntu-touch/80-the-ut-camera-app-starts-and-our-preload-was-breaking-egl.md).
+
+| Script | Purpose |
+| --- | --- |
+| `device/zl1-camapp-launch.py` | Runs on the device. Launches one app with the session's environment: it reads `/proc/<shell pid>/environ` (NUL-separated, which the device's dash cannot do), drops the shell's `MIR_SERVER_*`/`QT_QPA_PLATFORM`, sets `MIR_SOCKET` + `QT_QPA_PLATFORM=ubuntumirclient`, `chdir`s into the app's package (the app finds its own QML from the current directory), then `setgid`/`setuid`s to `ZL1_AS_UID` as the **last** step (root has to read the environment and the runtime dir first). `ZL1_SET_<NAME>=<value>` overrides one session variable for an experiment, `ZL1_PRELOAD_EXTRA` appends to `LD_PRELOAD`, and arguments after the shell pid are passed to the target — which is how the EGL probe below runs. |
+| `device/zl1-egl-probe.py` | Runs on the device (through the launcher). Reimplements qtmir's EGL initialisation in ctypes, with no Qt and no app in the picture: what `libEGL_libhybris.so.0` actually exports, who glvnd gives `EGL_DEFAULT_DISPLAY` to, what `mir_connect_sync` + `mir_connection_get_egl_native_display` return, and whether `eglInitialize` succeeds. This is the tool that separated "the platform is broken" from "this app is broken" — and then found the difference: the same binary and environment initialise hybris' EGL fine **without** `libcfi-shadow-init.so` preloaded and fail with it. |
+| `cfi-shadow/cfi-shadow-init.c` | Fixed 2026-09-23. It resolved the real `android_dlopen` with `dlsym(RTLD_NEXT, "android_dlopen")` only. `RTLD_NEXT` searches the objects after this one in the **global** scope, and `libhybris-common.so.1` also arrives inside the **local** scope of a library glvnd dlopens (`libEGL_libhybris.so.0`), which `RTLD_NEXT` cannot see — so the shim answered **NULL to every hybris dlopen in the process** and cached that failure permanently. `test_camera` never saw it (it has `libcamera.so.1` as a `DT_NEEDED`, so the global scope was populated before the first call); every Qt app did, as hybris' EGL stopping half-way and glvnd falling through to Mesa, which needs `/dev/dri` and cannot work here. `resolve_real()` now falls back to `dlopen("libhybris-common.so.1", RTLD_NOW\|RTLD_GLOBAL)`, logs which route was needed, and `prime()` returning 0 leaves the state un-primed so the next call retries. Build with `cfi-shadow/build.sh`; the previous binary is kept on the device as `libcfi-shadow-init.so.orig-20260923`. |
+
 ## The Android-side libraries the stock image is missing
 
 `libui_compat_layer.so`, `libhwc2_compat_layer.so` and `libhidltransport.so` are

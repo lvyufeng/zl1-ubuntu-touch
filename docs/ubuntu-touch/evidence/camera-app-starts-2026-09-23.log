@@ -1,0 +1,228 @@
+zl1: the UT camera app starts, and the port's own preload was breaking EGL -- 2026-09-23
+=====================================================================================
+
+One boot (uptime ~42,900 s -> the device dropped to EDL, see the last section), no reboot by us, no
+partition write. Everything below is what the device printed during the session; the raw files are
+on the device under /userdata/zl1-camera/ (app-dbg, app-nons, app-way, app-run1, app-run2, egl-*,
+strace-egl.log, probe-*.strace).
+
+
+THE FAILURE, AS FIRST SEEN
+==========================
+Running the click package's binary from the host, with the running shell's own environment (the
+session env, /proc/<shell pid>/environ) and inside the container's PID namespace:
+
+  ASSERT: "eglInitialize(mEglDisplay, nullptr, nullptr) == EGL_TRUE" in file
+          ../../../src/ubuntumirclient/qmirclientintegration.cpp, line 150
+  crash-dump: caught signal 6 -- /proc/self/maps follows, then a backtrace of this thread
+
+The maps of that crash had libEGL_mesa.so.0.0.0 and NO libEGL_libhybris.so.0.0.0, and the stderr had
+four X11 lines that do not belong in a Mir client's output at all:
+
+  Authorization required, but no authorization protocol specified
+
+
+THE SAME APP, AS A WAYLAND CLIENT: NOT A PATH QUIETLY TAKEN
+===========================================================
+ZL1_SET_QT_QPA_PLATFORM=wayland:
+
+  qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in ""
+  Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, mir1server,
+                                   ubuntumirclient, vnc, xcb.
+
+There is no wayland QPA plugin. The only usable one for a UT app here is ubuntumirclient, which is
+what the app was already using.
+
+
+WHO BREAKS, MEASURED RATHER THAN ASSUMED (strace -f -e trace=openat)
+====================================================================
+The app, without the port's cfi-shadow preload:
+
+  openat("/usr/share/glvnd/egl_vendor.d/10_libhybris.json")  = 8
+  openat("/lib/aarch64-linux-gnu/libEGL_libhybris.so.0")     = 8
+  openat("/usr/share/glvnd/egl_vendor.d/50_mesa.json")       = 8
+  openat("/lib/aarch64-linux-gnu/libEGL_mesa.so.0")          = 8
+  openat("/dev/dri", O_DIRECTORY)                            = -1 ENOENT
+  --- SIGABRT ---
+
+-- libhybris' EGL is a glvnd vendor ICD, and that is all it is:
+
+  $ readelf -d libEGL_libhybris.so.0.0.0     (pulled to the host and read there)
+     NEEDED libhybris-common.so.1, libstdc++.so.6, libc.so.6, libgcc_s.so.1
+     SONAME libEGL_libhybris.so.0
+  $ nm -D --defined-only libEGL_libhybris.so.0.0.0 | grep egl
+     00000000000067d4 T __egl_Main            <- the only egl* symbol; no eglGetDisplay
+  $ strings -a | grep eglplatform
+     %s/eglplatform_%s.so
+     /usr/lib/aarch64-linux-gnu/libhybris/
+
+-- so it reads EGL_PLATFORM and dlopens its platform module from a directory that contains:
+
+  eglplatform_fbdev.so  eglplatform_hwcomposer.so  eglplatform_null.so  eglplatform_wayland.so
+
+  (no mir module: a Mir client cannot be served by a platform module this build does not have)
+
+-- and the working shell does not use glvnd for any of this. It has mapped:
+
+  /android/system/lib64/libEGL.so, /android/vendor/lib64/egl/libEGL_adreno.so,
+  /usr/lib/aarch64-linux-gnu/libEGL_libhybris.so.0.0.0,
+  /usr/lib/aarch64-linux-gnu/libhybris/eglplatform_null.so,
+  /usr/lib/aarch64-linux-gnu/mir1/client-platform/android2.so.5,
+  /usr/lib/aarch64-linux-gnu/mir1/server-platform/graphics-android2.so.16
+
+  i.e. Mir's own platform plugins dlopen libhybris' EGL themselves; the Qt client's EGL goes
+  through glvnd (libEGL.so.1.1.0, which is a dispatcher: it has no eglGetDisplay implementation of
+  its own, only the vendor list).
+
+
+THE PROBE: scripts/device/zl1-egl-probe.py
+=========================================
+Run through the launcher so it has the session's environment. Without cfi-shadow:
+
+  libEGL_libhybris.so.0      loaded, but exports no eglGetDisplay -- it is a glvnd vendor ICD
+                             (entry point __egl_Main), not a full EGL
+  libEGL.so.1                eglGetDisplay(EGL_DEFAULT_DISPLAY) = 0x1
+                             eglInitialize = 1 (1.4)
+                             vendor = Android
+                             version = 1.4 Android META-EGL
+                             extensions = 36 stated; platform extensions: (none)
+  Mir connection valid (MIR_SOCKET='/run/user/32011/mir_socket')
+  mir_connection_get_egl_native_display() = EGL_DEFAULT_DISPLAY (0)
+
+With libcfi-shadow-init.so added to LD_PRELOAD, the same binary, same environment:
+
+  cfi-shadow-init[33976] loaded
+  cfi-shadow-init[33976] no android_dlopen/android_dlsym after this object -- not priming
+  Authorization required, but no authorization protocol specified     (x12)
+  libEGL.so.1                eglGetDisplay(EGL_DEFAULT_DISPLAY) = 0x33446c90
+                             eglInitialize = 0 (0.0)
+
+And the same difference in the strace of the probe:
+
+  plain: ... libEGL_libhybris.so.0 -> libhybris-common.so.1 -> libEGL.so.1 -> libhybris/linker/o.so
+         -> /android/system/lib64/libEGL.so = 3 -> /vendor/lib64/egl/libEGL_adreno.so = 6
+         -> /usr/lib/aarch64-linux-gnu/libhybris//eglplatform_null.so = 6   <- platform module
+  cfi:   ... libEGL_libhybris.so.0 -> libhybris-common.so.1 -> libEGL.so.1 -> libhybris/linker/o.so
+         -> libEGL_mesa.so.0 = 3 -> ... (no android EGL, no eglplatform_*.so at all)
+
+
+THE BUG (scripts/cfi-shadow/cfi-shadow-init.c)
+==============================================
+prime() resolved its forwarding target with dlsym(RTLD_NEXT, "android_dlopen"). RTLD_NEXT searches
+the objects *after* this one in the *global* scope, and libhybris-common.so.1 can arrive inside the
+local scope of a library glvnd dlopens (libEGL_libhybris.so.0 is dlopened by libEGL.so.1 in every Qt
+process), which RTLD_NEXT cannot see. It then returned early, leaving real_dlopen NULL -- and because
+android_dlopen() forwards through real_dlopen, the shim answered NULL to *every* hybris dlopen in the
+process. state was set to 2 (primed) regardless, so the failure was cached for the process's life.
+
+  cfi-shadow log, the two populations (append-only, per pid):
+    90 x  "shadow at 0x..."                                          <- primed (test_camera runs)
+    "no android_dlopen/android_dlsym after this object -- not priming" <- the camera app and every
+                                                                          probe run of 2026-09-23
+
+For libcamera this was harmless in the other direction: test_camera has libcamera.so.1 as a
+DT_NEEDED, so libhybris-common was in the global scope before the first call and priming worked.
+The camera app loads libcamera later (through libcamera_compat_layer), and by then the shim had
+already poisoned the process.
+
+
+THE FIX
+=======
+resolve_real(): try RTLD_NEXT first (unchanged behaviour where it worked), then fall back to
+dlopen("libhybris-common.so.1", RTLD_NOW | RTLD_GLOBAL) and take the two symbols from that handle,
+logging which route was needed. prime() now returns whether it primed, and android_dlopen() stores 0
+back into state when it did not, so a "not yet" is retried instead of being cached as "never".
+
+  $ scripts/cfi-shadow/build.sh
+      sha256 1b66341170fe7188b2e87f52cbde568432db99584c0b468fed52907097219056
+      (previous: bec52da782a00bbbbcbdf51cb1069ce61aacaf978b46eb33005afb34dc3587be, kept on the
+       device as libcfi-shadow-init.so.orig-20260923)
+      DT_NEEDED still empty; dlopen added to the undefined list (resolves from libc.so.6)
+
+After it, the same probe with cfi-shadow preloaded:
+
+  cfi-shadow-init[34061] resolved android_dlopen via dlopen("libhybris-common.so.1") -- RTLD_NEXT
+                         could not see it (libhybris-common is not in the global scope)
+  cfi-shadow-init[34061] shadow at 0x71bba57000, filling the first 8388608 bytes ...
+  libEGL.so.1                eglGetDisplay(EGL_DEFAULT_DISPLAY) = 0x1
+                             eglInitialize = 1 (1.4)
+                             vendor = Android
+                             version = 1.4 Android META-EGL
+
+
+THE APP RUNS
+============
+  nsenter -t <container> -p -- env ZL1_AS_UID=32011 \
+    ZL1_PRELOAD_EXTRA="/userdata/zl1-hybris/lib/libcfi-shadow-init.so \
+                       /userdata/zl1-hybris/lib/crash-dump.so" \
+    python3 /tmp/zl1-camapp-launch.py \
+      /usr/share/click/preinstalled/camera.ubports/4.1.1/lomiri-camera-app \
+      camera.ubports_camera_4.1.1 /usr/share/click/preinstalled/camera.ubports/4.1.1 <shell pid>
+
+  launched (62 environment variables from the session)
+  dropped to uid 32011 gid 32011
+  cfi-shadow-init[34254] resolved android_dlopen via dlopen(...)
+  Creating a QMirClientScreen now
+  Creating a QMirClientScreen now
+  Import path added ".../camera.ubports/4.1.1//./lib/aarch64-linux-gnu"
+  Camera app directory "/usr/share/click/preinstalled/camera.ubports/4.1.1"
+  Added camera "0"
+  Added camera "1"
+  ...  (media-hub: session bus and /com/lomiri/MediaHub/Service/sessions/0 errors, non-fatal)
+  dlopen failed: library "/system/lib64/libui_compat_layer.so" not found
+  ** Application is now active
+  file:///usr/share/click/preinstalled/camera.ubports/4.1.1/qml/Viewfinder/...: Binding loop detected
+
+  exit=124  (still alive when the 30 s timer fired -- the first time this app has ever stayed up)
+
+As root (without ZL1_AS_UID), the same run gets as far as "Added camera 0/1" and then dies:
+
+  QStandardPaths: runtime directory '/run/user/32011' is not owned by UID 0 ...
+  ** (process:34068): ERROR **: Error connecting to unix:path=/run/user/32011/bus: The connection
+  is closed
+  exit=133 (SIGTRAP)
+
+i.e. the session bus rejects a peer whose uid is not 32011, which is why the run has to drop to the
+session's own user after reading its environment.
+
+
+DEVICE STATE AND HOW THIS SESSION ENDED
+=======================================
+SSH stopped answering at host kernel time 2200800.5; the host's own kernel log shows the transition
+on the port the zl1 has always been on (3-3, the RNDIS gadget):
+
+  [2195387.8] rndis_host 3-3:1.0 usb0: unregister 'rndis_host' usb-0000:00:14.0-3, RNDIS device
+  [2195388.9] rndis_host 3-3:1.0 usb0: register 'rndis_host' at usb-0000:00:14.0-3, ..., 52:d0:92:1c:83:b6
+  [2195607.8] rndis_host 3-3:1.0 usb0: unregister 'rndis_host' usb-0000:00:14.0-3, RNDIS device
+  [2195609.9] rndis_host 3-3:1.0 usb0: register 'rndis_host' at usb-0000:00:14.0-3, ..., 86:e0:d0:fb:61:33
+  [2200800.5] usb 3-3: USB disconnect, device number 114
+  [2200802.2] usb 3-3: New USB device found, idVendor=05c6, idProduct=9008, bcdDevice= 0.00
+              idVendor=05c6 idProduct=9008, Product: QUSB__BULK, SerialNumber=0
+  [2200802.2] qcserial 3-3:1.0: Qualcomm USB modem converter now attached to ttyUSB2
+
+05c6:9008 with product QUSB__BULK is Qualcomm EDL (the emergency download loader), now steady on
+3-3 for 80+ s with no serial number. Nothing in this session wrote to a partition, the boot image,
+or a modem/radio partition, and no EDL/QDL/QFIL tool was run. Which side caused the transition is
+not established: the camera app had been running (as the session user, with the hybris camera path
+open in the container) a couple of minutes earlier, the device had re-enumerated its RNDIS gadget
+twice before that, and on this SoC the end of certain fault paths is EDL -- docs/ubuntu-touch/49
+section 5 recorded the same presentation (05c6:9008 on port 3-3) after an unrelated driver unbind,
+and it was recovered with a long press on power, not with any tool. It is recorded here as an
+unexplained transition, not as a diagnosis.
+
+The device needs a physical reset (long press on power) to leave EDL; there is no software path to
+it that does not go through the QDL loader, which the port's own ground rules forbid. No EDL tool was
+run from this side.
+
+
+WHAT THIS SESSION DID NOT ESTABLISH
+===================================
+- Whether the app's window reaches the screen: the display was off (ActiveOutputs (ii) 0 0) for
+  every run in this session and the compositor's CPU was never sampled with the app alive, so the
+  doc 68/77 criterion (2 ticks/s with no client vs 20-26 with a preview, display ON) was not applied.
+- Whether the preview works in the app: the camera was enumerated ("Added camera 0/1") but no frame
+  was looked for.
+- Why "/system/lib64/libui_compat_layer.so" is asked for by absolute path: /android/system is a
+  read-only ext4 mount (/dev/loop1), so the shim in /userdata/zl1-hybris/lib cannot be reached by
+  that name, and the file was not placed there. The message is non-fatal in the run above.
+- Why the media-hub session fails ("No such object path '/com/lomiri/MediaHub/Service/sessions/0'").
