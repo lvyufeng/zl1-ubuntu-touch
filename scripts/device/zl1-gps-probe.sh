@@ -24,8 +24,10 @@
 #      `does_satellite_based_positioning` and `does_report_wifi_and_cell_ids`. The tool cannot request
 #      a position -- that is the point of reading it first: if satellite positioning is `false`, that
 #      alone explains a HAL that was never started
-#   3. the logcat counts, including the discriminating `locClientOpen failed` and the two other
-#      branches in the same function
+#   3. the log counts, **split by which process could have written each string** -- three of the eight
+#      patterns used to be counted in logcat although they live in the UT-side daemon, whose messages
+#      go to the journal, so their count was structurally 0 and read as "the provider was never
+#      instantiated" (docs 102; section 3 below and evidence/gps-log-owners-2026-09-23.log)
 #   4. whether the GNSS HIDL service is even registered (`lshal`), read from inside the container
 #
 # Nothing here writes: no property is set, no service is restarted, no /sys write, no file written
@@ -51,7 +53,11 @@ while [ $# -gt 0 ]; do
   --test-gps) TEST_GPS=1; shift ;;
   --seconds) SECONDS_="${2?--seconds needs a number}"; shift 2 ;;
   --quiet) QUIET=1; shift ;;
-  --help|-h) sed -n '2,48p' "$0"; exit 0 ;;
+  # The header is lines 1-43 (Usage is the last of them); line 45 is `set -u`. The range used to run
+  # to 46, i.e. past the header into the variable assignments, so --help printed `set -u` and
+  # `TEST_GPS=0` as if they were usage. scripts/host/zl1-gps-selftest.sh now asserts --help prints no
+  # `set -u`, so the range cannot drift again unnoticed.
+  --help|-h) sed -n '2,43p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -104,7 +110,11 @@ fi
 echo "== switches (lomiri-location-serviced-cli -- it cannot request a position, only read/set these)"
 if [ -x /usr/bin/lomiri-location-serviced-cli ]; then
   /usr/bin/lomiri-location-serviced-cli does_satellite_based_positioning get 2>&1 | sed 's/^/   satellite: /'
-  /usr/bin/lomiri-location-serviced-cli does_report_wifi_and_cell_ids get 2>&1 | sed 's/^/   wifi/cell: /'
+  # The delimiter is `|`, not `/`: with `/`, the slash inside the REPLACEMENT ends the s command and
+  # sed exits 1 with "unknown option to `s'" -- so this reading printed a sed error instead of a
+  # value, and the wifi/cell switch was the one number this section never showed. (Found by
+  # scripts/host/zl1-gps-selftest.sh, which is the only reason it is not still that way.)
+  /usr/bin/lomiri-location-serviced-cli does_report_wifi_and_cell_ids get 2>&1 | sed 's|^|   wifi/cell: |'
   if [ "$QUIET" = 0 ]; then
     echo "   (its usage, verbatim, so a wrong subcommand above is visible as such:)"
     /usr/bin/lomiri-location-serviced-cli --help 2>&1 | head -12 | sed 's/^/   | /'
@@ -115,25 +125,92 @@ fi
 
 # --- 3. logcat: the branches in the source, not guesses ----------------------------------------
 
-echo "== container logcat (whole ring buffer, so pre-change lines are in here too)"
+# **A string can only appear in the log of the process that contains it**, so the counts below are
+# split by owner. This is not cosmetic. Of this section's eight patterns, TWO were counted in logcat
+# although they live in the UT-side daemon, whose messages go to the journal -- so their count was
+# structurally 0, and a 0 here reads as "the provider was never instantiated", which points the whole
+# diagnosis at the wrong layer; and TWO were counted although the string is in no binary in any image,
+# so their 0 was never evidence about anything. The other five are journal-side patterns that the
+# previous version did not look for at all, i.e. the half of this chain that was never being counted.
+# Where each string was found (offline, by grepping the images this port ships -- evidence:
+# docs/ubuntu-touch/evidence/gps-log-owners-2026-09-23.log):
+#
+#   logcat (a process in the Android container)
+#     libloc_api_v02.so                     locClientOpen failed
+#                                           Failed to get features supported
+#     android.hardware.gnss@1.0-impl-qti.so gnssSetCapabilitesCb
+#   journal (a process on the UT side -- the daemon, or the library it loads)
+#     /usr/bin/lomiri-location-serviced     Issue instantiating provider:
+#                                           Instantiating and configuring
+#     liblomiri-location-service.so.3       Remote service failed to start
+#                                           Failed to inject reference time to chipset
+#                                           ...providers/gps/android_hardware_abstraction_layer.cpp
+#   neither, and that is why they are gone:
+#     'set_gps_service_callbacks'   a SYMBOL name; the string is in no binary in any image. A count of
+#                                   0 for it was never evidence about anything.
+#     'Unable to get GPS service'   lives in libandroid_servers.so, i.e. the framework's
+#                                   GnssLocationProvider -- Android's own location provider, which the
+#                                   UT daemon does not go through (it calls IGnss::getService() HIDL
+#                                   directly). Even where that library is present its 0 says nothing
+#                                   about this path.
+
+echo "== the log, split by which process could have written it (this device has no working RTC --"
+echo "   docs 69 -- so ordering is not trustworthy; these are COUNTS, which do not depend on order)"
 if [ -n "$A" ]; then
   dump=$(nsenter -t "$A" -p -m -- /system/bin/logcat -d -v brief 2>/dev/null)
-  # Every string below is a literal from the C++ on this device (docs 82 section 1), the four from
-  # docs 56's status check (kept, so the two tools agree), and the GPS service acquisition pair.
+  echo "   --- logcat (the container's vendor GPS HAL) ---"
   for pat in 'locClientOpen failed' \
              'Failed to checking QMI_LOC message supported' \
              'Failed to get features supported' \
-             'Unable to get GPS service' \
-             'set_gps_service_callbacks' \
-             'gnssSetCapabilitesCb' \
-             'Instantiating and configuring' \
-             'Issue instantiating provider'; do
-    printf '   %-48s %s\n' "$pat" "$(printf '%s\n' "$dump" | grep -ac "$pat")"
+             'gnssSetCapabilitesCb'; do
+    printf '   %-46s %s\n' "$pat" "$(printf '%s\n' "$dump" | grep -ac "$pat")"
   done
-  echo "   -- the last 8 lines that mention gps/gnss/location:"
-  printf '%s\n' "$dump" | grep -aiE 'gps|gnss|LocSvc|location' | tail -8 | cut -c1-140 | sed 's/^/   | /'
+  echo "   -- the last 8 logcat lines that mention gps/gnss/LocSvc:"
+  printf '%s\n' "$dump" | grep -aiE 'gps|gnss|LocSvc' | tail -8 | cut -c1-140 | sed 's/^/   | /'
 else
-  echo "   (no container: lxc-info gave nothing)"
+  echo "   --- logcat: skipped (no container: lxc-info gave nothing) ---"
+fi
+
+# The UT side. `journalctl -b -u` is boot-scoped rather than time-scoped, which is the only kind of
+# journal query that survives a wrong clock; the counts are order-independent for the same reason.
+echo "   --- journal of $UNIT (the daemon itself and the library it loads) ---"
+jdump=$(journalctl -b -u "$UNIT" --no-pager -o cat 2>/dev/null)
+if [ -z "$jdump" ]; then
+  echo "   (empty or unreadable -- if the unit is active but this is empty, that itself is the finding:"
+  echo "    the daemon writes its provider and HAL messages to stderr, which systemd journals)"
+fi
+for pat in 'Issue instantiating provider' \
+           'Instantiating and configuring' \
+           'Remote service failed to start' \
+           'Failed to inject reference time' \
+           'android_hardware_abstraction_layer'; do
+  printf '   %-46s %s\n' "$pat" "$(printf '%s\n' "$jdump" | grep -ac "$pat")"
+done
+# The three gates of TrustStorePermissionManager (see zl1-location-request.sh for the model). Gate 1
+# is a true short circuit, so a grant shows up as gates 2/3 being *absent*, not as a line of their
+# own; gate 3's failure is the trust-store library's own message. Both are stderr -> journal.
+for pat in 'Missing agent implementation' \
+           'Cannot operate without an agent implementation' \
+           'Client lacks permissions to access the service with the given criteria' \
+           'Cannot create service for null permission manager'; do
+  printf '   %-46s %s\n' "$pat" "$(printf '%s\n' "$jdump" | grep -ac "$pat")"
+done
+echo "   -- and the daemon's own environ, where gate 1's switch lives:"
+# The value is captured before it is printed: `tr | grep | sed || echo "absent"` reports SED's status,
+# which is 0 even when grep matched nothing, so the "absent" line could never be reached.
+if [ -n "${dpid:-}" ]; then
+  tsv=$(tr '\0' '\n' < "/proc/$dpid/environ" 2>/dev/null \
+        | grep -a 'TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING')
+  if [ -n "$tsv" ]; then
+    printf '     %s\n' "$tsv"
+    echo "     -> gate 1 IS short-circuited: the trust store is not consulted at all (this is the"
+    echo "        image's own bypass, and the only way it gets set on this port is a drop-in, because"
+    echo "        the wrapper's getprop is the v63 stub -- see zl1-location-request.sh)"
+  else
+    echo "     (absent: gate 1 is NOT short-circuited, so the trust store decides)"
+  fi
+else
+  echo "     (no daemon pid from section 1)"
 fi
 
 # --- 4. properties and the HIDL service --------------------------------------------------------

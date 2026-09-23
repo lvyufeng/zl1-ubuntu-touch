@@ -1,0 +1,127 @@
+# Which process can write each GPS log string -- decided OFFLINE by grepping the images this port
+# ships (2026-09-23). Written for scripts/device/zl1-gps-probe.sh section 3, whose comment points
+# here. Host-side and read-only; no device was involved (it is in EDL).
+
+## rule
+
+  A log string can only appear in the log of the process whose address space contains it.
+  A vendor library loaded by a process in the Android container -> logcat.
+  A UT-side binary, or the library it dlopens -> stderr -> the systemd journal of its unit.
+  A string in NO binary -> a count of 0 for it is not evidence about anything, ever.
+
+## the images searched
+
+  /mnt/utrootfs          /dev/loop0 /mnt/utrootfs
+  /mnt/android-sys-test  /dev/loop7 /mnt/android-sys-test
+  /mnt/vendor-ro         /dev/loop9 /mnt/vendor-ro
+
+## side A -- in a binary inside the Android container, so logcat is where it lands
+
+### locClientOpen failed
+  /mnt/vendor-ro/lib64/libloc_api_v02.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Failed to checking QMI_LOC message supported
+  /mnt/vendor-ro/lib64/libloc_api_v02.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Failed to get features supported
+  /mnt/vendor-ro/lib64/libloc_api_v02.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### gnssSetCapabilitesCb
+  /mnt/android-sys-test/lib/android.hardware.gnss@1.0.so
+  /mnt/android-sys-test/lib/android.hardware.gnss@1.1.so
+  /mnt/android-sys-test/lib/libandroid_servers.so
+  /mnt/android-sys-test/lib64/android.hardware.gnss@1.0.so
+  /mnt/android-sys-test/lib64/android.hardware.gnss@1.1.so
+  /mnt/android-sys-test/lib64/libandroid_servers.so
+  /mnt/vendor-ro/lib/hw/android.hardware.gnss@1.0-impl-qti.so
+  /mnt/vendor-ro/lib64/hw/android.hardware.gnss@1.0-impl-qti.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+## side B -- in a UT-side binary or the library it loads, so the journal is where it lands
+
+### Issue instantiating provider
+  /mnt/utrootfs/usr/bin/lomiri-location-serviced
+  -- Android-side hits: system 0, vendor 0
+
+### Instantiating and configuring
+  /mnt/utrootfs/usr/bin/lomiri-location-serviced
+  -- Android-side hits: system 0, vendor 0
+
+### Remote service failed to start
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Failed to inject reference time
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### android_hardware_abstraction_layer
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Missing agent implementation
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libtrust-store.so.2.0.2
+  -- Android-side hits: system 0, vendor 0
+
+### Cannot operate without an agent implementation
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libtrust-store.so.2.0.2
+  -- Android-side hits: system 0, vendor 0
+
+### Client lacks permissions to access the service with the given criteria
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Cannot create service for null permission manager
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  -- Android-side hits: system 0, vendor 0
+
+## side C -- the two patterns that were REMOVED, and why a 0 for them was never evidence
+
+### set_gps_service_callbacks
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, case-sensitively, over every regular file in the image
+  (grep reads the whole file, so a name surviving only as an exported symbol would still show up
+   here -- this one is in no binary in any image, symbol tables included)
+  -> zero in all three, and zero is what it always was. Counting it told the probe nothing
+     about any process on this path; it is not a log line at all (it is a name from the
+     vendor HAL's API, and not one that survived into the images either).
+
+### Unable to get GPS service
+  UT rootfs     : 0
+  Android system: 2
+  Android vendor: 0
+  searched as a fixed string, recursively, case-sensitively, over every regular file in the image
+
+  This one IS present -- but not on this path. Where it lives:
+    /mnt/android-sys-test/lib/libandroid_servers.so
+    /mnt/android-sys-test/lib64/libandroid_servers.so
+    and in the UT rootfs (the daemon and the library it loads): 0
+    -> libandroid_servers.so is the FRAMEWORK's GnssLocationProvider. The UT daemon does not
+       go through it: providers/gps/android_hardware_abstraction_layer.cpp calls
+       IGnss::getService() over HIDL itself. So a 0 from that string says nothing about this
+       path -- and the earlier probe read exactly that 0 as 'the provider was never
+       instantiated'.
+
+## what the probe prints now, from the same three groups
+
+  logcat  block: locClientOpen failed / Failed to get features supported / gnssSetCapabilitesCb
+                 (gnssSetCapabilitesCb is also in libandroid_servers.so, but on this path the
+                  writer is the vendor impl android.hardware.gnss@1.0-impl-qti.so in the
+                  container -- logcat either way)
+                 (+ 'Failed to checking QMI_LOC message supported', still logcat-owned)
+  journal block: Issue instantiating provider / Instantiating and configuring /
+                 Remote service failed to start / Failed to inject reference time /
+                 android_hardware_abstraction_layer
+  gates:         the trust-store messages above, journal-owned, next to the daemon's environ
+
+## how to reproduce
+
+  sh scripts/host/zl1-gps-selftest.sh          # 59 checks, no device
+  and, for the counts above, the same greps this file was produced by:
+  grep -rlaF -- 'locClientOpen failed' /mnt/android-sys-test /mnt/vendor-ro
+  grep -rlaF -- 'Issue instantiating provider' /mnt/utrootfs
