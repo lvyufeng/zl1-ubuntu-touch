@@ -143,7 +143,7 @@ run() { # $1 = scenario; sets out, rc
   setup "$1"
   rm -f "$MARK"
   before="$(snapshot)"
-  out=$(PATH="$STUB:$PATH" sh "$W/check.sh" 2>&1); rc=$?
+  out=$(PATH="$STUB:$PATH" timeout 60 sh "$W/check.sh" 2>&1); rc=$?   # rc 124 = it hung
   after="$(snapshot)"
   if [ -f "$MARK" ]; then
     bad "$1: a mutating command was EXECUTED: $(tr '\n' ';' < "$MARK")"

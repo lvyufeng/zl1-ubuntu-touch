@@ -2,7 +2,7 @@
 THE FIRST COMMANDS AFTER RECOVERY, PRE-VERIFIED OFFLINE
 zl1 (LeEco Pro3, MSM8996pro), Ubuntu Touch 24.04-2.x, 2026-09-23
 OFFLINE ONLY: the device was in Qualcomm EDL (05c6:9008, port 3-3) for this whole
-session. Nothing below ran on it. Two host-side harnesses, the real device
+session. Nothing below ran on it. Three host-side harnesses, the real device
 scripts under test, three real defects found.
 ================================================================================
 
@@ -16,11 +16,16 @@ keeper-retirement verdict has to come from that boot's netwatch log, and if the
 addresses do not come up there is no SSH and getting SSH back needs another
 finger on the power button. A shell error in the first command wastes that boot.
 
-So the two scripts that run first were exercised on the host instead:
+So the scripts that run first -- and the one that needs a hand -- were
+exercised on the host instead:
 
-  scripts/device/zl1-edl-postmortem.sh      (health-check item 0, docs 86)
-  scripts/device/zl1-boot-address-check.sh  (health-check item 0b, the gate that
-                                             licenses item 0d, docs 88/94)
+  scripts/device/zl1-edl-postmortem.sh       (health-check item 0, docs 86)
+  scripts/device/zl1-boot-address-check.sh   (health-check item 0b, the gate that
+                                              licenses item 0d, docs 88/94)
+  scripts/device/zl1-orientation-axes.sh     (item 1b, docs 92 -- read-only, but the
+                                              decisive run takes a person holding the
+                                              phone still and upright, so a parser bug
+                                              there wastes a human step too)
 
 Both harnesses are committed, because the previous exercises of these two
 scripts were one-off: docs 86 section 5 records that five synthetic cases were
@@ -46,9 +51,9 @@ Nothing was written to the device, no partition, no boot image, no QDL/firehose
 tool, and no reboot was attempted.
 
 
-1. HOW THE TWO HARNESSES TEST THE REAL SCRIPTS
+1. HOW THE THREE HARNESSES TEST THE REAL SCRIPTS
 --------------------------------------------------------------------------------
-Neither harness reimplements the logic it checks. Each copies the device script
+None of the three reimplements the logic it checks. Each copies the device script
 with `sed`, rewriting only the OPERATIONAL occurrences of its device paths so
 they point into a fake root, and then runs that copy:
 
@@ -295,6 +300,116 @@ Output of `sh scripts/host/zl1-edl-postmortem-selftest.sh`:
   pass=34 fail=0
 
 
+4b. THE ORIENTATION PROBE: NO BUG, AND THAT IS ALSO A RESULT
+--------------------------------------------------------------------------------
+A third harness was written for the same reason as the first two, and it found
+nothing. `device/zl1-orientation-axes.sh` answers the user's "it keeps going
+landscape" report (docs 70/91/92) and its AXES-SWAPPED / AXES-INVERTED verdict
+is the only thing that licenses an accelerometer matrix trial; the decisive run
+needs a person holding the phone still, upright in portrait, screen facing them,
+for the whole window. So a parser bug there wastes a human step, not just a
+command -- and the script is almost entirely parsers: it shells out to `gdbus`
+and then pulls a uint32 out of one reply and three floats out of another with
+sed/awk (`ov_of`, `xyz_of`, the |g| axis picker), and its verdict is a count of
+the values that came out.
+
+`host/zl1-orientation-axes-selftest.sh` puts a stub `gdbus` in front of PATH
+(replies for loadPlugin, requestSensor and the two Properties.Get calls, with
+the two property replies read from files so a scenario is one file write), and
+checks the verdict, the exit code, and the table the human will read. 32 checks:
+
+  * 4 with the g on y and --portrait-up      -> AXES-OK, exit 0;
+  * 2 (and 1) with the g on x                -> AXES-SWAPPED, exit 3 -- the only
+                                                verdict that licenses a change,
+                                                so it is checked in both directions
+                                                (`notwant AXES-SWAPPED` on the OK run);
+  * 3 with the g on y                        -> AXES-INVERTED, exit 4;
+  * 6 with --flat-up (g on z)                -> the documented flat conclusion,
+                                                exit 0, and it may NOT say SWAPPED;
+  * the same 6 with --portrait-up            -> exit 5, "Not upright";
+  * an xyz reply that does not parse         -> exit 1, the guard that caught
+                                                this script's first version;
+  * punctuation drift (`(<uint64 N>, 4)`)    -> the ov_of fallback still reads 4;
+  * no posture flag                          -> measurement only, exit 0, and no
+                                                verdict is guessed;
+  * the conf.d read                         -> the matrix line AND the adaptor
+                                                line are both printed;
+  * --explain                                -> prints the reversible procedure
+                                                and runs no measurement;
+  * `--seconds` with no value                -> a message, not a shell abort.
+
+Every one passed on the first run. That is worth writing down as a result rather
+than as an absence: it means the printed verdict will be about the phone's pose,
+not about the parsing. It does NOT mean the verdict will be AXES-OK -- the
+script's own header says the flat reading cannot decide anything (qtmir ignores
+FaceUp/FaceDown by design), and the decisive run still needs the phone in a hand.
+
+One small thing seen while writing it: `ts_of`/`age_of` are defined in the
+script and `age_of` is never called, so the orientation reply's uint64 timestamp
+is not displayed anywhere. Dead code, no behaviour to test, no bug.
+
+Output of `sh scripts/host/zl1-orientation-axes-selftest.sh`:
+
+  zl1 orientation probe -- offline self-test
+    script under test: scripts/host/../device/zl1-orientation-axes.sh
+    fake root:         /tmp/zl1-orient-selftest/fake
+  
+  == the decisive run: upright portrait ==
+  PASS  portrait-ok: exit 0 (4 = BottomDown, the whole axis family is ruled out)
+  PASS  portrait-ok: verdict says: 4 = BottomDown, the whole axis family is ruled out
+  PASS  portrait-ok: the printed table shows value 4 and the Qt consequence Portrait
+  PASS  portrait-ok: the printed table shows the axis carrying the ~1 g (y here)
+  PASS  portrait-ok: it does not say [AXES-SWAPPED] (an upright phone must not be called swapped)
+  
+  == 1/2 with the g on x: the axes are exchanged ==
+  PASS  swapped: exit 3 (the only verdict that licenses a matrix trial)
+  PASS  swapped: verdict says: the only verdict that licenses a matrix trial
+  PASS  swapped: the printed table shows the g on x while the phone is upright
+  PASS  swapped: the printed table shows value 2's Qt consequence
+  
+  == 3 with the g on y: same axis, 180 out ==
+  PASS  inverted: exit 4 (BottomUp -> an upside-down screen, not landscape)
+  PASS  inverted: verdict says: BottomUp -> an upside-down screen, not landscape
+  
+  == flat, and it says so: 6 is a face value, which qtmir ignores by design ==
+  PASS  flat-face: exit 0 (the documented flat conclusion)
+  PASS  flat-face: verdict says: the documented flat conclusion
+  PASS  flat-face: the printed table shows the g on z, which is what makes it a face reading
+  PASS  flat-face: it does not say [AXES-SWAPPED] (a flat phone cannot license a matrix change)
+  
+  == the same flat reading but --portrait-up: the phone was not held up ==
+  PASS  not-upright: exit 5 (a face value with --portrait-up is not a verdict)
+  PASS  not-upright: verdict says: a face value with --portrait-up is not a verdict
+  
+  == the accelerometer reply does not parse: no verdict means anything ==
+  PASS  no-accel: exit 1 (the guard that caught this script's first version)
+  PASS  no-accel: verdict says: the guard that caught this script's first version
+  PASS  no-accel: the printed table shows the accel column printed as unknown
+  
+  == the punctuation drift fallback (ov_of takes the last integer when 'uint32' is gone) ==
+  PASS  drift: exit 0 (the value is still read when the reply's punctuation changes)
+  PASS  drift: verdict says: the value is still read when the reply's punctuation changes
+  
+  == no posture flag: measurement only, no verdict ==
+  PASS  no-flag: exit 0 (the script refuses to conclude)
+  PASS  no-flag: verdict says: the script refuses to conclude
+  PASS  no-flag: it does not say [AXES-OK] (and it does not guess)
+  
+  == the running configuration it prints (the identity matrix is not this bug) ==
+  PASS  config: exit 0 (the matrix line is found in the conf.d file)
+  PASS  config: verdict says: the matrix line is found in the conf.d file
+  PASS  config: the adaptor line is printed too
+  
+  == --explain changes nothing and names the two verdicts that license a change ==
+  PASS  explain: exit 0 (the reversible procedure is printed)
+  PASS  explain: verdict says: the reversible procedure is printed
+  PASS  explain: it does not say [== the running configuration] (it does not run a measurement)
+  
+  == a value flag with no value must not abort the shell ==
+  PASS  '--seconds' with no value -> a message and a clean exit
+  
+  pass=32 fail=0
+
 5. AND THE SAME GLOB MISTAKE ELSEWHERE? ONE HIT, AND IT IS A COMMENT
 --------------------------------------------------------------------------------
 Swept the whole script tree for the pattern (`ls` with flags, a `*/` glob
@@ -347,6 +462,7 @@ is a case where listing contents is the intent.
 |---|---|
 | `scripts/host/zl1-boot-address-selftest.sh` | new. Six synthetic netwatch logs, 10 checks, on the real `device/zl1-boot-address-check.sh` |
 | `scripts/host/zl1-edl-postmortem-selftest.sh` | new. Seven synthetic device states, 34 checks, a 23-command guard, a before/after write snapshot |
+| `scripts/host/zl1-orientation-axes-selftest.sh` | new. A stub `gdbus` and eight canned postures, 32 checks on the real `device/zl1-orientation-axes.sh` (section 4b) |
 | `scripts/device/zl1-edl-postmortem.sh` | fixed: `ls -dtr` in the fallback snapshot lookup (section 4) |
 | `scripts/device/zl1-boot-address-check.sh` | fixed: `${2?}` on `--log`; the unit state is captured instead of `\|\| echo`-ed (section 3) |
 | `scripts/device/zl1-gps-probe.sh`, `device/zl1-orientation-axes.sh`, `device/zl1-thermal.sh`, `host/zl1-camera-app-test.sh` | fixed: `${2?}` on every value-taking flag (section 2) |

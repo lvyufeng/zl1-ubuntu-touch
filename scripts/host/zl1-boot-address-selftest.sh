@@ -123,7 +123,7 @@ ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
 
 verdict_of() { # $1 log file -> prints the verdict name
-  out=$(sh "$W/check.sh" --log "$FR/userdata/$1" 2>/dev/null); rc=$?
+  out=$(timeout 60 sh "$W/check.sh" --log "$FR/userdata/$1" 2>/dev/null); rc=$?   # rc 124 = it hung
   case "$out" in
   *"The netwatch applied the addresses"*) v=netwatch-configured ;;
   *"but a heal fired first"*)             v=heal-first ;;
