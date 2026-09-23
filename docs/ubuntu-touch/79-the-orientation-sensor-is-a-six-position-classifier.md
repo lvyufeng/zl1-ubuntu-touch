@@ -20,7 +20,7 @@ interval              (uint32 100,)
 getAvailableIntervals ([(5.0, 1000.0, 0.0)],)
 ```
 
-**"orientation of the device screen as 6 pre-defined positions"** —— 这就是 Android 的 **device orientation**（HIDL `SENSOR_TYPE_DEVICE_ORIENTATION = 25`）：*六个离散位置*的分类器（1 portrait、2 landscape、3 reverse portrait、4 reverse landscape、5 face up、6 face down），不是一个角度流。
+**"orientation of the device screen as 6 pre-defined positions"** —— 这就是 Android 的 **device orientation**（HIDL `SENSOR_TYPE_DEVICE_ORIENTATION = 25）：*六个离散位置*的分类器（~~1 portrait、2 landscape、3 reverse portrait、4 reverse landscape、5 face up、6 face down~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §2：这六个编号不是 AOSP/Qt 那一套。sensorfw 自己的 `PoseData::Orientation` 是 `LeftUp=1, RightUp=2, BottomUp=3, BottomDown=4, FaceDown=5, FaceUp=6`——**6 才是 face up**。】**），不是一个角度流。
 
 这一类传感器**在定义上就是 on-change**：它报的是"现在是哪一个位置"，不是"每秒多少度"。所以：
 
@@ -49,7 +49,7 @@ rotationsensor  'x, y, and z axes rotation in degrees'  (timestamp, -1.0, 180.0,
 positions seen: 6   changes: 0
 ```
 
-加速度计 z 稳定在 **+1010 mG**。按 Android 的坐标系（+Z 从屏幕指向用户），**平放的手机屏幕朝上时 z ≈ +1000 mG**——也就是 `5`（face up）。分类器报的是 `6`（face down）。**两者矛盾。**
+加速度计 z 稳定在 **+1010 mG**。按 Android 的坐标系（+Z 从屏幕指向用户），**平放的手机屏幕朝上时 z ≈ +1000 mG**——也就是 `5`（face up）。分类器报的是 `6`（face down）。~~**两者矛盾。**~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §4：不矛盾——`processFace()` 就是"z > 0 → 6"，而 sensorfw 的枚举里 6 = `FaceUp`。两列说的是同一件事。】**
 
 两种解释，都要人来分：
 

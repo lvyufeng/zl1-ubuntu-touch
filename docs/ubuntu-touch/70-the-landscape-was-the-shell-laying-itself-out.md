@@ -2,7 +2,7 @@
 
 **日期**: 2026-09-22
 **状态**: **竖屏回来了 —— 重启 `lomiri-full-greeter.service` 之后，新 shell 的 qtmir 报的是 `Screen - initial currentOrientation is: Qt::PortraitOrientation`，而且之后没有采纳过任何方向变化，所以版面是竖的。** 机制不是"读一个新值把屏幕扳回来"，而是 `OrientedShell.qml` 里的 `orientation` 只在 `physicalOrientation` **变化**时才被赋值 —— 传感器现在给不出 qtmir 认得的姿态，于是那个变量一直停在它的初值 0（Primary = 竖屏）。
-**但这是缓解，不是治本**：`orientationsensor` 恒报 `(uptime_µs, 6)` 而且**自己不出值**（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) 更正了这里原先"加速度计没注册"的判断：加速度计、磁力计、陀螺仪都在流，缺的是 `start()` 那一步），而 shell 每次亮/灭屏都会重读这个缓存值、把 `6` 采纳成横屏 —— **按一下电源键就可能横回去**；`vsimd` 每 5 秒崩一次。方向这条线的根因在方向传感器本身，§6 是它的现状和下一步。
+**但这是缓解，不是治本**：`orientationsensor` 恒报 `(uptime_µs, 6)` 而且**自己不出值**（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) 更正了这里原先"加速度计没注册"的判断：加速度计、磁力计、陀螺仪都在流，缺的是 `start()` 那一步），而 ~~shell 每次亮/灭屏都会重读这个缓存值、把 `6` 采纳成横屏~~ —— **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §1/§5：`6` 不是 FaceDown、也不是横屏的来源。**sensorfw 自己的枚举里 `FaceUp` 就是 6（Qt 的枚举里 `FaceUp` 是 5），而且 qtmir 只在**四个边位值**上改写屏幕，`FaceUp`/`FaceDown` 两个值走 `default:` 分支、只打一行 `unknown orientation.`（`92` §5 有反汇编；本文件 §2 引的那串 `unknown orientation.` 就是它）。所以平放**永远**不会让屏幕转，也不会让它转回来——这是上游设计。§2 那次 385 秒被采纳的 `InvertedLandscape` 按 `92` §1 的表只能来自"右边朝上"那个读数，而不是 6】**；`vsimd` 每 5 秒崩一次。方向这条线的根因在方向传感器本身，§6 是它的现状和下一步。
 **接续**: [`69`](69-repowerd-died-on-a-startup-race-with-sensorfwd.md)（黑屏的因：repowerd 死了；屏一亮就露出这一层的横屏）、[`60`](60-sensorfwd-was-the-third-service-behind-the-same-wall.md)（sensorfwd 本身）、[`58`](58-one-cold-boot-where-the-secure-world-refused-and-three-firmwares-did-not-load.md)（安全世界/固件那条线）
 
 ---
@@ -70,7 +70,7 @@ $ gdbus call --system ... Get local.OrientationSensor orientation
 `(tu)` = (时间戳, 值)。两件事量出来了：
 
 - **时间戳是"取到这次读数时的 uptime（微秒）"**：`4907939888 µs = 4907.94 s`，而 qtmir 在同一时刻的日志是 `[ 4907.942493] ... customEvent()` —— 对得上。更早一次读到的是 `1912687691 µs = 1912.69 s`。所以**它会刷新**，但只在屏幕电源那类事件上刷新，间隔几十分钟。
-- **值一直是 6**。6 是 `FaceDown`。手机平放在桌上、屏幕朝上，正确的应该是 5（`FaceUp`）。
+- **值一直是 6**。~~6 是 `FaceDown`。手机平放在桌上、屏幕朝上，正确的应该是 5（`FaceUp`）。~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §2/§4：这一句把 Qt 的枚举名字套到了 sensorfw 的编号上。sensorfw 自己的 `PoseData::Orientation` 里 `FaceDown` = 5、`FaceUp` = 6，而 `processFace()` 就是"z > 0 → 6"，与这里测到的 `z ≈ +1015 mG` 一致。所以 6 是**正确**的朝上值，不是反的。】**
 
 还有一条：**`orientationChanged` 信号一次都不发。** 30 秒的 `dbus-monitor --system "interface='local.OrientationSensor'"` 只抓到我自己的连接建立/断开，一条信号都没有。
 
@@ -112,7 +112,7 @@ qml: Calculating new usage mode. Pointer devices: 1 ... root width: 1080 height:
 
 ## 6. 底层还没修：传感器数据通路
 
-> **【更正，见 [`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)】**这一节 (1) 的结论是错的，错在量法：sensorfw 的调用是**三个**（`loadPlugin` → `requestSensor` → **`start(sessionId)`**），当时漏了第三个，于是把"会话没开始出数"读成了"没注册"。补上之后**加速度计、磁力计、陀螺仪都在流**（`xyz` 两个相隔 10 秒的读数是 `(8674999894, -1.56, 21.50, 1016.0)` 和 `(8684997475, -1.52, 23.35, 1017.2)`，手机平放，z ≈ 1 g）。§4 那个"竖着拿 20 秒"的分叉也因此有了答案：**不是姿态算错，是 `orientationsensor` 自己不出值** —— 输入在流，它 559 秒没有新样本，而 shell 每次亮灭屏都会去**重读那个缓存值**（这也是它横/竖切换的真正触发，§5 的缓解因此只是有条件的）。另外补一条当时不知道的：**(5) 每次 `systemctl restart sensorfwd` 都会让容器的 sensors HAL 自杀一次**（6/6，毫秒级同一时刻），所以"重启 sensorfwd 看看"这条在这一节之后**不再使用**。
+> **【更正，见 [`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)】**这一节 (1) 的结论是错的，错在量法：sensorfw 的调用是**三个**（`loadPlugin` → `requestSensor` → **`start(sessionId)`**），当时漏了第三个，于是把"会话没开始出数"读成了"没注册"。补上之后**加速度计、磁力计、陀螺仪都在流**（`xyz` 两个相隔 10 秒的读数是 `(8674999894, -1.56, 21.50, 1016.0)` 和 `(8684997475, -1.52, 23.35, 1017.2)`，手机平放，z ≈ 1 g）。§4 那个"竖着拿 20 秒"的分叉也因此有了答案：**不是姿态算错，是 `orientationsensor` 自己不出值** —— 输入在流，它 559 秒没有新样本，而 shell 每次亮灭屏都会去**重读那个缓存值**（这也是它横/竖切换的真正触发，§5 的缓解因此只是有条件的）**——【再更正一次，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §5：亮灭屏确实会让 qtmir 重读，但重读到的那个 `6` 会被它忽略（`FaceUp`/`FaceDown` 不参与映射），所以"重读"本身不改屏幕；`71` §5 那条日志里两次被采纳的 `InvertedLandscape` 只能是"右边朝上"那类边位读数（按电源键意味着手在手机上），不是 6】**。另外补一条当时不知道的：**(5) 每次 `systemctl restart sensorfwd` 都会让容器的 sensors HAL 自杀一次**（6/6，毫秒级同一时刻），所以"重启 sensorfwd 看看"这条在这一节之后**不再使用**。
 
 **（1）`accelerometersensor` 在 sensorfw 里没有注册。** `availableSensorPlugins` 有 9 个（`accelerometersensor alssensor compasssensor gyroscopesensor magnetometersensor orientationsensor pressuresensor proximitysensor rotationsensor`），但 `requestSensor` 的答复是：
 

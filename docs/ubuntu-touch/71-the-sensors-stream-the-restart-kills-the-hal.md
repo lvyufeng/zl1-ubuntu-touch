@@ -5,7 +5,7 @@
 
 1. **`accelerometersensor` 没有"没注册"** —— 那是量错了。sensorfw 的调用是三个而不是两个：`loadPlugin(name)` → `requestSensor(name, pid)` → **`<obj>.start(sessionId)`**。少了最后一步，一个完全健康的传感器会一直回放"上一次别人启动它时"的那个值，读起来就是"冻住/没数据"。按三段顺序调，**加速度计、磁力计、陀螺仪都在流**（实测：`xyz` 两个相隔 10 秒的读数是 `(8674999894, -1.56, 21.50, 1016.0)` 和 `(8684997475, -1.52, 23.35, 1017.2)`，手机平放，z 轴 ~1 g）。
 2. **"传感器全是旧值"的来源是我们自己的 `systemctl restart sensorfwd`**：这个 boot 里 6 次 sensorfwd 停止，**6/6** 都在毫秒级同一时刻对应容器里一行 `ISensors::poll() re-entry. I do not know what to do except killing myself.`（vendor sensors HAL 自杀），随后 +0.4 秒一个新的 HAL 实例重新注册。**`requestSensor`/`start` 不会杀它**（一次 300 秒的会话里，1 个、2 个 adaptor 都试过，零次自杀）。所以这台设备上"重启 sensorfwd 修传感器"是反的。
-3. **真正不流的是 `orientationsensor`**：它的两个输入（加速度计、陀螺仪）都在流，它自己**559 秒没有出过新值**，最后一个是显示电源事件那一刻算出来的 `6`。而**横屏的触发量出来了**：电源键 → 显示电源变化 → qtmir 重读这个缓存值 → `6` 被映射成 `Qt::InvertedLandscapeOrientation` → shell 采纳。**所以 [`70`](70-the-landscape-was-the-shell-laying-itself-out.md) §5 的"重启 greeter 回竖屏"不是持久解，按一下电源键就可能横回去。**
+3. **真正不流的是 `orientationsensor`**：它的两个输入（加速度计、陀螺仪）都在流，它自己**559 秒没有出过新值**，最后一个是显示电源事件那一刻算出来的 `6`。而 ~~**横屏的触发量出来了**：电源键 → 显示电源变化 → qtmir 重读这个缓存值 → `6` 被映射成 `Qt::InvertedLandscapeOrientation` → shell 采纳。~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §1/§5：`6` 不可能被映射成 `InvertedLandscape`——sensorfw 的 6 是 `FaceUp`，QtSensors 把它翻成 `FaceUp`，而 qtmir 对 `FaceUp`/`FaceDown` 走 `default:`、只打印 `unknown orientation.`、不改屏幕。§5 那两次被采纳的 `InvertedLandscape` 只能是四个边位值里"右边朝上"那一个（按电源键＝手在手机上，读数在动）。】** **所以 [`70`](70-the-landscape-was-the-shell-laying-itself-out.md) §5 的"重启 greeter 回竖屏"确实不是持久解，但机制不是"6 被采纳"，而是：qtmir 只为四个边位值改写屏幕，平放（`FaceUp`/`FaceDown`）按设计什么都不做，于是一次边位读数就会一直留着（`92` §6）。**
 
 **接续**: [`70`](70-the-landscape-was-the-shell-laying-itself-out.md)（横屏与 §6 的传感器现状，本文更正它）、[`69`](69-repowerd-died-on-a-startup-race-with-sensorfwd.md)（repowerd 的启动竞态）、[`60`](60-sensorfwd-was-the-third-service-behind-the-same-wall.md)（sensorfwd 自己）
 
@@ -94,10 +94,10 @@ E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry
 三件事因此成立：
 
 1. **触发是显示电源变化，而不是"新数据"** —— 是屏幕亮/灭让 qtmir 去**重读那个缓存值**。
-2. **只要缓存值是 `6`，重读的结果就是横屏**（两个不同的电源事件各自采纳了一次 `InvertedLandscape`，两次都在 1 Hz 轮询读到 `6` 的窗口里）。同一秒里那次 `unknown orientation` 说明**值在短暂的起转瞬间是动过的**（1 Hz 的轮询看不到亚秒变化），但落定之后就是 `6`。
-3. **所以 `70` §5 的缓解是有条件的，而条件已经明确**：重启 greeter 让 `orientation` 变量回到初值（竖屏），但**任何一次电源键/亮灭屏都会重新采纳 `6`，也就是横回去**。要真正不横，得让 `6` 不再出现（§7）。
+2. ~~**只要缓存值是 `6`，重读的结果就是横屏**（两个不同的电源事件各自采纳了一次 `InvertedLandscape`，两次都在 1 Hz 轮询读到 `6` 的窗口里）。~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §5：`6` 会被 qtmir 忽略，所以"缓存值是 6 → 屏幕横"在代码里不成立。** 这一条的**观察**仍然有效（两次电源事件各采纳了一次 `InvertedLandscape`，而同一秒里还有 `unknown orientation`），但解释要反过来读：`InvertedLandscape` 只可能来自**边位**读数（`RightUp`＝右边朝上），所以那两次读数不是 6；同一秒里的 `unknown orientation` 才是 6（`FaceUp`）。**1 Hz 轮询看到的是这两种值在亚秒尺度上交替**——手正在按电源键，也就是手机正在被拿起/转动。】** 同一秒里那次 `unknown orientation` 说明**值在短暂的起转瞬间是动过的**（1 Hz 的轮询看不到亚秒变化），但落定之后就是 `6`。
+3. **所以 `70` §5 的缓解是有条件的，而条件已经明确**：重启 greeter 让 `orientation` 变量回到初值（竖屏），但 ~~**任何一次电源键/亮灭屏都会重新采纳 `6`，也就是横回去**。要真正不横，得让 `6` 不再出现（§7）。~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md) §6：不是"6 让它横回去"，而是"一次边位读数就够、而平放不能把它改回来"（qtmir 对 `FaceUp`/`FaceDown` 走 `default:`）。所以判据不是"让 6 不出现"，而是竖握时读数是不是 4——`92` §7 的 `--portrait-up` 那一次测量。】**
 
-顺带一个观察，不是结论：`6` 是在手机平放、屏幕朝上、加速度计 z ≈ +1015 mG 的情况下算出来的；`30-hidl.conf` 给加速度计的坐标矩阵是单位阵。这条链里"哪一处把上下反了"还没有量到 —— 但**现在有两个在流的输入**，这条链第一次是可查的。
+顺带一个观察，不是结论：`6` 是在手机平放、屏幕朝上、加速度计 z ≈ +1015 mG 的情况下算出来的；`30-hidl.conf` 给加速度计的坐标矩阵是单位阵。~~这条链里"哪一处把上下反了"还没有量到 —— 但**现在有两个在流的输入**，这条链第一次是可查的。~~ **【更正，见 [`92`](92-the-orientation-chain-is-correct-and-the-flat-value-is-ignored.md)：这条链里没有"反"的地方——三个枚举（sensorfw / QtSensors / Qt）的编号各不同、名字各有各的叫法，而中间那张翻译表是逐名字对齐的（sensorfw 6 `FaceUp` → Qt 5 `FaceUp`）。"6 朝上"与 `z ≈ +1015 mG` 是**同一个事实的两次独立确认**，不是矛盾。还没量到的是**竖握**那一次读数（`92` §7）。】**
 
 **【91 把它缩到一行了。】** 那个 1–6 的值不是 Android 方向传感器直通，是 sensorfw 自己用**加速度计**算的（`orientationchain` ← `accelerometerchain` + `orientationinterpreter`，见 `91` §2 的字符串证据）；而这条链上唯一的换算是 `[accelerometer] transformation_matrix`，`30-hidl.conf` 里它是**单位阵**。所以"哪一处反了"这个问题现在是"z 的符号"，候选修法是一行，并且可以用 `scripts/device/zl1-orientation-axes.sh`**只读地**先测出来再改（`91` §1/§7）。
 

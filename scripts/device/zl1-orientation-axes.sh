@@ -1,49 +1,77 @@
 #!/bin/sh
-# zl1-orientation-axes -- why does the shell go landscape when the phone lies flat?
+# zl1-orientation-axes -- which way is the phone, and does the sensor stack agree?
 #
-# Why this exists (docs 91): two docs recorded the symptom and neither could name the link that flips
-# up/down.
+# Why this exists (docs 92; it replaces the premise of docs 91's version of this script):
 #
-#   * doc 71 section 5: the orientation value is 6 while the phone is flat, screen up, and the
-#     accelerometer reads z ~ +1015 mG. In the six-position vocabulary that sensorfw's own
-#     interpreter uses, 5 is face up and 6 is face down -- so the two disagree.
-#   * doc 70 section 5: qtmir maps that value to Qt::InvertedLandscapeOrientation, which is where
-#     the user-visible "it keeps going landscape" comes from.
+#   * The shell sitting in landscape is a real symptom (docs 70/71), and for two docs the
+#     guess was "the accelerometer's z is inverted, so a flat screen-up phone is reported
+#     as face down (6) instead of face up (5)". That guess is WRONG, and it is checkable
+#     offline from the binaries in the rootfs:
+#       - sensorfw's own enum (PoseData::Orientation) numbers FaceUp = 6, FaceDown = 5 --
+#         the opposite of Qt's QOrientationReading, where FaceUp = 5, FaceDown = 6. So the
+#         device reporting 6 for a flat, screen-up phone was CORRECT all along.
+#       - OrientationInterpreter::processFace() assigns 6 when z > 0: 6 is the face-up
+#         value, by construction.
+#       - the QtSensors sensorfw backend translates sensorfw -> Qt through a six-entry
+#         table that preserves every NAME (sensorfw 6 FaceUp -> Qt 5 FaceUp).
+#       - qtmir handles four of the six Qt values and sends FaceUp/FaceDown to
+#         "() - unknown orientation.", leaving m_currentOrientation untouched: a FLAT
+#         phone never moves the screen, by design. That is also what the device's own
+#         journal shows (docs 70 section 2) -- the steady state is "unknown orientation."
+#     So neither the flat phone nor the z sign can explain a landscape screen, and the
+#     old "negate z" fix would have changed nothing.
 #
-# Offline it is possible to say which link *can* be at fault, because the data path is not a guess:
-# `local.OrientationSensor` is sensorfw's own object (`liborientationsensor-qt5.so`), its chain is
-# `orientationchain`, and that chain joins the **accelerometer** chain plus the
-# `orientationinterpreter` filter (`processFace()`, `rotateToPortrait()`, `THRESHOLD_PORTRAIT`, and
-# the symbol `accelerometer/orientationinterpreter join failed`). The adaptors in this package that
-# are *named* orientation/rotation/georotation emit `CompassData` -- degrees, not a 1..6 position --
-# so they cannot be producing this value. Between the adaptor's ring buffer and the classifier the
-# only conversion is `[accelerometer] transformation_matrix`, read by `libaccelerometerchain-qt5.so`
-# and **the identity** in `30-hidl.conf`. That is the one candidate, and it is one line.
+#   * What is left is the other two axes, and therefore THIS measurement. The end-to-end
+#     chain for this port (native orientation portrait, from the 1080x1920 geometry):
 #
-# What this script does is measure the pair that decides it, and nothing else:
+#         sensorfw value   name          what the screen gets
+#         -------------    -----------   ---------------------------------------------
+#              1           LeftUp        Qt::LandscapeOrientation
+#              2           RightUp       Qt::InvertedLandscapeOrientation
+#              3           BottomUp      Qt::InvertedPortraitOrientation
+#              4           BottomDown    Qt::PortraitOrientation
+#              5           FaceDown      nothing (qtmir logs "unknown orientation.")
+#              6           FaceUp        nothing (qtmir logs "unknown orientation.")
 #
-#   accelerometer z (sign and magnitude)   x   the classifier's value (5 or 6)
+#     In sensorfw's vocabulary, rotation is atan(y/...) in portrait mode and atan(x/...)
+#     in landscape mode, so BottomUp/BottomDown is the SIGN of y and LeftUp/RightUp the
+#     sign of x. With this port's accelerometer convention (verified: a flat screen-up
+#     phone reads z ~ +1015 mG, docs 71 section 6), a phone held UPRIGHT IN PORTRAIT
+#     should read y ~ +1 g and therefore classify as 4 = BottomDown = Portrait.
 #
-# Both are unambiguous: |z| ~ 1000 with the phone flat, and 5/6 are face up/face down. So:
+#     That is the decisive sample, and it is the one no doc has ever taken:
 #
-#   z > 0 (screen up, the Android convention) + classifier 6 (face down)  -> the frame reaching the
-#                                                                            classifier is inverted
-#   z > 0 + classifier 5                                                  -> it agrees; look elsewhere
+#       --portrait-up, value 4  ->  AXES-OK: the axes are where the stack expects them,
+#                                   and the landscape is a *latching/delivery* question
+#                                   (the last accepted reading was a landscape one and
+#                                   nothing corrects it while the phone is flat) -- not
+#                                   an axis fault.
+#       --portrait-up, value 1 or 2  ->  AXES-SWAPPED: x and y are exchanged (a 90
+#                                   confusion), which makes an upright phone classify as
+#                                   a landscape position. One line of
+#                                   [accelerometer] transformation_matrix.
+#       --portrait-up, value 3  ->  AXES-INVERTED: the pair is 180 out; that shows up as
+#                                   an upside-down portrait screen.
+#       --portrait-up, value 5 or 6  ->  the phone is not upright (it is flat); hold it
+#                                   up and run again.
 #
-# Therefore: run it with --flat-up while the phone lies flat, screen up, on a table. If the summary
-# says INVERTED, the candidate fix is `[accelerometer] transformation_matrix = "1,0,0,0,1,0,0,0,-1"`
-# and `--explain` prints the reversible way to try it. This script never makes that change.
+# The script also prints, per sample, which axis is carrying the ~1 g, so the table can be
+# read against the phone in your hand rather than trusted.
 #
-# It holds two sensor sessions for the length of the run and reads properties. It writes nothing,
-# starts and stops no service, and touches no partition. It does NOT restart the sensor stack: if the
-# samples are stale (`sample age` in the seconds-to-minutes, or `never stamped`), run
-# scripts/device/zl1-sensors-recover.sh first -- that is docs 78's ordering, and it is the repair.
+# What it does to the device: asks sensorfwd for two sensors and holds the sessions for
+# the length of the run, and reads properties. It writes nothing, starts and stops
+# nothing, and touches no partition. It does NOT restart the sensor stack -- if the
+# accelerometer column looks dead or stale, run scripts/device/zl1-sensors-recover.sh
+# first (that is docs 78's ordering, and it is the repair).
 #
-# Usage: zl1-orientation-axes.sh [--flat-up] [--seconds N] [--interval N] [--explain] [--quiet]
-#   --flat-up      you are telling it the phone is lying flat, screen up, right now
+# Usage: zl1-orientation-axes.sh [--portrait-up] [--flat-up] [--seconds N] [--interval N]
+#                                [--explain] [--quiet]
+#   --portrait-up  you are telling it the phone is held upright in portrait, screen
+#                  facing you -- this is the decisive run
+#   --flat-up      you are telling it the phone is lying flat, screen up
 #   --seconds N    how long to sample (default 30)
 #   --interval N   seconds between samples (default 1)
-#   --explain      print the reversible procedure for the candidate fix, and exit
+#   --explain      print the table and the reversible way to try the matrix, then exit
 #   --quiet        only the summary and the verdict
 
 set -u
@@ -52,18 +80,20 @@ SVC=com.nokia.SensorService
 MGR=/SensorManager
 SECONDS_TO_RUN=30
 INTERVAL=1
+PORTRAIT_UP=0
 FLAT_UP=0
 EXPLAIN=0
 QUIET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --flat-up)  FLAT_UP=1; shift ;;
-    --seconds)  SECONDS_TO_RUN="$2"; shift 2 ;;
-    --interval) INTERVAL="$2"; shift 2 ;;
-    --explain)  EXPLAIN=1; shift ;;
-    --quiet)    QUIET=1; shift ;;
-    *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
+    --portrait-up) PORTRAIT_UP=1; shift ;;
+    --flat-up)     FLAT_UP=1; shift ;;
+    --seconds)     SECONDS_TO_RUN="$2"; shift 2 ;;
+    --interval)    INTERVAL="$2"; shift 2 ;;
+    --explain)     EXPLAIN=1; shift ;;
+    --quiet)       QUIET=1; shift ;;
+    *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
 done
 
@@ -71,38 +101,53 @@ say() { [ "$QUIET" = 1 ] || echo "$*"; }
 
 if [ "$EXPLAIN" = 1 ]; then
   cat <<'EXPLAIN'
-The candidate fix, and it is reversible:
+The end-to-end table, for this port (native orientation: portrait, from 1080x1920):
 
-  /etc/sensorfw is a read-only image (docs 64 section 6), so the config cannot be edited in place.
-  sensorfwd takes `-c=P, --config-file=<path>` (docs 71 section 7.2), so the edit is a copy:
+   sensorfw   name          Qt (QtSensors)   qtmir -> screen
+   --------   -----------   --------------   --------------------------------------
+      1       LeftUp        LeftUp(3)        LandscapeOrientation
+      2       RightUp       RightUp(4)       InvertedLandscapeOrientation
+      3       BottomUp      TopDown(2)       InvertedPortraitOrientation
+      4       BottomDown    TopUp(1)         PortraitOrientation
+      5       FaceDown      FaceDown(6)      no change ("unknown orientation.")
+      6       FaceUp        FaceUp(5)        no change ("unknown orientation.")
 
-    1. copy the live config to /userdata and change ONE line in the [accelerometer] section:
-         /etc/sensorfw/sensord.conf            (and sensord.conf.d/30-hidl.conf for the current value)
-         transformation_matrix = "1,0,0,0,1,0,0,0,-1"     <- the candidate: negate z
-    2. point the service at it with a drop-in on the writable /etc path
-         /etc/systemd/system/sensorfwd.service.d/99-accel-matrix.conf
-         [Service]
-         ExecStart=
-         ExecStart=/usr/sbin/sensorfwd <the original arguments> --config-file=/userdata/sensorfw/sensord.conf
-       (repeat the original ExecStart line exactly -- a bare `ExecStart=` empties the list, and a
-        drop-in directory that is not named <unit>.service.d is silently inert)
-    3. restart sensorfwd IN DOCS 78's ORDER, never on its own: a bare `systemctl restart sensorfwd`
-       can kill the container's sensors HAL (docs 71 section 3) -- scripts/device/zl1-sensors-recover.sh
-       is the fixed sequence, and it is also the undo if the stack does not come back.
-    4. re-run this script with --flat-up. The prediction is specific and falsifiable: the same flat,
-       screen-up sample classifies as 5 (face up) instead of 6.
+  So a flat, screen-up phone reports 6, Qt calls it FaceUp, and qtmir ignores it on
+  purpose -- the flat position cannot move the screen. An upright portrait phone should
+  report 4 and get PortraitOrientation. Run this script with --portrait-up and read the
+  verdict before touching anything. If it says AXES-OK, the axes are fine and the
+  landscape is not an accelerometer problem at all.
 
-  Undo: remove the drop-in, `systemctl daemon-reload`, restart in docs 78's order. Nothing outside
-  /userdata and the writable /etc path is written, and no partition or boot image is involved.
+  If (and only if) it says AXES-SWAPPED or AXES-INVERTED, the candidate fix is one line,
+  and it is reversible:
 
-  Why this is one line and not a guess: the only conversion between the accelerometer adaptor's
-  buffer and the classifier is this matrix (libaccelerometerchain-qt5.so reads
-  `accelerometer/transformation_matrix`), and today it is the identity -- i.e. nothing corrects
-  anything. The magnetometer section in the same file is NOT the identity (it negates x), which is
-  the same kind of correction for the same kind of reason.
+    /etc/sensorfw is a read-only image (docs 64 section 6), so the config cannot be
+    edited in place. sensorfwd takes `-c=P, --config-file=<path>` (docs 71 section 7.2),
+    so the edit is a copy:
 
-This script does not make the change. It is a behaviour change to the running sensor stack, and the
-measurement above has to say INVERTED first.
+      1. copy the live config to /userdata and change ONE line in [accelerometer]:
+           transformation_matrix = "..."    (the value the verdict names)
+      2. point the service at it with a drop-in on the writable /etc path
+           /etc/systemd/system/sensorfwd.service.d/99-accel-matrix.conf
+           [Service]
+           ExecStart=
+           ExecStart=/usr/sbin/sensorfwd <the original arguments> --config-file=/userdata/sensorfw/sensord.conf
+         (repeat the original ExecStart line exactly -- a bare `ExecStart=` empties the
+          list, and a drop-in directory that is not named <unit>.service.d is silently
+          inert)
+      3. restart sensorfwd IN DOCS 78's ORDER, never on its own: a bare
+         `systemctl restart sensorfwd` can kill the container's sensors HAL (docs 71
+         section 3); scripts/device/zl1-sensors-recover.sh is the fixed sequence, and it
+         is also the undo if the stack does not come back.
+      4. re-run this script with --portrait-up. The prediction is specific: the same
+         upright sample must become 4 (BottomDown), and the shell must go portrait.
+
+    Undo: remove the drop-in, `systemctl daemon-reload`, restart in docs 78's order.
+    Nothing outside /userdata and the writable /etc path is written, and no partition or
+    boot image is involved.
+
+  This script does not make the change: it changes visible screen behaviour, and the
+  verdict has to say AXES-SWAPPED/AXES-INVERTED first.
 EXPLAIN
   exit 0
 fi
@@ -117,6 +162,7 @@ call() {
   _obj="$1"; _method="$2"; shift 2
   gdbus call --system --dest "$SVC" --object-path "$_obj" --method "$_method" "$@" 2>&1 | tail -1
 }
+
 now_us() { awk '{printf "%d", $1 * 1000000}' /proc/uptime; }
 ts_of() { printf '%s' "$1" | sed -n 's/.*uint64 \([0-9][0-9]*\).*/\1/p'; }
 age_of() {
@@ -125,8 +171,34 @@ age_of() {
   [ "$_t" = 0 ] && { printf 'never'; return; }
   awk -v n="$(now_us)" -v t="$_t" 'BEGIN { printf "%d", (n - t) / 1000000 }'
 }
+# the orientation property is a (tu): take the uint32. If the punctuation ever changes,
+# fall back to the last integer in the reply rather than to nothing.
+ov_of() {
+  _v=$(printf '%s' "$1" | sed -n 's/.*uint32 \([0-9][0-9]*\).*/\1/p')
+  [ -n "$_v" ] || _v=$(printf '%s' "$1" | tr -cs '0-9' '\n' | grep . | tail -1)
+  printf '%s' "${_v:-}"
+}
+# xyz is ((uint64 ts, x, y, z),)-ish and the fields are FLOATS. Drop everything up to the
+# first comma (the timestamp), split on commas, and from each field take the integer part:
+# on " -1.56" that is -1, on " 1016.0)>,)" that is 1016. Three fields or nothing.
+xyz_of() {
+  _rest=${1#*,}
+  [ "$_rest" != "$1" ] || { printf ''; return; }
+  printf '%s' "$_rest" | tr ',' '\n' |
+    sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | tr '\n' ' '
+}
+# the composition, so the printed value explains itself
+consequence() {
+  case "$1" in
+    1) printf 'Landscape' ;;
+    2) printf 'InvertedLandscape' ;;
+    3) printf 'InvertedPortrait' ;;
+    4) printf 'Portrait' ;;
+    5|6) printf 'ignored (face)' ;;
+    *) printf 'unknown to qtmir' ;;
+  esac
+}
 
-# --- what the config says the matrix is, so the run carries its own evidence ----------------------
 say "== the running configuration (read-only; /etc/sensorfw is a read-only image)"
 for f in /etc/sensorfw/sensord.conf /etc/sensorfw/sensord.conf.d/*.conf; do
   [ -f "$f" ] || continue
@@ -138,9 +210,11 @@ for f in /etc/sensorfw/sensord.conf /etc/sensorfw/sensord.conf.d/*.conf; do
   [ -n "$_a" ] && say "   $f: $_a"
   [ -n "$_m" ] && say "   $f: $_m"
 done
+say "   (an identity matrix means nothing is corrected; see the header for what the"
+say "    library does with it, and docs 92 for why that is not this bug)"
 say ""
 
-# --- hold sessions for two sensors (docs 60: this is the third call, `start`, that matters) ------
+# --- hold sessions for two sensors (the third call, `start`, is the one that matters) ---
 sleep "$SECONDS_TO_RUN" & KEEPER=$!
 trap 'kill $KEEPER 2>/dev/null' EXIT INT TERM
 
@@ -149,109 +223,138 @@ for n in orientationsensor accelerometersensor; do
   sid=$(call "$MGR" local.SensorManager.requestSensor "$n" "$KEEPER" |
         sed -n 's/^(\([-0-9][0-9]*\),)$/\1/p')
   case "$n" in
-    orientationsensor)  call /SensorManager/orientationsensor local.OrientationSensor.start "$sid" >/dev/null ;;
-    accelerometersensor) call /SensorManager/accelerometersensor local.AccelerometerSensor.start "$sid" >/dev/null ;;
+    orientationsensor)    call /SensorManager/orientationsensor local.OrientationSensor.start "$sid" >/dev/null ;;
+    accelerometersensor)  call /SensorManager/accelerometersensor local.AccelerometerSensor.start "$sid" >/dev/null ;;
   esac
 done
 
-say "   uptime    orient  orient age    accelerometer x y z (mG)                accel age"
-say "  --------   ------  -----------   ------------------------------------   ---------"
+say "   uptime    value  -> screen           accel x y z (int part)  |g| axis"
+say "  --------   -----  ------------------   ------------------------   ----------"
 
-f5_pos=0; f5_neg=0; f6_pos=0; f6_neg=0; flat=0
+n4=0; n3=0; n12=0; nface=0; nundef=0; nasample=0
 i=0
 while [ "$i" -lt "$SECONDS_TO_RUN" ]; do
   o=$(call /SensorManager/orientationsensor org.freedesktop.DBus.Properties.Get local.OrientationSensor orientation)
   a=$(call /SensorManager/accelerometersensor org.freedesktop.DBus.Properties.Get local.AccelerometerSensor xyz)
-  ov=$(printf '%s' "$o" | sed -n 's/.*uint32 \([0-9][0-9]*\).*/\1/p')
-  # The xyz property comes back as a struct wrapped in a variant, and the exact punctuation depends
-  # on the gdbus version (`(uint64 123, 5, -3, 1015)`, `(<...>,)`, ...). Rather than pin a shape,
-  # take the integers: the timestamp is first and x, y, z are the last three.
-  nums=$(printf '%s' "$a" | tr -cs '0-9-' '\n' | grep -v '^$' | grep -v '^-$')
-  az=$(printf '%s\n' "$nums" | tail -1)
-  ay=$(printf '%s\n' "$nums" | tail -2 | head -1)
-  ax=$(printf '%s\n' "$nums" | tail -3 | head -1)
-  [ "$(printf '%s\n' "$nums" | grep -c .)" -ge 4 ] || { ax=""; ay=""; az=""; }
-  printf '  %8s   %-6s  %-11s   %8s %8s %8s   %s\n' \
-    "$(cut -d. -f1 /proc/uptime)" "${ov:-?}" "$(age_of "$o")" "${ax:-?}" "${ay:-?}" "${az:-?}" "$(age_of "$a")"
-  # Only |z| >= 800 mG is "flat": 5 and 6 are the face positions, and off-flat the pair says nothing.
-  if [ -n "$ov" ] && [ -n "$az" ]; then
-    case "$az" in -*) sign=neg ;; *) sign=pos ;; esac
-    mag=${az#-}
-    if [ "$mag" -ge 800 ] 2>/dev/null; then
-      flat=$((flat + 1))
-      case "$ov:$sign" in
-        5:pos) f5_pos=$((f5_pos + 1)) ;;
-        5:neg) f5_neg=$((f5_neg + 1)) ;;
-        6:pos) f6_pos=$((f6_pos + 1)) ;;
-        6:neg) f6_neg=$((f6_neg + 1)) ;;
-      esac
-    fi
+  ov=$(ov_of "$o")
+  xyz=$(xyz_of "$a")
+  ax=$(printf '%s' "$xyz" | awk '{print $1}')
+  ay=$(printf '%s' "$xyz" | awk '{print $2}')
+  az=$(printf '%s' "$xyz" | awk '{print $3}')
+  # which axis is carrying the ~1 g, and with which sign -- so the table can be read
+  # against the phone in your hand
+  axis="?"
+  if [ -n "${ax:-}" ] && [ -n "${ay:-}" ] && [ -n "${az:-}" ]; then
+    nasample=$((nasample + 1))
+    axis=$(awk -v x="$ax" -v y="$ay" -v z="$az" 'BEGIN {
+      xm = (x<0 ? -x : x); ym = (y<0 ? -y : y); zm = (z<0 ? -z : z);
+      if (zm >= xm && zm >= ym) { printf "z%+d", (z<0 ? -1 : 1) }
+      else if (ym >= xm)        { printf "y%+d", (y<0 ? -1 : 1) }
+      else                      { printf "x%+d", (x<0 ? -1 : 1) }
+    }')
+    [ -n "$axis" ] || axis="?"
   fi
+  printf '  %8s   %-5s  %-18s   %8s %8s %8s   %s\n' \
+    "$(cut -d. -f1 /proc/uptime)" "${ov:-?}" "$(consequence "${ov:-}")" \
+    "${ax:-?}" "${ay:-?}" "${az:-?}" "$axis"
+  case "${ov:-}" in
+    4) n4=$((n4 + 1)) ;;
+    3) n3=$((n3 + 1)) ;;
+    1|2) n12=$((n12 + 1)) ;;
+    5|6) nface=$((nface + 1)) ;;
+    0|'') nundef=$((nundef + 1)) ;;
+  esac
   i=$((i + INTERVAL))
   [ "$i" -lt "$SECONDS_TO_RUN" ] && sleep "$INTERVAL"
 done
 
 say ""
-say "flat samples (|z| >= 800 mG): $flat"
-say "   classifier 5 (face up)   with z > 0: $f5_pos      with z < 0: $f5_neg"
-say "   classifier 6 (face down) with z > 0: $f6_pos      with z < 0: $f6_neg"
+say "samples with a value: 4(BottomDown)=$n4  3(BottomUp)=$n3  1/2(LeftUp/RightUp)=$n12" \
+    " 5/6(face)=$nface  none/0=$nundef   accel samples=$nasample"
 say ""
 
-if [ "$flat" = 0 ]; then
-  say "No flat sample. 5 and 6 are the two face positions, so the pair only means something while the"
-  say "phone lies flat. Put it flat on a table, screen up, and run again with --flat-up. If every"
-  say "sample above is stale (a growing 'accel age', or 0), the stack is the docs 78 fault, not this"
-  say "one: run scripts/device/zl1-sensors-recover.sh first."
+# --- no flag: just the measurement, no verdict ---------------------------------------
+if [ "$PORTRAIT_UP" = 0 ] && [ "$FLAT_UP" = 0 ]; then
+  say "That is the measurement, but not the verdict: it does not know where the phone was."
+  say "The decisive run is --portrait-up, with the phone held upright in portrait, screen"
+  say "facing you: an upright phone should read 4 (BottomDown -> Portrait). See the header,"
+  say "or run --explain for the table and the reversible way to try the matrix."
+  exit 0
+fi
+
+# No verdict can be trusted if the accelerometer column never parsed: the value alone
+# cannot say which way the phone was, and a half-dead stack is docs 78's fault, not this
+# one. This is the check that would have caught the first version of this script.
+if [ "$nasample" = 0 ]; then
+  say "No accelerometer sample parsed at all, so the orientation value cannot be read"
+  say "against the phone's actual pose -- and no verdict here would mean anything. If the"
+  say "accel column is '?' on every line, the sensor stack is the docs 78 fault: run"
+  say "scripts/device/zl1-sensors-recover.sh and then this again."
   exit 1
 fi
 
-if [ "$FLAT_UP" = 0 ]; then
-  say "That is the measurement, but not the verdict: it does not know where the phone was. Run again"
-  say "with --flat-up while the phone lies flat, screen up, on a table (nothing else has to hold"
-  say "still -- the classifier reports a position, not a rate)."
+# --- flat: documented, and it cannot move the screen ---------------------------------
+if [ "$FLAT_UP" = 1 ]; then
+  if [ "$nface" -ge 1 ] && [ "$n12" = 0 ] && [ "$n3" = 0 ] && [ "$n4" = 0 ]; then
+    say "FLAT, and the value is a face value (5 or 6) -- which is what a flat phone should"
+    say "report. Note what that means: qtmir ignores both of the face values by design, so"
+    say "THIS MEASUREMENT CANNOT DECIDE ANYTHING. A flat phone never moves the screen, and"
+    say "\"6\" is not a face-down/inverted reading -- sensorfw numbers FaceUp as 6 and"
+    say "Qt numbers it 5, and the sensorfw backend translates between them by name (docs"
+    say "92). If the shell is landscape right now, the cause is elsewhere: run again with"
+    say "--portrait-up, and read docs 92 section 1."
+    exit 0
+  fi
+  say "You said the phone was flat, but the value is not a face value (5/6). Either the"
+  say "phone is not flat (|z| has to dominate for processFace to fire at all), or the"
+  say "stack is not reporting. Keep the table above."
+  exit 2
+fi
+
+# --- portrait: the decisive verdict ---------------------------------------------------
+if [ "$n4" -ge 1 ] && [ "$n12" = 0 ] && [ "$n3" = 0 ]; then
+  say "AXES-OK. You said the phone was upright in portrait, and it reported 4 = BottomDown,"
+  say "which is exactly what this stack expects (rotation is atan(y/...) in portrait mode,"
+  say "and 4 is the y > 0 case). The chain turns that into Qt::PortraitOrientation, so the"
+  say "accelerometer axes are NOT the reason the shell sits landscape, and the identity"
+  say "[accelerometer] transformation_matrix is not a defect. What remains is latching:"
+  say "qtmir only moves the screen for the four edge positions, and while the phone lies"
+  say "flat it gets FaceUp/FaceDown and changes nothing (docs 92 section 1). Keep this"
+  say "output -- it rules out the whole axis family of explanations."
   exit 0
 fi
 
-# The verdict. Ground truth from --flat-up: the phone is flat, screen up, so the expected value is 5.
-# Every branch below is written so that a *counter* decides it, and each fires only on its own
-# combination -- an earlier version tested "saw a 6 with z > 0" without requiring "never saw a 6 with
-# z < 0", so a run where both signs produced 6 (i.e. the classifier is not tracking the sign at all)
-# was reported as the clean INVERTED case. The synthetic run that alternated the sign caught it.
-if [ "$f6_pos" -ge 1 ] && [ "$f6_neg" = 0 ] && [ "$f5_pos" = 0 ] && [ "$f5_neg" = 0 ]; then
-  say "INVERTED. You said the phone was flat, screen up, and the accelerometer agrees (z > 0, the"
-  say "Android convention: +z is out of the screen when the device faces up). The classifier read that"
-  say "same stream as 6 = face down. So the frame that reaches the classifier is inverted on z, and"
-  say "the only conversion between the accelerometer adaptor's buffer and the classifier is"
-  say "[accelerometer] transformation_matrix -- which is the identity above, i.e. nothing is being"
-  say "corrected. Candidate fix: \"1,0,0,0,1,0,0,0,-1\".  Run --explain for the reversible way to try"
-  say "it; this script does not make the change."
+if [ "$n12" -ge 1 ] && [ "$n4" = 0 ] && [ "$n3" = 0 ]; then
+  say "AXES-SWAPPED. You said the phone was upright in portrait, and it reported 1 or 2"
+  say "(LeftUp/RightUp) -- a landscape position. With the phone held the way you say, that"
+  say "means x and y are exchanged somewhere before the classifier: sensorfw decides"
+  say "portrait vs landscape by the sign of y and atan(y/...) while the phone is upright,"
+  say "so if it sees x instead, an upright phone looks like a phone on its side. Candidate"
+  say "fix: an [accelerometer] transformation_matrix that swaps the two -- run --explain"
+  say "for the reversible procedure, and do not make the change from this output alone:"
+  say "the phone must have been still, upright and screen-facing-you for the whole run."
   exit 3
 fi
 
-if [ "$f6_pos" -ge 1 ] && { [ "$f5_neg" -ge 1 ] || [ "$f6_neg" -ge 1 ]; }; then
-  say "The sign of z moved while the classifier stayed at 6, so the two are not simply opposite. Read"
-  say "the table above: what the classifier is tracking is not (only) the sign of z. If the phone did"
-  say "not move during the run, that is a real disagreement worth recording -- keep the output."
-  exit 2
+if [ "$n3" -ge 1 ] && [ "$n4" = 0 ] && [ "$n12" = 0 ]; then
+  say "AXES-INVERTED. You said the phone was upright in portrait, and it reported 3"
+  say "(BottomUp) -- the same axis, 180 out. That shows up as an upside-down portrait"
+  say "screen, not as landscape: y is negated, so 4 and 3 are swapped. Candidate fix: a"
+  say "transformation_matrix negating y (see --explain). Check that the phone was really"
+  say "screen-up and upright and not, say, upside down on a stand."
+  exit 4
 fi
 
-if { [ "$f5_pos" -ge 1 ] && [ "$f6_pos" = 0 ]; }; then
-  say "AGREES. Flat, screen up (z > 0) classified as 5 = face up, which is the right answer. The frame"
-  say "is not inverted, so the landscape problem is somewhere else: look at what qtmir does with the"
-  say "value (docs 70 section 5 -- 6 maps to InvertedLandscape, and 5 is the value it never saw)."
-  exit 0
+if [ "$nface" -ge 1 ] && [ "$n4" = 0 ] && [ "$n3" = 0 ] && [ "$n12" = 0 ]; then
+  say "Not upright. Every sample is a face value (5/6), which means the phone was flat"
+  say "(|z| >= 300 mG dominates and processFace took over). Hold it upright in portrait,"
+  say "screen facing you, and run again -- that is the only run that decides anything."
+  exit 5
 fi
 
-if [ "$f6_neg" -ge 1 ] && [ "$f6_pos" = 0 ]; then
-  say "AMBIGUOUS, and it is the important case: the classifier said 6 = face down while z was"
-  say "NEGATIVE for a phone you reported screen up. That means this port's accelerometer reports the"
-  say "gravity convention (+z into the screen) rather than Android's. The classifier is then"
-  say "*consistent* with its own input, and the question becomes which convention the whole stack is"
-  say "written against -- do not change the matrix on this output alone. Keep this table."
-  exit 2
-fi
-
-say "Mixed. Read the table: with the phone flat and still, one column should be constant. If both"
-say "moved, something else is driving the classifier -- keep this output and compare it against"
-say "docs/ubuntu-touch/71 (the power-key replay)."
+say "Mixed or empty. Read the table above: while the phone is still, one value should"
+say "dominate. If nothing ever arrives (accel samples = 0, or the accel column is ?), the"
+say "stack is the docs 78 fault, not this one -- run scripts/device/zl1-sensors-recover.sh"
+say "first. If values with no accel accompaniment alternate, that is worth keeping as-is;"
+say "compare it against docs 70 (the power-key replay) and docs 92."
 exit 2
