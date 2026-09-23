@@ -1,0 +1,406 @@
+zl1 fingerprint chain -- offline read out of the vendor image, and the offline harness
+2026-09-23. Device: EDL (05c6:9008, port 3-3). Nothing in here touched the device.
+Image: /mnt/data/zl1-backups/2026-06-07-adb-root-staged/vendor.img
+================================================================================
+
+1. the rc: the two services, and the vendor's own reason for the late_start
+--------------------------------------------------------------------------------
+service fps_hal /vendor/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+    # "class hal" causes a race condition on some devices due to files created
+    # in /data. As a workaround, postpone startup until later in boot once
+    # /data is mounted.
+    class late_start
+    user system
+    group system input
+
+service gx_fpd /vendor/bin/gx_fpd
+    class late_start
+    user system
+    group system
+
+on boot
+    chown system system /dev/goodix_fp
+    chmod 0644 /dev/goodix_fp
+
+    chmod 0666 /dev/qseecom
+
+    # Fingerprint
+    chmod 0664 /sys/devices/soc/soc:fpc_fpc1020/irq
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/irq
+    chmod 0660 /sys/devices/soc/soc:fpc_fpc1020/report_home
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/report_home
+    chmod 0660 /sys/devices/soc/soc:fpc_fpc1020/update_info
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/update_info
+    chmod 0660 /sys/devices/soc/soc:fpc_fpc1020/screen_state
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/screen_state
+    chmod 0660 /sys/devices/soc/soc:fpc_fpc1020/hw_reset
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/hw_reset
+    chmod 0660 /sys/devices/soc/soc:fpc_fpc1020/proximity_state
+    chown system system /sys/devices/soc/soc:fpc_fpc1020/proximity_state
+
+2. the modules on disk
+--------------------------------------------------------------------------------
+-rw-r--r--. 1 root root  174072 Jan  1  1970 fingerprint.msm8996.so
+-rw-r--r--. 1 root root   83792 Jan  1  1970 gxfingerprint5118m.default.so
+
+3. hw_get_module('fingerprint') -> the variant that wins, and what it is
+--------------------------------------------------------------------------------
+$ readelf -d $V/lib64/hw/fingerprint.msm8996.so
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libbinder.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libhardware.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libfp_client5118m.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libandroid_runtime.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so]
+ 0x000000000000000e (SONAME)             Library soname: [libfingerprint5118m.default.so]
+
+$ strings -a ... | grep -iE 'fpdata|Fp::connect|goodix_sensor_init|Init goodix'
+/data/system/users/0/fpdata/
+fpcode, goodix_sensor_init(), Fp::connect failed!
+fpcode, goodix_sensor_init() ok!
+goodix_sensor_init
+Init goodix sensor failed!
+
+4. one library down: the binder client, and the exact service name
+--------------------------------------------------------------------------------
+$ readelf -d $V/lib64/libfp_client5118m.so
+ 0x0000000000000001 (NEEDED)             Shared library: [libbinder.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so]
+$ python3: exact NUL-terminated strings
+  File "<stdin>", line 4
+    print(f"  {f.split('/')[-1]:28} 'FingerPrintService\\0': {str(b'FingerPrintService\x00' in b):5}  'android.hardware.IFpService\\0': {b'android.hardware.IFpService\x00' in b}")
+                                                                                                                                                                                  ^
+SyntaxError: f-string expression part cannot include a backslash
+$ strings -a $V/lib64/libfp_client5118m.so | grep -i 'getService\|reconnect'
+FingerPrint, getService failed, try again later.
+Fp::reconnect()
+reconnected break;
+Success to get FingerPrint Service
+success to getFpTemplate,count:%d
+ wait reconnect......
+_ZN7android2Fp9reconnectEv
+
+5. the provider: gx_fpd -> libfpservice5118m.so -> hw_get_module('gxfingerprint5118m')
+--------------------------------------------------------------------------------
+ 0x0000000000000001 (NEEDED)             Shared library: [libbinder.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libfpservice5118m.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libhardware.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libbacktrace.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libunwind.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc++.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libbase.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so]
+$ strings -a $V/lib64/libfpservice5118m.so | grep -E 'gxfingerprint5118m|hw_get_module'
+gxfingerprint5118m
+hw_get_module
+
+6. the innermost HAL: its OWN store, and the two nodes
+--------------------------------------------------------------------------------
+ 0x0000000000000001 (NEEDED)             Shared library: [libcutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libutils.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libhardware.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libQSEEComAPI.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libfpnav5118m.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [liblog.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libm.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libdl.so]
+$ strings -a ... | grep -E '^/data/gf_data'
+/data/gf_data/authenticate/
+/data/gf_data/base/finger_base/
+/data/gf_data/base/nav_base/
+/data/gf_data/consistency/
+/data/gf_data/enroll/
+/data/gf_data/frr_far/
+/data/gf_data/navigation/
+/data/gf_data/test_sensor/
+  gf_data roots: 8   QSEECom: 5   goodix_fp: 1   /dev/ion: 1   fs_mkdirs: 1
+
+7. the conclusion, in one table
+--------------------------------------------------------------------------------
+  layer                              module / process                  its store                how it fails
+  wrapper HIDL vendor.hal.fingerprint@2.0   fps_hal (.leeco_zl1)        (none)                   access(W_OK) -> silent SYS_EINVAL
+    -> hw_get_module("fingerprint")  /vendor/lib64/hw/fingerprint.msm8996.so   /data/system/users/0/fpdata/  mkdir/opendir on a directory nobody made
+      -> binder client              libfp_client5118m.so             (none)                   getService("FingerPrintService") -> null, retries
+        -> the provider             gx_fpd (late_start, user system)  (none)                   not running -> the retry never ends
+          -> hw_get_module("gxfingerprint5118m")  gxfingerprint5118m.default.so  /data/gf_data/*   fs_mkdirs can fail; then /dev/goodix_fp + QSEECom/TEE
+
+================================================================================
+8. the harness: host/zl1-loc-fp-selftest.sh against the tree as it stands
+================================================================================
+zl1 location-request + fingerprint-probe -- offline self-test
+  scripts under test: scripts/host/../device/zl1-location-request.sh
+                      scripts/host/../device/zl1-fingerprint-probe.sh
+  fake root:          /tmp/zl1-loc-fp-selftest/fake
+
+== 1. --status: read-only, and it says the true thing about the two levers ==
+PASS  --status exits 0
+PASS  --status makes no systemd call that changes anything
+PASS  --status created nothing on disk
+PASS  --status asks the bus who owns the service
+PASS  --status detects the v63 getprop stub (which is what makes both doc 82 levers dead)
+PASS  --status names the property the wrapper reads
+PASS  --status looks for the bridge library in the daemon
+PASS  --status answers that question rather than skipping it
+
+== 2. --explain: prints the two drop-ins, installs neither ==
+PASS  --explain exits 0
+PASS  --explain wrote nothing (the drop-in directory still does not exist)
+PASS  --explain makes no systemd call that changes anything
+PASS  --explain prints gate 1's drop-in
+PASS  --explain spells the directory with the FULL unit name
+PASS  --explain says out loud what A is
+PASS  --explain keeps the fake-coordinate drop-in behind gate 1 (the second reason it never worked)
+PASS  --explain shows the bare ExecStart= that resets the list
+
+== 3. --enable-testing: one file, that content, that restart -- and a notice nobody can silence ==
+PASS  --enable-testing exits 0
+PASS  it created the drop-in directory
+PASS  it wrote /tmp/zl1-loc-fp-selftest/fake/etc/systemd/system/lomiri-location-service.service.d/zl1-testing.conf
+PASS  the drop-in holds exactly that one Environment= line under [Service] and nothing else
+PASS  that is the only file it added
+PASS  and it asks for a daemon-reload
+PASS  and restarts exactly that one unit
+PASS  and it is the only unit it restarts
+PASS  it says what it is doing
+
+   -- the notice under --quiet, which is the defect this round found:
+PASS  --quiet --enable-testing STILL says it is installing a permission bypass
+PASS  and still says what that means
+PASS  and still names the way back
+PASS  --quiet did suppress the read-only analysis, so this is not just 'quiet is broken'
+PASS  and the bypass really was installed, so the notice was needed
+
+== 4. --disable-testing: removes that one file, and only when it is there ==
+PASS  it removed the testing drop-in
+PASS  it left the fake-coordinate drop-in alone
+PASS  it restarts the unit, so gate 1 closes now
+PASS  it reports the removal
+
+   -- and with nothing installed: nothing removed, and no false claim:
+PASS  with nothing installed it created nothing
+PASS  it does not claim to have removed anything
+PASS  it says there was nothing to remove
+PASS  and still restarts the unit (unambiguous state, no write involved)
+
+== 5. --request: writes the client and nothing else ==
+PASS  --request exits 0
+PASS  it wrote the client to its own /tmp path
+PASS  the client asks for the lomiri plugin (the key from the .so's own metadata)
+PASS  --seconds 5 reached the client's own deadline
+PASS  it is a PositionSource, so the marshalling is the library's, not a guess
+PASS  --request installed no drop-in (it only measures)
+PASS  --request makes no systemd call that changes anything
+PASS  it prints the client's own lines unaltered
+PASS  including the one that means 'plugin loaded, no backend'
+PASS  and it states which gate state the result is to be read against
+
+== 6. the zl1 guard and the flag surface (see the device these must refuse on) ==
+PASS  not-the-zl1 exits 1 rather than proceeding
+PASS  and on the wrong device it wrote nothing
+PASS  the fingerprint probe refuses too
+PASS  loc.sh: an unknown argument exits 2
+PASS  loc.sh: --help prints a usage block
+PASS  fp.sh: an unknown argument exits 2
+PASS  fp.sh: --help prints a usage block
+PASS  '--seconds' with no value does not abort the shell (this script defaults it)
+
+== 7. fingerprint: the default run writes nothing at all ==
+PASS  the default run exits 0
+PASS  the default run makes no systemd call that changes anything
+PASS  and it created no store directory
+PASS  it announces that it is read-only when --create-store-dir is not given
+PASS  it states the real question: access() with the HAL's own uid
+PASS  it compares the HAL's mount namespace against the container's for real
+PASS  and lists the path biometryd actually passes
+PASS  whose absence is the finding
+PASS  it counts the caller's line
+PASS  and the HAL's own line, whose being zero is the evidence
+PASS  and the line that puts the failure after openHal()
+PASS  it decides which of the two paths biometryd passes, and says so
+
+== 8. --create-store-dir: ONE path, decided by section 2, with its own undo ==
+PASS  level 27 -> it creates /data/system/users/0/fpdata
+PASS  and NOT the other candidate (the defect this round fixed)
+PASS  it reports what it created
+PASS  the undo names the path it created
+PASS  and it says which path it deliberately did not create
+PASS  the undo does not name a path that was never created
+
+   -- the other branch of section 2, driven by the property it reads:
+PASS  level 29 -> it creates /data/vendor_de/0/fpdata
+PASS  and not the <=27 path
+PASS  with the matching undo
+
+   -- an unreadable property lands on the SAME path a correct Android 8 would use:
+PASS  it explains that atoi("")=0
+PASS  and creates the <=27 path, as biometryd would
+
+   -- already there: no mkdir, no chown, no chmod -- and it does not pretend otherwise:
+PASS  with the directory present it creates nothing
+PASS  and changes no ownership or mode
+PASS  it says the directory was already there
+
+   -- the uid it would chown to comes from the HAL, so no HAL means no write:
+PASS  with no container it exits 1
+PASS  and writes nothing at all
+PASS  it says it aborted rather than reporting a success
+
+
+== 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, two silences ==
+
+   -- nothing else on the device yet: the two silences are both reported as present:
+PASS  it reads the variant properties inside the container, not the host's getprop stub
+PASS  and reports an unset one as unset rather than omitting it
+PASS  it picks the module AOSP's variant order picks
+PASS  and says what that module is, including that its binder client is one library down
+PASS  and names the service that client looks up
+PASS  it lists what is really in the container's /vendor, so 'which module' is an observation
+PASS  with the size of the module it picked
+PASS  and of the Goodix HAL underneath it
+PASS  the listing is filtered to the fingerprint modules, so it stays readable
+PASS  it notes the absent AOSP fallback
+PASS  it checks the daemon the picked module needs -- silence #2
+PASS  and whether FingerPrintService is on the container's binder
+PASS  and the Goodix HAL's own store, which is not the path biometryd passes
+PASS  and the device node that store is reached through
+PASS  the store questions go through the CONTAINER's mount namespace
+
+   -- and with the daemon up and the second store present, both change:
+PASS  gx_fpd is found by its cmdline, with its uid
+PASS  and the 'not running' verdict is gone
+PASS  the binder service list is read through the container's pid namespace
+grep: invalid option -- '>'
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Try 'grep --help' for more information.
+PASS  so the registered case is not reported as absent
+PASS  and the second store is now reported present
+
+   -- the check with teeth: does the resolution really have to go through the container?
+PASS  the mutation landed (the mutant tests the HOST's /vendor, not the container's)
+grep: invalid option -- '>'
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Try 'grep --help' for more information.
+PASS  on the host's /vendor the very same script finds NO module
+PASS  and says so, which is the false 'the HAL is not installed' verdict
+
+   -- and the one namespace answer that changes what every path above MEANS:
+PASS  a differing mount namespace is called out, not glossed over
+PASS  and it does not say 'same' when it is not
+
+pass=110 fail=0
+exit=0
+
+================================================================================
+9. the harness has teeth: the same harness against the script as it was at HEAD
+================================================================================
+$ git show HEAD:scripts/device/zl1-fingerprint-probe.sh > /tmp/zl1-prefix/scripts/device/...
+FAIL  it reads the variant properties inside the container, not the host's getprop stub
+FAIL  and reports an unset one as unset rather than omitting it
+FAIL  it picks the module AOSP's variant order picks
+FAIL  and says what that module is, including that its binder client is one library down
+FAIL  and names the service that client looks up
+FAIL  it lists what is really in the container's /vendor, so 'which module' is an observation
+FAIL  with the size of the module it picked
+FAIL  and of the Goodix HAL underneath it
+FAIL  it notes the absent AOSP fallback
+FAIL  it checks the daemon the picked module needs -- silence #2
+FAIL  and whether FingerPrintService is on the container's binder
+FAIL  and the Goodix HAL's own store, which is not the path biometryd passes
+FAIL  the store questions go through the CONTAINER's mount namespace
+FAIL  gx_fpd is found by its cmdline, with its uid
+FAIL  the binder service list is read through the container's pid namespace
+FAIL  and the second store is now reported present
+FAIL  the mutation did not land, so the check above proves nothing
+pass=91 fail=17
+
+   All 16 are the section that did not exist yet, except the last: 'the mutation did not land'
+   is the guard inside section 9 reporting honestly that a script without the nsenter call
+   cannot be mutated into the host-path form. That is the correct answer, not a defect.
+
+================================================================================
+10. the check with teeth, standalone: the same script resolving /vendor on the HOST
+================================================================================
+   (this run is --keep, so the rewritten scripts and their outputs are still on disk)
+pass=110 fail=0
+
+$ sed 's#nsenter -t "$A" -m -- test -f#test -f#' $W/fp.sh > $W/fp.hostpath.sh
+   the only difference between the two rewritten scripts:
+208c208
+<       if [ -z "$pick" ] && nsenter -t "$A" -m -- test -f "$d/fingerprint.$v.so"; then
+---
+>       if [ -z "$pick" ] && test -f "$d/fingerprint.$v.so"; then
+
+   -- what the real one says (the container has both modules):
+== which module hw_get_module('fingerprint') picks for THIS container
+   ro.hardware          = msm8996
+   ro.product.board     = msm8996
+   ro.board.platform    = msm8996
+   ro.arch              = <unset>
+   -> variant match: /vendor/lib64/hw/fingerprint.msm8996.so
+      that module carries the Goodix sensor glue for the msm8996 variant and is a binder
+      CLIENT (via libfp_client5118m.so) of the service 'FingerPrintService'. It also
+      hardcodes /data/system/users/0/fpdata/ -- the same path biometryd passes and the
+      wrapper access()es, so that path is not only a gate: it is the outer store too.
+   the modules present, as the container sees them:
+   /vendor/lib64/hw/fingerprint.msm8996.so  41232 bytes
+   /vendor/lib64/hw/gxfingerprint5118m.default.so  845944 bytes
+   (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+== the daemon the loaded module needs: gx_fpd, and its binder service
+   -- and what the mutated one says about the very same container:
+== which module hw_get_module('fingerprint') picks for THIS container
+   ro.hardware          = msm8996
+   ro.product.board     = msm8996
+   ro.board.platform    = msm8996
+   ro.arch              = <unset>
+   -> no variant match; AOSP would fall back to fingerprint.default.so
+   the modules present, as the container sees them:
+   /vendor/lib64/hw/fingerprint.msm8996.so  41232 bytes
+   /vendor/lib64/hw/gxfingerprint5118m.default.so  845944 bytes
+   (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+== the daemon the loaded module needs: gx_fpd, and its binder service
+
+================================================================================
+11. two gaps in the harness itself, found while extending it
+================================================================================
+  Both were found by making a check that could only ever pass, fail.
+
+  (a) the rewritten script still read /proc/$gxp for the gx_fpd uid, because rewrite() enumerated the
+      variables to move (/proc/$H, /proc/$_pid) and $gxp was not in the list. On the host /proc/7777
+      does not exist, so the uid came out EMPTY and the scenario still passed -- the branch ran, the
+      answer was vacuous. The fix is a landed check that counts instead of spot-checking:
+          all=$(grep -o '/proc/\$' "$s" | wc -l); moved=$(grep -oF "$FR/proc/\$" "$s" | wc -l)
+      and refuses to run if they differ. It immediately found a SECOND one: the rule for /proc/$A was
+      a no-op (`s#/proc/\$A#/proc/\$A#g`), so the HAL-vs-container mount-namespace comparison read two
+      nonexistent paths, got two empty strings, and reported "same mount namespace" for the wrong
+      reason. Both are now real paths, and section 9 drives the differing case.
+
+  (b) `notwant '^systemctl restart (?!lomiri-location-service)'` used a PCRE lookahead in an ERE
+      pattern, so it matched nothing and passed vacuously. Replaced with a count: exactly one restart.
+
+================================================================================
+12. what this round does NOT show
+================================================================================
+  * Nothing about the device. It is in EDL; every container property, module listing, /proc walk and
+    logcat count in the probe is a FIXTURE. The device answers are still owed.
+  * The chain above is read out of the VENDOR IMAGE, which is a file, and it is the same image the
+    device runs -- but "the module is on disk" is not "the module loaded".
+  * Which of the two stores is the one that actually fails on the device is NOT decided here. The
+    wrapper's access() gate is the first silent failure and the only one with evidence (docs 83);
+    /data/gf_data, the gx_fpd hop and the logcat counts are the three candidates BEHIND it, and the
+    probe now measures all three separately instead of assuming the first explains the rest.

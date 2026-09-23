@@ -149,7 +149,138 @@ else
   echo "   (no container)"
 fi
 
-# --- 3. logcat: whose message is missing -------------------------------------------------------
+# --- 3. under the wrapper: which module loads, and the daemon it needs --------------------------
+#
+# New in docs 98, and it is the part nobody had read out of the images: the wrapper HAL above is only
+# the OUTER third of the chain, and the two halves below it each have their own store and their own
+# way of failing. All of this was established offline from the vendor image (docs 98 section 2):
+#
+#   BiometricsFingerprint::setActiveGroup           <- the access(W_OK) gate, section 1 above
+#     -> FingerprintDaemonProxy::setActiveGroup     <- in-process binder, same binary
+#       -> mDevice = hw_get_module("fingerprint")   <- AOSP hw_get_module, variant order:
+#            ro.hardware, ro.product.board=msm8996, ro.board.platform=msm8996, ro.arch
+#          => /vendor/lib64/hw/fingerprint.msm8996.so   WINS (the variant matches; its SONAME is
+#             libfingerprint5118m.default.so). It carries the Goodix sensor glue itself --
+#             goodix_sensor_init/enroll/match, "Fp::connect failed!", Init goodix sensor failed! --
+#             and hardcodes "/data/system/users/0/fpdata/". Its binder client is one library down:
+#          => /vendor/lib64/hw/gxfingerprint5118m.default.so  only reached as ".default"
+#          -> libfp_client5118m.so  getService("FingerPrintService"), whose interface descriptor is
+#             android.hardware.IFpService; "FingerPrint, getService failed, try again later."
+#         -> gx_fpd  (/vendor/bin/gx_fpd, class late_start, user system) provides FingerPrintService
+#              -> libfpservice5118m.so calls hw_get_module("gxfingerprint5118m")
+#                 => /vendor/lib64/hw/gxfingerprint5118m.default.so
+#                    EIGHT hardcoded /data/gf_data/... roots, fs_mkdirs, chdir,
+#                    links libQSEEComAPI.so and libfpnav5118m.so, opens /dev/goodix_fp, /dev/ion
+#                       -> the TEE, via /dev/qseecom (the rc chmod 0666's it)
+#
+# The wrapper's own rc says why it is late_start: "class hal causes a race condition on some devices
+# due to files created in /data. As a workaround, postpone startup until later in boot once /data is
+# mounted." The vendor knew about the /data dependency; what no rc in this tree does is CREATE the
+# directory (section 5's other candidate is /data/gf_data, which the HAL mkdirs itself).
+#
+# So there are TWO stores, not one, and the second one is created by the HAL itself. Getting the
+# wrapper's path past access() is therefore necessary and not sufficient, and the two questions that
+# decide what happens next -- did hw_get_module pick the module we think, and is the daemon that
+# module calls actually up -- are both answerable here.
+
+echo "== which module hw_get_module('fingerprint') picks for THIS container"
+if [ -z "$A" ]; then
+  echo "   (no container: both the properties and /vendor are the container's, so there is nothing to read)"
+else
+  # The variant order is AOSP's (hardware/libhardware/hardware.c: variant_keys). Read the four
+  # properties inside the container, because the host's getprop is a stub (docs 50).
+  # No temp files: this script is read-only and stays that way. The candidate names are accumulated
+  # in a plain variable, which also means a failed property read cannot leave a stale list behind.
+  variants=""
+  for k in ro.hardware ro.product.board ro.board.platform ro.arch; do
+    v=$(nsenter -t "$A" -p -- /system/bin/getprop "$k" 2>/dev/null | tr -d '\r')
+    printf '   %-20s = %s\n' "$k" "${v:-<unset>}"
+    [ -n "$v" ] && variants="$variants $v"
+  done
+  # /vendor here is the CONTAINER's tree, not the host's: this script runs on the UT side, where
+  # /vendor is a different (or absent) tree. Every path below is therefore resolved with `nsenter -m`,
+  # exactly like the second store further down -- `test -f /vendor/...` on the host would report every
+  # module MISSING and read as "the HAL is not installed", which is the failure this section exists to
+  # rule out. (The first draft of this section made precisely that mistake.)
+  pick=""
+  for v in $variants; do
+    for d in /vendor/lib64/hw /system/lib64/hw /odm/lib64/hw; do
+      if [ -z "$pick" ] && nsenter -t "$A" -m -- test -f "$d/fingerprint.$v.so"; then
+        pick="$d/fingerprint.$v.so"
+      fi
+    done
+  done
+  if [ -n "$pick" ]; then
+    echo "   -> variant match: $pick"
+    case "$pick" in
+    *fingerprint.msm8996.so)
+      echo "      that module carries the Goodix sensor glue for the msm8996 variant and is a binder"
+      echo "      CLIENT (via libfp_client5118m.so) of the service 'FingerPrintService'. It also"
+      echo "      hardcodes /data/system/users/0/fpdata/ -- the same path biometryd passes and the"
+      echo "      wrapper access()es, so that path is not only a gate: it is the outer store too." ;;
+    *) echo "      (an unexpected variant: the offline read is docs 98 section 2; do not trust it here)" ;;
+    esac
+  else
+    echo "   -> no variant match; AOSP would fall back to fingerprint.default.so"
+  fi
+  # What is actually on disk, so "which module" is an observation and not a guess. Size only: readelf
+  # and strings are host tools and are NOT in the device rootfs, so the ELF/linkage facts stay where
+  # they were measured (scripts/host/zl1-vendor-link-audit.sh, offline against the images).
+  echo "   the modules present, as the container sees them:"
+  for d in /vendor/lib64/hw /system/lib64/hw; do
+    nsenter -t "$A" -m -- ls -l "$d" 2>/dev/null |
+      awk -v d="$d" '/finger|gxfinger/ { printf "   %s/%s  %s bytes\n", d, $NF, $5 }'
+  done
+  nsenter -t "$A" -m -- test -e /vendor/lib64/hw/fingerprint.default.so ||
+    echo "   (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)"
+fi
+
+echo "== the daemon the loaded module needs: gx_fpd, and its binder service"
+gxp=0
+for p in /proc/[0-9]*; do
+  [ -r "$p/cmdline" ] || continue
+  c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
+  case "$c" in *gx_fpd*) gxp=${p#/proc/}; break ;; esac
+done
+if [ "$gxp" != 0 ]; then
+  echo "   gx_fpd: pid $gxp  uid=$(awk '/^Uid:/{print $2}' "/proc/$gxp/status" 2>/dev/null)"
+else
+  echo "   gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it"
+  echo "   provides, so its absence is a second, independent reason setActiveGroup cannot work --"
+  echo "   and it is silent in the wrapper: Fp::connect just fails, one layer down."
+fi
+if [ -n "$A" ]; then
+  # The binder namespace is the container's, which is why this needs nsenter -p and why the host's
+  # own `service list` would answer "nothing" (docs 51's rule).
+  sl=$(nsenter -t "$A" -p -- /system/bin/service list 2>/dev/null)
+  n=$(printf '%s\n' "$sl" | grep -aic 'finger')
+  printf '   FingerPrintService on the container binder: %s\n' \
+    "$(printf '%s\n' "$sl" | grep -ai 'finger' | head -3 | tr '\n' ' ')"
+  [ "$n" -gt 0 ] || echo "      -> not registered: the loaded module's Fp::connect has nothing to talk to"
+fi
+
+echo "== the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)"
+if [ -n "$A" ]; then
+  for p in /data/gf_data /data/gf_data/enroll /data/system/users/0/fpdata; do
+    if nsenter -t "$A" -m -- test -e "$p"; then
+      printf '   EXISTS   %-32s %s\n' "$p" "$(nsenter -t "$A" -m -- ls -ldn "$p" 2>/dev/null | awk '{printf "mode=%s uid=%s gid=%s", $1,$3,$4}')"
+    else
+      echo "   MISSING  $p"
+    fi
+  done
+  echo "   (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd"
+  echo "    passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)"
+fi
+
+echo "== the device nodes the innermost HAL opens"
+for d in /dev/goodix_fp /dev/qseecom /dev/ion; do
+  if [ -e "$d" ]; then ls -ld "$d" 2>/dev/null | sed 's/^/   /'
+  else echo "   MISSING $d"; fi
+done
+echo "   (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /dev/goodix_fp to system --"
+echo "    if that section did not run in the container, the perms here are the ones the HAL sees)"
+
+# --- 4. logcat: whose message is missing -------------------------------------------------------
 
 echo "== container logcat counts (the HAL's silent branch is the point -- a missing line is evidence)"
 if [ -n "$A" ]; then
@@ -163,7 +294,10 @@ if [ -n "$A" ]; then
              'Can not open fingerprint HW Module' \
              'Start biometrics' \
              'Can not create instance of BiometricsFingerprint' \
-             'android.hardware.biometrics.fingerprint@2.1-service' ; do
+             'fps_hal' \
+             'gx_fpd' \
+             'Fp::connect failed' \
+             'getService failed' ; do
     printf '   %-52s %s\n' "$pat" "$(printf '%s\n' "$dump" | grep -ac "$pat")"
   done
   echo "   -- 'Bad path length' = 0 while 'setActiveGroup failed' > 0 means the access() branch,"
@@ -176,7 +310,7 @@ else
   echo "   (no container: lxc-info gave nothing)"
 fi
 
-# --- 4. the HIDL service and the device node ---------------------------------------------------
+# --- 5. the HIDL service and the device node ---------------------------------------------------
 
 echo "== HIDL registration (lshal needs nsenter -p -m)"
 if [ -n "$A" ]; then
@@ -195,7 +329,7 @@ for f in /sys/fs/selinux/enforce /sys/fs/selinux/mls; do
   [ -r "$f" ] && printf '   %-26s %s\n' "$f" "$(cat "$f" 2>/dev/null)" || echo "   $f unreadable/absent"
 done
 
-# --- 5. the one write, only when asked ---------------------------------------------------------
+# --- 6. the one write, only when asked ---------------------------------------------------------
 
 if [ "$CREATE" = 1 ]; then
   echo

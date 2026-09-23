@@ -51,7 +51,8 @@ ACT="$W/actions"
 rm -rf "$W"
 mkdir -p "$FR/proc/device-tree" "$FR/etc/systemd/system" "$FR/usr/bin" "$FR/usr/lib/qt5/bin" \
          "$FR/dev" "$FR/sys/fs/selinux" "$FR/proc/4242" "$FR/proc/4242/root/data/system/users/0" \
-         "$FR/proc/4242/fd" "$W/tmp" "$STUB" "$W/exists" "$FR/proc/1/ns" || exit 2
+         "$FR/proc/4242/fd" "$W/tmp" "$STUB" "$W/exists" "$W/files" "$W/ls" "$W/props" \
+         "$FR/proc/1/ns" || exit 2
 printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
 
 # The v63 stub over /usr/bin/getprop, which is what the real port has: a shell script with no custom.*
@@ -69,6 +70,12 @@ Uid:	1000	1000	1000	1000
 Gid:	1005	1005	1005	1005
 EOF
 printf '# the container init, for the namespace comparisons\n' > "$FR/proc/4242/root/x"
+# The mount-namespace comparison needs real symlinks, not files: readlink is what the probe calls.
+# In every scenario the container pid and the HAL pid are the same 4242, which is the honest default
+# (the HAL runs inside the container); section 9 drives the differ branch with its own fixture.
+mkdir -p "$FR/proc/4242/ns"
+ln -sf 'mnt:[4026532000]' "$FR/proc/4242/ns/mnt"
+ln -sf 'pid:[4026532001]' "$FR/proc/4242/ns/pid"
 # the daemon's maps, so "is the bridge library loaded" has something to find (section 4 of --status)
 printf '7f000000-7f001000 r-xp 00000000 fe:00 1 /usr/lib/aarch64-linux-gnu/libubuntu_platform_hardware_api.so\n' \
   > "$FR/proc/4242/maps"
@@ -107,18 +114,36 @@ case "\${FAKE_CONTAINER_PID:-4242}" in none) ;; *) printf '%s\n' "\${FAKE_CONTAI
 exit 0
 EOF
 
-# nsenter: records, and answers the three questions the scripts ask through it -- the two api-level
-# properties and "does this path exist". The existence answer comes from $W/exists/<basename>, so a
-# scenario pre-creates a directory by touching a file.
+# nsenter: records, and answers every question the scripts ask through the container -- the six
+# properties, "does this path exist" (`test -e`) / "is it a regular file" (`test -f`), the `ls`
+# listings, and the binder service list. A scenario sets up an answer by creating a file, never by
+# teaching the stub a fact:
+#   $W/props/<key>                        the value of `getprop <key>`
+#   $W/exists/<path, / -> _>              `test -e <path>` succeeds
+#   $W/files/<path, / -> _>               `test -f <path>` succeeds
+#   $W/ls/<path, / -> _>                  the output of `ls -... <path>`
+#   $W/services.txt                       the output of `/system/bin/service list`
+# This is why the path key is the whole path and not its basename: the fingerprint section asks about
+# /data/gf_data and /data/system/users/0/fpdata in the same run, and a basename key would make one
+# answer stand for the other.
 cat > "$STUB/nsenter" <<EOF
 #!/bin/sh
 printf 'nsenter %s\n' "\$*" >> "$ACT"
 case "\$*" in
 *"getprop ro.product.first_api_level"*) printf '%s' "\$FAKE_FAL" ;;
 *"getprop ro.build.version.sdk"*)       printf '%s' "\$FAKE_SDK" ;;
-*"test -e"*)  p="\${*##*test -e }"; p="\${p%% *}"
-              [ -n "\$p" ] && [ -e "$W/exists/\$(basename "\$p")" ] && exit 0
-              exit 1 ;;
+*"getprop "*)
+  k="\${*##*getprop }"; k="\${k%% *}"
+  cat "$W/props/\$k" 2>/dev/null ;;
+*"service list"*) cat "$W/services.txt" 2>/dev/null ;;
+*"test -e "*|*"test -f "*)
+  t="\${*##*test -}"; p="\${t#? }"; p="\${p%% *}"
+  case "\$t" in f*) d=files ;; *) d=exists ;; esac
+  [ -n "\$p" ] && [ -e "$W/\$d/\$(printf '%s' "\$p" | tr / _)" ] && exit 0
+  exit 1 ;;
+*" ls "*|*"ls -"*)
+  p="\${*##* }"
+  cat "$W/ls/\$(printf '%s' "\$p" | tr / _)" 2>/dev/null ;;
 esac
 exit 0
 EOF
@@ -166,8 +191,9 @@ rewrite() { # $1 src, $2 dst
       -e "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g" \
       -e "s|\${p#/proc/}|\${p#$FR/proc/}|g" \
       -e "s#/proc/\$H#$FR/proc/\$H#g" \
+      -e "s#/proc/\$gxp#$FR/proc/\$gxp#g" \
       -e "s#/proc/\$_pid#$FR/proc/\$_pid#g" \
-      -e "s#/proc/\$A#/proc/\$A#g" \
+      -e "s#/proc/\$A#$FR/proc/\$A#g" \
       -e "s#/etc/systemd/system#$FR/etc/systemd/system#g" \
       -e "s#^QML=/tmp/#QML=$W/tmp/#" \
       -e "s#/usr/bin/getprop#$FR/usr/bin/getprop#g" \
@@ -188,6 +214,19 @@ grep -qF "DROPIN_DIR=$FR/etc/systemd/system/\${UNIT}.d" "$W/loc.sh" \
 grep -qF "QML=$W/tmp/zl1-location-request.qml" "$W/loc.sh" \
   || { echo "the QML path rewrite did not land" >&2; exit 2; }
 grep -qF "$FR/proc/[0-9]*" "$W/fp.sh" || { echo "the process-walk rewrite did not land" >&2; exit 2; }
+# Stronger, and it is the check that would have caught a real gap: a `/proc/$something` the rewrite
+# does not know about stays pointed at THIS machine, so the branch that reads it silently reads
+# nothing and the scenario passes vacuously. Count every `/proc/<var>` and every moved one; they must
+# be equal, or a path was left behind.
+for s in "$W/loc.sh" "$W/fp.sh"; do
+  all=$(grep -o '/proc/\$' "$s" | wc -l)
+  moved=$(grep -oF "$FR/proc/\$" "$s" | wc -l)
+  if [ "$all" != "$moved" ]; then
+    echo "$(basename "$s"): $((all - moved)) /proc/<var> path(s) were NOT moved into the fake root:" >&2
+    grep -n '/proc/\$' "$s" | grep -vF "$FR/proc/\$" | sed 's/^/  /' >&2
+    exit 2
+  fi
+done
 
 DROPIN="$FR/etc/systemd/system/lomiri-location-service.service.d"
 TESTING="$DROPIN/zl1-testing.conf"
@@ -278,7 +317,10 @@ fi
   || { bad "the directory holds more than that:"; ls "$DROPIN" | sed 's/^/        | /'; }
 want '^systemctl daemon-reload' "$(sysacts)" "and it asks for a daemon-reload"
 want '^systemctl restart lomiri-location-service\.service' "$(sysacts)" "and restarts exactly that one unit"
-notwant '^systemctl restart (?!lomiri-location-service)' "$(sysacts)" "and nothing else"
+# `(?!...)` is not ERE, so a pattern using it matches nothing and the check passes vacuously. The real
+# assertion is a count: exactly one restart, and it names that unit.
+[ "$(sysacts | grep -c '^systemctl restart')" = 1 ] && ok "and it is the only unit it restarts" \
+  || { bad "it restarted more than one unit:"; sysacts | grep '^systemctl restart' | sed 's/^/        | /'; }
 want 'PERMISSION BYPASS' "$OUT" "it says what it is doing"
 
 echo
@@ -371,6 +413,7 @@ printf '%s\n' "$OUT" > "$W/out.fp"
 [ ! -d "$FR/data/system/users/0/fpdata" ] && ok "and it created no store directory" || bad "it created one"
 want 'read-only' "$OUT" "it announces that it is read-only when --create-store-dir is not given"
 want 'access\(W_OK\) with uid=1000' "$OUT" "it states the real question: access() with the HAL's own uid"
+want 'same mount namespace as the container' "$OUT" "it compares the HAL's mount namespace against the container's for real"
 want '/data/system/users/0/fpdata' "$OUT" "and lists the path biometryd actually passes"
 want 'MISSING  /data/system/users/0/fpdata' "$OUT" "whose absence is the finding"
 want 'setActiveGroup failed' "$OUT" "it counts the caller's line"
@@ -409,7 +452,7 @@ want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and creates the <=2
 
 echo
 echo "   -- already there: no mkdir, no chown, no chmod -- and it does not pretend otherwise:"
-: > "$W/exists/fpdata"
+: > "$W/exists/_data_system_users_0_fpdata"
 env_reset
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.exists"
@@ -419,13 +462,109 @@ want 'exists already' "$OUT" "it says the directory was already there"
 
 echo
 echo "   -- the uid it would chown to comes from the HAL, so no HAL means no write:"
-rm -f "$W/exists/fpdata"
+rm -f "$W/exists/_data_system_users_0_fpdata"
 RUN_PID=none
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.nohal"
 [ "$RC" = 1 ] && ok "with no container it exits 1" || bad "with no container it exited $RC"
 notwant 'mkdir ' "$(cat "$ACT")" "and writes nothing at all"
 want 'aborted' "$OUT" "it says it aborted rather than reporting a success"
+
+echo
+# ==================================================================================================
+echo
+echo "== 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, two silences =="
+# ==================================================================================================
+# What this section is for: the wrapper HAL section 1 inspects is only the OUTER third. Underneath it,
+# hw_get_module("fingerprint") picks a module by AOSP's variant order, that module is itself a client
+# of a binder service provided by gx_fpd, and the real Goodix code lives one more layer down with a
+# store of its OWN (/data/gf_data, which it creates with fs_mkdirs). So the wrapper's access() gate is
+# necessary and not sufficient, and "is the daemon up" and "which module got picked" are two further
+# ways for this to be silently dead.
+#
+env_reset   # section 8 left RUN_PID=none behind, and every check below needs a container
+# The fixtures below are the container's answers: the four variant properties, the two module files in
+# the container's /vendor, and the listing. Nothing is taught to the stub as a fact -- each answer is
+# a file, so a scenario says what the device would say.
+printf 'msm8996' > "$W/props/ro.hardware"
+printf 'msm8996' > "$W/props/ro.product.board"
+printf 'msm8996' > "$W/props/ro.board.platform"
+# ro.arch deliberately has no answer: an unset variant property must be reported, not dropped.
+: > "$W/files/_vendor_lib64_hw_fingerprint.msm8996.so"
+: > "$W/files/_vendor_lib64_hw_gxfingerprint5118m.default.so"
+cat > "$W/ls/_vendor_lib64_hw" <<'LS'
+total 812
+-rw-r--r-- 1 root root  41232 2020-01-01 00:00 fingerprint.msm8996.so
+-rw-r--r-- 1 root root 845944 2020-01-01 00:00 gxfingerprint5118m.default.so
+-rw-r--r-- 1 root root   9216 2020-01-01 00:00 sensors.msm8996.so
+LS
+
+echo
+echo "   -- nothing else on the device yet: the two silences are both reported as present:"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.chain"
+want 'ro\.product\.board     = msm8996' "$OUT" "it reads the variant properties inside the container, not the host's getprop stub"
+want 'ro\.arch              = <unset>' "$OUT" "and reports an unset one as unset rather than omitting it"
+want 'variant match: /vendor/lib64/hw/fingerprint\.msm8996\.so' "$OUT" "it picks the module AOSP's variant order picks"
+want 'binder' "$OUT" "and says what that module is, including that its binder client is one library down"
+want 'FingerPrintService' "$OUT" "and names the service that client looks up"
+want 'the modules present, as the container sees them' "$OUT" "it lists what is really in the container's /vendor, so 'which module' is an observation"
+want 'fingerprint\.msm8996\.so +41232 bytes' "$OUT" "with the size of the module it picked"
+want 'gxfingerprint5118m\.default\.so +845944 bytes' "$OUT" "and of the Goodix HAL underneath it"
+notwant 'sensors\.msm8996\.so' "$OUT" "the listing is filtered to the fingerprint modules, so it stays readable"
+want 'no fingerprint\.default\.so' "$OUT" "it notes the absent AOSP fallback"
+want 'gx_fpd: NOT RUNNING' "$OUT" "it checks the daemon the picked module needs -- silence #2"
+want 'not registered' "$OUT" "and whether FingerPrintService is on the container's binder"
+want 'MISSING  /data/gf_data' "$OUT" "and the Goodix HAL's own store, which is not the path biometryd passes"
+want 'MISSING .*dev/goodix_fp' "$OUT" "and the device node that store is reached through"
+want 'nsenter -t 4242 -m -- test -e /data/gf_data' "$(cat "$ACT")" "the store questions go through the CONTAINER's mount namespace"
+
+echo
+echo "   -- and with the daemon up and the second store present, both change:"
+: > "$W/exists/_data_gf_data"
+printf -- '-rwx------ 2 system system 4096 2020-01-01 00:00 /data/gf_data\n' > "$W/ls/_data_gf_data"
+printf 'FingerPrintService: []\n' > "$W/services.txt"
+mkdir -p "$FR/proc/7777"
+printf 'gx_fpd\0' > "$FR/proc/7777/cmdline"
+printf 'Uid:\t1000\t1000\t1000\t1000\n' > "$FR/proc/7777/status"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.chain.up"
+want 'gx_fpd: pid 7777 +uid=1000' "$OUT" "gx_fpd is found by its cmdline, with its uid"
+notwant 'gx_fpd: NOT RUNNING' "$OUT" "and the 'not running' verdict is gone"
+want 'FingerPrintService: \[\]' "$OUT" "the binder service list is read through the container's pid namespace"
+notwant '-> not registered' "$OUT" "so the registered case is not reported as absent"
+want 'EXISTS   /data/gf_data' "$OUT" "and the second store is now reported present"
+rm -rf "$FR/proc/7777"
+
+echo
+echo "   -- the check with teeth: does the resolution really have to go through the container?"
+# The point of the whole section. /vendor is the CONTAINER's tree; this script runs on the UT side,
+# where that path is a different tree (or absent). So the mutant below -- the same rewritten script
+# with `nsenter -t "$A" -m -- test -f` replaced by the host's own `test -f`, which is exactly what the
+# first draft of this section did -- reports "no variant match" for a container that plainly has the
+# module. If the mutant still found it, the checks above would be measuring nothing.
+sed 's#nsenter -t "$A" -m -- test -f#test -f#' "$W/fp.sh" > "$W/fp.hostpath.sh"
+if grep -qF 'test -f "$d/fingerprint.$v.so"' "$W/fp.hostpath.sh" && \
+   ! grep -qF 'nsenter -t "$A" -m -- test -f' "$W/fp.hostpath.sh"; then
+  ok "the mutation landed (the mutant tests the HOST's /vendor, not the container's)"
+  run "$W/fp.hostpath.sh"
+  printf '%s\n' "$OUT" > "$W/out.fp.hostpath"
+  notwant '-> variant match' "$OUT" "on the host's /vendor the very same script finds NO module"
+  want 'no variant match' "$OUT" "and says so, which is the false 'the HAL is not installed' verdict"
+else
+  bad "the mutation did not land, so the check above proves nothing"
+fi
+
+echo
+echo "   -- and the one namespace answer that changes what every path above MEANS:"
+mkdir -p "$FR/proc/5555/ns"
+ln -sf 'mnt:[4026539999]' "$FR/proc/5555/ns/mnt"
+RUN_PID=5555
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.nsdiffer"
+want 'a DIFFERENT mount namespace from the container' "$OUT" "a differing mount namespace is called out, not glossed over"
+notwant 'same mount namespace as the container' "$OUT" "and it does not say 'same' when it is not"
+rm -rf "$FR/proc/5555"; env_reset
 
 echo
 echo "pass=$PASS fail=$FAIL"
