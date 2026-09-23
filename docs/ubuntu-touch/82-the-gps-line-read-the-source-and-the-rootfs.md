@@ -1,7 +1,7 @@
 # 82 — GPS 这条线上有两件事被读反了：那行 QMI 错误不是拦路者，"没人要过位置"才是
 
 **日期**: 2026-09-23
-**状态**: 纯离线的一轮（设备在 EDL，见 [`80`](80-the-ut-camera-app-starts-and-our-preload-was-breaking-egl.md) §7）。做的是把 `56`/`64` 里"GPS 没有定位"这条**读一遍源码和这个 port 自己的 rootfs 镜像**，结论有两处要改：**（一）**`LocSvc_ApiV02: Failed to get features supported from QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02` 这行**不是**失败原因 —— 它在源码里只打一条日志然后继续，而且它能被打出来本身就说明 QMI client **开成功了**；**（二）**`u_hardware_gps_start` 从没被调用过，最可能的原因是**从来没有任何客户端请求过位置**，而不是某个东西坏了。顺带把这条线的三个现成仪器找出来了：`lomiri-location-serviced-cli`（读/写两个开关）、`test_gps`（直插 Android GPS HAL）、以及 `custom.location.fake` 那个**用假坐标跑通整条 UT 定位栈**的杠杆。
+**状态**: 纯离线的一轮（设备在 EDL，见 [`80`](80-the-ut-camera-app-starts-and-our-preload-was-breaking-egl.md) §7）。做的是把 `56`/`64` 里"GPS 没有定位"这条**读一遍源码和这个 port 自己的 rootfs 镜像**，结论有两处要改：**（一）**`LocSvc_ApiV02: Failed to get features supported from QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02` 这行**不是**失败原因 —— 它在源码里只打一条日志然后继续，而且它能被打出来本身就说明 QMI client **开成功了**；**（二）**`u_hardware_gps_start` 从没被调用过，最可能的原因是**从来没有任何客户端请求过位置**，而不是某个东西坏了 **【93 把这条变成了结构性的：`u_hardware_gps_new`/`u_hardware_gps_start` 只在 `HardwareAbstractionLayer::start_positioning()` 里被调用，而它只从一次客户端会话请求到达；而且这道门前面还有一把默认关着的锁，见 §a 的更正】**。顺带把这条线的三个现成仪器找出来了：`lomiri-location-serviced-cli`（读/写两个开关）、`test_gps`（直插 Android GPS HAL）、以及 `custom.location.fake` 那个**用假坐标跑通整条 UT 定位栈**的杠杆。
 
 **接续**: [`56`](56-the-two-services-move-into-the-containers-pid-namespace.md) §5（那行 QMI 错误的原始记录）、[`64`](64-the-last-unit-was-not-failing-it-was-obeying.md) §9（"GPS 没有定位"这条待办）、[`55`](55-the-bridge-libraries-built-and-hwbinder-does-not-cross-pid-namespaces-either.md)（桥接库）
 
@@ -69,6 +69,8 @@ fi
 
 * 默认（非 fake）走的就是 **`gps::Provider`** —— 所以"provider 没配"这个嫌疑不存在。
 * **`custom.location.fake=true` 是这条线上最干净的一个杠杆**：它把整个 UT 定位栈（daemon → engine → 客户端那条 D-Bus 路）用**一个假坐标**跑起来，完全不碰 Android GPS。它给出一个二分的上半截：**假坐标能出来 → UT 这一侧是好的，故障在 HAL 那一侧；连假坐标都出不来 → 故障在 HAL 以上。** 代价是它要重启一次 location 服务（dbus 激活的服务，运行时操作、可逆）。
+
+**【更正，见 [`93`](93-gps-the-door-is-a-client-request-and-the-two-levers-are-dead.md)：这个杠杆在本端口**永远走不到**。】** 上面这段 wrapper 的引文还漏了它自己的前三行——`if [ "$(getprop custom.location.testing)" = "true" ]; then export TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING=1; fi`——而那三行是这个端口上唯一能让位置服务被敲开的开关。两个 `getprop` 都读不到东西：v63 的引导钩子每次开机把 `/usr/bin/getprop` 覆盖成一个壳脚本，它的 `case` 表里没有 `custom.*` 这一支，落到 `*)` 之后因为没给第二个参数而**什么都不打印**；`setprop` 在同一条钩子里是 no-op。于是 `custom.location.fake` 和 `custom.location.testing` 都恒不等于 `true`，wrapper 永远走 `else`、豁免永远关着，而**每一次会话请求都会死在 `TrustStorePermissionManager` 上**（shell 调用者拿不到 AppArmor profile，否则就是 trust store 不回答），客户端只看到 `Error creating session`。也就是说：**"用假坐标跑通整条 UT 栈"这个实验在本端口即使命令换对了也不会出结果——因为 `dummy::Provider` 前面站着同一把锁。** 93 给出的替代是两个 drop-in（`Environment=` 装豁免、`ExecStart=` 换假坐标），并且指出 93 §2 的那条链——`StartPositionUpdates` → `start_positioning()` → `u_hardware_gps_new`/`u_hardware_gps_start`——才是"门"本身。
 
 **b. `gps::Provider` 里面是什么**（`liblomiri-location-service.so.3.0.0` 的符号与字符串）：
 

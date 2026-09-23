@@ -1,0 +1,532 @@
+================================================================================
+THE LOCATION DOOR AND ITS LOCK — RAW EVIDENCE
+zl1 (LeEco Pro3, MSM8996pro), Ubuntu Touch 24.04-2.x, 2026-09-23
+OFFLINE ONLY: every line below comes from the rootfs image mounted read-only at
+/mnt/utrootfs plus upstream source at the matching version. No device was
+touched (it was in EDL for this whole session).
+================================================================================
+
+
+0. WHAT THIS FILE IS FOR
+--------------------------------------------------------------------------------
+docs/82 established that the two sides of the GPS question are (a) the UT
+location stack and (b) the Android HAL, and left one line to read on the device
+(`does_satellite_based_positioning`). This file settles a question that comes
+*before* that one and can be settled without the device:
+
+    WHO calls u_hardware_gps_start(), and what would have to happen for that
+    call to be made for the first time on this port?
+
+The answer has two halves, one per section below:
+  §2  the door is a CLIENT REQUEST that arrives over D-Bus as
+      StartPositionUpdates on a session — proven from the installed binaries.
+  §3+§4 the lock in front of that door is TrustStorePermissionManager, and the
+      image's own two bypass levers are both unreachable on this port because
+      the v63 boot image installs a getprop stub over /usr/bin/getprop.
+
+
+1. IDENTITIES
+--------------------------------------------------------------------------------
+Everything in §2 and §3 was read out of these files (sha256, file sizes as on
+disk):
+
+  0095442f32820d77ec96dbc45f17c8e51f417b8a012c604fd284684adc730173
+      usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+  9e1c20b3c90318f808b7deb7e8c3c3bae0d38c8dda2aa950c8f0548b30794c0e
+      usr/lib/aarch64-linux-gnu/qt5/plugins/position/libqtposition_lomiri.so
+  34cad4ef0efa1a0f75a5f558b2282dc03c5e507794a2b77c4359ab054359555c
+      usr/bin/lomiri-location-serviced
+  05834820fb783fe7fa65818991b24af3228854e75d2835228e1802385403ab94
+      usr/bin/lomiri-location-service-providerd
+  f6aba899c50fd25df8673b6033afb52fcde957f31393b9cd9f28d4e65f27d774
+      usr/lib/aarch64-linux-gnu/libubuntu_platform_hardware_api.so.4.0.0
+  2ee3d896d0f4ef00c0ea907efa6a014b1c7180a357d9b12af032f13f84387988
+      usr/bin/getprop          <-- the REAL one, on the image (see §4)
+  a64a03676479eb4e09bc6eede6a4df854316e93ac9868aaa32188d1343393d25
+      usr/bin/setprop
+
+Packages (from /var/lib/dpkg/status inside the image):
+
+  liblomiri-location-service3      3.4.1+0~20260511205524.35+ubports24.04.2~1.gbp4e84cf
+  lomiri-location-service-bin      3.4.1+0~20260511205524.35+ubports24.04.2~1.gbp4e84cf
+  lomiri-location-service-qt5-plugin 3.4.1+0~20260511205524.35+ubports24.04.2~1.gbp4e84cf
+  Source: lomiri-location-service, https://gitlab.com/ubports/development/core/lomiri-location-service
+
+Upstream source was fetched from branch ubports/24.04-2.x of that repo (the
+branch this image's version string is cut from). sha256 of each fetched file is
+recorded next to the quote that uses it.
+
+Commands to reproduce §1:
+
+  R=/mnt/utrootfs
+  sha256sum $R/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0 \
+            $R/usr/lib/aarch64-linux-gnu/qt5/plugins/position/libqtposition_lomiri.so \
+            $R/usr/bin/lomiri-location-serviced \
+            $R/usr/bin/lomiri-location-service-providerd \
+            $R/usr/lib/aarch64-linux-gnu/libubuntu_platform_hardware_api.so.4.0.0 \
+            $R/usr/bin/getprop $R/usr/bin/setprop
+  grep -A4 '^Package: liblomiri-location-service3' $R/var/lib/dpkg/status
+
+
+2. THE DOOR: HOW u_hardware_gps_start() IS REACHED
+--------------------------------------------------------------------------------
+2a. The service really does carry the hardware provider.
+    The systemd unit (/usr/lib/systemd/system/lomiri-location-service.service)
+    declares
+
+        ExecStart=/usr/bin/lomiri-location-serviced --bus system \
+                  --provider gps::Provider --provider remote::Provider
+
+    and the drop-in .../lomiri-location-service.service.d/lxc-android-config.conf
+    replaces it with the wrapper
+
+        ExecStart=/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
+
+    whose (getprop-dependent) else-branch is byte-for-byte the same command line:
+
+        exec lomiri-location-serviced --bus system --provider gps::Provider \
+                                      --provider remote::Provider
+
+    The unit is ENABLED: /etc/systemd/system/multi-user.target.wants/
+    lomiri-location-service.service -> /usr/lib/systemd/system/lomiri-location-service.service
+
+2b. The hardware code lives inside liblomiri-location-service.so.3.0.0, not in
+    providerd. providerd is the *remote* provider daemon and has neither a
+    NEEDED entry for libubuntu_platform_hardware_api nor any u_hardware_* string:
+
+      $ readelf -d usr/bin/lomiri-location-service-providerd | grep NEEDED
+        libdbus-cpp.so.5, liblomiri-location-service.so.3,
+        libboost_program_options.so.1.83.0, libprocess-cpp.so.3, libstdc++, libc
+      $ strings usr/bin/lomiri-location-service-providerd | grep -c u_hardware
+        0
+
+    The only two objects in the whole image that reference the platform API are
+    the library itself and the API library:
+
+      $ grep -rl libubuntu_platform_hardware_api $R/usr/lib $R/usr/bin
+        usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+        usr/lib/aarch64-linux-gnu/libubuntu_platform_hardware_api.so.4.0.0
+
+2c. The thirteen u_hardware_gps_* entry points are ordinary UND dynamic symbols
+    of that library (so the call is a normal PLT call, not a dlsym):
+
+      $ readelf -sW --dyn-syms liblomiri-location-service.so.3.0.0 | grep u_hardware
+        5: ... UND u_hardware_gps_agps_notify_connection_not_available
+       17: ... UND u_hardware_gps_start
+       19: ... UND u_hardware_gps_agps_notify_connection_is_open
+       58: ... UND u_hardware_gps_delete_aiding_data
+       94: ... UND u_hardware_gps_new
+      106: ... UND u_hardware_gps_agps_set_server_for_type
+      111: ... UND u_hardware_gps_inject_xtra_data
+      168: ... UND u_hardware_gps_stop
+      237: ... UND u_hardware_gps_set_position_mode
+      254: ... UND u_hardware_gps_agps_notify_connection_is_closed
+      259: ... UND u_hardware_gps_inject_time
+      262: ... UND u_hardware_gps_inject_location
+      370: ... UND u_hardware_gps_delete
+
+2d. The two call sites. Reconstructing the PLT mapping: .plt is at 0x33510, the
+    resolver occupies the first 32 bytes, stub i is at 0x33530 + 16*i, and stub
+    i loads GOT[0x16f048 + 8*i]. That gives
+
+        u_hardware_gps_start   reloc index 14 -> stub 0x33610, GOT 0x16f0b8
+        u_hardware_gps_new     reloc index 84 -> stub 0x33a70, GOT 0x16f2e8
+
+    and verifying the stubs:
+
+      $ llvm-objdump-14 -d liblomiri-location-service.so.3.0.0 | sed -n '/^   33610:/,/br/p'
+        33610: adrp x16, 0x16f000
+        33614: ldr  x17, [x16, #184]      ; 0x16f000 + 184 = 0x16f0b8  ✓
+        33618: add  x16, x16, #184
+        3361c: br   x17
+
+    Both call sites are inside the Android hardware abstraction layer:
+
+      $ llvm-objdump-14 -d liblomiri-location-service.so.3.0.0 | grep -n 0x33610
+        dab84:  b   0x33610        <-- tail call, inside start_positioning()
+      $ llvm-objdump-14 -d liblomiri-location-service.so.3.0.0 | grep -n 0x33a70
+        daa64:  bl  0x33a70        <-- inside Impl::register_callbacks()
+
+    and readelf -sW places them:
+
+      0xdaa40 size 0x40  com::lomiri::location::providers::gps::android::
+                        HardwareAbstractionLayer::Impl::register_callbacks()
+      0xdaa80 size 0x170 com::lomiri::location::providers::gps::android::
+                        HardwareAbstractionLayer::start_positioning()
+
+    So u_hardware_gps_new() (create the device) and u_hardware_gps_start()
+    (start it) BOTH happen inside start_positioning(), and nowhere else: the
+    address 0xdaa80 appears exactly once in .text as a call target, and once in
+    .data.rel.ro (file offset 0x15e580, inside the HardwareAbstractionLayer
+    vtable: the neighbouring slots are 0xda910 set_assistance_mode and
+    0xda9c0 set_position_mode). start_positioning() is therefore a VIRTUAL
+    method, dispatched through that vtable.
+
+  $ python3 -c "d=open('/tmp/lls.so','rb').read(); import struct; \
+                print([hex(i) for i in ...])"   # see §6 for the exact one-liner
+  hits for 0xdaa80: 0x47e0 (metadata), 0x29da0 (metadata), 0x15e580 (.data.rel.ro)
+
+2e. The full chain, with every address in the installed library except the two
+    ends:
+
+      client                      D-Bus method call StartPositionUpdates
+        |
+        v
+      com.lomiri.location.Service.Session   interface com.lomiri.location.Service.Session
+        |  service::session::Skeleton::on_start_position_updates
+        v
+      0x8f0e4  service::session::Implementation::start_position_updates()   (384 B)
+        |  engine / provider selection
+        v
+      0xe7f10  providers::gps::Provider::start_position_updates()            (40 B)
+        |  virtual call through the HAL vtable (.data.rel.ro 0x15e580)
+        v
+      0xdaa80  HardwareAbstractionLayer::start_positioning()                (368 B)
+        |  -> 0xdaa40  Impl::register_callbacks()   -> bl 0x33a70 = u_hardware_gps_new
+        |  -> (tail)                                -> b  0x33610 = u_hardware_gps_start
+        v
+      libubuntu_platform_hardware_api.so.4 -> android_dlopen/android_dlsym
+        -> the Android GNSS HAL (HIDL android.hardware.gnss@1.0) in the container
+
+    Every name in that chain is present in the library's symbol table, which is
+    how the middle steps were identified:
+
+      $ readelf -sW liblomiri-location-service.so.3.0.0 | grep -E 'start_position_updatesEv' | c++filt
+        com::lomiri::location::service::session::Implementation::start_position_updates()
+        com::lomiri::location::providers::gps::Provider::start_position_updates()
+        com::lomiri::location::providers::gpsd::Provider::start_position_updates()
+        com::lomiri::location::providers::dummy::Provider::start_position_updates()
+        ... (remote::Provider::Stub/Skeleton, FusionProvider, ProxyProvider, Engine::Controller)
+
+    Note the two consequences, which are the whole point of this section:
+      * Nothing in the daemon's *startup* touches the hardware. Constructing the
+        provider, registering the D-Bus name and opening the bus do not call
+        u_hardware_gps_new or u_hardware_gps_start.
+      * The first position request a client ever makes is what calls them. On a
+        device where no client has ever completed CreateSessionForCriteria +
+        StartPositionUpdates, the hardware half has provably never been asked to
+        do anything — which is a *structural* explanation of docs 82's
+        observation, not a hypothesis about the HAL.
+
+
+3. THE LOCK: TrustStorePermissionManager
+--------------------------------------------------------------------------------
+3a. The comparison happens before any session object exists. In
+    src/location_service/com/lomiri/location/service/skeleton.cpp
+    (sha256 82b52d46be05a526bdbd1bc71c2d22bd5f636bae47f3188e065a68a794efd0a6),
+    handle_create_session_for_criteria():
+
+        Criteria criteria;
+        in->reader() >> criteria;
+
+        auto credentials =
+            configuration.credentials_resolver->resolve_credentials_for_incoming_message(in);
+
+        auto result =
+            configuration.permission_manager->check_permission_for_credentials(criteria, credentials);
+
+        if (PermissionManager::Result::rejected == result) throw std::runtime_error
+        {
+            "Client lacks permissions to access the service with the given criteria"
+        };
+
+    and the throw lands in the catch-all that sends the client
+
+        com.lomiri.location.Service.Error.CreatingSession / "Error creating session"
+
+    while logging the real reason server-side. Both strings are in the installed
+    binary:
+
+      $ strings -t x liblomiri-location-service.so.3.0.0 | grep -E 'Client lacks|Could not resolve'
+        fcbb0 Client lacks permissions to access the service with the given criteria
+        fca08 Could not resolve PID
+
+3b. The manager in use is the trust-store one, not the "no trust store" build.
+    src/.../service/system_configuration.cpp (sha256
+    1aeff856f922650d24222ffc97600075920e7f9a45c08520d02c1e60802830ec) chooses
+    at compile time:
+
+        clls::SystemConfiguration& clls::SystemConfiguration::instance()
+        {
+        #ifdef ENABLE_TRUST_STORE
+            static UbuntuSystemConfiguration config;   // -> TrustStorePermissionManager
+        #else
+            static DefaultSystemConfiguration config;  // -> DefaultPermissionManager
+        #endif
+            return config;
+        }
+
+    and the Debian build sets it explicitly — debian/rules of this same package:
+
+        -DENABLE_TRUST_STORE=ON \
+
+    in both the 32- and 64-bit invocations.
+
+3c. Its check, src/.../service/trust_store_permission_manager.cpp
+    (sha256 4aac9da4a5010a1b602a38601581f5bde7b2afc7f5d6f2811e5020b9ea22b66f):
+
+        service::PermissionManager::Result service::TrustStorePermissionManager::check_permission_for_credentials(
+                const location::Criteria&,
+                const service::Credentials& credentials)
+        {
+            if (is_running_under_testing())
+                return Result::granted;
+
+            if (credentials.profile.empty()) {
+                SYSLOG(ERROR) << "Could not resolve PID " << credentials.pid << " to apparmor profile";
+                return service::PermissionManager::Result::rejected;
+            }
+
+            std::string description = i18n::tr("wants to access your current location.");
+
+            core::trust::Agent::RequestParameters params
+            {
+                core::trust::Uid{credentials.uid},
+                core::trust::Pid{credentials.pid},
+                credentials.profile,
+                TrustStorePermissionManager::default_feature(),
+                description
+            };
+
+            Result result{Result::rejected};
+
+            try
+            {
+                auto answer = agent->authenticate_request_with_parameters(params);
+                switch(answer)
+                {
+                case core::trust::Request::Answer::granted:
+                    result = Result::granted;
+                    break;
+                case core::trust::Request::Answer::denied:
+                    result = Result::rejected;
+                    break;
+                }
+            } catch(...)
+            {
+                // We silently drop all issues here and return rejected.
+                result = Result::rejected;
+            }
+
+            return result;
+        }
+
+    with
+
+        bool is_running_under_testing()
+        {
+            return core::posix::this_process::env::get(
+                        "TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING",
+                        "0") == "1";
+        }
+
+    The env var name is in the installed binary:
+
+      $ strings -t x liblomiri-location-service.so.3.0.0 | grep TRUST_STORE_PERMISSION
+        101e48 TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING
+        101e80 ./src/location_service/com/lomiri/location/service/trust_store_permission_manager.cpp
+
+    Three gates, in order, and every one of them ends in `rejected`:
+      1. the environment bypass (off unless the env var is "1"),
+      2. a non-empty AppArmor profile, resolved with aa_gettaskcon(pid) by
+         DBusDaemonCredentialsResolver::libapparmor_profile_resolver() in
+         skeleton.cpp — and if aa_gettaskcon fails the resolver logs
+         "Could not resolve PID <pid> to apparmor profile: <e>" and leaves the
+         string EMPTY, which is exactly the rejection above,
+      3. the trust-store agent, whose every exception is swallowed into
+         `rejected` with no client-visible reason.
+
+3d. Where the profile comes from, same file:
+
+        auto rc = aa_gettaskcon(pid, &scope.con, &scope.mode);
+        if (rc == app_armor_error) throw std::system_error{errno, std::system_category()};
+        return std::string{scope.con ? scope.con : ""};
+
+    So the gate is "the kernel must be able to name the calling task's
+    confinement label". A caller the kernel reports as `unconfined` passes this
+    gate and lands on gate 3; a caller aa_gettaskcon cannot answer for does not.
+
+3e. The trust-store side is wired up in the image, which is what makes gate 3 a
+    real dependency rather than a no-op:
+
+      /usr/share/dbus-1/system.d/com.lomiri.location.Service.conf
+          <allow own="core.trust.dbus.Agent.LomiriLocationService"/>
+      /usr/lib/systemd/user/lomiri-location-service-trust-stored.service
+          ExecStart=/usr/bin/trust-stored-skeleton --remote-agent DBusRemoteAgent \
+                    --bus=system --local-agent MirAgent \
+                    --trusted-mir-socket=${XDG_RUNTIME_DIR}/mir_socket_trusted \
+                    --for-service LomiriLocationService --store-bus session
+          ConditionPathExists=/run/user/%U/mir_socket_trusted
+      /etc/systemd/user/graphical-session.target.wants/lomiri-location-service-trust-stored.service
+          (and the -wayland variant, both enabled; the ConditionPathExists picks one)
+      /etc/systemd/system/multi-user.target.wants/lomiri-location-service.service
+          (the service itself, enabled)
+
+    The matching client-side helper is right there in the library:
+      $ readelf -sW liblomiri-location-service.so.3.0.0 | grep -i truststore | c++filt
+        0xd5e10  TrustStorePermissionManager::default_feature()
+        0xd5f30  TrustStorePermissionManager::create_default_instance_with_bus(...)
+        0xd6110  TrustStorePermissionManager::check_permission_for_credentials(...)   (892 B)
+
+
+4. THE TWO DEAD LEVERS
+--------------------------------------------------------------------------------
+4a. The wrapper the unit actually runs is
+    /usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper:
+
+        #!/bin/sh
+        if [ -x /usr/bin/getprop ] && [ "$(getprop custom.location.testing)" = "true" ]; then
+            export TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING="1"
+        fi
+
+        if [ -x /usr/bin/getprop ] && [ "$(getprop custom.location.fake)" = "true" ]; then
+            lat="$(getprop custom.location.lat 51.505660)"
+            lon="$(getprop custom.location.lon -0.099850)"
+            exec lomiri-location-serviced --bus system \
+                 --provider dummy::Provider \
+                 --dummy::Provider::ReferenceLocationLat="${lat}" \
+                 --dummy::Provider::ReferenceLocationLon="${lon}"
+        else
+            exec lomiri-location-serviced --bus system \
+                 --provider gps::Provider --provider remote::Provider
+        fi
+
+    i.e. the image ships BOTH levers docs 82 recommends: the testing bypass for
+    gate 1, and a whole-stack-without-Android dummy provider for the A/B.
+
+4b. Both levers read `getprop`, and on this port `getprop` is not the binary
+    that is on the image. boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
+    installs a /bin/sh stub over /usr/bin/getprop and /usr/bin/setprop on every
+    boot (the block is inside `if [ -d /var/lib/lxc/android/pre-start.d ]`, which
+    exists on this port; it also does `mount -o remount,rw /` first, which is how
+    it can write to the image at all). The stub's whole decision table:
+
+        prop="${1:-}"
+        default="${2:-}"
+        case "$prop" in
+            '') exit 0 ;;
+            ro.build.version.sdk) printf '%s\n' 28 ;;
+            ro.product.device|ro.product.vendor.device|ro.product.odm.device) printf '%s\n' le_zl1 ;;
+            ro.product.name|ro.product.vendor.name|ro.product.odm.name) printf '%s\n' ZL1_CN ;;
+            ro.product.model|ro.product.vendor.model) printf '%s\n' 'LeEco Pro3' ;;
+            ro.hardware|ro.boot.hardware) printf '%s\n' qcom ;;
+            ro.treble.enabled) printf '%s\n' true ;;
+            ro.vndk.version) printf '%s\n' 28 ;;
+            sys.boot_completed|dev.bootcomplete|service.bootanim.exit)
+                [ -n "$default" ] && printf '%s\n' "$default" ;;
+            init.svc.*|vendor.*|persist.*|ctl.*|debug.*|test.*)
+                [ -n "$default" ] && printf '%s\n' "$default" ;;
+            *) [ -n "$default" ] && printf '%s\n' "$default" ;;
+        esac
+        exit 0
+
+    `custom.location.testing` and `custom.location.fake` fall to `*)`. The
+    wrapper calls both with NO second argument, so with $default empty the stub
+    prints NOTHING and exits 0. Neither comparison can ever be true. And
+    `setprop` is a documented no-op in the same script:
+
+        if [ "$TOOL_NAME" = setprop ]; then
+            log "no-attach diagnostic no-op setprop: $*"
+            exit 0
+        fi
+
+    so the properties cannot be set either. The originals are parked next to the
+    stubs as /usr/bin/getprop.orig-zl1 and /usr/bin/setprop.orig-zl1 (and the
+    libhybris-based original needs the TLS-slot shim to run at all).
+
+    VERDICT: on this port the wrapper's `else` branch is what always runs, and
+    `TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING` is always off.
+    Both of docs 82's levers are unreachable *as shipped* — not because the
+    property is wrong, but because the tool the wrapper asks cannot answer.
+
+
+5. THE TWO FIXES THIS LICENSES (drop-ins, both reversible, neither applied)
+--------------------------------------------------------------------------------
+5a. Turn on the testing bypass without touching getprop. The service reads the
+    variable from its own environment, and systemd can set it:
+
+      /etc/systemd/system/lomiri-location-service.service.d/zl1-testing.conf
+          [Service]
+          Environment=TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING=1
+
+    /etc/systemd/system is one of the writable whitelist paths on this port, and
+    the drop-in directory must be the FULL unit name (a bare
+    lomiri-location-service.d/ is silently inert). Effect: gate 1 returns
+    `granted` for every caller, so any process — including an unconfined root
+    shell — can create a session and start position updates, which is what calls
+    u_hardware_gps_new/u_hardware_gps_start for the first time.
+
+    This is the image's own testing switch. It is still a permission bypass: for
+    as long as the drop-in is in place, anything on the device can obtain the
+    device's location. That is a trade the user has to make, exactly like
+    `orientationsensor=False` and the debug keeper.
+
+5b. Replace the ExecStart instead of the property, for the fake-location A/B:
+
+      /etc/systemd/system/lomiri-location-service.service.d/zl1-dummy.conf
+          [Service]
+          ExecStart=
+          ExecStart=/usr/bin/lomiri-location-serviced --bus system \
+                    --provider dummy::Provider \
+                    --dummy::Provider::ReferenceLocationLat=51.505660 \
+                    --dummy::Provider::ReferenceLocationLon=-0.099850
+
+    (the empty ExecStart= resets the list; without it systemd appends a second
+    command). This is the same command the wrapper would have run had the
+    property been readable, so it exercises the UT stack and not Android — the
+    A/B docs 82 wanted, restored without a boot-image change.
+
+    Gate 1 is still in front of it: with the dummy provider, CreateSessionForCriteria
+    still runs the same permission check, so 5a is needed for 5b to be observable
+    by a client. That, incidentally, is a second, independent reason the
+    "fake location" experiment could never have produced a result on this port.
+
+
+6. REPRODUCTION
+--------------------------------------------------------------------------------
+  R=/mnt/utrootfs            # mount rootfs-...-zl1-host.img read-only
+
+  # the door
+  readelf -sW  $R/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0 | grep u_hardware
+  cp $R/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0 /tmp/lls.so
+  llvm-objdump-14 -d /tmp/lls.so > /tmp/lls.asm          # objdump cannot decode aarch64
+  readelf -rW /tmp/lls.so | awk '$3=="R_AARCH64_JUMP_SLOT"{n++; print n-1, $5}' | grep u_hardware_gps
+  readelf -sW /tmp/lls.so | grep -E 'start_positioningEv|register_callbacksEv' | c++filt
+  python3 - <<'PY'
+  import struct
+  d=open('/tmp/lls.so','rb').read()
+  pat=struct.pack('<Q',0xdaa80); i=0; hits=[]
+  while True:
+      j=d.find(pat,i)
+      if j<0: break
+      hits.append(hex(j)); i=j+1
+  print('hits for 0xdaa80:', hits)   # ['0x47e0', '0x29da0', '0x15e580']
+  PY
+
+  # the lock
+  curl -s https://gitlab.com/ubports/development/core/lomiri-location-service/-/raw/ubports/24.04-2.x/debian/rules | grep ENABLE_TRUST_STORE
+  curl -s .../src/location_service/com/lomiri/location/service/trust_store_permission_manager.cpp
+  curl -s .../src/location_service/com/lomiri/location/service/skeleton.cpp
+  strings -t x /tmp/lls.so | grep -E 'TRUST_STORE_PERMISSION|Client lacks permissions|Could not resolve PID'
+
+  # the levers
+  sed -n '1040,1110p' boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
+  cat $R/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
+
+
+7. WHAT THIS DOES NOT SETTLE
+--------------------------------------------------------------------------------
+  * It does not prove the hardware works once asked. It proves which call has to
+    happen for the question to become answerable, and that nothing on this port
+    has made it.
+  * It does not prove that a session request *is* what the current device state
+    lacks — only that it is the door, and that the lock in front of it is closed
+    by default for any client the trust store has no answer for. The
+    discriminating experiment is §5a + a real client (§ the doc's instrument).
+  * It says nothing new about the Android side: whether `u_hardware_gps_start`
+    returns success, whether the QMI client opens, whether a fix is ever
+    obtained. docs 82's line (`locClientOpen failed`) is still the one to read.
+  * It does not establish that `aa_gettaskcon` succeeds or fails for a root
+    shell on this device. Both outcomes are consistent with the code above; the
+    difference decides *which* gate rejects, not whether one does.
+  * Nothing here was measured on the device. The device was in EDL throughout.
