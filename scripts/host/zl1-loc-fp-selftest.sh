@@ -150,6 +150,16 @@ case "\$*" in
   k="\${*##*getprop }"; k="\${k%% *}"
   cat "$W/props/\$k" 2>/dev/null ;;
 *"service list"*) cat "$W/services.txt" 2>/dev/null ;;
+*"logcat"*)
+  # `nsenter -t A -p -m -- /system/bin/logcat -d -v brief`: the container's log, from the fixture.
+  # Without this case the stub answered nothing, so the probe's whole logcat block read an EMPTY dump:
+  # every count in it was 0 in every scenario while the pattern LABELS still printed -- which is how
+  # the old check ("it counts the caller's line") passed. A table of zeros with the right names in it
+  # is exactly the shape this project keeps finding, so the fixture is now actually delivered.
+  cat "$W/logcat.txt" 2>/dev/null ;;
+*"lshal"*)
+  # `nsenter ... -- lshal`: the same, for the HIDL service list.
+  cat "$W/lshal.txt" 2>/dev/null ;;
 *"test -e "*|*"test -f "*)
   t="\${*##*test -}"; p="\${t#? }"; p="\${p%% *}"
   case "\$t" in f*) d=files ;; *) d=exists ;; esac
@@ -173,6 +183,13 @@ cat > "$STUB/logcat" <<EOF
 #!/bin/sh
 printf 'logcat %s\n' "\$*" >> "$ACT"
 cat "$W/logcat.txt" 2>/dev/null
+exit 0
+EOF
+
+cat > "$STUB/journalctl" <<EOF
+#!/bin/sh
+printf 'journalctl %s\n' "\$*" >> "$ACT"
+cat "$W/journal.txt" 2>/dev/null
 exit 0
 EOF
 
@@ -250,6 +267,7 @@ QMLF="$W/tmp/zl1-location-request.qml"
 
 PASS=0
 FAIL=0
+SKIP=0
 ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
 want()    { if printf '%s\n' "$2" | grep -Eq "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
@@ -257,6 +275,11 @@ notwant() { if printf '%s\n' "$2" | grep -Eq "$1"; then bad "$3"; printf '%s\n' 
 # The stub log. `systemctl` is called for read-only queries in every mode (is-active, show, status),
 # so "did not call systemd" is the wrong assertion -- what must not happen is a call that changes the
 # device: a daemon-reload, a restart, a mask, a stop.
+# $2 is a FILE (the fixture); $1 is the pattern. `-F`, because these strings contain no regex on
+# purpose -- a fingerprint message with a `(` or a `.` in it must be counted as written.
+countf() { grep -c -F -- "$1" "$2" 2>/dev/null || true; }
+# What the probe printed for one pattern, as a number. The table is "   <pattern> <count>".
+pcount() { printf '%s\n' "$OUT" | awk -v p="$1" 'index($0, p) && $NF ~ /^[0-9]+$/ { print $NF; exit }'; }
 sysacts() { grep -E '^systemctl ' "$ACT" 2>/dev/null; }
 syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|enable|disable|reload)' "$ACT" 2>/dev/null; }
 
@@ -271,6 +294,37 @@ run() {
   OUT=$(PATH="$STUB:$PATH" FAKE_FAL="$RUN_FAL" FAKE_SDK="$RUN_SDK" FAKE_CONTAINER_PID="$RUN_PID" \
         timeout 60 sh "$s" "$@" 2>&1); RC=$?
 }
+
+# --- the two logs the fingerprint probe counts in ----------------------------------------------
+#
+# **They deliberately do NOT overlap**: every string the probe counts in logcat is absent from the
+# journal fixture and vice versa, so a probe that reads a pattern out of the wrong log prints 0 where
+# the fixture has 2 (or 1), and the assertion below fails instead of reading like a plausible finding.
+# The counts are also all different from each other, so "wrong log" and "wrong pattern" cannot be
+# confused. This is the defect docs 103 fixes: `setActiveGroup failed` is biometryd's own line, and it
+# was being counted in the container's logcat, where it can never appear.
+printf '%s\n' \
+  'I/fps_hal ( 612): initialising' \
+  'D/fingerprint.msm8996( 612): Fp::connect failed' \
+  'E/BiometricsFingerprint( 612): Bad path length' \
+  'E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Bad path length' \
+  'I/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Start biometrics' \
+  'I/fps_hal ( 612): Opening fingerprint hal library' \
+  'I/gx_fpd ( 700): waiting for the HAL' \
+  "E/BiometricsFingerprint( 612): Can't open fingerprint HW Module, error: -1" \
+  "E/BiometricsFingerprint( 612): Can't create instance of BiometricsFingerprint, nullptr" \
+  'E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): getService failed' \
+  > "$W/logcat.txt"
+printf '%s\n' \
+  'android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default' \
+  > "$W/lshal.txt"
+printf '%s\n' \
+  'biometryd[612]: setActiveGroup failed: SYS_EINVAL' \
+  'biometryd[612]: setActiveGroup failed: SYS_EINVAL' \
+  'biometryd[612]: Failed to instantiate device.' \
+  'biometryd[612]: Cannot construct Forwarding device for null impl.' \
+  'biometryd[612]: Clearing template store: 0' \
+  > "$W/journal.txt"
 
 echo "zl1 location-request + fingerprint-probe -- offline self-test"
 echo "  scripts under test: $LOC"
@@ -408,6 +462,9 @@ for s in "$W/loc.sh" "$W/fp.sh"; do
   [ "$RC" = 2 ] && ok "$(basename "$s"): an unknown argument exits 2" || bad "$(basename "$s"): unknown argument exited $RC"
   run "$s" --help
   want 'Usage|--' "$OUT" "$(basename "$s"): --help prints a usage block"
+  # The range is a line number and drifts with the header; the fingerprint probe's used to stop at 40,
+  # i.e. SHORT of the Usage line it exists to print, and only a negative assertion sees that direction.
+  notwant '^set -u|^CREATE=|^QUIET=' "$OUT" "$(basename "$s"): and stops at the header, not in the assignments after it"
 done
 msg=$(PATH="$STUB:$PATH" sh "$W/loc.sh" --seconds 2>&1 >/dev/null | head -1)
 case "$msg" in
@@ -419,7 +476,6 @@ esac
 echo
 echo "== 7. fingerprint: the default run writes nothing at all =="
 # ==================================================================================================
-printf 'setActiveGroup failed: SYS_EINVAL\nStart biometrics\nConnected to IBiometricsFingerprint::2.1 service\n' > "$W/logcat.txt"
 run "$W/fp.sh"
 printf '%s\n' "$OUT" > "$W/out.fp"
 [ "$RC" = 0 ] && ok "the default run exits 0" || bad "the default run exited $RC"
@@ -439,6 +495,121 @@ want "biometryd's ACTUAL reason on this port" "$OUT" "so the reason it gives for
 want 'the Android side, for cross-check only \(biometryd never reads this\)' "$OUT" "and it labels the container read as a cross-check, because biometryd does not read it"
 want 'vendor.img build.prop: 23' "$OUT" "with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared"
 want 'AGREES with the reading above' "$OUT" "and it says when the two independent readings agree, which is what makes the write safe"
+
+# ==================================================================================================
+echo
+echo "== 7b. the log, split by which process could have written it (docs 103) =="
+# ==================================================================================================
+# The defect: `setActiveGroup failed` is **biometryd's own line** (libbiometry.so.2.0.0, UT side, so
+# biometryd's journal) and this probe counted it in the container's logcat, where it can never appear.
+# The probe's header hinges on that line -- it is the caller's record of the access(W_OK) branch that
+# logs nothing -- so a structural 0 there made the inference it prints unreadable.
+env_reset
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.logs"
+want 'split by which process could have written it' "$OUT" "the section says it is split by owner"
+want 'journal of biometryd' "$OUT" "and names the journal it reads the UT side from"
+want 'journalctl -b -u biometryd' "$(grep -E '^journalctl ' "$ACT" 2>/dev/null | head -1)" \
+  "the journal query is boot-scoped (-b), the only kind that survives a wrong clock"
+want 'no-pager' "$(grep -E '^journalctl ' "$ACT" 2>/dev/null | head -1)" "and paged output is turned off"
+# The probe reaches logcat through nsenter, so the recorded line is `nsenter ...` -- reading `^logcat`
+# here found nothing and the assertion could never have passed or failed on the thing it names.
+want 'logcat -d' "$(grep -E '^nsenter .*logcat' "$ACT" 2>/dev/null | head -1)" "logcat is read as a dump, not a follow"
+
+# The two slices of the output, so "which block did that number come from" is answerable:
+LCBLOCK=$(printf '%s\n' "$OUT" | sed -n '/--- logcat (the container/,/--- journal of biometryd/p')
+JBLOCK=$(printf '%s\n' "$OUT" | sed -n '/--- journal of biometryd/,$p')
+[ -n "$LCBLOCK" ] && [ -n "$JBLOCK" ] \
+  && ok "both blocks are in the output, so each count can be attributed" \
+  || bad "one of the two blocks is missing from the output"
+
+echo "     -- the caller's line, which is the whole reason this section exists:"
+notwant 'setActiveGroup failed' "$LCBLOCK" \
+  "setActiveGroup failed is NOT counted in logcat (it is biometryd's, and it is in no Android binary)"
+[ "$(pcount 'setActiveGroup failed')" = "$(countf 'setActiveGroup failed' "$W/journal.txt")" ] \
+  && ok "and its count is the JOURNAL fixture's ($(countf 'setActiveGroup failed' "$W/journal.txt"))" \
+  || bad "it printed $(pcount 'setActiveGroup failed'), the journal has $(countf 'setActiveGroup failed' "$W/journal.txt") -- this is the defect: it would be 0 in logcat"
+
+echo "     -- the rest of the journal block, each read from the journal:"
+for p in 'Failed to instantiate device' 'Cannot construct Forwarding device' 'Clearing template store'; do
+  [ "$(pcount "$p")" = "$(countf "$p" "$W/journal.txt")" ] \
+    && ok "$p: the journal fixture's count ($(countf "$p" "$W/journal.txt"))" \
+    || bad "$p printed $(pcount "$p"), the journal has $(countf "$p" "$W/journal.txt")"
+done
+notwant '0 *(setActiveGroup failed|Failed to instantiate device)' "$OUT" \
+  "and none of the journal strings is reported as 0 (the shape the old version produced)"
+
+echo "     -- and the logcat block, each read from logcat:"
+for p in 'Bad path length' 'Start biometrics' 'Opening fingerprint hal library' \
+         "Can't open fingerprint HW Module" "Can't create instance of BiometricsFingerprint" \
+         'Fp::connect failed' 'getService failed' 'fps_hal' 'gx_fpd'; do
+  [ "$(pcount "$p")" = "$(countf "$p" "$W/logcat.txt")" ] \
+    && ok "$p: the logcat fixture's count ($(countf "$p" "$W/logcat.txt"))" \
+    || bad "$p printed $(pcount "$p"), logcat has $(countf "$p" "$W/logcat.txt")"
+done
+want 'access\(W_OK\) branch' "$OUT" "it states the inference the caller's line is evidence for"
+
+echo "     -- the strings that are in no binary in any image are gone, with the reason:"
+FPLIST=$(sed -n "/^  for pat in 'Bad path length'/,/; do/p" "$W/fp.sh")
+for p in 'Unable to get FP service' 'Connected to IBiometricsFingerprint' 'Unable to get IBiometricsFingerprint'; do
+  printf '%s\n' "$FPLIST" | grep -qF -- "$p" \
+    && bad "'$p' is still a counted pattern, but it is in no file of any of the three images" \
+    || ok "'$p' is no longer counted (it is in no binary in any image)"
+done
+for p in 'Can not open fingerprint HW Module' 'Can not create instance of BiometricsFingerprint'; do
+  printf '%s\n' "$FPLIST" | grep -qF -- "$p" \
+    && bad "'$p' is still counted, but the string in the service binary says Can apostrophe t" \
+    || ok "'$p' is gone (the binary says Can't)"
+done
+want "says \*\*Can't\*\*, not" "$(cat "$W/fp.sh")" \
+  "and the script keeps the reason (the binary says Can't, not Can not) where the next person reads it"
+
+echo "     -- the fixtures themselves, so a count read from the wrong log cannot pass:"
+# The two lists, for the image cross-check in section 10. Two shapes: the first pattern sits on the
+# `for pat in '...'` line, the rest on indented lines -- an extractor that only matches the second
+# shape drops the first pattern of each list silently (that mistake cost the GPS harness a round).
+# Both quote styles have to be handled: two of the logcat patterns contain an apostrophe (the real
+# string is `Can't ...`), so they are double-quoted in the script -- and an extractor that only knew
+# about single quotes dropped them from BOTH lists silently. Hence the count check below, which is the
+# only thing that can see a dropped entry: an extraction that returns fewer items than the block holds
+# looks exactly like a shorter list.
+pats() {
+  printf '%s\n' "$1" \
+    | sed -e 's/^ *for pat in //' -e 's/[[:space:]]*\\$//' -e 's/; do[[:space:]]*$//' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | sed -e "s/^'//" -e "s/'$//" -e 's/^"//' -e 's/"$//' \
+    | grep -v '^$'
+}
+# `pats` returns one pattern per line, and $1 is the block TEXT (printf splits it into lines).
+LCBLOCK_SRC=$(sed -n "/^  for pat in 'Bad path length'/,/; do/p" "$W/fp.sh")
+JBLOCK_SRC=$(sed -n "/^for pat in 'setActiveGroup failed'/,/; do/p" "$W/fp.sh")
+LOGPATS=$(pats "$LCBLOCK_SRC")
+JPATS=$(pats "$JBLOCK_SRC")
+[ -n "$LOGPATS" ] && ok "the logcat pattern list was extracted from the shipped script" || bad "could not extract the logcat pattern list"
+[ -n "$JPATS" ] && ok "and the journal list" || bad "could not extract the journal pattern list"
+# Every line of the block carries exactly one quoted pattern, so "how many lines have a quote" is the
+# number of entries -- and comparing it with what came out is the only way to see a dropped one.
+_n=$(printf '%s\n' "$LCBLOCK_SRC" | grep -c "['\"]"); _m=$(printf '%s\n' "$LOGPATS" | grep -c .)
+[ "$_n" = "$_m" ] && ok "logcat: all $_n quoted entries were extracted (none dropped silently)" \
+                  || bad "logcat: the block holds $_n entries but only $_m were extracted"
+_n=$(printf '%s\n' "$JBLOCK_SRC" | grep -c "['\"]"); _m=$(printf '%s\n' "$JPATS" | grep -c .)
+[ "$_n" = "$_m" ] && ok "journal: all $_n quoted entries were extracted (none dropped silently)" \
+                  || bad "journal: the block holds $_n entries but only $_m were extracted"
+echo "     logcat:  $(printf '%s' "$LOGPATS" | tr '\n' ' ')"
+echo "     journal: $(printf '%s' "$JPATS" | tr '\n' ' ')"
+[ -z "$(printf '%s\n%s\n' "$LOGPATS" "$JPATS" | sort | uniq -d)" ] \
+  && ok "no pattern is counted in both logs" \
+  || { bad "a pattern is in both lists -- one of its two owners must be wrong:"; printf '%s\n%s\n' "$LOGPATS" "$JPATS" | sort | uniq -d | sed 's/^/        | /'; }
+for p in 'setActiveGroup failed' 'Failed to instantiate device' 'Cannot construct Forwarding device'; do
+  [ "$(countf "$p" "$W/logcat.txt")" = 0 ] \
+    && ok "the journal-only string '$p' is absent from the logcat fixture" \
+    || bad "'$p' is in BOTH fixtures: the check above could no longer fail"
+done
+for p in 'Bad path length' 'Start biometrics' 'Fp::connect failed'; do
+  [ "$(countf "$p" "$W/journal.txt")" = 0 ] \
+    && ok "and the logcat-only string '$p' is absent from the journal fixture" \
+    || bad "'$p' is in BOTH fixtures in the other direction"
+done
 
 # ==================================================================================================
 echo
@@ -613,7 +784,53 @@ want 'a DIFFERENT mount namespace from the container' "$OUT" "a differing mount 
 notwant 'same mount namespace as the container' "$OUT" "and it does not say 'same' when it is not"
 rm -rf "$FR/proc/5555"; env_reset
 
+# ==================================================================================================
 echo
-echo "pass=$PASS fail=$FAIL"
+echo "== 10. every counted pattern is still a real string in some image (SKIPPED if they are not here) =="
+# ==================================================================================================
+# Section 7b proves each pattern is counted in the log its OWNER writes to; that is about ownership,
+# not existence. Five of the old patterns were in no binary in any image -- two of them because the
+# real string says Can't -- and a count of 0 for those is not evidence about anything, which is the
+# worst shape for a probe whose subject is a line that is missing. This is the only check that a
+# pattern IS a string, so it is worth the mounts; without them it is a loud, counted SKIP rather than
+# a silent no-op. Read-only, and the same test as host/zl1-gps-selftest.sh uses: does grep PRINT A
+# HIT (not its exit status -- unreadable files inside these images make grep exit 2).
+UT_IMG=${ZL1_UT_IMAGE:-/mnt/utrootfs}
+AS_IMG=${ZL1_ANDROID_IMAGE:-/mnt/android-sys-test}
+VE_IMG=${ZL1_VENDOR_IMAGE:-/mnt/vendor-ro}
+_missing=""
+for _m in "$UT_IMG" "$AS_IMG" "$VE_IMG"; do [ -d "$_m" ] || _missing="$_missing $_m"; done
+if [ -n "$_missing" ]; then
+  SKIP=$((SKIP + 1))
+  printf 'SKIP  the image cross-check (%s not mounted here)\n' "${_missing# }"
+  printf '      -> mount them read-only (docs 103 section 7) and re-run: nothing else checks that a pattern is a real string\n'
+else
+  _oldifs=$IFS; IFS='
+'
+  # Note the weaker claim this makes for two of them: `fps_hal` and `gx_fpd` are logcat TAGS, i.e. the
+  # process names, so they exist here as names in the vendor's init/.rc and selinux files rather than as
+  # strings in a binary. That is exactly why the probe keeps them (see its section 4 comment) -- and it
+  # is also why this check asks "in some file of the image", not "in a binary".
+  for _p in $LOGPATS; do
+    if [ -n "$(grep -rlaF --exclude-dir=doc -- "$_p" "$AS_IMG" "$VE_IMG" 2>/dev/null | head -1)" ]; then
+      ok "logcat-side: '$_p' exists in the Android images"
+    else
+      bad "logcat-side: '$_p' is counted in logcat but is in no file of the Android images -- its 0 would not be evidence"
+    fi
+  done
+  for _p in $JPATS; do
+    if [ -n "$(grep -rlaF --exclude-dir=doc -- "$_p" "$UT_IMG" 2>/dev/null | head -1)" ]; then
+      ok "journal-side: '$_p' exists in the UT rootfs"
+    else
+      bad "journal-side: '$_p' is counted in the journal but is in no file of the UT rootfs"
+    fi
+  done
+  IFS=$_oldifs
+fi
+
+echo
+echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here)")"
 [ "$KEEP" = 1 ] || rm -rf "$W"
+# A SKIP is a statement about THIS host, not a defect (the rule host/zl1-installers-selftest.sh uses) --
+# but it is printed and counted, because an assertion that quietly becomes a no-op is the defect.
 [ "$FAIL" = 0 ]

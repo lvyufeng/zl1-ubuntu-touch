@@ -39,6 +39,13 @@
 # honest check is /proc/<hal-pid>/root/... (that path is resolved through the target's namespace),
 # plus its uid from /proc/<hal-pid>/status. Not the host's view, not guesswork about namespace flags.
 #
+# The log has two halves, and section 4 counts each string in the one its owner writes to (docs 103):
+# the caller's "setActiveGroup failed" is **biometryd's**, and biometryd is a UT-side service, so that
+# line goes to ITS journal -- not to the container's logcat, where a HAL whose access() branch logs
+# nothing has nothing to say. Reading the caller's line out of logcat made the pair the header asks
+# the reader to compare impossible to satisfy. The evidence for every owner is in
+# docs/ubuntu-touch/evidence/fp-log-owners-2026-09-23.log.
+#
 # Nothing here writes. `--create-store-dir` is off by default and is the only thing that would: it
 # creates exactly the directory Android's own FingerprintService creates -- the ONE path section 2
 # determined biometryd passes, not both candidates, and it prints the rmdir undo for that path. It is a
@@ -57,7 +64,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
   --create-store-dir) CREATE=1; shift ;;
   --quiet) QUIET=1; shift ;;
-  --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
+  # The header is lines 1-56 (Usage is the last of them); line 58 is `set -u`. The range used to stop
+  # at 40, i.e. short of the Usage line it exists to print. scripts/host/zl1-loc-fp-selftest.sh now
+  # asserts both halves of that -- the usage block IS printed, and no `set -u` is -- because a line
+  # number drifts with the header and only the negative assertion can see the other direction.
+  --help|-h) sed -n '2,56p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -350,35 +361,102 @@ done
 echo "   (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /dev/goodix_fp to system --"
 echo "    if that section did not run in the container, the perms here are the ones the HAL sees)"
 
-# --- 4. logcat: whose message is missing -------------------------------------------------------
+# --- 4. the log, split by which process could have written it ----------------------------------
 
-echo "== container logcat counts (the HAL's silent branch is the point -- a missing line is evidence)"
+# **A log string can only appear in the log of the process whose address space contains it**, so the
+# counts below are split by owner. This section used to count all thirteen patterns in the container's
+# logcat, and that made the ONE comparison its own header asks for unreadable:
+#
+#   the header says the device log shows the *caller's* "setActiveGroup failed: SYS_EINVAL" and nothing
+#   from the HAL, because the access() branch is silent. That caller is **biometryd**, and the string
+#   lives in **libbiometry.so.2.0.0 -- on the UT side**, so it goes to biometryd's journal. Counted in
+#   logcat it was structurally 0, i.e. the old comment's rule ("'Bad path length' = 0 while
+#   'setActiveGroup failed' > 0 means the access() branch") could never be satisfied, and a reader
+#   would have concluded the HAL never got the call at all -- the opposite of what the header says.
+#
+# Five more patterns were in no binary of any of the three images, two of them because the real string
+# says **Can't**, not "Can not" -- in a probe whose whole subject is a line that is missing, that is
+# the worst possible defect: a count that is 0 no matter what the device does.
+# Where each string was found (offline, grep over the images this port ships -- evidence:
+# docs/ubuntu-touch/evidence/fp-log-owners-2026-09-23.log):
+#
+#   logcat (a process in the Android container)
+#     android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+#                              Bad path length        AOSP's BiometricsFingerprint.cpp -- the
+#                                                     precondition, and the reason a >0 here means the
+#                                                     path never even reached access()
+#                              Start biometrics       service.cpp, ALOGE: openHal() got this far
+#                              Opening fingerprint hal library
+#                              Can't open fingerprint HW Module
+#                              Can't create instance of BiometricsFingerprint
+#     fingerprint.msm8996.so   Fp::connect failed     the innermost wrapper
+#     libsecureui_svcsock.so   getService failed      kept, but note it is a generic string that also
+#                                                     appears in two unrelated blobs in this Android
+#                                                     image, so a >0 is not necessarily this chain
+#   logcat too, but they are NOT binary strings -- and they belong here anyway:
+#     fps_hal, gx_fpd   a logcat line's TAG is the process name, so a daemon that logs under its own
+#                       name shows up without that name existing in any binary. This is the one
+#                       exception to the rule at the top, and it is why these two are not removed.
+#   journal of biometryd.service (the UT-side caller, and the library it loads)
+#     libbiometry.so.2.0.0   setActiveGroup failed: %s        <-- the line the header quotes
+#                            Failed to instantiate device.
+#                            Cannot construct Forwarding device for null impl.
+#                            Clearing template store:
+#                            Failed to enroll template, aborting ...
+#   neither, and that is why they are gone:
+#     'Unable to get FP service' / 'Connected to IBiometricsFingerprint' /
+#     'Unable to get IBiometricsFingerprint'   in no file of any of the three images. The second one
+#                                              was ALSO the string the self-test's own logcat fixture
+#                                              contained, so it was the harness that made it look real
+#     'Can not open fingerprint HW Module' / 'Can not create instance of BiometricsFingerprint'
+#                                              the strings in the service binary say Can't (above)
+
+echo "== the log, split by which process could have written it (the HAL's silent branch is the point --"
+echo "   a missing line is evidence, and WHICH log it is missing from is the other half)"
 if [ -n "$A" ]; then
   dump=$(nsenter -t "$A" -p -m -- /system/bin/logcat -d -v brief 2>/dev/null)
-  for pat in 'setActiveGroup failed' \
-             'Bad path length' \
-             'Unable to get FP service' \
-             'Connected to IBiometricsFingerprint' \
-             'Unable to get IBiometricsFingerprint' \
-             'Opening fingerprint hal library' \
-             'Can not open fingerprint HW Module' \
+  echo "   --- logcat (the container's vendor service and the modules it loads) ---"
+  for pat in 'Bad path length' \
              'Start biometrics' \
-             'Can not create instance of BiometricsFingerprint' \
-             'fps_hal' \
-             'gx_fpd' \
+             'Opening fingerprint hal library' \
+             "Can't open fingerprint HW Module" \
+             "Can't create instance of BiometricsFingerprint" \
              'Fp::connect failed' \
-             'getService failed' ; do
-    printf '   %-52s %s\n' "$pat" "$(printf '%s\n' "$dump" | grep -ac "$pat")"
+             'getService failed' \
+             'fps_hal' \
+             'gx_fpd' ; do
+    printf '   %-52s %s\n' "$pat" "$(printf '%s\n' "$dump" | grep -acF "$pat")"
   done
-  echo "   -- 'Bad path length' = 0 while 'setActiveGroup failed' > 0 means the access() branch,"
-  echo "      which logs NOTHING (BiometricsFingerprint.cpp:221-223)."
-  echo "   -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means"
-  echo "      openHal() got as far as registering the HIDL service, which puts the failure after open."
   echo "   -- the last 10 lines mentioning finger/biometric:"
   printf '%s\n' "$dump" | grep -aiE 'finger|biometric|fp_|goodix' | tail -10 | cut -c1-150 | sed 's/^/   | /'
 else
-  echo "   (no container: lxc-info gave nothing)"
+  echo "   --- logcat: skipped (no container: lxc-info gave nothing) ---"
 fi
+
+# The UT side. `journalctl -b -u` is boot-scoped rather than time-scoped, which is the only kind of
+# journal query that survives a wrong clock (this device has no working RTC, docs 69).
+echo "   --- journal of biometryd (the caller biometryd, and the library it loads) ---"
+jdump=$(journalctl -b -u biometryd --no-pager -o cat 2>/dev/null)
+if [ -z "$jdump" ]; then
+  echo "   (empty or unreadable -- if biometryd is active and this is empty, that itself is the finding:"
+  echo "    it writes its device and HAL messages to stderr, which systemd journals)"
+fi
+for pat in 'setActiveGroup failed' \
+           'Failed to instantiate device' \
+           'Cannot construct Forwarding device' \
+           'Clearing template store' \
+           'Failed to enroll template' ; do
+  printf '   %-52s %s\n' "$pat" "$(printf '%s\n' "$jdump" | grep -acF "$pat")"
+done
+echo "   -- the pair that decides it, now readable because both halves are in the same place:"
+echo "      'Bad path length' > 0                  -> the path never reached access() (too long/empty)"
+echo "      'Bad path length' = 0 AND the caller's"
+echo "      'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING"
+echo "                                                (BiometricsFingerprint.cpp:221-223), so the HAL"
+echo "                                                has no line of its own on that path -- which is"
+echo "                                                exactly why the caller's line is the evidence"
+echo "   -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means"
+echo "      openHal() got as far as registering the HIDL service, which puts the failure after open."
 
 # --- 5. the HIDL service and the device node ---------------------------------------------------
 

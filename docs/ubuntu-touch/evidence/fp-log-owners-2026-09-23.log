@@ -1,0 +1,177 @@
+# Which process can write each fingerprint log string -- decided OFFLINE by grepping the images
+# this port ships (2026-09-23). Written for scripts/device/zl1-fingerprint-probe.sh section 4, whose
+# comment points here. Host-side and read-only; no device was involved (it is in EDL).
+
+## rule
+
+  A log string can only appear in the log of the process whose address space contains it:
+    a vendor library or service in the Android container -> logcat
+    a UT-side binary, or a library it dlopens          -> stderr -> the systemd journal of its unit
+    a string in NO binary                              -> a count of 0 for it is not evidence
+  ONE exception, and it is why two patterns stay logcat-side: a logcat line's TAG is the process
+  name, so a daemon that logs under its own name appears without that name being in any binary.
+
+## the images searched
+
+  /mnt/utrootfs          /dev/loop0 /mnt/utrootfs
+  /mnt/android-sys-test  /dev/loop7 /mnt/android-sys-test
+  /mnt/vendor-ro         /dev/loop9 /mnt/vendor-ro
+
+## side A -- logcat: strings in a binary inside the Android container
+
+### Bad path length
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Start biometrics
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Opening fingerprint hal library
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Can't open fingerprint HW Module
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  /mnt/vendor-ro/lib64/libfpservice5118m.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Can't create instance of BiometricsFingerprint
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### Fp::connect failed
+  /mnt/vendor-ro/lib64/hw/fingerprint.msm8996.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### getService failed
+  /mnt/android-sys-test/app/XiaomiAccount/oat/arm64/XiaomiAccount.vdex
+  /mnt/android-sys-test/lib/lib-imsvideocodec.so
+  /mnt/android-sys-test/lib/liboctvm_drv.so
+  /mnt/android-sys-test/lib/libsecureui_svcsock_system.so
+  /mnt/android-sys-test/lib64/lib-imsvideocodec.so
+  /mnt/android-sys-test/lib64/liboctvm_drv.so
+  /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1
+  /mnt/vendor-ro/lib/libsecureui_svcsock.so
+  /mnt/vendor-ro/lib64/libfp_client5118m.so
+  /mnt/vendor-ro/lib64/libsecureui_svcsock.so
+  -- UT-side hits (/mnt/utrootfs): 0
+
+### the two TAG patterns, which are process names and not binary strings
+  fps_hal      in the UT rootfs: 0   in the vendor image: /etc/init/android.hardware.biometrics.fingerprint@2.0-service.rc
+ /etc/selinux/precompiled_sepolicy
+ /etc/selinux/vendor_file_contexts
+ /etc/selinux/vendor_sepolicy.cil
+  gx_fpd       in the UT rootfs: 0   in the vendor image: /etc/init/android.hardware.biometrics.fingerprint@2.0-service.rc
+ /etc/selinux/precompiled_sepolicy
+ /etc/selinux/vendor_file_contexts
+ /etc/selinux/vendor_sepolicy.cil
+ /lib64/libfpservice5118m.so
+  -> they are the daemon's and the HAL's names as the vendor's init/.rc and selinux files spell
+     them. A logcat line prints the process name as its tag, so these can appear in logcat without
+     being in any binary -- the reason they are NOT removed with the five below.
+
+## side B -- journal: strings in a UT-side binary, so biometryd's own journal
+
+### setActiveGroup failed
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Failed to instantiate device
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Cannot construct Forwarding device
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Clearing template store
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### Failed to enroll template
+  /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+  -- Android-side hits: system 0, vendor 0
+
+### and the line the whole probe hinges on, in full
+  setActiveGroup failed: %s
+  -> %s /mnt/utrootfs/usr/lib/aarch64-linux-gnu/libbiometry.so.2.0.0
+     that is biometryd's own client library, on the UT side. The probe's header says the device
+     log shows the CALLER's 'setActiveGroup failed: SYS_EINVAL' and nothing from the HAL, because
+     the HAL's access(W_OK) branch logs nothing (BiometricsFingerprint.cpp:221-223). So this line
+     is the evidence -- and it is in the journal, never in logcat. Counting it in logcat (which
+     is what this probe did) made it structurally 0, and the inference the probe prints could
+     therefore never be read off the output.
+
+## side C -- the patterns that were REMOVED, and why a 0 for them was never evidence
+
+### Unable to get FP service
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, over every regular file in the image (grep reads the
+  whole file, so a name surviving only as an exported symbol would still show up here)
+
+### Connected to IBiometricsFingerprint
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, over every regular file in the image (grep reads the
+  whole file, so a name surviving only as an exported symbol would still show up here)
+  -> and this one is worth its own line: it was ALSO the string the self-test's own logcat
+     fixture contained ('Connected to IBiometricsFingerprint::2.1 service'), so the harness
+     made it look real. A fixture may only contain strings that exist in an image.
+
+### Unable to get IBiometricsFingerprint
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, over every regular file in the image (grep reads the
+  whole file, so a name surviving only as an exported symbol would still show up here)
+
+### Can not open fingerprint HW Module
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, over every regular file in the image (grep reads the
+  whole file, so a name surviving only as an exported symbol would still show up here)
+  the real strings, in /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1:
+    Can't open fingerprint HW Module, error: %d
+    Can't create instance of BiometricsFingerprint, nullptr
+  -> 'Can't', not 'Can not'. Both patterns asked for a string that does not exist anywhere,
+     so both counts were 0 for every possible device state -- in a probe whose subject is a
+     line that is MISSING. A 0 there is not evidence; it is the pattern.
+
+### Can not create instance of BiometricsFingerprint
+  UT rootfs     : 0
+  Android system: 0
+  Android vendor: 0
+  searched as a fixed string, recursively, over every regular file in the image (grep reads the
+  whole file, so a name surviving only as an exported symbol would still show up here)
+  the real strings, in /mnt/vendor-ro/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1:
+    Can't open fingerprint HW Module, error: %d
+    Can't create instance of BiometricsFingerprint, nullptr
+  -> 'Can't', not 'Can not'. Both patterns asked for a string that does not exist anywhere,
+     so both counts were 0 for every possible device state -- in a probe whose subject is a
+     line that is MISSING. A 0 there is not evidence; it is the pattern.
+
+## what the probe prints now, from the same three groups
+
+  logcat  block: Bad path length / Start biometrics / Opening fingerprint hal library /
+                 Can't open fingerprint HW Module / Can't create instance of BiometricsFingerprint /
+                 Fp::connect failed / getService failed / fps_hal / gx_fpd
+  journal block: setActiveGroup failed / Failed to instantiate device /
+                 Cannot construct Forwarding device / Clearing template store /
+                 Failed to enroll template
+
+  and the pair the diagnosis rests on, now that both halves are in the log each one is in:
+    'Bad path length' > 0                    -> the path never reached access() (too long / empty)
+    'Bad path length' = 0 AND
+    'setActiveGroup failed' > 0              -> the access(W_OK) branch, which logs nothing
+
+## how to reproduce
+
+  sh scripts/host/zl1-loc-fp-selftest.sh        # 179 checks, no device
+  and, for the counts above, the same greps this file was produced by:
+  grep -rlaF --exclude-dir=doc -- 'Bad path length' /mnt/android-sys-test /mnt/vendor-ro
+  grep -rlaF --exclude-dir=doc -- 'setActiveGroup failed' /mnt/utrootfs
