@@ -110,7 +110,8 @@ E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry
 1. **`orientationsensor` 为什么不出值**（§4）。现在它的输入是可用的，所以可以在不动整条链的前提下查：把 sensorfwd 的日志级别抬到 `debug`（用一条 `ExecStart` 复述型的 drop-in，**不要**用 `setsid` 手工探针 —— [`60`](60-sensorfwd-was-the-third-service-behind-the-same-wall.md) 记着那会抢走总线名把真 unit 卡在 activating），看 `OrientationSensor` 的 chain/`orientationinterpreter` 有没有在跑 `evaluateSensor`。
 2. **一个新的、可用的杠杆**：`/usr/sbin/sensorfwd --help` 里有 **`-c=P, --config-file=<path>`**（默认 `/etc/sensorfw/sensord.conf`）。`/etc/sensorfw` 是只读镜像、动不了，但 `/etc/systemd/system` 是可写白名单路径，所以**一条 drop-in 就能让 sensorfwd 吃一份我们放在 `/userdata` 的配置**。这打开了两个实验：（a）换加速度计的坐标矩阵，看 `6` 变不变；（b）`[available] orientationsensor=False`，让方向传感器干脆不注册 —— 代价是**没有自动旋转**，但换来的是**竖屏稳定**。这是取舍，不是纯技术选择，**要不要做等用户一句话**，不擅自改。
 3. **HAL 自杀这件事本身**（§3）：它是 vendor HAL 里的 `poll()` 重入保护，触发者是客户端在 poll 飞行途中消失。修它属于容器侧（改 vendor 镜像），不是现在这一步；现在只需要知道**别去踩**。可查的第一条线索是那句话里的线程号（每次自杀都不是主线程在报，例如 `7166 7166` 的主线程 vs `7733 7819` 的 `7819`）。
-4. [`70`](70-the-landscape-was-the-shell-laying-itself-out.md) §6 剩下的两条仍在：`vsimd` 报 `libQSEEComAPI.so` not found（文件在）、`android.frameworks.sensorservice@1.0::ISensorManager/default` 永远在等（那个进程就是 sensors HAL 自己 pid 476）。
+4. ~~[`70`](70-the-landscape-was-the-shell-laying-itself-out.md) §6 剩下的两条仍在：`vsimd` 报 `libQSEEComAPI.so` not found（文件在）、`android.frameworks.sensorservice@1.0::ISensorManager/default` 永远在等（那个进程就是 sensors HAL 自己 pid 476）。~~
+   **【更正，[`90`](90-the-one-process-that-cannot-link-and-it-is-32-bit.md)：`vsimd` 那条已经查清并且结案。】** 不是命名空间问题，是 ELF class：`vsimd` 是 32 位，而唯一的 `libQSEEComAPI.so` 是 64 位；32 位那份在这台设备的两个镜像里都不存在。它是小米虚拟 SIM 那套（不是传感器链路上的一环），所以**这一条与 §4.1 的方向传感器问题无关** —— 剩下真正没结案的只有 `ISensorManager/default` 那一条。
 5. **`alssensor` 从来没有过一个样本**（时间戳 0）—— repowerd 的自动亮度拿不到光强。这是一条独立的小线。
 
 ## 8. 文件与复现

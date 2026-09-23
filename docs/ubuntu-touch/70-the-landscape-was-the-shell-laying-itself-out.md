@@ -132,7 +132,9 @@ sensorfw: SensorManagerError: "requested sensor id 'rotationsensor' not register
 F linker  : CANNOT LINK EXECUTABLE "/vendor/bin/vsimd": library "libQSEEComAPI.so" not found
 ```
 
-而**那个文件是存在的**：`/vendor/lib64/libQSEEComAPI.so`（31352 字节，主机和容器里都看得到）。所以这不是"镜像少一个库"，是**链接器/命名空间那一类问题** —— 和 [`66`](66-the-input-layer-vendor-symbol-was-libinputservice.md) 的 `DT_NEEDED` 传递、[`55`](55-the-bridge-libraries-built-and-hwbinder-does-not-cross-pid-namespaces-either.md) 的 `pc=0x0` 是同一族。`/dev/qseecom` 在（`crw------- root root 234,0`），`slpi` 子系统 `ONLINE`，所以 TEE 那一侧看起来是好的。
+而**那个文件是存在的**：`/vendor/lib64/libQSEEComAPI.so`（31352 字节，主机和容器里都看得到）。~~所以这不是"镜像少一个库"，是**链接器/命名空间那一类问题** —— 和 [`66`](66-the-input-layer-vendor-symbol-was-libinputservice.md) 的 `DT_NEEDED` 传递、[`55`](55-the-bridge-libraries-built-and-hwbinder-does-not-cross-pid-namespaces-either.md) 的 `pc=0x0` 是同一族。`/dev/qseecom` 在（`crw------- root root 234,0`），`slpi` 子系统 `ONLINE`，所以 TEE 那一侧看起来是好的。~~
+
+**【更正，[`90`](90-the-one-process-that-cannot-link-and-it-is-32-bit.md)：它就是"镜像少一个库"。】** 存在的那份是 **64 位**的（`/vendor/lib64/`，ELF64 AArch64），而 `/vendor/bin/vsimd` 是 **ELF32** —— 32 位进程在任何搜索路径上都装不了 ELF64 的库，所以链接器的 "not found" 是字面意思，排查方向不是命名空间而是 ELF class。32 位那份在这个设备的**两个镜像里都不存在**（`vendor.img` 与 `system.img` 整树找 `*qseecom*` 只有 `qseecomd` 和 lib64 那份）；`/dev/qseecom` 与 `slpi` 的状态与这件事无关，因为 `vsimd` 根本没走到打开设备那一步。这一条现在可以离线判定，见 `90` §2。
 
 **（3）有东西在永远等 `system_server` 才提供的服务。** 容器 logcat 里稳定刷：
 

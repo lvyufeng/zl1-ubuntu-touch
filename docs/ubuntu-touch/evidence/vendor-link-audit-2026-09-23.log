@@ -1,0 +1,105 @@
+### zl1 vendor/system link audit -- 2026-09-23
+### host-side, read-only, device NOT involved (the phone was in Qualcomm EDL, 05c6:9008)
+###
+### command:
+###   scripts/host/zl1-vendor-link-audit.sh \
+###     --vendor /mnt/zl1-ro/vendor --system /mnt/zl1-ro/system
+### where the two trees are the -staged backups, mounted read-only (loop,ro,noload):
+###   vendor.img  sha256 029c8e6047a6a8908ef3a069ebf49046dad2c3f676fbdfe6528d15e5067308ef
+###   system.img  sha256 1045472d40a9702ecd27d2a9459f1cc57a49fdeeeb3e43e6fe82dfc8f1d6171a
+###   /mnt/data/zl1-backups/2026-06-07-adb-root-staged/
+###
+### the vendor partition's own build.prop: ro.product.vendor.device=le_zl1, brand=LeEco,
+###   fingerprint LeEco/ZL1_NA/le_zl1:6.0.1/WEXNAOP5802101261S/letv01261206:user/release-keys
+### the Android system image the container runs (and the same UUID as the stock system.img):
+###   ro.build.version.sdk=28, fingerprint LeEco/ZL1_CN/le_zl1:9/PKQ1.181007.001/9.11.13
+###
+### the four facts this log is here to support:
+###   1. /vendor/bin/vsimd is ELF32; the only libQSEEComAPI.so on the device is
+###      /vendor/lib64/libQSEEComAPI.so, ELF64 AArch64 (31352 bytes). A 32-bit process cannot
+###      load it at any search path, so 'library not found' is literal.
+###   2. exactly ONE executable that init starts cannot link (vsimd); the two others
+###      (mdm_helper, mdm_helper_proxy) have no init .rc and nothing references them.
+###   3. every library with an unresolved dependency is either referenced by nothing or only
+###      by a referencer of the OTHER ELF class -- which resolves from its own class's dir.
+###   4. no 32-bit libQSEEComAPI.so exists anywhere in either image (searched, not assumed).
+###
+### the five searches that back fact 4, each read-only:
+###   find /mnt/zl1-ro/vendor /mnt/zl1-ro/system -xdev -iname '*qseecom*'
+###     -> /vendor/bin/qseecomd, /vendor/lib64/libQSEEComAPI.so   (no 32-bit file)
+###   ls /mnt/zl1-ro/vendor/lib | grep -i qsee      -> (nothing)
+###   ls /mnt/zl1-ro/system/lib | grep -i qsee      -> (nothing)
+###   find .../2026-06-07-adb-root-staged -name '*QSEECom*'  -> the lib64 copy only
+###   grep -rl QSEEComAPI over  -- see the referencer lines below
+###
+### AND: the same-day capture in 2026-06-07-adb-root-exact passes its own SHA256SUMS (31/31 OK)
+### and cannot be mounted -- mount(2) 'Structure needs cleaning'. Use -staged. Never trust a
+### checksum as proof that the bytes are a filesystem.
+
+
+== executables whose DT_NEEDED cannot resolve (these fail at exec time, every time init starts them)
+  /vendor/bin/mdm_helper                       ELF64  missing: libmdmimgload.so
+                                               -> no init .rc references it: nothing starts it, it is a dead file
+  /vendor/bin/mdm_helper_proxy                 ELF64  missing: libmdmimgload.so
+                                               -> no init .rc references it: nothing starts it, it is a dead file
+  /vendor/bin/vsimd                            ELF32  missing: libQSEEComAPI.so
+                                               -> started by /vendor/etc/init/vendor.xiaomi.hardware.vsimapp@1.0-service.rc
+
+== libraries whose DT_NEEDED cannot resolve (dead unless something loads them)
+  /system/lib/com.quicinc.cne.server@1.0.so    ELF32  missing: com.quicinc.cne.constants@1.0.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+  /vendor/lib64/libmialgoengine.so             ELF64  missing: libarcsoft_beautyshot.so libarcsoft_dualcam_refocus.so libarcsoft_dualcam_refocus_front.so libarcsoft_dualcam_refocus_rear_t.so libarcsoft_portrait_lighting.so libarcsoft_portrait_lighting_c.so libarcsoft_low_light_hdr.so libarcsoft_high_dynamic_range.so libarcsoft_supernight.so libHalSuperSensorServer.so libalCFR.so libmisegment_front_845.so libbeauty.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+  /vendor/lib64/libmm-qdcm-diag.so             ELF64  missing: libmm-dspp-utils.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+  /vendor/lib64/vendor.qti.hardware.improvetouch.touchcompanion@1.0-service.so ELF64  missing: libhbtpclient.so libhbtpfrmwk.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+  /vendor/lib/libcppf.so                       ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+  /vendor/lib/libdsi_netctrl.so                ELF32  missing: libnetmgr.so libconfigdb.so
+                                               <- referenced by /vendor/bin/imsdatadaemon (ELF64)
+                                               <- referenced by /vendor/lib64/lib-imsdpl.so (ELF64)
+                                               <- referenced by /vendor/lib64/libloc_ds_api.so (ELF64)
+                                               <- referenced by /vendor/lib64/libril-qc-qmi-1.so (ELF64)
+  /vendor/lib/libkeymasterdeviceutils.so       ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/lib/libkeymasterprovision.so (ELF32)
+                                               <- referenced by /vendor/lib/libmt.so (ELF32)
+                                               <- referenced by /vendor/lib64/libkeymasterprovision.so (ELF64)
+                                               <- referenced by /vendor/lib64/libmt.so (ELF64)
+                                               <- referenced by /vendor/lib64/libmt@1.2.so (ELF64)
+  /vendor/lib/libkeymasterutils.so             ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/lib/libkeymasterprovision.so (ELF32)
+                                               <- referenced by /vendor/lib/libmt.so (ELF32)
+                                               <- referenced by /vendor/lib64/libkeymasterprovision.so (ELF64)
+                                               <- referenced by /vendor/lib64/libmt.so (ELF64)
+                                               <- referenced by /vendor/lib64/libmt@1.2.so (ELF64)
+  /vendor/lib/libmfido.so                      ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/bin/fidoca (ELF64)
+                                               <- referenced by /vendor/lib/libmt.so (ELF32)
+                                               <- referenced by /vendor/lib64/libmt.so (ELF64)
+                                               <- referenced by /vendor/lib64/libmt@1.2.so (ELF64)
+  /vendor/lib/libmlipay@1.1.so                 ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/bin/mlipayd@1.1 (ELF64)
+                                               <- referenced by /vendor/lib64/libmt@1.2.so (ELF64)
+  /vendor/lib/libmlipay.so                     ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/lib/libmt.so (ELF32)
+                                               <- referenced by /vendor/lib64/libmt.so (ELF64)
+  /vendor/lib/libmt.so                         ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/bin/tidad@1.1 (ELF64)
+                                               <- referenced by /vendor/lib/libtida@1.1.so (ELF32)
+                                               <- referenced by /vendor/lib64/libtida@1.1.so (ELF64)
+  /vendor/lib/libtida@1.1.so                   ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/bin/tidad@1.1 (ELF64)
+  /vendor/lib/libvsim.so                       ELF32  missing: libQSEEComAPI.so
+                                               <- referenced by /vendor/bin/vsimd (ELF32)
+  /vendor/lib/vendor.qti.data.factory@1.0.so   ELF32  missing: com.quicinc.cne.api@1.0.so com.quicinc.cne.api@1.1.so com.quicinc.cne.constants@2.1.so com.quicinc.cne.server@2.0.so com.quicinc.cne.server@2.1.so com.quicinc.cne.server@2.2.so vendor.qti.hardware.data.qmi@1.0.so
+                                               <- referenced by /vendor/bin/cnd (ELF64)
+                                               <- referenced by /vendor/lib64/libcne.so (ELF64)
+                                               <- referenced by /vendor/lib64/libcneapiclient.so (ELF64)
+  /vendor/lib/vendor.qti.hardware.improvetouch.touchcompanion@1.0-service.so ELF32  missing: libhbtpclient.so libhbtpfrmwk.so
+                                               <- referenced by nothing in either tree: dead file, not a fault
+
+== verdict
+1 executable(s) that init starts cannot link. That is a repeating failure, and it is
+decided by the images, not by anything on a running device: check the ELF class of the binary
+against the class of every library that could satisfy the soname, before suspecting namespaces.

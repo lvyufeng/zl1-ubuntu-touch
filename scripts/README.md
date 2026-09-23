@@ -276,6 +276,35 @@ that died). See [`../docs/ubuntu-touch/86-edl-has-a-cause-a-panic-and-the-eviden
 | --- | --- |
 | `device/zl1-edl-postmortem.sh` | Runs on the device, and it is the **first thing after the device comes back from EDL**. Read-only. It asks the device itself (`/proc/config.gz`, not the build tree) whether the panic → EDL path is armed and what `download_mode` is, then reads both witnesses — `/sys/fs/pstore/*` and the newest `keep/boot-*/` archive's last snapshot — against one set of death signatures (`Kernel panic`, `Unable to handle kernel`, `WDOG`, `Going down for restart`, …) and gives a three-branch verdict. An **empty pstore proves nothing** (ramoops has to survive the reset for the file to exist at all, and that has never been verified on this device), so "no witness" is reported as "no witness" with exit 1, never as "no panic". `--quiet` / `--full`; exit 0 = ran, 1 = a witness could not be read, 2 = not the zl1. Its branches were exercised against a synthetic tree; **that run caught two real bugs**, the worse being a backtick inside a double-quoted `say` that was command substitution, so the script **executed `reboot edl`** — harmless on the host, and on the phone it would have put the device straight into EDL. |
 
+## Auditing the two Android images offline (no device, and it answers real questions)
+
+The container's Android side is two images this port already has on the host: the **vendor partition**
+(`vendor.img`) and the **Android system** the container mounts (`system.img`, and the identical
+`android-system-zl1-halium-candidate.img` at `/data/system.img`). Almost everything about why a vendor
+process fails to start is decided inside those two files, which means it can be answered while the
+phone is in EDL, unplugged, or in a drawer. The trap is that "the library is there" is not a link
+test — a `DT_NEEDED` is a **class-free soname**, so the question is always "*is there a library of
+this ELF class, in a directory this class searches?*". That is what this script asks, for every
+executable and every library at once, and then it separates what matters from what does not: an
+*executable* with an unresolved dependency is a failure init will repeat forever, while a *library*
+nothing references is just a file left behind. See
+[`../docs/ubuntu-touch/90-the-one-process-that-cannot-link-and-it-is-32-bit.md`](../docs/ubuntu-touch/90-the-one-process-that-cannot-link-and-it-is-32-bit.md).
+
+Two facts about the backups themselves, both found the hard way on 2026-09-23 and both worth knowing
+before reaching for one:
+
+* **Use `2026-06-07-adb-root-staged`, never `2026-06-07-adb-root-exact`.** The `-exact` copy passes
+  its own `SHA256SUMS` (31/31 OK) and its filesystems are still unopenable (`mount(2): Structure
+  needs cleaning`, and `debugfs` sees garbage in the inode table). A checksum proves the bytes were
+  not corrupted in transit; it does not prove the bytes are a filesystem. The script refuses the
+  `-exact` path with a warning, and its default is the staged one.
+* `system.img` and the `-candidate.img` written to `/data/system.img` are the **same image** (same
+  filesystem UUID), so auditing one audits the container's `/system`.
+
+| Script | Purpose |
+| --- | --- |
+| `host/zl1-vendor-link-audit.sh` | Read-only, host-side, no device. Mounts the two images with `loop,ro,noload` (no journal replay, nothing written), then for every ELF under `bin/` and `lib*/` resolves each `DT_NEEDED` against the same-class sonames in `/vendor/lib{64}` + `/system/lib{64}`, and reports two lists. **Executables**: each broken one is cross-referenced against the init `.rc` that names it, so the report distinguishes "init will restart this forever" from "nothing starts it, it is a dead file" — the whole point, since the images carry both. **Libraries**: each broken one is cross-referenced against its referencers, printed with *their* ELF class, because a 64-bit referencer needs the 64-bit sibling and does not make the 32-bit file a fault. Exit 0 = no init-started executable is broken, 1 = at least one is. `--exec-only` / `--quiet` / `--vendor DIR --system DIR` for already-mounted trees / `--images DIR`. Its findings on the stock images: exactly one started process cannot link (`/vendor/bin/vsimd`, 32-bit, needs the 32-bit `libQSEEComAPI.so`, which exists nowhere — see doc 90), and two binaries nothing starts (`mdm_helper`, `mdm_helper_proxy`, missing `libmdmimgload.so`). Its **first version was flaky** — the same image reported different unrelated executables as broken from run to run, because membership was tested with `printf | grep -qx` under `set -o pipefail`, whose exit status is not a reliable boolean; the `case`-pattern version is stable across runs. A finding list that changes between identical runs would have invented port faults. |
+
 ## The bionic TLS-slot shim
 
 On aarch64 glibc the thread pointer's slot 1 (`TP+8`) is `tcbhead_t::private`, which glibc never
