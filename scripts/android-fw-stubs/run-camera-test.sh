@@ -21,7 +21,13 @@
 #      open, so without the layer the program dies of SIGSEGV (exit 139) right there.
 #
 # Usage:
-#   run-camera-test.sh [--timeout SECONDS] [--no-input-stack] [--crash-dump] [test_camera args...]
+#   run-camera-test.sh [--timeout SECONDS] [--no-input-stack] [--crash-dump] [--block-buffered]
+#                      [test_camera args...]
+#
+# --block-buffered removes the `stdbuf -oL` that test_camera now always runs under. Line buffering
+# is the default because without it a timeout-killed run loses the tail of `out` and the
+# "reached the preview?" check reports "no" for a run that did reach the preview; see the comment
+# above PREFIX below for the measurement.
 #
 # --no-input-stack is the measurement mode: the camera without the input stack in the same process
 # (no-input-stack.so, see scripts/android-fw-stubs/no-input-stack.c). It is how the camera is
@@ -50,13 +56,22 @@ args=()
 PRELOAD="/usr/lib/aarch64-linux-gnu/libtls-padding.so /userdata/zl1-hybris/lib/libcfi-shadow-init.so"
 # A crash loses whatever stdio had buffered, and test_camera writes its progress with printf to a
 # file -- block buffered, so a run that dies early leaves an empty file and looks like a run that
-# never printed anything. --line-buffered puts stdbuf in front of it; the diagnostic value of
-# "the last line it printed" is the whole reason to run this.
-PREFIX=""
+# never printed anything. stdbuf -oL in front of it fixes that, and the diagnostic value of
+# "the last line it printed" is the whole reason to run this, so line buffering is the **default**:
+# it was opt-in (--line-buffered) and that made the "reached the preview?" check below lie.
+#
+# Measured 2026-09-23: a timeout-killed run leaves `out` at exactly 4096 bytes -- one stdio buffer,
+# cut mid-line -- because everything after the last flush is gone. test_camera prints
+# "Started camera preview." near the end (line 49 of a 49-line run), so it sits in exactly the part
+# that gets lost, and `grep -aq 'Started camera preview'` then answers "no" for a run that did reach
+# the preview. `stdbuf -oL` makes the marker survive; --block-buffered restores the old behaviour
+# when what is being investigated is the buffering itself.
+PREFIX="stdbuf -oL "
 while [ $# -gt 0 ]; do
   case "$1" in
   --timeout) SECS="$2"; shift 2 ;;
   --line-buffered) PREFIX="stdbuf -oL "; shift ;;
+  --block-buffered) PREFIX=""; shift ;;
   --no-input-stack)
     PRELOAD="$PRELOAD /userdata/zl1-hybris/lib/no-input-stack.so"
     shift
@@ -116,8 +131,27 @@ ssh_d "A=\$(lxc-info -n android -pH 2>/dev/null | head -1)
         # What success looks like: test_camera prints this once the preview is running, and then it
         # renders frames until the timeout kills it. It never takes a picture -- there is no
         # take_picture() call in it at all -- so a JPEG is not the thing to look for.
+        #
+        # The failure this check used to have: an absent marker is not the same as 'the run stopped
+        # early'. `out` is written through block-buffered stdio and the process is always killed by
+        # the timeout, so its tail is lost -- and when the loss lands exactly on a buffer boundary
+        # the file is an exact multiple of 4096 bytes. That is the signature to report as 'cannot
+        # tell', not as 'no'. Line buffering (now the default) is what makes a 'no' trustworthy.
+        # (No double quotes in here: this whole block is one double-quoted ssh argument.)
         echo '== reached the preview?'
-        grep -aq 'Started camera preview' \$d/out && echo '  yes: Started camera preview.' || echo '  no'
+        sz=\$(stat -c %s \$d/out 2>/dev/null || echo 0)
+        if grep -aq 'Started camera preview' \$d/out; then
+          echo \"  yes: Started camera preview.\"
+        elif [ \"\$sz\" = 0 ]; then
+          echo '  no -- and out is empty, so the run printed nothing at all'
+        elif [ \$((sz % 4096)) -eq 0 ] && [ \"$PREFIX\" = \"\" ]; then
+          echo \"  CANNOT TELL: no marker, but out is \$sz bytes, an exact multiple of 4096 --\"
+          echo '    the signature of a block-buffered tail that was lost when the timeout killed it.'
+          echo '    Drop --block-buffered (line buffering is the default) and rerun before calling'
+          echo '    this a failure.'
+        else
+          echo \"  no -- out is \$sz bytes with no marker, so the run stopped before the preview\"
+        fi
         echo '== any image written?'
         ls -l \$d/*.jpeg \$d/*.jpg /tmp/*.jpeg /tmp/*.jpg /tmp/shot_* 2>/dev/null || echo '  none'
         echo '== what cameraserver did, from its own log:'

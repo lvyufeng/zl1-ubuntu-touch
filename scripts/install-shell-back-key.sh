@@ -107,60 +107,26 @@ restart_greeter() {
   $SSH "su -l phablet -c 'XDG_RUNTIME_DIR=/run/user/32011 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/32011/bus systemctl --user restart lomiri-full-greeter.service'" 2>&1 | tail -1
 }
 
-# The patch. Applied by python3 (which the device has) so the replacement is exact-string-based and
-# the script can refuse to continue if the anchor is not found exactly once.
+# The patch itself lives in scripts/shell-overlay-patch.py, which is scp'd to the device and run
+# there. It is not embedded here as a heredoc inside an `ssh "..."` string, and that is not style:
+# three bugs came out of the embedded version, all the same shape. The installer pipes its program
+# through a double-quoted string, so the *local* shell processed it too -- every `"` in the Python
+# had to be escaped, and anything in backticks was run as a command. A comment containing
+# `mirscreencast` ran mirscreencast locally; a comment in backticks produced "syntax error near
+# unexpected token"; and finally the escaped quotes around the QML strings were eaten, which wrote
+# `console.log(zl1-shot: capture for  + v)` and **took the shell down** -- Lomiri logged
+# `Shell.qml:957 Expected token ','` and then "Lomiri encountered an unrecoverable error while
+# loading: Type Shell unavailable". The overlay being runtime-only is what made that a 20-second
+# fix (`--remove`) instead of a broken device.
+PATCHER_SRC="$(cd "$(dirname "$0")" && pwd)/shell-overlay-patch.py"
+PATCHER=/tmp/zl1-shell-overlay-patch.py
+
 patch_remote() {
-  $SSH "mkdir -p $OVERLAY_DIR && python3 - <<'PY'
-import io, sys
-stock = io.open('$STOCK', encoding='utf-8').read()
-anchor = '        Keys.onPressed: physicalKeysMapper.onKeyPressed(event, lastInputTimestamp);\n'
-if stock.count(anchor) != 1:
-    sys.stderr.write('ANCHOR NOT FOUND EXACTLY ONCE (%d) -- refusing to patch\n' % stock.count(anchor))
-    sys.exit(1)
-repl = '''        Keys.onPressed: {
-            // --- zl1: the physical Back key -------------------------------------------------
-            // Nothing in this shell handles Qt.Key_Back (the only Key_Back* strings in the tree
-            // are Key_Backtab and Key_Backspace) and the apps do not either, so on an app screen
-            // the key arrives and dies. Bind it to what a back key means here: close the spread
-            // if it is open, otherwise minimize the focused app.
-            //
-            // Leaving the app is done with the SAME call the Home key makes, not with a minimize:
-            //   * calling Stage.onMinimizeClicked() throws "TypeError: Type error" -- it is only a
-            //     signal handler inside Stage.qml, not a public function (measured 2026-09-23);
-            //   * emitting panelState.minimizeClicked() runs clean (no error at all) and changes
-            //     nothing on screen: in phone mode the stage is "staged" and window decorations --
-            //     hence a minimize button -- only exist when mode == "windowed"
-            //     (PanelState.decorationsVisible is bound to exactly that), so a minimized window
-            //     is not a state this shell has on a phone;
-            //   * WindowInputMonitor.onHomeKeyActivated, i.e. what the HOMEPAGE key does and what
-            //     the user has seen work, is launcher.toggleDrawer(false, false, true);
-            //     Launcher.toggleDrawer toggles, so the same call closes an open drawer/panel and
-            //     otherwise brings the launcher forward. greeter.active is the same guard the
-            //     Home key uses, to keep pocket presses from doing anything on the lock screen.
-            //
-            // The console.log lines land in the journal as qml: and are the measurement that the
-            // key reaches the shell at all: zl1-back: for Qt.Key_Back, zl1-key: for the keys
-            // that were already handled. They are cheap (a line per key press, not per frame).
-            if (event.key === Qt.Key_Back || event.nativeVirtualKey === 166) {
-                console.log(\"zl1-back: key=\" + event.key + \" nvk=\" + event.nativeVirtualKey
-                            + \" spread=\" + stage.spreadShown
-                            + \" drawer=\" + launcher.drawerShown
-                            + \" app=\" + (stage.mainApp ? stage.mainApp.appId : \"none\"));
-                if (stage.spreadShown) {
-                    stage.closeSpread();
-                } else if (!greeter.active && (stage.mainApp || launcher.drawerShown)) {
-                    launcher.toggleDrawer(false, false, true);
-                }
-                event.accepted = true;
-            } else {
-                console.log(\"zl1-key: key=\" + event.key + \" nvk=\" + event.nativeVirtualKey);
-                physicalKeysMapper.onKeyPressed(event, lastInputTimestamp);
-            }
-        }
-'''
-io.open('$OVERLAY', 'w', encoding='utf-8').write(stock.replace(anchor, repl, 1))
-print('patched -> $OVERLAY')
-PY"
+  scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    "$PATCHER_SRC" "$HOST:$PATCHER" || { echo "could not copy the patcher to the device"; return 1; }
+  # Two independent safety gates, both in the patcher: each hunk is an exact-string replacement that
+  # aborts unless its anchor appears exactly once, and nothing is written unless every hunk applied.
+  $SSH "mkdir -p $OVERLAY_DIR && python3 $PATCHER $STOCK $OVERLAY"
 }
 
 case "$ACTION" in
@@ -175,7 +141,7 @@ case "$ACTION" in
     echo "=== 1. build the overlay from the stock file ==="
     patch_remote || { echo "ABORTED: patch not applied"; exit 1; }
     echo
-    echo "=== 2. the diff must be exactly one hunk (one line in, a block out) ==="
+    echo "=== 2. the diff must be exactly the two known hunks ==="
     $SSH "diff -u $STOCK $OVERLAY | head -40; echo; echo \"stock lines: \$(wc -l < $STOCK)  overlay lines: \$(wc -l < $OVERLAY)\""
     echo
     echo "=== 3. qmllint on both, diffed: the patched file may not add a new error ==="
@@ -194,7 +160,25 @@ fi"
     echo
     echo "=== 5. restart the greeter so the shell reloads Shell.qml ==="
     restart_greeter
-    sleep 12
+    sleep 14
+    echo
+    echo "=== 5b. did the shell actually LOAD it? (the only honest check) ==="
+    # This step exists because the cheap checks above are not enough. qmllint compares identical
+    # whether or not the patched file is loadable -- when an earlier version of this script wrote the
+    # file with its quotes eaten, qmllint reported "IDENTICAL diagnostics" and the QML engine then
+    # refused it outright ("Shell.qml:957 Expected token ','" followed by "Lomiri encountered an
+    # unrecoverable error while loading: Type Shell unavailable"). So: after the restart, look for
+    # that message, and if it is there, put the stock shell back **without being asked**. A shell that
+    # will not load is a black screen, and this is the moment to undo it.
+    if $SSH "journalctl -b -o short-monotonic _COMM=lomiri --no-pager -n 400 2>/dev/null | tail -200 | grep -q 'unrecoverable error while loading'"; then
+      echo "  THE SHELL DID NOT LOAD -- rolling back to the stock shell now"
+      $SSH "umount $STOCK"
+      restart_greeter
+      sleep 10
+      echo "  rolled back; check the shell: bash $0 --status"
+      exit 1
+    fi
+    echo "  the shell loaded the patched file (no 'unrecoverable error while loading')"
     echo
     echo "=== 6. status ==="
     $SSH "su -l phablet -c 'XDG_RUNTIME_DIR=/run/user/32011 systemctl --user show lomiri-full-greeter.service -p MainPID -p ActiveState -p NRestarts' 2>/dev/null | grep -vE 'tlsfix2'

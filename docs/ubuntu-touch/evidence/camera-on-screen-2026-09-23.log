@@ -1,0 +1,160 @@
+zl1 camera on-screen measurement -- 2026-09-23
+=============================================
+
+The question: doc 68 §5 says the valid evidence that a camera preview is being
+composited is the COMPOSITOR's own utime+stime rate from /proc/<pid>/stat, with the
+display ON. Its table is:
+
+    display ON,  no client        1.2 ticks/s
+    display ON,  preview running  27.8 - 50
+    display OFF, preview running  4.8
+
+Two runs were needed because the first one left the display as it was found (off).
+
+
+RUN 1 -- display left as found (ActiveOutputs 0 0), /tmp/zl1-cam-measure.sh 90
+  device output: /userdata/zl1-camera/measure-190858/
+
+== compositor pid=55461 (HZ=100)
+IDLE  : 19868 -> 19868 = 0 ticks/s
+RUN +6s: 19868 -> 19895 = 4 ticks/s
+RUN +12s: 19895 -> 19927 = 5 ticks/s
+RUN +18s: 19927 -> 19960 = 5 ticks/s
+RUN +24s: 19960 -> 19991 = 5 ticks/s
+RUN +30s: 19991 -> 20022 = 5 ticks/s
+RUN +36s: 20022 -> 20049 = 4 ticks/s
+RUN +42s: 20049 -> 20081 = 5 ticks/s
+RUN +48s: 20081 -> 20111 = 5 ticks/s
+RUN +54s: 20111 -> 20137 = 4 ticks/s
+RUN +60s: 20137 -> 20170 = 5 ticks/s
+RUN +66s: 20170 -> 20199 = 4 ticks/s
+RUN +72s: 20199 -> 20226 = 4 ticks/s
+RUN +78s: 20226 -> 20259 = 5 ticks/s
+RUN +84s: 20259 -> 20285 = 4 ticks/s
+RUN +90s: 20285 -> 20315 = 5 ticks/s
+== exit=124
+== out: 49 lines, 4134 bytes
+== markers in out:
+29:Current preview size: [1920,1080]
+49:Started camera preview.
+  (4-5 ticks/s is exactly the "display OFF, preview running" row, so this run is
+   read as inconclusive on the tick criterion, not as a negative.)
+
+
+RUN 2 -- display explicitly TurnOn over DBus, restored to 0 0 afterwards
+         /tmp/zl1-cam-measure-on.sh 72
+         device output: /userdata/zl1-camera/on-191148/
+
+== compositor pid=55461  shell pid=1705540  HZ=100
+== display state before:
+(ii) 0 0
+BEFORE (display off, idle)   : compositor 0 ticks/s   shell 0 ticks/s
+== display after TurnOn:
+(ii) 1 0
+ON, no client                : compositor 2 ticks/s   shell 0 ticks/s
+== output in /userdata/zl1-camera/on-191148
+ON + preview +6s          : compositor 21 ticks/s   shell 41 ticks/s
+ON + preview +12s          : compositor 25 ticks/s   shell 42 ticks/s
+ON + preview +18s          : compositor 25 ticks/s   shell 40 ticks/s
+ON + preview +24s          : compositor 26 ticks/s   shell 43 ticks/s
+ON + preview +30s          : compositor 20 ticks/s   shell 48 ticks/s
+ON + preview +36s          : compositor 25 ticks/s   shell 41 ticks/s
+ON + preview +42s          : compositor 24 ticks/s   shell 42 ticks/s
+ON + preview +48s          : compositor 21 ticks/s   shell 49 ticks/s
+ON + preview +54s          : compositor 25 ticks/s   shell 42 ticks/s
+ON + preview +60s          : compositor 21 ticks/s   shell 47 ticks/s
+ON + preview +66s          : compositor 26 ticks/s   shell 42 ticks/s
+ON + preview +72s          : compositor 24 ticks/s   shell 43 ticks/s
+== exit=124
+== display after TurnOff (restored):
+(ii) 0 0
+== markers:
+29:Current preview size: [1920,1080]
+49:Started camera preview.
+== out: 49 lines
+== err:
+cfi-shadow-init[30108] loaded
+cfi-shadow-init[30108] shadow at 0x76bdf57000, filling the first 8388608 bytes (every address below 0x10000000000) with kUncheckedShadow
+cfi-shadow-init[30108] hybris already has 4 /android/ mappings, 0x773df57000 .. 0x773dfb3000
+no-input-stack: android_input_stack_initialize() ignored -- the input stack is not part of this measurement (see no-input-stack.c)
+no-input-stack: android_input_stack_start() ignored
+Found compositor and shell
+Created surface
+Created egl window
+
+Note the no-input-stack lines: these runs used --no-input-stack, i.e. the camera
+WITHOUT the input stack in the same process. That is the measurement mode.
+
+Both runs used `stdbuf -oL` on test_camera. Without it the marker is lost: a
+timeout-killed run leaves `out` at exactly 4096 bytes (one stdio buffer, cut
+mid-line) and "Started camera preview." -- line 49 of 49 -- sits in the lost tail.
+
+
+WHICH SCREENSHOT IS WHICH -- reference-based identification
+==========================================================
+shell item grabs taken over SSH with scripts/host/zl1-screenshot.sh.
+base2.png is a confirmed launcher grab. NCC = normalised cross-correlation
+(ImageMagick `compare -metric NCC`), RMSE in 16-bit units (65535 = maximal).
+
+                        RMSE_vs_base2    NCC_vs_base2    NCC_vs_preview-4
+base2 (launcher, ref)      --               1.000            0.374
+cam-3                     2283.4           0.9096           0.374   <- launcher
+screenshot19700210_*      1495.5           0.9610           0.371   <- launcher
+preview-1                14165.4           0.3853           0.120
+preview-3                14158.5           0.3867           0.121
+preview-4                 9178.6           0.3736           1.000
+run2-a                   14110.0           0.3851           0.120
+run2-b                   14115.3           0.3852           0.119
+run2-c                   14123.4           0.3853           0.120
+run2-d                   14131.5           0.3853           0.120
+on-a                     14096.4           0.3852           0.119
+on-b                     14100.2           0.3853           0.119
+on-d                      9102.5           0.3764           0.944
+
+preview-1/3/4 and run2-a..d were taken during runs with the display OFF;
+on-a/b/d during the run with the display ON. They are the SAME scene. So the grab
+does not depend on display power -- what display power changes is the tick
+criterion above. (The earlier reading that the display-off grabs showed the
+launcher was wrong: against the launcher reference they are at NCC 0.38, while the
+two actual launcher grabs are at 0.91 and 0.96.)
+
+
+TRUNCATED GRABS
+===============
+4 of the 17 PNGs copied on 2026-09-23 were incomplete, because the poller finds
+the file the moment the shell creates it and the copy raced the write:
+
+  cam-1.png     525118 bytes    PIL: image file is truncated
+  cam-2.png     623566 bytes    PIL: image file is truncated
+  on-c.png      254386 bytes    PIL: image file is truncated
+  preview-2.png 516914 bytes    PIL: image file is truncated
+
+(complete grabs of the same scene were ~565 KB, ~748 KB and ~792 KB). `file`
+reports all of them as valid PNGs -- only a decoder complains. Fixed in
+scripts/host/zl1-screenshot.sh: wait for the size to stop changing, then require
+the copy to end in the IEND chunk (49 45 4e 44 ae 42 60 82) and re-copy if not.
+Re-tested: 748025 bytes, PIL decodes it.
+
+
+THE STALE-FRAME CHECK
+=====================
+After the runs, with NO camera client alive:
+
+  pgrep -a test_camera                     -> none
+  processes holding wayland-0 open         -> only lomiri (pid 1705540)
+  fix-check.png (748025 bytes)             -> NCC_vs_preview-4 = 0.997494
+  TurnOn -> sleep 4 -> stale-on.png        -> NCC_vs_preview-4 = 0.997155
+  (display then TurnOff, ActiveOutputs restored to (ii) 0 0)
+
+Same frame, nine minutes after the run, with the client gone and after a real
+recomposite. So the grab shows the shell's scene contents -- the surface got there
+-- and a screenshot alone is NOT evidence that a preview is live. The tick table
+above is what proves that part.
+
+
+THE FIXED run-camera-test.sh, re-run
+====================================
+  bash scripts/android-fw-stubs/run-camera-test.sh --timeout 30 --no-input-stack
+  == reached the preview?
+    yes: Started camera preview.
+(stdbuf -oL is the default now, so this "yes" is trustworthy.)
