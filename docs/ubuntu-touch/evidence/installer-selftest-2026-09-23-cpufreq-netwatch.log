@@ -4,7 +4,9 @@ zl1 installer self-test, second round: cpufreq + netwatch
 
 This round extended scripts/host/zl1-installers-selftest.sh from 128 checks (two installers,
 ssh transport) to 228 checks (four installers, two transports), and it found defects in BOTH
-of the new ones. Section 1 is what was wrong, section 2 is the run on the current tree,
+of the new ones. The run below is that round's, at 228 checks. The harness is now at 229
+(docs 101 added the check that identifies which revision the "shipped applier" comparison is
+actually reading -- the guard that turned out to be able to pass without comparing anything). Section 1 is what was wrong, section 2 is the run on the current tree,
 section 3 is the same harness run against the PRE-FIX scripts from HEAD.
 
   $ uname -srm

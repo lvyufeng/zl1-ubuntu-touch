@@ -17,6 +17,15 @@
 #       if (atoi(api_level) <= 27)  "/data/system/users/0/fpdata/"
 #       else                        "/data/vendor_de/0/fpdata/"
 #
+#   **And `get` is `core::posix::exec("/usr/bin/getprop", {key}, ...)`**
+#   (halium/biometryd/src/biometry/util/property_store.cpp:26) -- an ABSOLUTE path to the *UT-side*
+#   binary, which the v63 boot hook replaces with a /bin/sh stub on every boot (docs 50, 93). So
+#   biometryd's api_level is always "", atoi("")=0, and it takes the <=27 branch because its property
+#   read is broken -- not because of what the device reports. Section 2 reads biometryd's own path
+#   and then cross-checks it against the container's properties, because the two can disagree:
+#   the vendor.img build.prop in the 2026-06-07 backup set says ro.product.first_api_level=23, which
+#   happens to be the same branch. Two independent readings agreeing is what makes the write safe.
+#
 #   And the HAL checks it before doing anything else
 #   (device/leeco/zl1/biometrics/BiometricsFingerprint.cpp:215-228):
 #       if (storePath.size() >= PATH_MAX || <= 0) { ALOGE("Bad path length"); return SYS_EINVAL; }
@@ -128,25 +137,86 @@ fi
 # mentioned. Deciding it here means section 5 cannot disagree with section 2 (docs 97).
 TARGET=""
 echo "== which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)"
+# **Read what biometryd reads, not what the device knows.** biometryd does not query the Android
+# property area: it shells out to an ABSOLUTE path on the UT side
+# (halium/biometryd src/biometry/util/property_store.cpp:26)
+#
+#     core::posix::exec("/usr/bin/getprop", {key}, {}, core::posix::StandardStream::stdout)
+#
+# and on this port /usr/bin/getprop is the v63 boot hook's /bin/sh stub (docs 50/93). So both
+# properties come back empty, api_level stays "", atoi("") is 0, and the <=27 branch is taken -- for
+# a reason that has nothing to do with what the device reports.
+#
+# That matters here because this section decides the ONE path section 5 is allowed to create. The
+# earlier version read the *container's* /system/bin/getprop, which is NOT what biometryd reads: on a
+# device whose first_api_level were >27 and whose UT getprop worked, biometryd would take the >27
+# branch while that version still answered from the container's value -- the wrong path, stated with
+# full confidence. So: read biometryd's own source of truth, then cross-check it against the device's
+# Android properties, and print the disagreement when there is one, because on this port the
+# disagreement is the whole content of the decision (both land on <=27, so the target is certain --
+# but "certain because two independent readings agree" is a different statement from "certain").
+GP=/usr/bin/getprop
+gp_is_stub=0
+if [ -f "$GP" ]; then
+  head -c 2 "$GP" 2>/dev/null | grep -q '#!' && gp_is_stub=1
+  grep -qa 'no-attach diagnostic' "$GP" 2>/dev/null && gp_is_stub=1
+fi
+if [ -x "$GP" ]; then
+  fal=$("$GP" ro.product.first_api_level 2>/dev/null | tr -d '\r')
+  sdk=$("$GP" ro.build.version.sdk 2>/dev/null | tr -d '\r')
+else
+  fal=; sdk=
+fi
+lvl=${fal:-$sdk}
+# The verdict has to come from what it ANSWERED, not from a guess about the file: the v63 stub is a
+# shell script, but so is any other replacement, so a shebang proves nothing on its own. (The first
+# draft of this said "THE v63 STUB, so every read below is empty" and then printed a value when a
+# test substituted a shell script that does answer -- a sentence contradicting the lines under it.)
+gpn="a real binary"
+[ "$gp_is_stub" = 1 ] && gpn="a shell script (the v63 stub's shape)"
+if [ -z "$lvl" ]; then
+  printf '   biometryd execs %s -- %s, and it answers NOTHING\n' "$GP" "$gpn"
+  printf '     -> that is what makes the <=27 branch automatic: not the device, its own broken read\n'
+else
+  printf '   biometryd execs %s -- %s, and it DOES answer (so the level below is a real read)\n' "$GP" "$gpn"
+fi
+printf '     ro.product.first_api_level -> %s\n     ro.build.version.sdk      -> %s\n' "${fal:-<unset>}" "${sdk:-<unset>}"
+case "$lvl" in
+  ''|*[!0-9]*) echo "   -> both empty/garbage, so atoi(\"\")=0 and biometryd takes the <=27 branch:"
+               echo "      /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)"
+               TARGET=/data/system/users/0/fpdata ;;
+  *) if [ "$lvl" -le 27 ] 2>/dev/null; then
+       echo "   -> level $lvl <= 27: biometryd passes /data/system/users/0/fpdata/"
+       TARGET=/data/system/users/0/fpdata
+     else
+       echo "   -> level $lvl > 27: biometryd passes /data/vendor_de/0/fpdata/  (check THAT one above)"
+       TARGET=/data/vendor_de/0/fpdata
+     fi ;;
+esac
+# The cross-check, and it is worth reading even when it agrees: the vendor.img build.prop in the
+# 2026-06-07 backup set says ro.product.first_api_level=23, which is the same branch. Two independent
+# readings landing on one path is what makes the write in section 5 safe.
 if [ -n "$A" ]; then
-  # Read the properties INSIDE the container: the host's getprop is a stub (docs 50).
-  fal=$(nsenter -t "$A" -p -- /system/bin/getprop ro.product.first_api_level 2>/dev/null | tr -d '\r')
-  sdk=$(nsenter -t "$A" -p -- /system/bin/getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')
-  lvl=${fal:-$sdk}
-  printf '   ro.product.first_api_level = %s\n   ro.build.version.sdk      = %s\n' "${fal:-<unset>}" "${sdk:-<unset>}"
-  case "$lvl" in
-    ''|*[!0-9]*) echo "   -> both unset/garbage: atoi(\"\")=0, so biometryd takes the <=27 branch: /data/system/users/0/fpdata/"
-                 TARGET=/data/system/users/0/fpdata ;;
-    *) if [ "$lvl" -le 27 ] 2>/dev/null; then
-         echo "   -> level $lvl <= 27: biometryd passes /data/system/users/0/fpdata/"
-         TARGET=/data/system/users/0/fpdata
+  cfal=$(nsenter -t "$A" -p -- /system/bin/getprop ro.product.first_api_level 2>/dev/null | tr -d '\r')
+  csdk=$(nsenter -t "$A" -p -- /system/bin/getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')
+  clvl=${cfal:-$csdk}
+  printf '   the Android side, for cross-check only (biometryd never reads this):\n'
+  printf '     ro.product.first_api_level -> %s     [2026-06-07 vendor.img build.prop: 23]\n' "${cfal:-<unset>}"
+  printf '     ro.build.version.sdk      -> %s\n' "${csdk:-<unset>}"
+  case "$clvl" in
+    ''|*[!0-9]*) echo "   -> (the container's own read is empty too; the offline evidence stands alone)" ;;
+    *) if [ "$clvl" -le 27 ] 2>/dev/null; then
+         [ "$TARGET" = /data/system/users/0/fpdata ] \
+           && echo "   -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain" \
+           || echo "   -> DISAGREES with the reading above: biometryd will pass $TARGET, the device reports <=27."
        else
-         echo "   -> level $lvl > 27: biometryd passes /data/vendor_de/0/fpdata/  (check THAT one above)"
-         TARGET=/data/vendor_de/0/fpdata
+         [ "$TARGET" = /data/vendor_de/0/fpdata ] \
+           && echo "   -> AGREES with the reading above (both >27): /data/vendor_de/0/fpdata/ is certain" \
+           || echo "   -> DISAGREES with the reading above: biometryd will pass $TARGET, the device reports >27."
        fi ;;
   esac
 else
-  echo "   (no container)"
+  echo "   (no container -- the container's properties cannot be cross-checked; the reading above stands alone)"
 fi
 
 # --- 3. under the wrapper: which module loads, and the daemon it needs --------------------------

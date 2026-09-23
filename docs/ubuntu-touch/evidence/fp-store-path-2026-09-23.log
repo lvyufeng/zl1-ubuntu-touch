@@ -1,0 +1,295 @@
+Which directory the fingerprint HAL is handed, settled offline
+2026-09-23. Host-side. Device: EDL (05c6:9008, port 3-3). Nothing here touched the device.
+================================================================================
+
+The question this settles: biometryd hands the HAL a store path, the HAL access(W_OK)es it, and a
+failure there returns SYS_EINVAL with NO log line (docs 83). So which path, and does it exist?
+Neither half had been answered from the real images before this round.
+
+1. the source, read out of the halium checkout
+================================================================================
+
+$ sed -n '586,598p' /mnt/data/halium-zl1-build/halium/biometryd/src/biometry/devices/android.cpp
+      hybris_fp_instance_{hybris_fp_instance}
+{
+    biometry::util::AndroidPropertyStore store;
+    UHardwareBiometryRequestStatus ret = SYS_OK;
+    std::string api_level = store.get("ro.product.first_api_level");
+    if (api_level.empty())
+        api_level = store.get("ro.build.version.sdk");
+    if (atoi(api_level.c_str()) <= 27)
+        ret = u_hardware_biometry_setActiveGroup(hybris_fp_instance, 0, (char*)"/data/system/users/0/fpdata/");
+    else
+        ret = u_hardware_biometry_setActiveGroup(hybris_fp_instance, 0, (char*)"/data/vendor_de/0/fpdata/");
+    if (ret != SYS_OK)
+        printf("setActiveGroup failed: %s\n", IntToStringRequestStatus(ret).c_str());
+
+-- and `store.get` is not the Android property area, it is a FORK AND EXEC of an absolute path:
+
+$ sed -n '22,35p' /mnt/data/halium-zl1-build/halium/biometryd/src/biometry/util/property_store.cpp
+#include <core/posix/exec.h>
+
+std::string biometry::util::AndroidPropertyStore::get(const std::string& key) const
+{
+    core::posix::ChildProcess getprop = core::posix::exec("/usr/bin/getprop", {key}, {}, core::posix::StandardStream::stdout);
+    std::string value; getprop.cout() >> value;
+
+    auto result = getprop.wait_for(core::posix::wait::Flags::untraced);
+
+    if (result.status == core::posix::wait::Result::Status::exited && result.detail.if_exited.status == core::posix::exit::Status::success)
+        return value;
+
+    throw std::out_of_range{key};
+}
+
+   `/usr/bin/getprop` is the UT-side binary, and the v63 boot hook replaces it with a /bin/sh stub on
+   every boot (docs 50, 93 -- the same stub that makes docs 82's two custom.location.* levers dead).
+   So both reads return NOTHING, api_level stays "", atoi("") is 0, and the <=27 branch is taken.
+
+2. the two values, from the images rather than from the device
+================================================================================
+
+$ sudo mount -o ro,noload,loop /mnt/data/zl1-backups/2026-06-07-adb-root-staged/vendor.img /mnt/vendor-ro
+$ sudo grep -E 'first_api_level|version.sdk|board.platform|product.board' /mnt/vendor-ro/build.prop
+ro.board.platform=msm8996
+ro.product.board=msm8996
+ro.product.first_api_level=23
+
+   ro.product.first_api_level = 23  ->  atoi = 23 <= 27  ->  /data/system/users/0/fpdata/
+   (ro.hardware is NOT in this build.prop, which is why hw_get_module falls through to
+    ro.product.board=msm8996 -- the variant order doc 98 reads out of the library.)
+
+   **So the device would say the same branch the broken read says.** The two do not merely agree on
+   this device by luck: 23 and "" both land on <=27. Nothing here depends on that staying true --
+   the probe now prints both, and says so when they disagree.
+
+3. and does that directory exist? Asked of the partition image, not of the device
+================================================================================
+
+$ sudo mount -o ro,noload,loop /mnt/data/zl1-backups/2026-09-16-recovery-supplement/userdata.img /mnt/udata-ro
+$ sudo ls -ld /mnt/udata-ro/system/users/0 /mnt/udata-ro/system/users/0/fpdata \
+                /mnt/udata-ro/vendor_de/0/fpdata /mnt/udata-ro/gf_data
+ls: cannot access 'system/users/0/fpdata': No such file or directory
+ls: cannot access 'gf_data': No such file or directory
+drwx------. 2 1000 1000 4096 Apr 25  1970 system/users/0
+drwx------. 2 1000 1000 4096 Apr 25  1970 vendor_de/0/fpdata
+
+   * /data/system/users/0            EXISTS   drwx------ system:system  -- and EMPTY (no fpdata)
+   * /data/system/users/0/fpdata     MISSING  <- what biometryd passes, and what the HAL access()es
+   * /data/vendor_de/0/fpdata        EXISTS   drwx------ system:system  -- and EMPTY
+   * /data/gf_data                   MISSING  <- the innermost Goodix HAL's own store (docs 98)
+
+   This is the first time these have been checked against a real image, and it settles two things:
+   doc 83's "the EINVAL is a missing directory" is confirmed (the directory really is absent, in an
+   image taken from a device that had booted many times), and doc 98's second store is absent too --
+   so the two silences are two REAL absences, not two readings of one.
+   The 26 GiB image mounts read-only with `noload`; nothing was written to it or to any device.
+
+4. the defect this round found in the instrument: it decided from the wrong process's read
+================================================================================
+
+   The probe's section 2 asked the CONTAINER (`nsenter -t $A -p -- /system/bin/getprop ...`) and
+   decided from that. biometryd does not read the container's properties -- it execs the UT-side
+   /usr/bin/getprop. On the real device both answers are <=27, so the old code was right by
+   coincidence. It stops being a coincidence the moment the UT getprop answers anything >27, and on a
+   device whose first_api_level is >27 with a WORKING getprop it would name the wrong path with full
+   confidence -- and section 6 writes exactly one directory, with an undo for that one.
+
+   Demonstrated rather than argued. The harness can now give the UT-side getprop an answer, and the
+   scenario is "container says 29, the real port's stub is in place":
+
+$ sh /tmp/zl1-hw/scripts/host/zl1-loc-fp-selftest.sh      # the PRE-FIX probe
+  90:FAIL  it says WHY biometryd lands on <=27 (its own read answers nothing), not why the device would
+  166:FAIL  and states that biometryd's OWN read comes from the UT-side getprop, which is the v63 stub's shape
+  242:FAIL  so the reason it gives for the <=27 branch is biometryd's, not the device's
+  318:FAIL  and it labels the container read as a cross-check, because biometryd does not read it
+  394:FAIL  with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared
+  470:FAIL  and it says when the two independent readings agree, which is what makes the write safe
+  556:FAIL  container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created
+  579:FAIL  NOT the path the container's value would suggest (the old probe's answer)
+  581:FAIL  and it says the two readings disagree instead of silently picking one
+  669:FAIL  it reports that the UT getprop answers (so the level is a real read, not a default)
+  759:FAIL  and both readings agree here
+  847:FAIL  the container reports the value the real vendor.img build.prop carries
+  933:FAIL  and it says so explicitly
+  pass=111 fail=13
+
+   and 13 red is 13 sides of one defect: the shipped probe prints a level, an AGREES/DISAGREES verdict
+   and a stated reason that all come from the container's read; the two that matter most are
+     "container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path
+      created"  and  "NOT the path the container's value would suggest (the old probe's answer)".
+
+5. the fixed probe, on the same three readings
+================================================================================
+
+   -- the real 2026-09-23 shape: the stub says nothing, the device says 23, both <=27:
+   == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+      biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        ro.product.first_api_level -> <unset>
+        ro.build.version.sdk      -> <unset>
+      -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+         /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+      the Android side, for cross-check only (biometryd never reads this):
+        ro.product.first_api_level -> 23     [2026-06-07 vendor.img build.prop: 23]
+        ro.build.version.sdk      -> 28
+      -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+   (b) the UT getprop answers 29 AND the container answers 29 -- the >27 branch:
+   == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+      biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it DOES answer (so the level below is a real read)
+        ro.product.first_api_level -> 29
+        ro.build.version.sdk      -> 29
+      -> level 29 > 27: biometryd passes /data/vendor_de/0/fpdata/  (check THAT one above)
+      the Android side, for cross-check only (biometryd never reads this):
+        ro.product.first_api_level -> 29     [2026-06-07 vendor.img build.prop: 23]
+        ro.build.version.sdk      -> 29
+      -> AGREES with the reading above (both >27): /data/vendor_de/0/fpdata/ is certain
+   (c) the UT getprop is the STUB while the container says 29 -- the disagreement:
+   == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+      biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        ro.product.first_api_level -> <unset>
+        ro.build.version.sdk      -> <unset>
+      -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+         /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+      the Android side, for cross-check only (biometryd never reads this):
+        ro.product.first_api_level -> 29     [2026-06-07 vendor.img build.prop: 23]
+        ro.build.version.sdk      -> 29
+      -> DISAGREES with the reading above: biometryd will pass /data/system/users/0/fpdata, the device reports >27.
+
+The full current run:
+
+$ sh scripts/host/zl1-loc-fp-selftest.sh
+  == 7. fingerprint: the default run writes nothing at all ==
+  PASS  the default run exits 0
+  PASS  the default run makes no systemd call that changes anything
+  PASS  and it created no store directory
+  PASS  it announces that it is read-only when --create-store-dir is not given
+  PASS  it states the real question: access() with the HAL's own uid
+  PASS  it compares the HAL's mount namespace against the container's for real
+  PASS  and lists the path biometryd actually passes
+  PASS  whose absence is the finding
+  PASS  it counts the caller's line
+  PASS  and the HAL's own line, whose being zero is the evidence
+  PASS  and the line that puts the failure after openHal()
+  PASS  it says WHY biometryd lands on <=27 (its own read answers nothing), not why the device would
+  PASS  and states that biometryd's OWN read comes from the UT-side getprop, which is the v63 stub's shape
+  PASS  so the reason it gives for the <=27 branch is biometryd's, not the device's
+  PASS  and it labels the container read as a cross-check, because biometryd does not read it
+  PASS  with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared
+  PASS  and it says when the two independent readings agree, which is what makes the write safe
+  == 8. --create-store-dir: ONE path, decided by section 2, with its own undo ==
+  PASS  level 27 -> it creates /data/system/users/0/fpdata
+  PASS  and NOT the other candidate (the defect this round fixed)
+  PASS  it reports what it created
+  PASS  the undo names the path it created
+  PASS  and it says which path it deliberately did not create
+  PASS  the undo does not name a path that was never created
+  PASS  container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created
+  PASS  NOT the path the container's value would suggest (the old probe's answer)
+  PASS  and it says the two readings disagree instead of silently picking one
+  PASS  it reports that the UT getprop answers (so the level is a real read, not a default)
+  PASS  and reads the level from biometryd's own source
+  PASS  level 29 -> it creates /data/vendor_de/0/fpdata
+  PASS  and not the <=27 path
+  PASS  with the matching undo
+  PASS  and both readings agree here
+  PASS  the container reports the value the real vendor.img build.prop carries
+  PASS  and it says so explicitly
+  PASS  so the path is certain from two independent readings
+  PASS  it explains that atoi("")=0
+  PASS  and creates the <=27 path, as biometryd would
+  PASS  with the directory present it creates nothing
+  PASS  and changes no ownership or mode
+  PASS  it says the directory was already there
+  PASS  with no container it exits 1
+  PASS  and writes nothing at all
+  PASS  it says it aborted rather than reporting a success
+  == 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, two silences ==
+  PASS  it reads the variant properties inside the container, not the host's getprop stub
+  PASS  and reports an unset one as unset rather than omitting it
+  PASS  it picks the module AOSP's variant order picks
+  PASS  and says what that module is, including that its binder client is one library down
+  PASS  and names the service that client looks up
+  PASS  it lists what is really in the container's /vendor, so 'which module' is an observation
+  PASS  with the size of the module it picked
+  PASS  and of the Goodix HAL underneath it
+  PASS  the listing is filtered to the fingerprint modules, so it stays readable
+  PASS  it notes the absent AOSP fallback
+  PASS  it checks the daemon the picked module needs -- silence #2
+  PASS  and whether FingerPrintService is on the container's binder
+  PASS  and the Goodix HAL's own store, which is not the path biometryd passes
+  PASS  and the device node that store is reached through
+  PASS  the store questions go through the CONTAINER's mount namespace
+  PASS  gx_fpd is found by its cmdline, with its uid
+  PASS  and the 'not running' verdict is gone
+  PASS  the binder service list is read through the container's pid namespace
+  PASS  so the registered case is not reported as absent
+  PASS  and the second store is now reported present
+  PASS  the mutation landed (the mutant tests the HOST's /vendor, not the container's)
+  PASS  on the host's /vendor the very same script finds NO module
+  PASS  and says so, which is the false 'the HAL is not installed' verdict
+  PASS  a differing mount namespace is called out, not glossed over
+  PASS  and it does not say 'same' when it is not
+
+  
+  pass=124 fail=0
+
+6. what this round does NOT show
+================================================================================
+  * NOTHING ABOUT THE DEVICE. The device is in EDL; the probe has still never run on it, and the
+    write (--create-store-dir) has never been made. The claim here is about which path it would
+    create and why, settled from the images and the source.
+  * The /data image is from 2026-09-16, before the netwatch, cpufreq and keeper work. It answers
+    "did the directory exist on a device that had booted many times", not "is it absent right now".
+  * first_api_level=23 is the VENDOR build.prop's value. It is what the container's property area
+    would serve; it is not a getprop run on the device.
+  * **Even with the directory created, nothing proves a fingerprint would then work.** Below
+    access(W_OK) sit the innermost HAL's own store (/data/gf_data, also absent), the daemon (gx_fpd)
+    and libQSEEComAPI.so. Doc 83's EINVAL was the FIRST of three silences; this round confirms the
+    first two are real absences and says nothing about the third.
+  * Creating the directory is a write to Android's /data and remains the user's call. The probe
+    prints the undo for exactly the one path it created.
+
+7. and a defect in the installer harness itself, found by re-running it after this commit
+================================================================================
+zl1-installers-selftest.sh went from pass=229/fail=0 to fail=3 the moment the cpufreq fix was
+committed, without a line of the script under test changing. Its "and the applier that actually
+shipped, on the very same fixture" scenario reads
+
+    git show HEAD:scripts/install-cpufreq-governor.sh
+
+and the whole point of that scenario is "the version that SHIPPED exits 0 while a core never moved".
+Once the fix is in HEAD, HEAD *is* the fixed applier -- the scenario silently became "the fix,
+compared against itself". The guard that was meant to catch that asked for the string
+
+    did NOT take it
+
+while the applier prints `did NOT take '<governor>'`, so it is in NEITHER version: an assertion that
+could only ever pass, which is the exact defect this project keeps finding in the scripts this file
+tests. Fixed by walking the file's history for the newest revision whose applier has NO read-back and
+printing which revision that was:
+
+    PASS  the pre-fix revision is 8a21b99c0c70, whose applier has no read-back
+
+Two things came with it. `git log -- "$CP"` had to become a REPO-RELATIVE path, because the
+documented way to run this harness is a copy of the tree placed outside the repository, and
+`git log -- /tmp/copy/...` finds no history at all -- under the project's own instructions the first
+version turned a working comparison into a hard error. And when no history is available it prints a
+`SKIP` line, counts it separately and names it in the total, rather than quietly comparing the script
+against itself.
+
+The same stale-HEAD problem was then found in the WRITTEN reproduction commands of docs 99 and 100
+(both said `git show HEAD:...`), which no longer reproduce their own recorded failures. All three are
+now "copy the current tree, roll back only the scripts that round fixed to a named revision", and each
+was re-run:
+
+    docs 99   (revert install-retire-debug-keeper.sh to 55a490e)   pass=224 fail=5
+    docs 100  (revert cpufreq + netwatch to 3a26b66)               pass=211 fail=15
+    docs 101  (revert both probes to 25f7ba1)                      pass=111 fail=13
+
+evidence
+  scripts/host/zl1-loc-fp-selftest.sh                       124 checks (was 110)
+  scripts/host/zl1-installers-selftest.sh                   229 checks (was 228)
+  scripts/device/zl1-fingerprint-probe.sh                    section 2 reads biometryd's own source
+  docs/ubuntu-touch/101-*.md                                 the write-up

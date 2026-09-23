@@ -11,7 +11,7 @@
 
 | 问题 | 答案 |
 |---|---|
-| 这一轮做了什么？ | `scripts/host/zl1-installers-selftest.sh` 从 128 项扩到 **228 项**，新增第 12 节（cpufreq，44 项）和第 13 节（netwatch，56 项）——正好是剩下两个会写设备状态的安装器 |
+| 这一轮做了什么？ | `scripts/host/zl1-installers-selftest.sh` 从 128 项扩到 **228 项**（docs 101 又加了 1 项，现为 229），新增第 12 节（cpufreq，44 项）和第 13 节（netwatch，56 项）——正好是剩下两个会写设备状态的安装器 |
 | 为什么是这两个？ | `install-cpufreq-governor.sh` 是**发热修复的另一半**（把四颗核从镜像自带的 `performance` 上调走）；`install-netwatch-service.sh` 是**唯一会读一个分区**的安装器（misc，看门狗能往里写 `boot-recovery`） |
 | cpufreq 抓到什么？ | applier **写完之后从不回读**。`echo > scaling_governor` 一返回就记一次成功，所以"内核对这个名字回 EINVAL、值根本没变"时它报的是 `governor 'schedutil' on 0 cores`，**退出 0**、`Result=success`、unit `active`——一个说"发热修复已武装"而四颗核仍在 `performance` 的仪器 |
 | cpufreq 还抓到什么？ | `--governor` **末尾不带值**时 `$2` 触发 `set -u` 直接**中止整个 shell**（rc=1，且不说哪个 flag 缺值）；以及**根本没有 `--help` 分支**（`unknown argument --help`，rc=2），而同目录每一个兄弟脚本都打印用法 |
@@ -133,7 +133,7 @@ SHA256 `30e14955…`，`tr -d '\0' | wc -c` 是 0——也就是说拍照那一�
 
 ---
 
-## 6. 这个 harness 现在覆盖什么（228 项）
+## 6. 这个 harness 现在覆盖什么（228 项；docs 101 之后 229）
 
 ```
 == 1.  --status 和 --explain 什么都不改（快照比对：整个假设备的文件集）                     14
@@ -173,11 +173,18 @@ SHA256 `30e14955…`，`tr -d '\0' | wc -c` 是 0——也就是说拍照那一�
 sh scripts/host/zl1-installers-selftest.sh          # 228 项
 sh scripts/host/zl1-installers-selftest.sh --keep   # 留下两台假设备、桩、改写后的 applier 与变异体
 
-# 证明 harness 真的在测这两个缺陷：把它对着修复前的脚本跑一遍
-git worktree add --detach /tmp/zl1-headwt HEAD
-cp scripts/host/zl1-installers-selftest.sh /tmp/zl1-headwt/scripts/host/
-sh /tmp/zl1-headwt/scripts/host/zl1-installers-selftest.sh   # 15 条红，两个缺陷
-git worktree remove /tmp/zl1-headwt
+# 证明 harness 真的在测这两个缺陷：把当前整棵树拷出去，只把这一轮修的那两个脚本退回到修复前的 revision
+# （整棵树都要拷：netwatch 的检查要 scripts/check-netwatch-integrity.sh，缺了它会另外多出 6 条红，
+#  那是复制不完整，不是缺陷）。
+#
+# **"修复前"要写成一个固定的 revision，不能写 HEAD**——这一篇当时写的就是 HEAD，而这两个修复一提交，
+# 它就开始拿修复跟它自己比了（docs 101 记下了这次真的发生，以及那个永远只可能 PASS 的守卫）。
+# 这两个缺陷的修复是 25f7ba1，之前是 3a26b66。
+rm -rf /tmp/zl1-inst-prefix && mkdir -p /tmp/zl1-inst-prefix
+cp -r scripts /tmp/zl1-inst-prefix/
+git show 3a26b66:scripts/install-cpufreq-governor.sh > /tmp/zl1-inst-prefix/scripts/install-cpufreq-governor.sh
+git show 3a26b66:scripts/install-netwatch-service.sh > /tmp/zl1-inst-prefix/scripts/install-netwatch-service.sh
+sh /tmp/zl1-inst-prefix/scripts/host/zl1-installers-selftest.sh   # 15 条红，两个缺陷
 
 # 回到设备之后，这两条在恢复顺序里的位置：cpufreq 是现在就能做的一条
 bash scripts/install-cpufreq-governor.sh --status     # 只读：unit、四颗核的 governor、热区
@@ -187,7 +194,7 @@ bash scripts/install-cpufreq-governor.sh --remove     # 退回镜像原本的设
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/host/zl1-installers-selftest.sh` | 扩：128 → **228** 项，两个传输（ssh/adb）、两台假设备；第 12/13 节 |
+| `scripts/host/zl1-installers-selftest.sh` | 扩：128 → **228** 项（后为 229），两个传输（ssh/adb）、两台假设备；第 12/13 节 |
 | `scripts/install-cpufreq-governor.sh` | 修：每核回读 + 读不回来就 `exit 1`；`${2?}` 与 `--help` |
 | `scripts/install-netwatch-service.sh` | 修：既存备份必须**非空且哈希对得上**；新备份与第二次读取交叉核对，不一致就拒收 |
 | `docs/ubuntu-touch/evidence/installer-selftest-2026-09-23-cpufreq-netwatch.log` | 这一轮的原始输出：两个缺陷的原文、228 项全文、对着 `HEAD` 的 15 条红 |

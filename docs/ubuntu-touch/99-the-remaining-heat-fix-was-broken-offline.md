@@ -69,6 +69,7 @@ A 的后果是它的反面：这一轮之前它被认为"只是不干活"，实�
 
 ```
 $ git show HEAD:scripts/install-retire-debug-keeper.sh > /tmp/zl1-inst-prefix/scripts/...
+$ git show 55a490e:scripts/install-retire-debug-keeper.sh > /tmp/zl1-inst-prefix/scripts/...
 $ sh /tmp/zl1-inst-prefix/scripts/host/zl1-installers-selftest.sh
 FAIL  the applier refuses
 FAIL  and says what it is leaving alone
@@ -144,11 +145,15 @@ pass=123 fail=5
 sh scripts/host/zl1-installers-selftest.sh          # 128 项
 sh scripts/host/zl1-installers-selftest.sh --keep   # 留下假设备、桩、改写后的 applier 与变异体
 
-# 先证明 harness 真的在测这个缺陷：把它对着修复前的脚本跑一遍
-rm -rf /tmp/zl1-inst-prefix && mkdir -p /tmp/zl1-inst-prefix/scripts/host
-cp scripts/host/zl1-installers-selftest.sh /tmp/zl1-inst-prefix/scripts/host/
-git show HEAD:scripts/install-retire-debug-keeper.sh > /tmp/zl1-inst-prefix/scripts/install-retire-debug-keeper.sh
-git show HEAD:scripts/install-no-edl-on-panic.sh   > /tmp/zl1-inst-prefix/scripts/install-no-edl-on-panic.sh
+# 先证明 harness 真的在测这个缺陷：把当前整棵树拷出去，只把这一轮修的那个脚本退回到修复前的 revision。
+# 只退它一个，是因为 harness 后来也覆盖了别的安装器，那些脚本的缺陷会在同一个数字里混进来。
+#
+# **"修复前"要写成一个固定的 revision，不能写 HEAD。** 修复一提交，HEAD 就是修好的版本，
+# 同一份 harness 会开始拿修复跟它自己比 —— 而这真的发生了（docs 101 记下了它，以及那个永远只可能
+# PASS 的守卫）。这个缺陷的修复是 3a26b66，之前是 55a490e。
+rm -rf /tmp/zl1-inst-prefix && mkdir -p /tmp/zl1-inst-prefix
+cp -r scripts /tmp/zl1-inst-prefix/
+git show 55a490e:scripts/install-retire-debug-keeper.sh > /tmp/zl1-inst-prefix/scripts/install-retire-debug-keeper.sh
 sh /tmp/zl1-inst-prefix/scripts/host/zl1-installers-selftest.sh   # 5 条红，同一个缺陷
 
 # 回到设备之后，这两条是恢复顺序里的第 0c / 0d 项

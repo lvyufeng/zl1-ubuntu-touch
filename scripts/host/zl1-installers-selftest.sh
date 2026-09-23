@@ -423,6 +423,7 @@ printf '%s\n' "$probe" | grep -qF -- "z$FR/proc/\$ppid/comm" ||
 
 PASS=0
 FAIL=0
+SKIP=0   # checks that could not run here (a statement about git history, not about the script)
 ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
 want()    { if printf '%s\n' "$2" | grep -Eq "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
@@ -968,15 +969,47 @@ want 'NOT armed' "$OUT" "and says what that means: the heat fix is not armed"
 want 'on 3 cores \(1 did not take it\)' "$OUT" "with the 3/1 split, which is the honest count"
 
 echo "     ... and the applier that actually shipped, on the very same fixture:"
-# Not a mutation of the new one: the applier from `git show HEAD`, extracted and rewritten the same way.
-# That is the version whose behaviour is being claimed, so it is the version to run.
-git show HEAD:scripts/install-cpufreq-governor.sh > "$W/cp.head.sh" 2>/dev/null \
-  || { echo "cannot read the pre-fix cpufreq installer from git" >&2; exit 2; }
-extract_applier "$W/cp.head.sh" APPLIER_EOF "$W/applier/cp.old.raw.sh"
-sed -e "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g" "$W/applier/cp.old.raw.sh" > "$W/applier/cpufreq-old.sh"
-if grep -qF 'did NOT take it' "$W/applier/cp.old.raw.sh"; then
-  bad "the HEAD applier already contains the read-back -- the comparison proves nothing"
+# Not a mutation of the new one: the applier that SHIPPED BEFORE THE FIX, extracted and rewritten the
+# same way. That is the version whose behaviour is being claimed, so it is the version to run.
+#
+# **It is found by walking this file's history, not by reading HEAD.** The first version of this said
+# `git show HEAD:...`, which was correct exactly until the fix was committed -- after that HEAD *is*
+# the fixed applier and the "the shipped one exits 0" assertions compared the fix against itself. The
+# guard that was supposed to catch that looked for `did NOT take it`, a string that appears in neither
+# version (the applier prints `did NOT take '<governor>'`), so it could only ever pass: an assertion
+# that cannot fail, which is the same defect this file exists to find in the scripts. Walking back to
+# the newest revision whose applier has no read-back keeps the comparison meaningful as HEAD moves.
+# The path given to git is REPO-RELATIVE, not $CP: the documented way to run this file is a copy of it
+# and of the scripts under test, placed outside the repository -- and `git log -- /tmp/copy/...` finds
+# no history at all, which is how the first version of this walk turned a working comparison into a
+# hard error under the project's own instructions. $W/cp.try.sh is where each revision lands.
+CPOLD=""
+for c in $(git log --format=%H -- scripts/install-cpufreq-governor.sh 2>/dev/null); do
+  git show "$c:scripts/install-cpufreq-governor.sh" > "$W/cp.try.sh" 2>/dev/null || continue
+  extract_applier "$W/cp.try.sh" APPLIER_EOF "$W/applier/cp.try.raw.sh" 2>/dev/null || continue
+  case "$(cat "$W/applier/cp.try.raw.sh" 2>/dev/null)" in
+  *"NOT armed"*) continue ;;   # this revision has the read-back; keep walking
+  esac
+  CPOLD=$c; cp "$W/applier/cp.try.raw.sh" "$W/applier/cp.old.raw.sh"; break
+done
+if [ -n "$CPOLD" ]; then
+  sed -e "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g" "$W/applier/cp.old.raw.sh" > "$W/applier/cpufreq-old.sh"
+  ok "the pre-fix revision is $(printf '%s' "$CPOLD" | cut -c1-12), whose applier has no read-back"
 else
+  # Not a failure: the comparison is a statement about this repository's HISTORY, and a copy of the
+  # tree outside it has no history to walk. It is printed as a SKIP, counted separately, and named at
+  # the end -- an assertion that quietly becomes a no-op is the defect this whole file hunts for.
+  SKIP=$((SKIP + 1))
+  printf 'SKIP  the "shipped applier" comparison (no git history for scripts/install-cpufreq-governor.sh here)\n'
+  printf '      run this harness from inside the repository to get it; it is not a failure of the script\n'
+  sed -e "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g" "$W/applier/cp.raw.sh" > "$W/applier/cpufreq-old.sh"
+fi
+if grep -qF 'NOT armed' "$W/applier/cp.old.raw.sh" 2>/dev/null; then
+  # the guard that has to be able to FAIL: if the "pre-fix" version somehow has the read-back, the
+  # two appliers agree and the comparison below proves nothing about the fix
+  [ -n "$CPOLD" ] && bad "the pre-fix applier still contains the read-back -- the comparison proves nothing"
+else
+
   ok "the shipped applier has no read-back, so it is the behaviour the fix replaces"
   govs_reset
   env_reset
@@ -1190,6 +1223,6 @@ want "readlink -f /dev/block/bootdevice/by-name/misc" "$(grep '^adb ' "$ACT" 2>/
 cmp -s "$W/misc/misc.img" "$MISC_PART" && ok "and the backup is byte-identical to the partition it claims to be" || bad "the backup differs from the partition"
 
 echo
-echo "pass=$PASS fail=$FAIL"
+echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here; see the SKIP line above)")"
 [ "$KEEP" = 1 ] || rm -rf "$W"
 [ "$FAIL" = 0 ]

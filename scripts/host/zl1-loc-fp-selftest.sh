@@ -57,7 +57,21 @@ printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
 
 # The v63 stub over /usr/bin/getprop, which is what the real port has: a shell script with no custom.*
 # case. The probe's own detector looks for the shebang -- this is the branch that must fire.
-printf '#!/bin/sh\n# no-attach diagnostic stub\nexit 0\n' > "$FR/usr/bin/getprop"
+#
+# **This binary is on biometryd's decision path.** biometryd does not read the Android property area;
+# it runs `core::posix::exec("/usr/bin/getprop", {key}, ...)` (property_store.cpp:26) -- an absolute
+# path to this exact file. So a scenario that wants biometryd to take the >27 branch has to give the
+# UT-side getprop an answer, and `ut_getprop` is how. Leaving it as the stub is the real port.
+ut_getprop_stub() { printf '#!/bin/sh\n# no-attach diagnostic stub\nexit 0\n' > "$FR/usr/bin/getprop"; chmod +x "$FR/usr/bin/getprop"; }
+ut_getprop() { # $1 = first_api_level answer ('' = the stub's behaviour: no output)
+  if [ -z "${1:-}" ]; then
+    ut_getprop_stub
+  else
+    printf '#!/bin/sh\ncase "$1" in ro.product.first_api_level) echo %s ;; ro.build.version.sdk) echo %s ;; esac\nexit 0\n' "$1" "${2:-}" > "$FR/usr/bin/getprop"
+    chmod +x "$FR/usr/bin/getprop"
+  fi
+}
+ut_getprop
 printf '#!/bin/sh\nexit 0\n' > "$FR/usr/lib/qt5/bin/qmlscene"
 chmod +x "$FR/usr/bin/getprop" "$FR/usr/lib/qt5/bin/qmlscene"
 
@@ -250,7 +264,7 @@ syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|enable|d
 # FAKE_* values are what the device would have answered through lxc-info/nsenter, so a scenario that
 # wants a different device state sets them and calls env_reset afterwards.
 RUN_FAL=27; RUN_SDK=27; RUN_PID=4242
-env_reset() { RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; }
+env_reset() { RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; ut_getprop; }
 run() {
   s="$1"; shift
   : > "$ACT"
@@ -419,7 +433,12 @@ want 'MISSING  /data/system/users/0/fpdata' "$OUT" "whose absence is the finding
 want 'setActiveGroup failed' "$OUT" "it counts the caller's line"
 want 'Bad path length' "$OUT" "and the HAL's own line, whose being zero is the evidence"
 want 'Start biometrics' "$OUT" "and the line that puts the failure after openHal()"
-want 'level 27 <= 27' "$OUT" "it decides which of the two paths biometryd passes, and says so"
+want 'both empty/garbage, so atoi\(""\)=0 and biometryd takes the <=27 branch' "$OUT" "it says WHY biometryd lands on <=27 (its own read answers nothing), not why the device would"
+want 'biometryd execs .*usr/bin/getprop -- a shell script' "$OUT" "and states that biometryd's OWN read comes from the UT-side getprop, which is the v63 stub's shape"
+want "biometryd's ACTUAL reason on this port" "$OUT" "so the reason it gives for the <=27 branch is biometryd's, not the device's"
+want 'the Android side, for cross-check only \(biometryd never reads this\)' "$OUT" "and it labels the container read as a cross-check, because biometryd does not read it"
+want 'vendor.img build.prop: 23' "$OUT" "with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared"
+want 'AGREES with the reading above' "$OUT" "and it says when the two independent readings agree, which is what makes the write safe"
 
 # ==================================================================================================
 echo
@@ -435,13 +454,41 @@ want 'NOT created: /data/vendor_de/0/fpdata' "$OUT" "and it says which path it d
 notwant 'UNDO:.*vendor_de' "$OUT" "the undo does not name a path that was never created"
 
 echo
-echo "   -- the other branch of section 2, driven by the property it reads:"
+echo "   -- the >27 branch is reached only when biometryd's OWN read says so:"
+# This is the defect this round fixed in the probe. The old section 2 read the CONTAINER's
+# /system/bin/getprop and decided from that; biometryd reads the UT-side /usr/bin/getprop. Set the two
+# to disagree and the difference is visible: the container says 29 here, and with the real port's stub
+# in place the probe must still create the <=27 path, because that is what biometryd will pass.
 RUN_FAL=29; RUN_SDK=29
+ut_getprop_stub
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create29.containeronly"
+want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created"
+notwant 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "NOT the path the container's value would suggest (the old probe's answer)"
+want 'DISAGREES with the reading above' "$OUT" "and it says the two readings disagree instead of silently picking one"
+
+echo
+echo "   -- and when biometryd's own getprop answers >27, the other path is taken:"
+RUN_FAL=29; RUN_SDK=29
+ut_getprop 29 29
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create29"
+want 'it DOES answer' "$OUT" "it reports that the UT getprop answers (so the level is a real read, not a default)"
+want 'level 29 > 27' "$OUT" "and reads the level from biometryd's own source"
 want 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "level 29 -> it creates /data/vendor_de/0/fpdata"
 notwant 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and not the <=27 path"
 want 'UNDO: nsenter -t 4242 -m -- rmdir /data/vendor_de/0/fpdata' "$OUT" "with the matching undo"
+want 'AGREES with the reading above' "$OUT" "and both readings agree here"
+
+echo
+echo "   -- the real 2026-09-23 shape: the stub says nothing, the device says 23, both <=27:"
+RUN_FAL=23; RUN_SDK=28
+ut_getprop_stub
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create.truth"
+want 'ro.product.first_api_level -> 23' "$OUT" "the container reports the value the real vendor.img build.prop carries"
+want 'AGREES with the reading above' "$OUT" "and it says so explicitly"
+want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "so the path is certain from two independent readings"
 
 echo
 echo "   -- an unreadable property lands on the SAME path a correct Android 8 would use:"
