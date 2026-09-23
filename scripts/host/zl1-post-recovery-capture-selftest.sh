@@ -1,0 +1,520 @@
+#!/bin/sh
+# zl1 post-recovery capture -- offline self-test.
+#
+# Host-side, touches no device. The subject is `scripts/host/zl1-post-recovery-capture.sh`, whose whole
+# job is to run OTHER scripts in the right order and keep what they said. So there are two things to
+# hold it to, and neither is about a peripheral:
+#
+#   1. THE ORDER, AND THE REFUSAL. Step 0 (the pstore/kmsg post-mortem) has to run FIRST, because
+#      `/sys/fs/pstore` only holds the previous oops until the next reset; the boot-address verdict has
+#      to come from THIS boot's netwatch log; and none of it may run at all when the device is in EDL,
+#      because there is no device to run it on and a script that "tries anyway" is how a session gets
+#      lost. The EDL refusal is therefore asserted twice: by the verdict text, and by the fact that no
+#      ssh and no scp was made.
+#   2. THE ARCHIVE, AND WHAT IS *NOT* IN IT. Every step's output has to survive as a file, with an
+#      index and a checksum, because the boot it describes cannot be revisited. And the DEFAULT set has
+#      to contain nothing that writes: the one step that does (`install-no-edl-on-panic.sh
+#      --capture-only`, which copies pstore onto /userdata at every boot) is behind --with-capture.
+#
+# The transport is stubbed exactly as in the sibling harnesses -- the `ssh`/`scp` stub *is* the device --
+# with one addition that this script needs and the others do not: because it CALLS other scripts, those
+# callees are replaced by recording stubs (they have their own harnesses; what is under test here is
+# that they are invoked, in order, with the right arguments, and that their output is kept). The
+# rewritten paths are then cross-checked against the real repository, so a misspelt callee name cannot
+# hide behind the rewrite -- a step pointing at a file that does not exist would otherwise look exactly
+# like a step that ran and said nothing.
+#
+# The device fixture is deliberately the shape the identity block reads: a keeper process in
+# `/proc/<pid>`, a boot_id, an uptime, and a `systemctl --failed` that answers.
+#
+# Usage: zl1-post-recovery-capture-selftest.sh [--keep]
+#   --keep   leave the fake root, the stubs and the archive in place for inspection
+#
+# Exit codes: 0 every scenario behaved; 1 something did not; 2 the harness could not set up.
+
+set -u
+
+KEEP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --keep) KEEP=1; shift ;;
+  --help|-h) sed -n '2,26p' "$0"; exit 0 ;;
+  *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+HERE=$(dirname "$0")
+SRC="$HERE/zl1-post-recovery-capture.sh"
+[ -r "$SRC" ] || { echo "cannot read $SRC" >&2; exit 2; }
+REPO=$(cd "$HERE/../.." && pwd)
+
+W=${TMPDIR:-/tmp}/zl1-post-recovery-capture-selftest
+FR="$W/fake"          # the fake DEVICE
+CAL="$W/callees"      # the recording stand-ins for the scripts this one calls
+STUB="$W/stub"
+ACT="$W/actions"
+rm -rf "$W"
+mkdir -p "$FR/proc/sys/kernel/random" "$FR/tmp" "$FR/userdata" "$STUB" "$W/fake-repo/scripts/host" \
+         "$CAL/device" "$CAL/host" "$W/out" || exit 2
+
+# --- the fake device ------------------------------------------------------------------------------
+printf 'deadbeef-1111-2222-3333-444444444444\n' > "$FR/proc/sys/kernel/random/boot_id"
+printf '412.55 1201.30\n' > "$FR/proc/uptime"
+
+# The keeper, exactly as docs 72's `ps` showed it: argv[0] is a shell and argv[1] IS the path. The
+# identity block matches on the full command line, so the fixture has to have that shape or the two
+# numbers the block exists to capture (pid and ticks) come out empty and nothing notices.
+KEEPER_PATH=/usr/local/sbin/zl1-debug-net.sh
+mkdir -p "$FR/proc/900"
+printf '/bin/sh\0%s\0' "$KEEPER_PATH" > "$FR/proc/900/cmdline"
+printf '900 (zl1-debug-net) S 1 900 900 0 -1 4194304 10 0 0 0 41 17 0 0\n' > "$FR/proc/900/stat"
+# A bystander whose command line merely MENTIONS the keeper: the block must not count it.
+mkdir -p "$FR/proc/901"
+printf '/usr/bin/grep\0%s\0' "$KEEPER_PATH" > "$FR/proc/901/cmdline"
+printf '901 (grep) S 1 901 901 0 -1 4194304 10 0 0 0 5 5 0 0\n' > "$FR/proc/901/stat"
+
+# --- the stubs ------------------------------------------------------------------------------------
+# lsusb: the FIRST question the script asks, and the one that decides whether anything runs. An EDL
+# device has no serial number, so the two states are distinguishable only by the vendor id -- which is
+# why the fixture answers both questions rather than just "is it there".
+# `lsusb -d ID` is a FILTER: it exits non-zero when no device matches, which is exactly the test the
+# script's first question is. A stub that printed and exited 0 for everything would report EDL for a
+# healthy device -- and the first version of this fixture did exactly that, which is why the whole
+# default run "refused" and sixty-odd assertions failed at once. The filter IS the check; faking it is
+# faking the answer.
+cat > "$STUB/lsusb" <<EOF
+#!/bin/sh
+printf 'lsusb %s\n' "\$*" >> "$ACT"
+want_id=
+[ "\$1" = -d ] && want_id="\$2"
+case "\${FP_STATE:-present}" in
+edl) have_id=05c6:9008; line='Bus 003 Device 127: ID 05c6:9008 Qualcomm, Inc. Gobi Wireless Modem (QDL mode)' ;;
+*)   have_id=18d1:4ee7; line='Bus 003 Device 042: ID 18d1:4ee7 Google Inc.' ;;
+esac
+if [ -n "\$want_id" ]; then
+  [ "\$want_id" = "\$have_id" ] || exit 1
+  printf '%s\n' "\$line"; exit 0
+fi
+printf '%s\n' "\$line"
+exit 0
+EOF
+
+cat > "$STUB/systemctl" <<EOF
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >> "$ACT"
+case "\$*" in
+*--failed*) [ -n "\${FP_FAILED_UNITS:-}" ] && printf '%s\n' "\$FP_FAILED_UNITS"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB"/*
+
+# The device's serial: the script looks for a directory under /sys/bus/usb/devices with a `serial`
+# file. The fixture for that is a real directory, because that IS the check.
+# The serial is written by the lsusb stub's scenario, because the two questions are really the same
+# question: an EDL device presents no serial, so the lookup finds nothing, and a healthy one has it.
+# `serial_off` is for the third state -- something is on the bus, but not the device we want.
+SERDIR="$FR/sys/bus/usb/devices/3-3"
+mkdir -p "$SERDIR"
+printf '%s\n' "33e80afe" > "$SERDIR/serial"
+serial_on()  { rm -rf "$FR/sys/bus/usb/devices"; mkdir -p "$SERDIR"; printf '%s\n' "${FP_SERIAL:-33e80afe}" > "$SERDIR/serial"; }
+serial_off() { rm -rf "$FR/sys/bus/usb/devices"; }
+
+# ssh: the device. It drops the connection options, maps the device's absolute paths into the fake
+# root, and runs the rest for real -- so the identity block really walks a /proc and the two numbers
+# it prints are measurements of the fixture rather than strings the harness handed it.
+: > "$W/paths.sed"
+emit() { printf '%s\n' "$1" >> "$W/paths.sed"; }
+emit "s#/proc/sys/kernel/random/boot_id#$FR/proc/sys/kernel/random/boot_id#g"
+emit "s#/proc/uptime#$FR/proc/uptime#g"
+emit "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g"
+# `/tmp` LAST would be a bug, and it was one: every other rule's replacement text contains $FR, which
+# is itself under /tmp, so a later `s#/tmp/#...#g` rewrites the text the earlier rules just produced and
+# the device path comes out double-prefixed (`.../fake/tmp/.../fake/proc/uptime`). The rule is therefore
+# anchored on the shape this script actually sends -- `sh /tmp/<script>` -- which cannot match inside the
+# fake prefix, and the probe below asserts that no double prefix survives.
+emit "s#sh /tmp/#sh $FR/tmp/#g"
+# The `${p#/proc/}` prefix strip: without it the identity block prints the fake root's path as if it
+# were the pid, so "keeper pids: <a path>" passes a human eye and fails the assertion that the number is
+# a number. (The sibling harnesses carry the same rule for the same reason.)
+emit "s|\${p#/proc/}|\${p#$FR/proc/}|g"
+
+cat > "$STUB/ssh" <<EOF
+#!/bin/sh
+printf 'ssh %s\n' "\$*" >> "$ACT"
+while [ \$# -gt 0 ]; do
+  case "\$1" in *@*) shift; break ;; *) shift ;; esac
+done
+# the reachability probe: 'true'. Answered from the environment, so "the device is on the bus but SSH
+# is not up yet" is a reachable scenario instead of an untested branch.
+case "\$*" in true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;; esac
+cmd=\$(printf '%s' "\$*" | sed -f "$W/paths.sed")
+exec env PATH="$STUB:\$PATH" FP_STATE="\${FP_STATE:-present}" sh -c "\$cmd"
+EOF
+
+# scp: pushes a callee stand-in into the fake device's /tmp, and records the SOURCE path -- so "it
+# pushed the real script and not something it invented" is checkable.
+cat > "$STUB/scp" <<EOF
+#!/bin/sh
+printf 'scp %s\n' "\$*" >> "$ACT"
+# `-o NAME=VALUE` is TWO argv entries and only the first begins with a dash, so a filter that skips
+# "anything starting with -" still leaves `BatchMode=yes` in the list -- and then the pair it takes as
+# src/dst is two option values, the copy fails, and every device step reports "could not copy". The
+# option's VALUE has to be skipped with it.
+args=""; skip=0
+for a in "\$@"; do
+  if [ "\$skip" = 1 ]; then skip=0; continue; fi
+  case "\$a" in -o) skip=1; continue ;; -*) continue ;; esac
+  args="\$args \$a"
+done
+set -- \$args
+src="\$1"; dst="\$2"
+base=\$(basename "\$dst")
+cp "\$src" "$FR/tmp/\$base" || exit 1
+exit 0
+EOF
+chmod +x "$STUB/ssh" "$STUB/scp"
+
+# --- the callees ----------------------------------------------------------------------------------
+#
+# Recording stand-ins. Each one prints a line that says which script ran and with what arguments, so
+# the ORDER and the ARGUMENTS are both assertable, and exits with a code the scenario chooses. The real
+# scripts have their own harnesses; what is under test here is that this script calls them at all, in
+# the right order, and keeps what they said.
+#
+# `FP_RC_<name>` chooses a callee's exit code, which is how "a failing step does not stop the capture"
+# is tested.
+callee() { # relative path, marker name
+  mkdir -p "$CAL/$(dirname "$1")"
+  # Each callee records its invocation in $ACT as well as printing it: the printed line goes into the
+  # ARCHIVE (which is what the operator reads), and the $ACT line is what makes the ORDER assertable
+  # without parsing the archive. The first version only printed, and every order assertion failed while
+  # the archive was correct -- a harness reading the wrong place for the right fact.
+  cat > "$CAL/$1" <<EOF
+#!/bin/sh
+printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
+rc=\$(printf '%s' "\${FP_RC_$2:-0}")
+[ -n "\$rc" ] || rc=0
+echo "CALLEE $2: done rc=\$rc"
+printf 'CALLEE $2 rc=%s\n' "\$rc" >> "$ACT"
+exit "\$rc"
+EOF
+  chmod +x "$CAL/$1"
+}
+callee device/zl1-edl-postmortem.sh        EDLPM
+callee device/zl1-boot-address-check.sh    BOOTADDR
+callee device/zl1-gps-probe.sh             GPS
+callee device/zl1-fingerprint-probe.sh     FP
+callee device/zl1-orientation-axes.sh      ORIENT
+callee ../install-retire-debug-keeper.sh   KEEPER
+callee ../install-no-edl-on-panic.sh       NOEDL
+callee host/zl1-health-check.sh            HEALTH
+
+# The script under test, rewritten so $(HERE)/../device/... and $(HERE)/../install-... resolve to the
+# recording stubs. ONLY those two prefixes are touched: everything else (the ssh/scp calls, the /tmp
+# pushes, the argument handling) is the real code.
+CAP="$W/fake-repo/scripts/host/zl1-post-recovery-capture.sh"
+sed -e "s#\"\$HERE/../device/#\"$CAL/device/#g" \
+    -e "s#\"\$HERE/../install-#\"$CAL/../install-#g" \
+    -e "s#\"\$HERE/zl1-health-check.sh\"#\"$CAL/host/zl1-health-check.sh\"#g" \
+    -e "s#/sys/bus/usb/devices/#$FR/sys/bus/usb/devices/#g" \
+    "$SRC" > "$CAP"
+chmod +x "$CAP"
+sh -n "$CAP" 2>/dev/null || bash -n "$CAP" || { echo "the rewritten script does not parse" >&2; exit 2; }
+
+# The rewrites are the fake environment, and a rewrite that silently did not land would send the script
+# at the REAL scripts -- i.e. at the real device-dependent installers. So they are counted, and the
+# callee names are cross-checked against the repository: every path the rewritten script will call has
+# to correspond to a file that exists in the real tree. Without that, a misspelt callee is
+# indistinguishable from a callee that ran and printed nothing.
+for pat in "$CAL/device/" "$CAL/../install-" "$CAL/host/zl1-health-check.sh" "$FR/sys/bus/usb/devices/"; do
+  grep -qF "$pat" "$CAP" || { echo "the rewrite to '$pat' did not land" >&2; exit 2; }
+done
+
+# The ssh stub's map is the fake device, so it is checked on the shapes this script sends -- including
+# the one that IS a bug if it appears: a replacement re-processed by a later expression.
+probe=$(printf 'sh /tmp/zl1-edl-postmortem.sh\n/proc/uptime\n/proc/sys/kernel/random/boot_id\n/proc/[0-9]*\n' |
+        sed -f "$W/paths.sed")
+case "$probe" in
+*"sed:"*) echo "the ssh stub's map is broken: $probe" >&2; exit 2 ;;
+esac
+printf '%s\n' "$probe" | grep -qF "sh $FR/tmp/zl1-edl-postmortem.sh" ||
+  { echo "the map did not rewrite 'sh /tmp/...' (got: $probe)" >&2; exit 2; }
+printf '%s\n' "$probe" | grep -qF "$FR/proc/uptime" ||
+  { echo "the map did not rewrite /proc/uptime (got: $probe)" >&2; exit 2; }
+# THE one that matters: a double prefix means a replacement was rewritten by a later rule, and the
+# failure it produces is a device script reading a path that does not exist rather than an error.
+if printf '%s\n' "$probe" | grep -qF "$FR/tmp/zl1-post-recovery-capture-selftest"; then
+  echo "the ssh stub's map double-applies (got: $probe)" >&2; exit 2
+fi
+for rel in device/zl1-edl-postmortem.sh device/zl1-boot-address-check.sh device/zl1-gps-probe.sh \
+           device/zl1-fingerprint-probe.sh device/zl1-orientation-axes.sh \
+           install-retire-debug-keeper.sh install-no-edl-on-panic.sh host/zl1-health-check.sh; do
+  [ -f "$REPO/scripts/$rel" ] || { echo "the script calls scripts/$rel, which does not exist" >&2; exit 2; }
+done
+
+# --- the checks -----------------------------------------------------------------------------------
+
+PASS=0
+FAIL=0
+ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
+want()    { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
+notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+
+sshacts()  { grep -E '^ssh ' "$ACT" 2>/dev/null; }
+scpacts()  { grep -E '^scp ' "$ACT" 2>/dev/null; }
+# The order the callees ran in, as one line each. This is the assertion the whole harness exists for.
+order()    { grep -E '^CALLEE (EDLPM|BOOTADDR|KEEPER|HEALTH|GPS|FP|ORIENT|NOEDL) args=' "$ACT" 2>/dev/null; }
+snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
+
+# $1 = outdir, rest = extra args. FP_STATE / FP_SSH / FP_RC_* set the device's state.
+run() {
+  od="$1"; shift
+  : > "$ACT"
+  case "${FP_STATE:-present}" in
+  absent) serial_off ;;
+  *)      serial_on ;;
+  esac
+  OUT=$(PATH="$STUB:$PATH" FP_STATE="${FP_STATE:-present}" FP_SSH="${FP_SSH:-yes}" \
+        FP_RC_EDLPM="${FP_RC_EDLPM:-}" FP_RC_BOOTADDR="${FP_RC_BOOTADDR:-}" \
+        timeout 120 bash "$CAP" --outdir "$od" "$@" 2>&1); RC=$?
+}
+reset_rc() { FP_RC_EDLPM=; FP_RC_BOOTADDR=; }
+
+echo "zl1 post-recovery capture -- offline self-test"
+echo "  subject: $SRC"
+echo "  fake device: $FR   (serial 33e80afe, keeper pid 900)"
+echo "  callees are recording stand-ins in $CAL; the real ones have their own harnesses"
+echo
+
+# ==================================================================================================
+echo "== 1. the flag surface, and the rewrite guard =="
+# ==================================================================================================
+: > "$ACT"
+OUT=$(PATH="$STUB:$PATH" bash "$CAP" --nope 2>&1); RC=$?
+[ "$RC" = 2 ] && ok "an unknown argument exits 2" || bad "unknown argument exited $RC"
+OUT=$(PATH="$STUB:$PATH" bash "$CAP" --help 2>&1); RC=$?
+[ "$RC" = 0 ] && ok "--help exits 0" || bad "--help exited $RC"
+want 'Usage: zl1-post-recovery-capture' "$OUT" "and prints its usage block from the header"
+want 'READ-ONLY BY DEFAULT' "$OUT" "which states the property the rest of this file checks"
+msg=$(PATH="$STUB:$PATH" bash "$CAP" --outdir 2>&1 >/dev/null | head -1); rc=$?
+case "$msg" in
+*"unbound variable"*) bad "--outdir with no value aborted the shell: $msg" ;;
+*"--outdir needs a DIRECTORY"*) ok "--outdir with no value names the flag instead of aborting the shell" ;;
+*) bad "--outdir with no value said neither: $msg" ;;
+esac
+
+# ==================================================================================================
+echo
+echo "== 2. in EDL it must refuse, and touch NOTHING =="
+# ==================================================================================================
+FP_STATE=edl
+OD="$W/out/edl"
+rm -rf "$OD"
+BEFORE=$(snap)
+run "$OD"
+printf '%s\n' "$OUT" > "$W/out.edl"
+[ "$RC" = 2 ] && ok "with the device in EDL it exits 2" || bad "it exited $RC"
+want 'the device is NOT reachable: edl' "$OUT" "naming the mode it found"
+want '05c6:9008' "$OUT" "and the USB id that identifies it"
+want 'PHYSICAL AND ONLY PHYSICAL' "$OUT" "and saying the next move is a finger, not a command"
+want 'long-press POWER for 10-20 s' "$OUT" "with the actual instruction"
+[ "$(snap)" = "$BEFORE" ] && ok "the fake device is unchanged" || bad "it changed the fake device"
+[ -z "$(sshacts)" ] && ok "it made NO ssh call at all" || { bad "it SSHed to a device in EDL:"; sshacts | sed 's/^/        | /'; }
+[ -z "$(scpacts)" ] && ok "and pushed nothing" || bad "it scp'd to a device in EDL"
+[ -z "$(order)" ] && ok "and ran none of the steps" || bad "it ran steps against a device in EDL"
+[ ! -d "$OD" ] && ok "and created no archive directory -- there is nothing to archive" || bad "it created $OD"
+want 'NOTHING WAS RUN' "$OUT" "and says so, so the refusal cannot be mistaken for a failed capture"
+
+echo
+echo "   -- and the same for 'no device on the bus' (the other phone shares this bus, docs 33):"
+FP_STATE=absent
+run "$W/out/absent"
+printf '%s\n' "$OUT" > "$W/out.absent"
+[ "$RC" = 2 ] && ok "with no device on the bus it exits 2" || bad "it exited $RC"
+want 'NOT reachable: absent' "$OUT" "and distinguishes 'absent' from 'edl'"
+want '4a2fe00b' "$OUT" "and names the other phone as the thing to rule out"
+[ -z "$(order)" ] && ok "and ran nothing" || bad "it ran steps with no device"
+
+echo
+echo "   -- and a device that is on the bus but has no SSH yet (a boot still in progress):"
+FP_STATE=present; FP_SSH=no
+run "$W/out/nossh"
+printf '%s\n' "$OUT" > "$W/out.nossh"
+[ "$RC" = 2 ] && ok "with the serial present and ssh down it exits 2" || bad "it exited $RC"
+want 'SSH does not answer yet' "$OUT" "and says it may still be booting, rather than 'absent'"
+want 'zl1-rndis-recover\.sh' "$OUT" "and points at the OTHER known failure, the host-side enum (docs 76)"
+[ -z "$(order)" ] && ok "and ran nothing" || bad "it ran steps before SSH answered"
+FP_SSH=yes
+
+# ==================================================================================================
+echo
+echo "== 3. the default run: the read-only chain, in the only order that works =="
+# ==================================================================================================
+FP_STATE=present; reset_rc
+OD="$W/out/default"
+run "$OD"
+printf '%s\n' "$OUT" > "$W/out.default"
+[ "$RC" = 0 ] && ok "the default run exits 0" || bad "it exited $RC"
+want 'boot_id: deadbeef-1111-2222-3333-444444444444' "$OUT" "it reads this boot's identity first"
+# Read from the ARCHIVE, not from stdout: the identity block is redirected to 00-identity.txt, so an
+# assertion on $OUT would be asserting about a line the operator only sees if they open the file. (The
+# boot_id passes either way, because the header repeats it -- which is exactly the kind of coincidence
+# that makes a wrong assertion look right.)
+want 'keeper pids: 900 ' "$(cat "$OD/00-identity.txt")" "the identity block captures the keeper's pid"
+want 'keeper cpu ticks \(utime\+stime\): 58' "$(cat "$OD/00-identity.txt")" "and its accumulated ticks (41+17), the number that only exists before the kill"
+want 'uptime: 412\.55' "$(cat "$OD/00-identity.txt")" "and the boot's uptime"
+notwant '901' "$(cat "$OD/00-identity.txt")" "and not the bystander whose cmdline only MENTIONS the keeper"
+
+# THE ORDER. Step 0 first is not a preference: /sys/fs/pstore holds the previous oops only until the
+# next reset, so anything that runs before it is borrowing against evidence that cannot be re-read.
+O=$(order | sed 's/ args=.*//')
+printf '%s\n' "$O" > "$W/out.order"
+want '^CALLEE EDLPM$' "$(printf '%s\n' "$O" | sed -n '1p')" "step 0 (the post-mortem) runs FIRST"
+want '^CALLEE BOOTADDR$' "$(printf '%s\n' "$O" | sed -n '2p')" "then the boot-address verdict"
+want '^CALLEE KEEPER$' "$(printf '%s\n' "$O" | sed -n '3p')" "then the keeper's status (read-only)"
+want '^CALLEE HEALTH$' "$(printf '%s\n' "$O" | sed -n '4p')" "then the health check"
+want '^CALLEE GPS$' "$(printf '%s\n' "$O" | sed -n '5p')" "then the GPS probe"
+want '^CALLEE FP$' "$(printf '%s\n' "$O" | sed -n '6p')" "then the fingerprint probe"
+want '^CALLEE ORIENT$' "$(printf '%s\n' "$O" | sed -n '7p')" "and the orientation survey last"
+[ "$(order | wc -l)" = 7 ] && ok "exactly seven steps: nothing extra is run by default" \
+  || { bad "it ran $(order | wc -l) steps:"; order | sed 's/^/        | /'; }
+notwant '^CALLEE NOEDL' "$(order)" "and NOT the one step that writes"
+
+echo
+echo "   -- the arguments each step got, which is where a silent misuse would show:"
+want '^CALLEE KEEPER args=--status$' "$(order)" "the keeper is asked with --status, the read-only mode"
+want '^CALLEE HEALTH args=$' "$(order)" "the health check is run bare (its own defaults are the survey)"
+want '^CALLEE EDLPM args=$' "$(order)" "the post-mortem is run bare -- its flags would narrow it"
+want '^CALLEE ORIENT args=$' "$(order)" "and the orientation step is the SURVEY, not the decisive --portrait-up run"
+notwant 'CALLEE .*args=.*--portrait-up' "$(order)" "which needs a person holding the phone still, so it is not run here"
+notwant 'CALLEE .*args=.*--install' "$(order)" "and no step is invoked with --install"
+
+echo
+echo "   -- the device scripts were PUSHED, by their real paths:"
+want "scp .*$CAL/device/zl1-edl-postmortem\.sh root@10\.15\.19\.82:/tmp/zl1-edl-postmortem\.sh" "$(scpacts)" \
+  "the post-mortem is pushed to /tmp by name, and the source is the path the script resolved"
+want 'zl1-boot-address-check\.sh' "$(scpacts)" "and the boot-address check"
+want 'sh /tmp/zl1-edl-postmortem\.sh' "$(sshacts)" "and run from /tmp, which is where the health check sends them too"
+[ "$(scpacts | wc -l)" = 5 ] && ok "five pushes: the five DEVICE steps, and no more" \
+  || { bad "it pushed $(scpacts | wc -l) files:"; scpacts | sed 's/^/        | /'; }
+
+# ==================================================================================================
+echo
+echo "== 4. the archive: everything survives as a file, with an index and a checksum =="
+# ==================================================================================================
+[ -f "$OD/INDEX.txt" ] && ok "the index exists" || bad "no INDEX.txt"
+[ -f "$OD/SHA256SUMS" ] && ok "and the checksums" || bad "no SHA256SUMS"
+[ -f "$OD/00-identity.txt" ] && ok "the identity block is archived" || bad "no 00-identity.txt"
+for f in 01-edl-postmortem 02-boot-address 03-keeper-status 04-health-check 05-gps-probe \
+         06-fingerprint 07-orientation; do
+  [ -s "$OD/$f.txt" ] && ok "step output archived: $f.txt" || bad "missing or empty $f.txt"
+done
+want '^boot_id: deadbeef-1111-2222-3333-444444444444$' "$(cat "$OD/INDEX.txt")" "the index names the boot it describes"
+want '^with_capture: 0' "$(cat "$OD/INDEX.txt")" "and whether the writing step was included"
+want '^01-edl-postmortem +0 +01-edl-postmortem\.txt$' "$(cat "$OD/INDEX.txt")" "and lists each step with its exit code and its file"
+( cd "$OD" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "the checksums verify" || bad "SHA256SUMS does not verify"
+# The archive must contain what the callee SAID, not a summary of it: that is the whole point.
+want 'CALLEE EDLPM: done rc=0' "$(cat "$OD/01-edl-postmortem.txt")" "a step's own output is what is archived"
+want 'lines -> 01-edl-postmortem\.txt' "$OUT" "and the operator is told the file, not just 'ok'"
+
+echo
+echo "   -- and a second capture of the SAME boot lands in the same directory:"
+run "$OD"
+[ -f "$OD/INDEX.txt" ] && ok "the index is rewritten in place" || bad "the second run lost the index"
+[ "$(find "$OD" -name '*-*.txt' | wc -l)" = 8 ] && ok "and the file set does not grow (8 archived outputs, not 16)" \
+  || { bad "the second run added files:"; find "$OD" -name '*-*.txt' | sed 's/^/        | /'; }
+
+# ==================================================================================================
+echo
+echo "== 5. the flags that change the SET, and what they must not change =="
+# ==================================================================================================
+OD2="$W/out/skip"
+run "$OD2" --skip-probes
+printf '%s\n' "$OUT" > "$W/out.skip"
+[ "$RC" = 0 ] && ok "--skip-probes exits 0" || bad "it exited $RC"
+notwant '^CALLEE (GPS|FP)' "$(order)" "the two probes are not run"
+[ "$(order | wc -l)" = 5 ] && ok "leaving five steps" || bad "$(order | wc -l) steps ran"
+want 'SKIPPED by --skip-probes' "$OUT" "and the skip is SAID, not silent"
+[ ! -e "$OD2/05-gps-probe.txt" ] && ok "and no file pretends the probe ran" || bad "an empty probe file was written"
+
+echo
+echo "   -- --no-orientation, and --with-capture, and both together:"
+OD3="$W/out/noorient"
+run "$OD3" --no-orientation
+notwant '^CALLEE ORIENT' "$(order)" "--no-orientation drops the orientation step"
+want 'SKIPPED by --no-orientation' "$OUT" "and says so"
+
+OD4="$W/out/withcapture"
+run "$OD4" --with-capture
+printf '%s\n' "$OUT" > "$W/out.withcapture"
+[ "$RC" = 0 ] && ok "--with-capture exits 0" || bad "it exited $RC"
+want '^CALLEE NOEDL args=--capture-only$' "$(order)" "the writing step runs, in its read-only-looking mode"
+[ "$(order | wc -l)" = 8 ] && ok "eight steps" || bad "$(order | wc -l) steps ran"
+want '^08-no-edl-capture +0' "$(cat "$OD4/INDEX.txt")" "and it is listed in the index"
+want '^with_capture: 1' "$(cat "$OD4/INDEX.txt")" "with the index recording that the archive is not read-only-only"
+
+echo
+echo "   -- and WITHOUT the flag the writing step is not merely unlisted, it is not run:"
+run "$W/out/withoutcapture"
+notwant '^CALLEE NOEDL' "$(order)" "the step that writes is not run by default"
+want 'NOT run, and it is the one that writes' "$OUT" "and the operator is told it exists and why it did not run"
+want '\-\-capture-only' "$OUT" "by name, so the decision is theirs"
+
+# ==================================================================================================
+echo
+echo "== 6. a failing step does not stop the capture, and does not hide =="
+# ==================================================================================================
+# The evidence in this list is only readable once. Stopping at the first bad verdict would mean losing
+# the rest of it and needing another physical press -- so a failure is recorded and reported, and the
+# remaining steps still run.
+FP_RC_BOOTADDR=1
+OD5="$W/out/failing"
+run "$OD5"
+FP_RC_BOOTADDR=
+printf '%s\n' "$OUT" > "$W/out.failing"
+[ "$RC" = 1 ] && ok "with one step failing the run exits 1" || bad "it exited $RC"
+want 'FAILED rc=1' "$OUT" "the failing step is named, with its code"
+want '^02-boot-address +1' "$(cat "$OD5/INDEX.txt")" "and the index carries the code"
+[ -s "$OD5/02-boot-address.txt" ] && ok "its output is still archived" || bad "a failed step's output was dropped"
+want 'CALLEE BOOTADDR: done rc=1' "$(cat "$OD5/02-boot-address.txt")" "and it is the step's own output"
+want '^CALLEE HEALTH' "$(order)" "the steps AFTER it still ran -- the evidence is not thrown away"
+[ "$(order | wc -l)" = 7 ] && ok "all seven ran" || bad "$(order | wc -l) steps ran"
+want 'FAILED \(their output is archived' "$OUT" "and the summary says the archive is still worth reading"
+want 'netwatch-configured' "$OUT" "while the next-move text still explains what 02 decides"
+notwant 'capture complete: 7 steps ran, 0 failed' "$OUT" "and it does not claim a clean capture"
+
+echo
+echo "   -- and a step that fails only in its PUSH (scp) is reported as such, not as a silence:"
+# --------------------------------------------------------------------------------------------------
+rm -rf "$W/out/pushfail"
+mkdir -p "$W/stubnoscp"
+cp "$STUB"/* "$W/stubnoscp/" 2>/dev/null || true
+cat > "$W/stubnoscp/scp" <<EOF
+#!/bin/sh
+printf 'scp %s\n' "\$*" >> "$ACT"
+exit 1
+EOF
+chmod +x "$W/stubnoscp/scp"
+: > "$ACT"
+OUT=$(PATH="$W/stubnoscp:$PATH" FP_STATE=present timeout 120 bash "$CAP" --outdir "$W/out/pushfail" 2>&1); RC=$?
+printf '%s\n' "$OUT" > "$W/out.pushfail"
+[ "$RC" = 1 ] && ok "an un-pushable device script fails the run" || bad "it exited $RC"
+want 'could not copy zl1-edl-postmortem\.sh to the device' "$(cat "$W/out/pushfail/01-edl-postmortem.txt")" \
+  "the file says the copy failed, rather than being empty"
+
+# ==================================================================================================
+echo
+echo "== 7. what this harness does NOT test, and says so =="
+# ==================================================================================================
+printf 'SKIP  what the steps themselves decide. Their callees here are recording stand-ins: the\n'
+printf '      post-mortem, the boot-address verdict, the probes and the health check each have their own\n'
+printf '      offline harness (see the table in scripts/README.md), and this file checks only that they\n'
+printf '      are called, in order, with these arguments, and that their output is kept.\n'
+printf 'SKIP  the device-side truth behind each step: whether pstore really holds an oops, whether the\n'
+printf '      netwatch really configured the addresses. Those need the boot itself.\n'
+echo
+echo "pass=$PASS fail=$FAIL skip=2 (named above)"
+[ "$KEEP" = 1 ] || rm -rf "$W"
+[ "$FAIL" = 0 ]
