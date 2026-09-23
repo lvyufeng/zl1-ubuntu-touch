@@ -1,0 +1,85 @@
+== zl1-address-owner-proof -- offline self-test ==
+run 2026-09-23, host Linux 5.15.0-190-generic
+
+zl1 address-owner proof -- offline self-test
+  script under test: scripts/host/../device/zl1-address-owner-proof.sh
+  fake root:         /tmp/zl1-addrproof-selftest/fake
+
+== what the script may not do ==
+PASS  no 'sysrq-trigger' anywhere in the script
+PASS  no 'kexec' anywhere in the script
+PASS  no '/dev/block' anywhere in the script
+PASS  no reboot/poweroff/halt command anywhere in the script
+PASS  no 'systemctl' anywhere in the script
+PASS  the self-revert timer is armed (line 242) before the first SIGSTOP (line 253)
+PASS  exactly one 'ip addr del' as a command in the script
+PASS  the only 'ip addr del' command removes $PROBE_ADDR
+PASS  the SSH address is never the operand of 'addr del'
+
+== S1: the netwatch notices and puts it back ==
+PASS  S1 -> proof-obtained (exit 0)
+PASS  S1: the harness wrote exactly one ADDRS line (the assertion below has teeth)
+PASS  S1: it reports how long the netwatch took
+PASS  S1: the self-revert was armed against the keeper pid (1 timer(s))
+PASS  S1: the keeper is running again (state S) after the probe
+PASS  S1: the address is on the interface at the end
+
+== S2: nothing restores it -- the script must restore it itself, and say so ==
+PASS  S2 -> proof-failed (exit 1)
+PASS  S2: the undo says it is putting the address back
+PASS  S2: it reports the window it waited, from --wait
+PASS  S2: it points at the stale-running-build explanation
+PASS  S2: the address is back on the interface (by the script)
+PASS  S2: the keeper was resumed (state S)
+
+== S3: an old ADDRS line is NOT evidence (the offset anchor) ==
+PASS  S3 -> proof-unclear (exit 1)
+PASS  S3: it says the line was not new
+
+== S4: the address cannot be taken away -- nothing is measured, the keeper still comes back ==
+PASS  S4: it reads the address back instead of assuming the del landed
+PASS  S4: the keeper was resumed even on the not-armed path
+
+== S5: not armed -- the three preconditions ==
+PASS  S5a: a probe that stops a process refuses without --yes
+PASS  S5b: an installed build without ensure_addrs() is refused, not measured
+PASS  S5c: no netwatch -> refuse and name the installer
+
+== S6: the keeper is already gone -- that IS the configuration being asked about ==
+PASS  S6 -> proof-obtained (exit 0)
+PASS  S6: it says the keeper is absent rather than stopping nothing
+PASS  S6: no resume is reported when nothing was stopped
+
+== S7: the wrong device ==
+PASS  S7: a device-tree model that is not LE_ZL1 stops it
+
+== S8: --wait needs a number ==
+PASS  S8: '--wait' with no value -> a message and exit 2
+PASS  S8: a window shorter than the sample loop is refused
+
+== S9: --help prints the whole header, not a fixed range ==
+PASS  S9: --help printed all 54 header lines
+PASS  S9: the header states the address that is never touched
+
+== S10: the running watchdog predates the installed file ==
+PASS  S10: it says the process in memory is the old build, and why
+PASS  S10: it names the fix (a reboot), not just the symptom
+
+== S11: the netwatch logs it and the address does not stick ==
+PASS  S11 -> proof-failed (exit 1)
+PASS  S11: a logged restore that did not land is its own failure, named
+PASS  S11: the log line alone is NOT enough for a pass
+
+== S12: the script is KILLED while it waits -- that is the case the timer exists for ==
+PASS  S12: the keeper was stopped before the kill (the scenario is set up)
+PASS  S12: the address had been removed before the kill (so a restored one is a real restore)
+PASS  S12: after kill -9 the keeper is STILL stopped (the exit trap did not run)
+PASS  S12: the address is still off, as it must be with the script gone
+PASS  S12: the detached timer (pid 780569) is alive and will resume the keeper
+PASS  S12: and it targets the keeper pid, not something else
+PASS  S12: the keeper is running again once it is resumed
+
+== the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 49 checks, and this run has 49 (the citation is live)
+
+pass=49 fail=0 skip=0

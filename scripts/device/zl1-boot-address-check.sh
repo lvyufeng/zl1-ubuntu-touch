@@ -24,6 +24,15 @@
 #   * no ADDRS line and no heal, yet the addresses are there -> the keeper did it (it is still
 #     running, which is expected in stage 1). The netwatch path is unproven -- inconclusive.
 #
+# **`inconclusive` is the expected verdict on most keeper-alive boots, and that is not a retry.**
+# `ensure_addrs()` logs only when an address was missing, and the keeper re-adds both every second --
+# so on a boot where the keeper is alive the netwatch gets an ADDRS line only by winning a race whose
+# window is under a second wide. Re-running the boot is re-rolling that race. The keeper-less boot
+# being asked about does not have the race at all (nothing else would configure the interface), which
+# is why the measurement to run is the one that removes the keeper's contribution on purpose:
+#
+#   scripts/device/zl1-address-owner-proof.sh --yes      (stops the keeper, one address, see below)
+#
 # Usage: zl1-boot-address-check.sh [--quiet] [--log FILE]
 #   --quiet     verdict only
 #   --log FILE  read a different netwatch log (default /userdata/zl1-netwatch.log)
@@ -264,11 +273,34 @@ elif [ -n "$first_heal" ]; then
   always "   probably predates ensure_addrs() (see above)."
 else
   verdict="inconclusive"
-  always "   The addresses are present but the netwatch never logged configuring them, and no heal"
-  always "   fired -- so the keeper is what configured them (it is still running, which is what"
-  always "   stage 1 expects). This boot says nothing about the netwatch path."
-  always "   To get a verdict: make sure the installed build has ensure_addrs(), re-run the boot,"
-  always "   and read this again."
+  if [ -n "$k_pids" ]; then
+    always "   The addresses are present but the netwatch never logged configuring them, and no heal"
+    always "   fired -- so the keeper is what configured them (it is still running, which is what"
+    always "   stage 1 expects). This boot says nothing about the netwatch path."
+    always ""
+    always "   AND ON A KEEPER-ALIVE BOOT IT GENERALLY CANNOT SAY ANYTHING. The keeper re-adds both"
+    always "   addresses every second (its loop calls configure_iface on rndis0), and ensure_addrs()"
+    always "   logs 'ADDRS:' ONLY when something was missing -- so the netwatch gets a line only if"
+    always "   one of its 2 s samples lands in the gap between an address going missing and the"
+    always "   keeper's next 1 Hz tick. That gap is somewhere between tens of milliseconds and one"
+    always "   second, and its length has not been measured. So this verdict is a race outcome, not a"
+    always "   failed attempt: re-running the boot until it reads 'netwatch-configured' is re-rolling"
+    always "   a coin, and each roll is a device boot."
+    always ""
+    always "   That race closes the moment the keeper is gone -- which is the case actually being"
+    always "   asked about, and the reason it does not bear on the answer. So measure the thing where"
+    always "   it is deterministic instead:"
+    always "     scripts/device/zl1-address-owner-proof.sh --yes"
+    always "   It stops the keeper, takes ONE address away, and requires the netwatch to notice and"
+    always "   put it back; then it resumes the keeper, and restores the address itself if the"
+    always "   netwatch did not."
+  else
+    always "   The addresses are present, the netwatch never logged configuring them, and no heal"
+    always "   fired -- but the keeper is NOT running either, so something else applied them (a"
+    always "   manual 'ip addr add', the container, or a build without a working ensure_addrs())."
+    always "   This boot does not show that the netwatch can do it."
+    always "     scripts/device/zl1-address-owner-proof.sh --yes      # measures it directly"
+  fi
 fi
 
 say ""

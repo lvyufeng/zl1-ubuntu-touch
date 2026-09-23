@@ -195,6 +195,46 @@ case "$out" in
 *) ok "'--log \"\"' is handled without a shell error (it reports the log unreadable)" ;;
 esac
 
+echo "== the two shapes of 'inconclusive' =="
+# Both are the same verdict and they are NOT the same situation, so they must not read the same.
+# C above ran with no keeper in the fake /proc, i.e. the addresses came from somewhere this script
+# cannot see. That must not be reported as "the keeper did it".
+out=$(sh "$W/check.sh" --log "$FR/userdata/C.log" 2>/dev/null)
+case "$out" in
+*"the keeper is NOT running either"*) ok "C: with no keeper, it does not claim the keeper configured them" ;;
+*) bad "C: an inconclusive reading with no keeper present still blames the keeper" ;;
+esac
+
+# I is the case that actually happens on a device in stage 1: the keeper IS running, so it won every
+# race and the netwatch had nothing to do. The verdict stays inconclusive -- and the output has to say
+# that this is the expected outcome rather than a failed attempt, because the thing it licensed was a
+# device boot, and "re-run the boot" without that sentence is a re-roll of a sub-second race.
+printf '1.10s netwatch start pid=812 heal=1 stall=45s\n5.00s sample rx=1 tx=1 frozen=0\n' \
+  > "$FR/userdata/I.log"
+mkdir -p "$FR/proc/813"
+printf '#!/bin/sh\x00/usr/bin/sh\x00/usr/local/sbin/zl1-debug-net.sh\x00' > "$FR/proc/813/cmdline"
+printf '813 (sh) S 1 813 813 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 10000 0 0 0 0 0 0\n' \
+  > "$FR/proc/813/stat"
+out=$(sh "$W/check.sh" --log "$FR/userdata/I.log" 2>/dev/null); rc=$?
+case "$out" in
+*"netwatch never logged configuring"*) ok "I: keeper alive and nothing missing -> inconclusive (exit $rc)" ;;
+*) bad "I: the keeper-alive inconclusive branch did not fire (exit $rc)" ;;
+esac
+[ "$rc" = 1 ] || bad "I: exit was $rc, wanted 1 (inconclusive must not license the retirement)"
+case "$out" in
+*"re-rolling"*) ok "I: it says re-running the boot is a re-roll, not a retry" ;;
+*) bad "I: re-running the boot is still presented as the way to get a verdict" ;;
+esac
+case "$out" in
+*"zl1-address-owner-proof.sh"*) ok "I: it names the deterministic measurement instead" ;;
+*) bad "I: no route to a verdict other than another boot" ;;
+esac
+case "$out" in
+*"the keeper is NOT running either"*) bad "I: with the keeper present it used the no-keeper wording" ;;
+*) ok "I: the keeper-alive wording is the one it printed" ;;
+esac
+rm -rf "$FR/proc/813"
+
 echo
 echo "== a log with no boot boundary at all =="
 # The header line the reader writes now exists even when the section holds nothing, so "no start
@@ -339,6 +379,33 @@ EOF
   grep -q 'kept <= cap' "$SRC" \
     && ok "the reader bounds what it keeps (the cap is in the script)" \
     || bad "the reader has no cap: nothing bounds the section it keeps"
+fi
+
+echo
+echo "== the health check cites this harness's count, and that citation cannot drift =="
+# scripts/host/zl1-health-check.sh tells the next reader how many checks this harness has, hand-typed.
+# It went stale once already (docs 110) -- the GPS line said 99 while that harness had grown to 129 --
+# and nothing noticed, because a stale number in a comment fails nothing. So the number is checked
+# from here, against this run's own total.
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -z "$DEV_AWK" ]; then
+  # The BIG section is the one conditional block in this file (4 checks, or 1 SKIP on a host with no
+  # non-gawk awk), so this total is host-dependent and the cited number is not the one this run would
+  # produce. Count that SKIP out loud rather than comparing against a number that is right anyway.
+  printf 'SKIP  no non-gawk awk here, so the BIG section was skipped and the total is host-dependent: the citation is not checked on this host\n'
+  SKIP=$((SKIP + 1))
+elif [ ! -r "$HEALTH" ]; then
+  printf 'SKIP  %s is not readable, so there is no citation to check\n' "$HEALTH"
+  SKIP=$((SKIP + 1))
+else
+  cited=$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' |
+            sed -n 's/.*zl1-boot-address-selftest\.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')
+  total=$((PASS + FAIL + 1))
+  if [ -n "$cited" ] && [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has $total (the citation is live)"
+  else
+    bad "the health check cites '${cited:-nothing}' checks for this harness; this run has $total"
+  fi
 fi
 
 echo

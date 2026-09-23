@@ -1,0 +1,14 @@
+== the mutation matrix for zl1-address-owner-proof.sh ==
+run 2026-09-23: each mutant is the real script with ONE protection removed, run through
+scripts/host/zl1-address-proof-selftest.sh via ZL1_PROOF_SRC. Base was 49 pass / 0 fail.
+
+M0 base                  pass=49 fail=0 skip=0  first_red=-
+M1 no --yes gate         pass=21 fail=32 skip=0  first_red=S1 -> wanted verdict 'proof-obtained' (exit 2)
+M3 no offset anchor      pass=46 fail=4 skip=0  first_red=S3 -> wanted verdict 'proof-unclear' (exit 0)
+M4 no del read-back      pass=47 fail=3 skip=0  first_red=S4: exit was 1, wanted 2 (not armed)
+M5 no undo re-add        pass=48 fail=1 skip=0  first_red=S2: the address was LEFT OFF the interface
+M6 del the SSH addr      pass=30 fail=23 skip=0  first_red=the 'ip addr del' does not remove PROBE_ADDR -- an address other
+M7 line alone enough     pass=46 fail=3 skip=0  first_red=S11 -> wanted verdict 'proof-failed' (exit 0)
+M8 no resume in undo     pass=46 fail=3 skip=0  first_red=S1: the keeper is in state T, not S, after the probe
+M9 revert under NEWLINE  pass=46 fail=3 skip=0  first_red=S1: no armed timer targets pid 773413 -- the keeper could be lef
+M2 arm after stop        pass=48 fail=1 skip=0  first_red=the SIGSTOP (line 241) does not come after the revert arming (li
