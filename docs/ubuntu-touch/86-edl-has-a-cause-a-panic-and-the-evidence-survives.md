@@ -27,7 +27,7 @@ panic  ->  panic_notifier_list 上注册的 panic_prep_restart() 把 in_panic �
        ->  复位，而 dload 标志已经被置上  ->  引导程序进 EDL，而不是进系统
 ```
 
-这不是 EDL 第一次有原因：更早那个阶段已经有过一条——`scripts/README.md` 末尾记着，那批 `fastboot boot` 实验"两次把设备送进 EDL"。但那一条解释不了 `80` §7：那一次设备**正跑着 UT**（RNDIS 在、SSH 在），整个会话里没有一条 fastboot 命令。所以上面这条是**另一条**路，而且是唯一一条不需要外部命令、不需要任何人做任何事的路。
+这不是 EDL 第一次有原因，之前有两条：`scripts/README.md` 末尾记着那批 `fastboot boot` 实验"两次把设备送进 EDL"；`49` §5 那次则归因于 `cnss`/`cnss_pci` 的 `unbind`（拆掉 PCIe 链路撞上 SoC 的 crash-dump 路径）。两条都是**外部动作**触发的（一条命令、一次 unbind），而且都解释不了 `80` §7：那一次设备**正跑着 UT**（RNDIS 在、SSH 在），整个会话里既没有 fastboot 命令也没有动过驱动。所以上面这条是**第三条**路，也是唯一一条不需要外部命令、不需要任何人做任何事的路。
 
 两个细节值得写下来，因为它们决定这条路径**在这台设备上到底走哪一段**：
 
