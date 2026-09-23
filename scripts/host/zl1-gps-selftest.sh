@@ -31,7 +31,9 @@ KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --keep) KEEP=1; shift ;;
-  --help|-h) sed -n '2,26p' "$0"; exit 0 ;;
+  # The header, whatever its current length -- not a fixed line range, which silently truncates the
+  # usage text every time the header grows (docs 104).
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -339,7 +341,13 @@ echo "== 2. the default run writes nothing =="
 BEFORE=$(snap)
 run
 printf '%s\n' "$OUT" > "$W/out.default"
-[ "$RC" = 0 ] && ok "the default run exits 0" || bad "the default run exited $RC"
+# Exit 1 IS the right answer for this fixture, and the assertion is spelled with its reason so it cannot
+# be "fixed" back to 0 by the next person: the default logcat fixture contains `locClientOpen failed`
+# once, which is the one line in the HAL source that returns a real failure -- so the verdict is
+# `qmi-open-failed`, a NAMED blocker, and section 6 exits 1 for that. (The scenario where 0 is correct
+# is the one whose count is 0 and whose features/capabilities lines are present: section 10 below.)
+[ "$RC" = 1 ] && ok "the default run exits 1 (its fixture's logcat has locClientOpen failed)" \
+  || bad "the default run exited $RC, wanted 1 (the fixture contains locClientOpen failed)"
 [ "$(snap)" = "$BEFORE" ] && ok "and changed nothing in the fake device" || bad "the default run wrote something"
 [ -z "$(grep -c '^test_gps' "$ACT" 2>/dev/null | grep -v '^0$')" ] && ok "and never touched the hardware half" || bad "it ran test_gps without being asked"
 want 'read-only' "$OUT" "it announces that it is read-only"
@@ -532,6 +540,138 @@ else
   IFS=$_oldifs
 fi
 
+# ==================================================================================================
+echo
+echo "== 10. the verdict: which rung of the chain does the evidence stop at (docs 108) =="
+# ==================================================================================================
+# Section 6 of the probe exists because the first real capture archived nine sections and the run was
+# read as "the GPS probe produced no verdict" -- while those sections held the deepest evidence this
+# chain has ever had. So the verdict is a decision, and a decision needs its branches tested. Each
+# scenario below differs from the others in exactly one evidence source.
+#
+# The fixtures are written into the same two files the other sections use, so a scenario is "replace
+# what the container logged, then run the real script again". Section 2's snapshot check is not
+# repeated here: `snap` is about writes and this section writes only to the harness's own fake root.
+
+# --- the rung the device was actually on, as RECORDED (verbatim numbers from the archive) -----------
+# scripts/device/zl1-gps-probe.sh counts, and tmp-post-recovery-20260923T145530Z/05-gps-probe.txt is
+# what the device really logged: locClientOpen failed = 0, Failed to get features supported = 2,
+# gnssSetCapabilitesCb = 2, and the adapter's set_position_mode called. Nothing about this fixture is
+# invented, which is the point: a fixture that cannot be produced by the device tests nothing.
+cat > "$LOGCT" <<'EOF'
+I/ubuntu_application_gps_hidl_for_hybris( 1757): set_gps_service_callbacks: called
+D/PerMgrSrv(  338): GPS voting for modem
+I/ubuntu_application_gps_hidl_for_hybris( 1757): gnssSetCapabilitesCb: called
+I/ubuntu_application_gps_hidl_for_hybris( 1757): gnssSetSystemInfoCb: called
+E/ubuntu_application_gps_hidl_for_hybris( 1757): Unable to initialize GNSS Xtra interface
+I/ubuntu_application_gps_hidl_for_hybris( 1757): u_hardware_gps_set_position_mode: called
+I/ubuntu_application_gps_hidl_for_hybris( 1757): set_position_mode: called
+E/LocSvc_ApiV02: Failed to get features supported from QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02
+E/LocSvc_ApiV02: Failed to get features supported from QMI_LOC_GET_SUPPORTED_FEATURE_REQ_V02
+EOF
+cat > "$JOURNAL" <<'EOF'
+Instantiating and configuring
+Instantiating and configuring
+EOF
+env_reset
+run
+printf '%s\n' "$OUT" > "$W/out.v.reaches"
+[ "$RC" = 0 ] && ok "REACHES: the recorded state exits 0 -- the chain reaches the vendor HAL" \
+  || bad "REACHES: exited $RC, wanted 0"
+want 'REACHES the container.s vendor GPS HAL' "$OUT" "the verdict says the chain reaches the vendor HAL"
+want 'QMI client OPENED' "$OUT" "and that the client opened (the reading docs 82 established)"
+want 'not a case of nobody ever asking' "$OUT" "and that the adapter was reached, so 'nobody asked' is ruled out"
+want 'u_hardware_gps_\* \(the UT adapter, in logcat\) +1' "$OUT" "quoting the adapter count from the table"
+# The count is 1 and not 2 on purpose: the recording's next line is `set_position_mode: called`, which
+# does NOT carry the adapter prefix. A fixture that inflated it would make the count look like a
+# measurement of something else.
+notwant 'u_hardware_gps_\* \(the UT adapter, in logcat\) +2' "$OUT" "and the count is the prefix's, not 'set_position_mode' twice"
+want 'NOT decidable from these counts' "$OUT" "and saying what the counts cannot decide"
+notwant 'trust-store' "$OUT" "with no trust-store claim, since no gate message is present"
+# The one thing the probe must never do is claim the HAL is registered: it cannot read those columns.
+want "columns are not parsed on" "$OUT" "it states plainly that it does not parse the lshal table"
+want 'never to say "the service is up"' "$OUT" "and that the gnss count is not a registration claim"
+
+echo
+echo "   -- the fake-position hook must be visible in the verdict (a fake fix is not a fix):"
+env_reset
+FAKE_TESTING=1 run
+want 'custom.location.testing is SET' "$OUT" "with the test hook set, the verdict says so"
+env_reset
+
+echo
+echo "   -- a trust-store refusal is named, and comes before the HAL rungs:"
+env_reset
+cat > "$JOURNAL" <<'EOF'
+Instantiating and configuring
+Client lacks permissions to access the service with the given criteria
+EOF
+run
+[ "$RC" = 1 ] && ok "REFUSED: exits 1" || bad "REFUSED: exited $RC, wanted 1"
+want 'REFUSED by the trust store' "$OUT" "the verdict names the trust store"
+# Two assertions, not one: the phrase wraps across a line, and a single-line regex that spans the
+# wrap would be asserting the terminal's width. (The first version of this assertion did exactly
+# that and failed while the output was right.)
+want "gate 1's short-circuit switch is" "$OUT" "and reports gate 1's state, which decides whether the store is consulted at all"
+want 'NOT set' "$OUT" "-- and that state is NOT set, so the trust store is the thing deciding"
+notwant 'REACHES the container' "$OUT" "and does NOT claim the HAL rung, even though the logcat fixture still has the features lines"
+# The ordering is the assertion, not the wording: a refusal above the HAL means the HAL's own state is
+# not visible on this boot, so the trust-store branch must be reached first.
+cat > "$JOURNAL" <<'EOF'
+Client lacks permissions to access the service with the given criteria
+EOF
+env_reset
+run
+want 'The chain stops above the HAL' "$OUT" "and says the HAL's own state is not visible, rather than calling it broken"
+
+echo
+echo "   -- a daemon that instantiates providers and never reaches the HAL:"
+env_reset
+: > "$LOGCT"
+cat > "$JOURNAL" <<'EOF'
+Instantiating and configuring
+Instantiating and configuring
+Instantiating and configuring
+EOF
+run
+[ "$RC" = 1 ] && ok "DAEMON-ONLY: exits 1" || bad "DAEMON-ONLY: exited $RC, wanted 1"
+want 'instantiated providers' "$OUT" "the verdict names the daemon-only state"
+want 'A provider being' "$OUT" "and draws the distinction the layer depends on: a provider is not a position request"
+notwant 'REACHES the container' "$OUT" "and does not claim the HAL rung"
+
+echo
+echo "   -- the namespace check comes BEFORE every log rung:"
+env_reset
+ln -sf "$DHOST_NS" "$FR/proc/700/ns/pid"
+run
+[ "$RC" = 1 ] && ok "BAD-NS: exits 1" || bad "BAD-NS: exited $RC, wanted 1"
+want 'in the HOST PID namespace' "$OUT" "the verdict names the namespace"
+want 'it fails before this chain starts' "$OUT" "and says the chain never starts, so no log rung is quoted"
+notwant 'REACHES the container.s vendor GPS HAL' "$OUT" "and the log rungs are not reached at all"
+
+echo
+echo "   -- and with no container there is nothing to judge:"
+env_reset
+RUN_CONTAINER=none run
+[ "$RC" = 1 ] && ok "NO-CONTAINER: exits 1" || bad "NO-CONTAINER: exited $RC, wanted 1"
+want 'container does not answer' "$OUT" "the verdict says so"
+want 'logcat: skipped' "$OUT" "and the logcat table is skipped rather than printed as zeros"
+notwant 'REACHES the container' "$OUT" "and no rung is claimed from a container that is not there"
+env_reset
+
+echo
+echo "   -- the verdict is the LAST section, so it cannot be quoted before its evidence:"
+vline=$(grep -n '^== verdict' "$W/out.v.reaches" | cut -d: -f1)
+gline=$(grep -n '^== .*gps.conf' "$W/out.v.reaches" | cut -d: -f1)
+[ -n "$vline" ] && [ "$vline" -gt "${gline:-999999}" ] && ok "the verdict comes after every evidence section" \
+  || bad "the verdict is at line ${vline:-none}, gps.conf at ${gline:-none}"
+
+echo
+echo "== 11. what this harness does NOT test, and says so =="
+echo "SKIP  the device facts behind the verdict: whether the netwatch-style log really holds those lines,"
+echo "      whether the container's lshal lists gnss, and whether lomiri's own gate is open. Those need"
+echo "      the boot itself -- and the verdict's job is to say which of them to look at."
+SKIP=$((SKIP + 1))
 echo
 echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here)")"
 [ "$KEEP" = 1 ] || rm -rf "$W"

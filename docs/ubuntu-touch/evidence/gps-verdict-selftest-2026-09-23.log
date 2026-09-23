@@ -1,0 +1,151 @@
+zl1 GPS probe -- offline self-test
+  script under test: scripts/host/../device/zl1-gps-probe.sh
+  fake device:       /tmp/zl1-gps-selftest/fake
+
+== 1. the provenance rule, checked statically out of the shipped script ==
+PASS  the logcat pattern list was found in the shipped script
+PASS  and the journal list
+     logcat: locClientOpen failed Failed to checking QMI_LOC message supported Failed to get features supported gnssSetCapabilitesCb
+     journal: Issue instantiating provider Instantiating and configuring Remote service failed to start Failed to inject reference time android_hardware_abstraction_layer
+PASS  no pattern is counted in both logs
+
+   -- and the two strings that were removed, with the reason (they can never be evidence):
+PASS  the symbol name is no longer counted as a log line (it is a SYMBOL: in no binary in any image)
+PASS  nor is the framework's own message (libandroid_servers.so / GnssLocationProvider -- not on this path)
+PASS  and the script says why, where the next person will read it
+PASS  including why the framework path is not this path
+
+== 2. the default run writes nothing ==
+PASS  the default run exits 1 (its fixture's logcat has locClientOpen failed)
+PASS  and changed nothing in the fake device
+PASS  and never touched the hardware half
+PASS  it announces that it is read-only
+PASS  section 1 is about the unit
+PASS  it prints the ExecStart that is actually in effect
+PASS  and names the drop-in that set it
+
+== 3. every count comes from the log the string's OWNER writes to ==
+PASS  the logcat block is labelled by owner
+PASS  and so is the journal block
+PASS  locClientOpen failed: the count is the logcat fixture's (1)
+PASS  gnssSetCapabilitesCb: from logcat
+PASS  Issue instantiating provider: the journal fixture's count (2)
+PASS  Instantiating and configuring: from the journal
+PASS  Remote service failed to start: from the journal
+PASS  Failed to inject reference time: from the journal
+PASS  and the fixture's journal strings are NOT reported as 0 (the shape the old version produced)
+PASS  the journal query is boot-scoped (-b), the only kind that survives a wrong clock
+PASS  and paged output is turned off
+PASS  logcat is read as a dump, not a follow
+
+   -- the three trust-store gates, which only the journal can show:
+PASS  gate 3's failure has a name in the output
+PASS  and the count is the journal's
+PASS  so does gate 1/2's
+PASS  and the third
+
+   -- and where gate 1's switch would be visible:
+PASS  it looks for the bypass in the daemon's own environ (the wrapper execs, so that is where it lands)
+PASS  and prints it when it IS set, so a short-circuited gate 1 is visible as such
+
+== 4. the two fixtures must stay distinguishable (the harness's own teeth) ==
+PASS  the journal-only string is absent from the logcat fixture, so reading the wrong log cannot pass
+PASS  and the logcat-only string is absent from the journal fixture
+
+== 5. the namespace verdict, driven both ways ==
+PASS  a daemon in the container's namespace is reported as such
+PASS  and the daemon's own ns value is shown, not blank
+PASS  with the container's alongside it
+PASS  a daemon in the host namespace is called out (it cannot see hwbinder)
+PASS  with what that means for the HAL it needs
+PASS  and the mismatch is visible in the values it printed
+
+   -- and with no daemon at all, and with no container:
+PASS  a missing daemon is said, not assumed
+PASS  with no container the logcat block says it is skipped
+PASS  and it does not claim to have looked for the HIDL service
+PASS  nor does it give a namespace verdict with no container pid to compare against
+
+== 6. the switches, the properties and the HIDL service ==
+PASS  it reads does_satellite_based_positioning through the UT's own client tool
+PASS  and does_report_wifi_and_cell_ids
+PASS  it reads the four custom.* properties the wrapper uses
+PASS  and says they are read inside the container, because the host getprop is a stub
+PASS  it asks lshal about gnss
+PASS  through the container's PID and mount namespaces
+
+== 7. the flag surface ==
+PASS  an unknown argument exits 2
+PASS  --help exits 0
+PASS  and prints the usage block
+PASS  and stops at the header, rather than printing the assignments after it
+PASS  --seconds with no value names the flag instead of aborting the shell
+
+== 8. --test-gps is opt-in, and reaches the HAL the way the camera path does ==
+PASS  --test-gps runs test_gps
+PASS  with hybris' library path in front
+PASS  and the TLS-slot preload a glibc host needs
+PASS  and it does not invent a path
+PASS  the default run sets none of that, because it does not run the hardware half
+
+== 9. every pattern is still a string that exists in some image (SKIPPED, loudly, if they are not here) ==
+PASS  logcat-side: 'locClientOpen failed' exists in the Android images
+PASS  logcat-side: 'Failed to checking QMI_LOC message supported' exists in the Android images
+PASS  logcat-side: 'Failed to get features supported' exists in the Android images
+PASS  logcat-side: 'gnssSetCapabilitesCb' exists in the Android images
+PASS  journal-side: 'Issue instantiating provider' exists in the UT rootfs
+PASS  journal-side: 'Instantiating and configuring' exists in the UT rootfs
+PASS  journal-side: 'Remote service failed to start' exists in the UT rootfs
+PASS  journal-side: 'Failed to inject reference time' exists in the UT rootfs
+PASS  journal-side: 'android_hardware_abstraction_layer' exists in the UT rootfs
+
+== 10. the verdict: which rung of the chain does the evidence stop at (docs 108) ==
+PASS  REACHES: the recorded state exits 0 -- the chain reaches the vendor HAL
+PASS  the verdict says the chain reaches the vendor HAL
+PASS  and that the client opened (the reading docs 82 established)
+PASS  and that the adapter was reached, so 'nobody asked' is ruled out
+PASS  quoting the adapter count from the table
+PASS  and the count is the prefix's, not 'set_position_mode' twice
+PASS  and saying what the counts cannot decide
+PASS  with no trust-store claim, since no gate message is present
+PASS  it states plainly that it does not parse the lshal table
+PASS  and that the gnss count is not a registration claim
+
+   -- the fake-position hook must be visible in the verdict (a fake fix is not a fix):
+PASS  with the test hook set, the verdict says so
+
+   -- a trust-store refusal is named, and comes before the HAL rungs:
+PASS  REFUSED: exits 1
+PASS  the verdict names the trust store
+PASS  and reports gate 1's state, which decides whether the store is consulted at all
+PASS  -- and that state is NOT set, so the trust store is the thing deciding
+PASS  and does NOT claim the HAL rung, even though the logcat fixture still has the features lines
+PASS  and says the HAL's own state is not visible, rather than calling it broken
+
+   -- a daemon that instantiates providers and never reaches the HAL:
+PASS  DAEMON-ONLY: exits 1
+PASS  the verdict names the daemon-only state
+PASS  and draws the distinction the layer depends on: a provider is not a position request
+PASS  and does not claim the HAL rung
+
+   -- the namespace check comes BEFORE every log rung:
+PASS  BAD-NS: exits 1
+PASS  the verdict names the namespace
+PASS  and says the chain never starts, so no log rung is quoted
+PASS  and the log rungs are not reached at all
+
+   -- and with no container there is nothing to judge:
+PASS  NO-CONTAINER: exits 1
+PASS  the verdict says so
+PASS  and the logcat table is skipped rather than printed as zeros
+PASS  and no rung is claimed from a container that is not there
+
+   -- the verdict is the LAST section, so it cannot be quoted before its evidence:
+PASS  the verdict comes after every evidence section
+
+== 11. what this harness does NOT test, and says so ==
+SKIP  the device facts behind the verdict: whether the netwatch-style log really holds those lines,
+      whether the container's lshal lists gnss, and whether lomiri's own gate is open. Those need
+      the boot itself -- and the verdict's job is to say which of them to look at.
+
+pass=99 fail=0 skip=1 (a check that could NOT run here)

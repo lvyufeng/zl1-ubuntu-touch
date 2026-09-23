@@ -1,0 +1,135 @@
+Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+zl1 GPS probe :: Wed Feb 11 08:21:29 AM EST 1970 :: read-only
+== unit lomiri-location-service
+   ExecStart=/usr/bin/lomiri-location-serviced --bus system --provider gps::Provider --provider remote::Provider
+   ExecStart=
+   ExecStart=/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
+   ExecStart=
+   ExecStart=/userdata/zl1-hybris/bin/zl1-ns-exec /usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
+   drop-in: /etc/systemd/system/lomiri-location-service.service.d/zl1-hybris-path.conf
+   drop-in: /etc/systemd/system/lomiri-location-service.service.d/zl1-tls.conf
+   drop-in: /etc/systemd/system/lomiri-location-service.service.d/zz-zl1-ns.conf
+   drop-in: /usr/lib/systemd/system/lomiri-location-service.service.d/lxc-android-config.conf
+   ActiveState: active
+   | ● lomiri-location-service.service - Location Services
+   |      Loaded: loaded (/usr/lib/systemd/system/lomiri-location-service.service; enabled; preset: enabled)
+   |     Drop-In: /usr/lib/systemd/system/lomiri-location-service.service.d
+   |              └─lxc-android-config.conf
+   |              /etc/systemd/system/lomiri-location-service.service.d
+   |              └─zl1-hybris-path.conf, zl1-tls.conf, zz-zl1-ns.conf
+   |      Active: active (running) since Wed 1970-02-11 08:02:27 EST; 19min ago
+   |    Main PID: 54636 (nsenter)
+   |      CGroup: /system.slice/lomiri-location-service.service
+   |              ├─54636 nsenter -t 36058 -p -- /usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
+   |              └─54686 lomiri-location-serviced --bus system --provider gps::Provider --provider remote::Provider
+   | 
+   | Feb 11 08:02:27 ubuntu-phablet zl1-ns-exec[54686]: Instantiating and configuring: remote::Provider
+   | Feb 11 08:02:27 ubuntu-phablet zl1-ns-exec[54686]: tlsfix2 thread pid=0x00000000000006dd tp=0x0000007d73fa7d00 slot1_was=0x0000007d76d21aec
+   | Feb 11 08:02:27 ubuntu-phablet zl1-ns-exec[54686]: tlsfix2 thread pid=0x00000000000006dd tp=0x0000007d6b7e7d00 slot1_was=0x0000000000000000
+   | Feb 11 08:02:27 ubuntu-phablet systemd[1]: Started lomiri-location-service.service - Location Services.
+   | Feb 11 08:02:27 ubuntu-phablet zl1-ns-exec[54686]: tlsfix2 thread pid=0x00000000000006dd tp=0x0000007d6bff7d00 slot1_was=0x0000000000000000
+== daemon pid 54686  ns/pid pid:[4026533532]
+   container  pid 36058  ns/pid pid:[4026533532]
+   -> the daemon runs IN the container's PID namespace (what binder/hwbinder needs)
+   environ (the ones that matter):
+     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin
+     LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libtls-padding.so
+     HYBRIS_LD_LIBRARY_PATH=/userdata/zl1-hybris/lib:/system/lib64:/odm/lib64:/vendor/lib64
+== switches (lomiri-location-serviced-cli -- it cannot request a position, only read/set these)
+   satellite: Unknown property, aborting now.
+   satellite: dbus[675496]: Attempted to unregister path (path[0] = com path[1] = lomiri) which isn't registered
+   satellite:   --bus arg (=session)      The well-known bus to connect to the service upon
+   satellite:   --help                    Produces this help message
+   satellite:   --property arg (=unknown) Property to set/get from a running service, known 
+   satellite:                             properties are:
+   satellite:                                state [get]
+   satellite:                                is_online [get/set]
+   satellite:                                does_satellite_based_positioning [get/set]
+   satellite:                                does_report_wifi_and_cell_ids [get/set]
+   satellite:                                visible_space_vehicles [get]
+   satellite:                                client_applications [get]
+   satellite:   --set arg                 Adjust the value of the property.
+   satellite:   --get                     Query the value of the property.
+   satellite:   --test                    Executes runtime tests.
+   wifi/cell: Unknown property, aborting now.
+   wifi/cell: dbus[675593]: Attempted to unregister path (path[0] = com path[1] = lomiri) which isn't registered
+   wifi/cell:   --bus arg (=session)      The well-known bus to connect to the service upon
+   wifi/cell:   --help                    Produces this help message
+   wifi/cell:   --property arg (=unknown) Property to set/get from a running service, known 
+   wifi/cell:                             properties are:
+   wifi/cell:                                state [get]
+   wifi/cell:                                is_online [get/set]
+   wifi/cell:                                does_satellite_based_positioning [get/set]
+   wifi/cell:                                does_report_wifi_and_cell_ids [get/set]
+   wifi/cell:                                visible_space_vehicles [get]
+   wifi/cell:                                client_applications [get]
+   wifi/cell:   --set arg                 Adjust the value of the property.
+   wifi/cell:   --get                     Query the value of the property.
+   wifi/cell:   --test                    Executes runtime tests.
+   (its usage, verbatim, so a wrong subcommand above is visible as such:)
+   | Problem parsing command line: Error parsing command line
+   |   --bus arg (=session)      The well-known bus to connect to the service upon
+   |   --help                    Produces this help message
+   |   --property arg (=unknown) Property to set/get from a running service, known 
+   |                             properties are:
+   |                                state [get]
+   |                                is_online [get/set]
+   |                                does_satellite_based_positioning [get/set]
+   |                                does_report_wifi_and_cell_ids [get/set]
+   |                                visible_space_vehicles [get]
+   |                                client_applications [get]
+   |   --set arg                 Adjust the value of the property.
+== the log, split by which process could have written it (this device has no working RTC --
+   docs 69 -- so ordering is not trustworthy; these are COUNTS, which do not depend on order)
+   --- logcat (the container's vendor GPS HAL) ---
+   locClientOpen failed                           0
+   Failed to checking QMI_LOC message supported   0
+   Failed to get features supported               2
+   gnssSetCapabilitesCb                           2
+   -- the last 8 logcat lines that mention gps/gnss/LocSvc:
+   | I/ubuntu_application_gps_hidl_for_hybris( 1757): set_gps_service_callbacks: called
+   | D/PerMgrSrv(  338): GPS voting for modem
+   | I/ubuntu_application_gps_hidl_for_hybris( 1757): gnssSetCapabilitesCb: called
+   | I/ubuntu_application_gps_hidl_for_hybris( 1757): gnssSetSystemInfoCb: called
+   | E/ubuntu_application_gps_hidl_for_hybris( 1757): Unable to initialize GNSS Xtra interface
+   | I/ubuntu_application_gps_hidl_for_hybris( 1757): u_hardware_gps_set_position_mode: called
+   | I/ubuntu_application_gps_hidl_for_hybris( 1757): set_position_mode: called
+   | I/chatty  (  551): uid=1021(gps) NDK identical 1 line
+   --- journal of lomiri-location-service (the daemon itself and the library it loads) ---
+   Issue instantiating provider                   0
+   Instantiating and configuring                  6
+   Remote service failed to start                 0
+   Failed to inject reference time                0
+   android_hardware_abstraction_layer             0
+   Missing agent implementation                   0
+   Cannot operate without an agent implementation 0
+   Client lacks permissions to access the service with the given criteria 0
+   Cannot create service for null permission manager 0
+   -- and the daemon's own environ, where gate 1's switch lives:
+     (absent: gate 1 is NOT short-circuited, so the trust store decides)
+== Android properties (read INSIDE the container: the host's getprop is a stub)
+   custom.location.fake         <unset>
+   custom.location.lat          <unset>
+   custom.location.lon          <unset>
+   custom.location.testing      <unset>
+== GNSS HIDL service registration (lshal, inside the container -- it needs -p and -m)
+   Y android.hardware.gnss@1.0::IGnss/default                                                  N/A        N/A    
+   Y android.hardware.gnss@1.0::IGnss/gnss_vendor                                              N/A        N/A    
+   Y android.hidl.base@1.0::IBase/gnss_vendor                                                  N/A        N/A    
+   Y vendor.qti.gnss@1.0::ILocHidlGnss/gnss_vendor                                             N/A        N/A    
+     android.hardware.gnss@1.0::IGnss/default                               N/A        257    257
+     vendor.qti.gnss@1.0::ILocHidlGnss/gnss_vendor                          N/A        257    257
+     android.hardware.gnss@1.0::I*/* (/vendor/lib/hw/) (-qti)              N/A        N/A    
+     android.hardware.gnss@1.0::I*/* (/vendor/lib64/hw/) (-qti)            N/A        N/A    257
+== /etc/gps.conf (XTRA servers only -- no SUPL lines; affects AGPS, not standalone)
+   a35fab13d67e18241cfa1d0bcdc86d0c  /etc/gps.conf
+   | # XTRA_SERVER_QUERY (1=on, 0=off)
+   | # If XTRA_SERVER_QUERY is on, the XTRA_SERVERs listed
+   | # below will be ignored, and instead the servers will
+   | # be queried from the modem.
+   | XTRA_SERVER_QUERY=0
+   | # XTRA_SERVERs below are used only if XTRA_SERVER_QUERY
+   | # is off.
+   | XTRA_SERVER_1=http://xtra1.gpsonextra.net/xtra2.bin
+   | XTRA_SERVER_2=http://xtra2.gpsonextra.net/xtra2.bin
+   | XTRA_SERVER_3=http://xtra3.gpsonextra.net/xtra2.bin
