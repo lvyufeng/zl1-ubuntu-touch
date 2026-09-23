@@ -121,6 +121,77 @@ LOGCT="$W/logcat.txt"
   printf 'I/GnssLocationProvider: something gps\n'
 } > "$LOGCT"
 
+# --- the lshal listing ---------------------------------------------------------------------------
+#
+# A FIXTURE IN THE REAL SHAPE, and the shape is the point. lshal prints THREE tables, separated by
+# blank lines, each introduced by a description line that is a literal in the image's own
+# liblshal.so; the default rows are `R Interface Thread Use Server Clients`. The previous version of
+# this file fed the stub a single bare line (`android.hardware.gnss@1.0::IGnss/default`) -- a shape no
+# lshal produces -- so nothing it asserted could have been about a real listing.
+#
+# The three description lines below are copied verbatim out of
+# /mnt/android-sys-test/lib64/liblshal.so, and the default rows are the 2026-09-23 recording
+# (evidence/gps-probe-live-2026-09-23.txt). That is what makes the expected verdict a recorded fact
+# rather than a guess about a device.
+LSHAL="$W/lshal.txt"
+LSHAL_MODE=registered
+L_ROW_FMT='%-3s %-56s %-11s %-7s %s\n'
+lshal_row() { printf "$L_ROW_FMT" "$@"; }
+GNSS_DEFAULT='android.hardware.gnss@1.0::IGnss/default'
+lshal_fixture() { # mode -> $LSHAL ; the three tables are built independently so a scenario can move
+                  # exactly one thing: where the row is, or whether the anchor line is there at all
+  t1_row=1; t2_row=1; t3_row=1; anchor=1
+  case "$1" in
+  registered) ;;
+  # The numbers here are DELIBERATELY unique in the whole listing (909 / 7/9). An earlier version used
+  # the recording's own 257/257, which the table-2 row also carries -- so an implementation that read
+  # the Server column out of the wrong table still printed 257 and the check passed. A fixture whose
+  # expected value can be produced by a wrong implementation is not a test.
+  live)       t2_row=0 ;;
+  unreleased) t2_row=0 ;;                        # in table 1, but R is blank: listed, hash not read
+  unregistered) t1_row=0 ;;                      # in table 2 only -> outside-table-1
+  norow)      t1_row=0; t2_row=0 ;;              # nowhere by name; only the I*/* aggregates remain
+  noanchor)   anchor=0 ;;                        # the tables cannot be told apart -> unknown
+  empty)      t1_row=0; t2_row=0; t3_row=0 ;;
+  esac
+  {
+    [ "$anchor" = 1 ] && printf '%s\n' \
+      'All binderized services (registered services through hwservicemanager)'
+    lshal_row 'R' 'Interface' 'Thread Use' 'Server' 'Clients'
+    if [ "$t1_row" = 1 ]; then
+      case "$1" in
+      live)       lshal_row 'Y' "$GNSS_DEFAULT" '7/9' '909' '42' ;;
+      unreleased) lshal_row ' ' "$GNSS_DEFAULT" '7/9' '909' '42' ;;
+      *)          lshal_row 'Y' "$GNSS_DEFAULT" 'N/A' 'N/A' ''
+                  lshal_row 'Y' 'android.hardware.gnss@1.0::IGnss/gnss_vendor' 'N/A' 'N/A' ''
+                  lshal_row 'Y' 'android.hidl.base@1.0::IBase/gnss_vendor' 'N/A' 'N/A' '' ;;
+      esac
+    fi
+    # a non-gnss row is always here, so an empty table 1 is still a table that was FOUND and read
+    lshal_row 'Y' 'android.hidl.manager@1.0::IServiceManager/default' 'N/A' 'N/A' ''
+    printf '\n'
+    printf '%s\n' 'All interfaces that getService() has ever return as a passthrough interface;'
+    printf '%s\n' 'PIDs / processes shown below might be inaccurate because the process'
+    printf '%s\n' 'might have relinquished the interface or might have died.'
+    printf '%s\n' 'The Server / Server CMD column can be ignored.'
+    printf '%s\n' "The Clients / Clients CMD column shows all process that have ever dlopen'ed "
+    printf '%s\n' 'the library and successfully fetched the passthrough implementation.'
+    lshal_row 'R' 'Interface' 'Thread Use' 'Server' 'Clients'
+    [ "$t2_row" = 1 ] && lshal_row ' ' "$GNSS_DEFAULT" 'N/A' '257' '257'
+    # `empty` has to mean empty: this row carries 'gnss' too, so leaving it in would make the
+    # "the listing has no gnss at all" scenario impossible to build.
+    [ "$1" = empty ] || lshal_row ' ' 'vendor.qti.gnss@1.0::ILocHidlGnss/gnss_vendor' 'N/A' '257' '257'
+    printf '\n'
+    printf '%s\n' 'All available passthrough implementations (all -impl.so files).'
+    printf '%s\n' 'These may return subclasses through their respective HIDL_FETCH_I* functions.'
+    lshal_row 'R' 'Interface' 'Thread Use' 'Server' 'Clients'
+    [ "$t3_row" = 1 ] && {
+      lshal_row ' ' 'android.hardware.gnss@1.0::I*/* (/vendor/lib/hw/) (-qti)' 'N/A' 'N/A' ''
+      lshal_row ' ' 'android.hardware.gnss@1.0::I*/* (/vendor/lib64/hw/) (-qti)' 'N/A' 'N/A' '257'
+    }
+  } > "$LSHAL"
+}
+
 # --- the stubs ----------------------------------------------------------------------------------
 mkstub() { # name
   printf '#!/bin/sh\nprintf "%%s %%s\\n" "%s" "$*" >> "%s"\n' "$1" "$ACT" > "$STUB/$1"
@@ -188,7 +259,7 @@ EOF
 cat > "$STUB/lshal" <<EOF
 #!/bin/sh
 printf 'lshal %s\n' "\$*" >> "$ACT"
-printf '%s\n' 'android.hardware.gnss@1.0::IGnss/default'
+[ "\${FAKE_LSHAL:-present}" = none ] || cat "$LSHAL"
 exit 0
 EOF
 
@@ -287,6 +358,9 @@ env_reset() {
   cp "$FR/proc/700/environ.normal" "$W/environ" 2>/dev/null
   rm -f "$FR/proc/700/environ"
   printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' > "$FR/proc/700/environ"
+  # Rebuilt here, not left over from the previous scenario: a lshal fixture that leaked across
+  # scenarios would make the registration section's checks pass for the wrong reason.
+  lshal_fixture registered
 }
 run() {
   : > "$ACT"
@@ -294,6 +368,12 @@ run() {
         FAKE_JOURNAL="$RUN_JOURNAL" FAKE_LOGCT="$RUN_LOGCT" \
         FAKE_SAT="$RUN_SAT" FAKE_WIFI="$RUN_WIFI" \
         timeout 60 sh "$GP" "$@" 2>&1); RC=$?
+}
+# `LSHAL_MODE=x run` would not stick: an assignment in front of a FUNCTION is not required to survive
+# into it (and bash restores it). So the fixture is rebuilt explicitly, by name.
+run_lshal() { # mode [args...]
+  lshal_fixture "$1"; shift
+  run "$@"
 }
 env_reset
 
@@ -589,8 +669,16 @@ notwant 'u_hardware_gps_\* \(the UT adapter, in logcat\) +2' "$OUT" "and the cou
 want 'NOT decidable from these counts' "$OUT" "and saying what the counts cannot decide"
 notwant 'trust-store' "$OUT" "with no trust-store claim, since no gate message is present"
 # The one thing the probe must never do is claim the HAL is registered: it cannot read those columns.
-want "columns are not parsed on" "$OUT" "it states plainly that it does not parse the lshal table"
-want 'never to say "the service is up"' "$OUT" "and that the gnss count is not a registration claim"
+# docs 110 replaced the old "the columns are not parsed on purpose" stance with a reading built on
+# lshal's own source. These two assertions are the ones that changed meaning, so they are asserted the
+# other way round now: the probe must READ the table and must say WHERE the reading came from.
+want 'registered: *yes' "$OUT" "it reads the registration out of lshal's binderized table"
+want "column is 'Y'" "$OUT" "and reports the R column, which is what makes the row a live service"
+want 'Server is read here only because this row is in table 1' "$OUT" "and says which table the Server column is being read from"
+notwant 'columns are not parsed' "$OUT" "and no longer claims it cannot read the listing (docs 110)"
+# The registration reading is tied INTO the rung, not left beside it: a process that logged is not by
+# itself a service anybody could call, and this is the only place the two statements meet.
+want 'reachable, not merely running' "$OUT" "and the reaches-the-HAL rung states the registration reading with it"
 
 echo
 echo "   -- the fake-position hook must be visible in the verdict (a fake fix is not a fix):"
@@ -667,7 +755,126 @@ gline=$(grep -n '^== .*gps.conf' "$W/out.v.reaches" | cut -d: -f1)
   || bad "the verdict is at line ${vline:-none}, gps.conf at ${gline:-none}"
 
 echo
-echo "== 11. what this harness does NOT test, and says so =="
+echo "== 11. reading the lshal listing: which table a row is in is the whole answer (docs 110) =="
+# Each scenario below sets its OWN two logs as well as its own listing: without that they would inherit
+# whatever section 10 left behind, and `empty`'s assertion (`no-gnss-listing`) depends on the journal
+# being silent. A scenario that leans on its predecessor's fixture is a scenario that tests the wrong
+# thing the day the predecessor changes.
+silent_logs() { : > "$LOGCT"; : > "$JOURNAL"; }
+# ==================================================================================================
+# lshal prints THREE tables and only the first -- the one hwservicemanager fills -- means "registered".
+# Every scenario below moves exactly ONE thing: where the row for android.hardware.gnss@1.0::IGnss/default
+# sits, or whether the description line that names table 1 is present at all. The probe must answer
+# yes / no / unknown, and `unknown` must never collapse into `no`: without the anchor line the tables
+# cannot be told apart, and a row that is really in table 1 would read as unregistered.
+#
+# The fixtures come from the fixture builder above, whose description lines are copied out of the
+# image's own liblshal.so -- so "the anchor is present" is a fact about a real binary, not a guess.
+
+echo "   -- the row is in table 1 (the recorded device state):"
+env_reset
+silent_logs
+run_lshal registered
+printf '%s\n' "$OUT" > "$W/out.reg.registered"
+want 'registered: *yes' "$OUT" "registered: yes"
+want 'gnss rows: +[0-9]+ in the listing, [1-9][0-9]* in the binderized table' "$OUT" \
+     "and it counts the rows inside that table, not just anywhere in the listing"
+
+echo
+echo "   -- the row is in table 2 only (a passthrough reference does not serve hwbinder callers):"
+env_reset
+silent_logs
+run_lshal unregistered
+want 'registered: *no' "$OUT" "registered: no"
+want 'NOT in the binderized table' "$OUT" "and it names the table, not the service, as the reason"
+
+echo
+echo "   -- the row is nowhere by name, but the binderized table WAS found and read:"
+env_reset
+silent_logs
+run_lshal norow
+want 'registered: *no' "$OUT" "registered: no -- this is a located blocker, not an absence of evidence"
+
+echo
+echo "   -- a different lshal: no description line, so the tables cannot be told apart:"
+env_reset
+silent_logs
+run_lshal noanchor
+want 'registered: *unknown' "$OUT" "registered: unknown, NOT no"
+want 'not in the listing' "$OUT" "and it says the anchor line is the thing that was missing"
+notwant 'registered: *no' "$OUT" "so an unreadable listing is never reported as an unregistered service"
+
+echo
+echo "   -- a binderized row with unique thread and server numbers:"
+env_reset
+silent_logs
+run_lshal live
+want 'registered: *yes' "$OUT" "registered: yes"
+# 909 / 7/9 appears NOWHERE else in the listing, so this is the one assertion a wrong Server source
+# cannot satisfy by accident (see the fixture's comment).
+want '909 / 7/9' "$OUT" "and the Server/Threads columns are quoted from THAT row (server / threads)"
+notwant 'Server/Threads: *257' "$OUT" "with none of the table-2 numbers leaking into that line"
+
+echo
+echo "   -- a binderized row whose hash was not read (R blank): listed, but not confirmed live:"
+env_reset
+silent_logs
+run_lshal unreleased
+want 'registered: *yes' "$OUT" "registered: yes -- it is in the binderized table, so it IS registered"
+want "column is '-'" "$OUT" "and the R column is reported as read (blank), not assumed to be Y"
+want 'not the hash query' "$OUT" "and it says what a blank R does and does not mean"
+
+echo
+echo "   -- nothing at all: the listing is empty of gnss, which is its own verdict:"
+env_reset
+silent_logs
+run_lshal empty
+[ "$RC" = 1 ] && ok "EMPTY: exits 1" || bad "EMPTY: exited $RC, wanted 1"
+want 'no-gnss-listing' "$OUT" "the verdict says there is no gnss entry to talk to"
+notwant 'gnss-not-registered' "$OUT" "and it is NOT reported as an unregistered service (there is nothing to register)"
+
+echo
+echo "   -- and the two 'no' cases become the blocker when the logs are silent:"
+# The unregistered fixture is run against the SILENT log (section 10's fixtures are replaced here by
+# the default ones), because that is the only situation in which the registration reading is allowed
+# to decide the verdict: a log line proving the vendor HAL ran is deeper evidence and outranks it.
+env_reset
+cat > "$LOGCT" <<'EOF'
+I/SomethingElse: nothing about gnss at all
+EOF
+cat > "$JOURNAL" <<'EOF'
+EOF
+run_lshal unregistered
+[ "$RC" = 1 ] && ok "SILENT+UNREGISTERED: exits 1" || bad "SILENT+UNREGISTERED: exited $RC, wanted 1"
+want 'gnss-not-registered' "$OUT" "the verdict names the missing registration"
+want 'nothing to reach' "$OUT" "and says why that stops the chain"
+# ... and with the service registered, the same silent logs must NOT produce that verdict.
+env_reset
+cat > "$LOGCT" <<'EOF'
+I/SomethingElse: nothing about gnss at all
+EOF
+run_lshal registered
+notwant 'gnss-not-registered' "$OUT" "with the service registered, the same silent logs do NOT blame registration"
+env_reset
+
+echo
+echo "   -- lshal absent entirely: 'could not be asked' is not 'has no GNSS HAL':"
+env_reset
+cat > "$LOGCT" <<'EOF'
+I/SomethingElse: nothing about gnss at all
+EOF
+cat > "$JOURNAL" <<'EOF'
+EOF
+FAKE_LSHAL=none run
+[ "$RC" = 1 ] && ok "NO-LSHAL: exits 1" || bad "NO-LSHAL: exited $RC, wanted 1"
+want 'lshal produced NO output at all' "$OUT" "it says lshal could not be asked"
+want "may mean 'could" "$OUT" "and the no-gnss-listing verdict refuses to blame the container for that"
+want 'registered: *unknown' "$OUT" "with registration unknown, not no"
+notwant 'registered: *no' "$OUT" "so an absent instrument never becomes a missing service"
+env_reset
+
+echo
+echo "== 12. what this harness does NOT test, and says so =="
 echo "SKIP  the device facts behind the verdict: whether the netwatch-style log really holds those lines,"
 echo "      whether the container's lshal lists gnss, and whether lomiri's own gate is open. Those need"
 echo "      the boot itself -- and the verdict's job is to say which of them to look at."

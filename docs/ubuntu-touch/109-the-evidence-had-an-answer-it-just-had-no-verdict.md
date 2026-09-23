@@ -163,6 +163,13 @@ no-evidence         这一开机无法说明链条在哪断，只能说它没开
 **这一层仍然是这一轮没有解决的**：GNSS HIDL 服务到底注册没有，需要一个**有依据的**读法
 （`lshal` 的 flag、或某个进程/`/dev` 检查），而不是解析一张没人记录过格式的表。
 
+> **已解决 → [`110`](110-the-lshal-columns-have-a-definition.md)。** 上面那句"没人记录过格式"说的是
+> **输出**，而镜像的**构建树**里就有 `lshal`（`frameworks/native/cmds/lshal`），
+> 其字面量逐字存在于编译出来的 `liblshal.so` 里。于是列有了定义，而**这次录下来的清单本身**
+> 就写着答案：`android.hardware.gnss@1.0::IGnss/default` 在 `lshal` 的第一张表里、`R = Y` ——
+> 也就是**注册了，而且是活的**。判词因此多了一支 `gnss-not-registered`，`no-gnss-listing` 也上移了。
+> 这一篇剩下的正文**没有改动**，保留当时的读法。
+
 ---
 
 ## 5. 离线验证：99 检查，和五次"必须失败"

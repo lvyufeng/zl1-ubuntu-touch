@@ -28,16 +28,20 @@
 #      patterns used to be counted in logcat although they live in the UT-side daemon, whose messages
 #      go to the journal, so their count was structurally 0 and read as "the provider was never
 #      instantiated" (docs 102; section 3 below and evidence/gps-log-owners-2026-09-23.log)
-#   4. whether the GNSS HIDL service is even registered (`lshal`), read from inside the container
+#   4. whether the GNSS HIDL service is even registered (`lshal`), read from inside the container.
+#      The first capture could not read this, because nothing in THIS REPO recorded what lshal's
+#      columns mean. The image's own build tree does: /mnt/data/halium-zl1-build/frameworks/native/
+#      cmds/lshal, whose literals are verbatim in the built liblshal.so. That turns "the service is
+#      registered" from a guess into a reading (docs 110), and section 4 below states the three rules
+#      it is built on -- chiefly that `hash`, and therefore the R column, is assigned in exactly one
+#      place, fetchBinderizedEntry(), i.e. lshal's FIRST table only.
 #
 # And then it states a VERDICT (section 6), because the first real capture archived all nine sections
-# and nobody could say what they added up to. The verdict is built from the section-3 counts only --
-# from strings that provably belong to the process whose log they are read out of -- and it is explicit
-# about the one layer it cannot judge: the lshal table's columns are NOT parsed, because nothing in
-# this tree records what they mean on this image, and a verdict built on a guessed column would be a
-# fabricated answer (the family of defects in docs 99/108). It names which rung of the chain the
-# evidence stops at, and exits 0 only when the chain demonstrably reaches the container's vendor GPS
-# HAL -- a positive finding about the layers above it, not a claim that GPS produces a fix.
+# and nobody could say what they added up to. The verdict is built from the section-3 counts --
+# strings that provably belong to the process whose log they are read out of -- plus the one section-4
+# registration reading, and it names which rung of the chain the evidence stops at. It exits 0 only
+# when the chain demonstrably reaches the container's vendor GPS HAL -- a positive finding about the
+# layers above it, not a claim that GPS produces a fix.
 #
 # Nothing here writes: no property is set, no service is restarted, no /sys write, no file written
 # outside /tmp. The one exception is `--test-gps`, which starts one GPS tracking session through
@@ -288,19 +292,123 @@ if [ -n "$A" ]; then
   done
 fi
 
-echo "== GNSS HIDL service registration (lshal, inside the container -- it needs -p and -m)"
+echo "== GNSS HIDL service registration (lshal, inside the container -- nsenter needs -p and -m)"
+# THE READING, AND WHERE IT COMES FROM (docs 110). This section used to print the listing and refuse
+# to read it, on the grounds that nothing in this tree recorded what the columns mean. That was true
+# of the *output* and false of the *source*: the image's own build tree carries lshal at
+# /mnt/data/halium-zl1-build/frameworks/native/cmds/lshal, and the built liblshal.so in
+# android-system-zl1-halium-candidate.img contains its literals verbatim (checked: "Thread Use",
+# "are you root?", "All binderized services"). So the columns are readable, and the rules are these:
+#
+#   * lshal prints THREE tables in this order, separated by blank lines, each introduced by a
+#     description line that is a literal in liblshal.so:
+#       1 "All binderized services (registered services through hwservicemanager)"
+#       2 "All interfaces that getService() has ever return as a passthrough interface;"
+#       3 "All available passthrough implementations (all -impl.so files)."
+#   * the default columns (ListCommand.cpp: mSelectedColumns = {RELEASED, INTERFACE_NAME, THREADS,
+#     SERVER_PID, CLIENT_PIDS}) are `R  Interface  Thread Use  Server  Clients`.
+#   * R is TableEntry::isReleased(), and it reads `hash` -- and `hash` is assigned in exactly ONE
+#     place in the whole source, fetchBinderizedEntry(), i.e. TABLE 1 ONLY. Hence:
+#       row inside table 1  == hwservicemanager's list() returned that name == REGISTERED;
+#       R = "Y"             == the object was fetched and answered interfaceChain() and
+#                              getHashChain() over IPC == the service is live, not merely listed.
+#   * table 2's own description says "The Server / Server CMD column can be ignored", which is why
+#     the Server column is read here ONLY for a table-1 row.
 n_gnss=0
+n_binder_gnss=0
+gnss_registered=unknown
+gnss_answered="-"
+gnss_server="-"
+gnss_thread="-"
+lshal_ran=0
 if [ -n "$A" ]; then
-  listing=$(nsenter -t "$A" -p -m -- lshal 2>/dev/null | grep -ai 'gnss')
-  printf '%s\n' "$listing" | head -8 | sed 's/^/   /'
-  n_gnss=$(printf '%s\n' "$listing" | grep -ac .)
-  [ "$n_gnss" -gt 0 ] || echo "   (no gnss service registered)"
-  cat <<'NOTE'
-   -> and that is as far as this probe goes with it. The listing's columns are not parsed on
-      purpose: nothing in this tree records what they mean on this image, and a verdict built on a
-      guessed column would be a fabricated answer (docs 99/108). n_gnss is a COUNT of lines that
-      mention gnss, used only to say "the listing is empty" -- never to say "the service is up".
-NOTE
+  listing=$(nsenter -t "$A" -p -m -- lshal 2>/dev/null)
+  [ -n "$listing" ] && lshal_ran=1
+  # The whole listing is kept, not `grep gnss`: the blank lines are what separate the three tables,
+  # and dropping them is what made the first capture unreadable (evidence/gps-probe-live-2026-09-23.txt).
+  printf '%s\n' "$listing" | grep -ai 'gnss' | head -8 | sed 's/^/   /'
+  n_gnss=$(printf '%s\n' "$listing" | grep -ac 'gnss')
+  # "It listed nothing" and "it could not be asked" are different blockers, and the section-4 line and
+  # the verdict both have to be able to say which one this boot is -- otherwise an absent `lshal` is
+  # reported as a container with no GNSS HAL.
+  [ "$lshal_ran" = 1 ] || echo "   lshal produced NO output at all: it is absent, or it cannot reach hwservicemanager"
+  [ "$lshal_ran" = 1 ] && [ "$n_gnss" -eq 0 ] && echo "   (it ran, but there is no gnss entry in it)"
+
+  reg_anchor=0
+  reg_where=absent
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+    anchor) reg_anchor="$_v" ;;
+    where)  reg_where="$_v" ;;
+    binder) n_binder_gnss="$_v" ;;
+    rel)    gnss_answered="$_v" ;;
+    srv)    gnss_server="$_v" ;;
+    thr)    gnss_thread="$_v" ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$listing" | awk -v s='android.hardware.gnss@1.0::IGnss/default' '
+  /^[[:space:]]*$/ { inb = 0; next }
+  /registered services through hwservicemanager/ { inb = 1; anchor = 1; next }
+  {
+    idx = 0
+    for (i = 1; i <= NF; i++) if ($i == s) { idx = i; break }
+    if (idx == 0) next
+    # R is never empty, so an awk field index of 1 means the R column was the blank " " and
+    # awk swallowed it with the leading whitespace.
+    rel = (idx == 1) ? "-" : $1
+    if (inb) { if (++hit == 1) { hrel = rel; hthr = $(idx + 1); hsrv = $(idx + 2) } }
+    else     { if (++out == 1) { orel = rel; othr = $(idx + 1); osrv = $(idx + 2) } }
+  }
+  END {
+    where = hit ? "in-table-1" : (out ? "outside-table-1" : "absent")
+    rel2 = (hit ? hrel : orel); if (rel2 == "") rel2 = "-"
+    srv2 = (hit ? hsrv : osrv); if (srv2 == "") srv2 = "-"
+    thr2 = (hit ? hthr : othr); if (thr2 == "") thr2 = "-"
+    printf "anchor=%d\nwhere=%s\nbinder=%d\nrel=%s\nsrv=%s\nthr=%s\n", \
+           anchor + 0, where, hit + 0, rel2, srv2, thr2
+  }')
+EOF
+
+  # The anchor line comes FIRST, before any row is believed: without it lshal's three tables cannot be
+  # told apart, and `outside-table-1` would then read as "not registered" for a row that may in fact be
+  # in the binderized table. A reading that cannot separate the tables must not produce either answer.
+  if [ "$reg_anchor" != 1 ]; then
+    gnss_registered=unknown
+  else
+    case "$reg_where" in
+    in-table-1)      gnss_registered=yes ;;
+    outside-table-1) gnss_registered=no ;;
+    # With the anchor present, `absent` has exactly one meaning: the binderized table WAS found and
+    # this service is not in it -- a located blocker, not an absence of evidence.
+    *)               gnss_registered=no ;;
+    esac
+  fi
+
+  printf '   %-16s %s\n' 'registered:' "$gnss_registered"
+  case "$gnss_registered" in
+  yes)
+    echo "   A row for it is in lshal's FIRST table -- the one hwservicemanager fills -- and its R"
+    echo "   column is '$gnss_answered': $(if [ "$gnss_answered" = Y ]; then echo 'the object was fetched and answered interfaceChain()/getHashChain(), so the service is LIVE, not just listed.'; else echo 'the hash was not read, so it answered the listing but not the hash query.'; fi)"
+    printf '   %-16s %s / %s\n' 'Server/Threads:' "$gnss_server" "$gnss_thread"
+    echo "   (Server is read here only because this row is in table 1; lshal's own description of"
+    echo "    table 2 says its Server column can be ignored.)"
+    ;;
+  no)
+    echo "   The service is NOT in the binderized table, so there is nothing for a HIDL request to"
+    echo "   reach: $(if [ "$reg_where" = outside-table-1 ]; then echo 'it appears only OUTSIDE table 1 (a passthrough reference), which does not serve hwbinder callers.'; else echo "lshal's binderized table was found and has no row for it, while $n_gnss gnss line(s) exist elsewhere."; fi)"
+    ;;
+  *)
+    if [ "$lshal_ran" = 1 ]; then
+      echo "   lshal's three tables could not be told apart (the 'registered services through"
+      echo "   hwservicemanager' anchor line is not in the listing), so registration is NOT decided"
+      echo "   here. Nothing below in the verdict is allowed to build on it."
+    else
+      echo "   There is no listing to read: lshal produced no output at all. Registration is NOT decided"
+      echo "   here, and the verdict must not read this as 'the container has no GNSS HAL'."
+    fi
+    ;;
+  esac
+  printf '   %-16s %s\n' 'gnss rows:' "$n_gnss in the listing, $n_binder_gnss in the binderized table"
 fi
 
 echo "== /etc/gps.conf (XTRA servers only -- no SUPL lines; affects AGPS, not standalone)"
@@ -341,10 +449,32 @@ fi
 # deepest evidence this chain has ever had. An instrument that cannot state its own bottom line makes
 # every reader re-derive it, and re-deriving it is where the answer was lost.
 #
-# The rungs are read off the COUNTS FROM SECTION 3, in the order the chain is traversed. Nothing here
-# parses the lshal table or guesses a column (see section 4): the two decisive patterns live in
-# /mnt/vendor-ro/lib64/libloc_api_v02.so, the container's vendor GPS HAL, so a nonzero count is proof
-# that process ran -- and docs 82's source reading says which of the two means "its QMI client opened".
+# The rungs are read off the COUNTS FROM SECTION 3, in the order the chain is traversed, plus the one
+# reading from section 4 that is decided by lshal's own source (is the service REGISTERED). The two
+# decisive log patterns live in /mnt/vendor-ro/lib64/libloc_api_v02.so, the container's vendor GPS HAL,
+# so a nonzero count is proof that process ran -- and docs 82's source reading says which of the two
+# means "its QMI client opened".
+#
+# The rungs, first match wins, and the order IS the claim:
+#
+#   no-container          the container does not answer -- nothing below it can be judged
+#   wrong-namespace       the daemon is in the HOST PID namespace -- the chain never starts
+#   trust-store-refused   a request was refused above the HAL
+#   qmi-open-failed       the vendor HAL ran and its QMI client failed to open
+#   reaches-vendor-hal    the vendor HAL ran, the client opened, the adapter was reached  [exit 0]
+#   gnss-not-registered   nothing ran, and the listing says there is no service to call
+#   no-gnss-listing       nothing ran, and there is not even a gnss row to look at
+#   daemon-only           the daemon built providers; no request reached the HAL
+#   no-evidence           this boot cannot say where the chain breaks
+#
+# `no-container` and `wrong-namespace` come before every log rung: when the container is absent (or
+# invisible), no count can prove the chain ran, so quoting one would be quoting an impossible witness.
+#
+# Where the registration reading sits, and why: the logs say what RAN, registration says what UT can
+# REACH, and a log line proving the vendor HAL ran is strictly deeper evidence than a listing -- so
+# `reaches-vendor-hal` and `qmi-open-failed` come first and are not overruled by it. When the logs are
+# SILENT, though, the listing is the only thing left that can name a blocker, so `gnss-not-registered`
+# sits immediately above the two "nothing ran" rungs.
 echo ""
 echo "== verdict"
 verdict=""
@@ -378,6 +508,19 @@ elif [ "$n_cc_feat" -gt 0 ] || [ "$n_cc_cap" -gt 0 ]; then
   [ "$n_cc_cap" -gt 0 ] && echo "   'gnssSetCapabilitesCb' appears $n_cc_cap time(s): the vendor HAL is answering callbacks."
   [ "$n_adapter" -gt 0 ] && echo "   And the UT adapter was reached: $n_adapter line(s) carry 'u_hardware_gps_' (set_position_mode and"
   [ "$n_adapter" -gt 0 ] && echo "   friends), so this is not a case of nobody ever asking -- the request got below the daemon."
+  # The registration reading STRENGTHENS this rung rather than deciding it: a process that logged is
+  # not by itself a service anybody could call, and this is the one place the two can be tied together.
+  case "$gnss_registered" in
+  yes) echo "   And it is reachable, not merely running: android.hardware.gnss@1.0::IGnss/default has a row in"
+       echo "   lshal's binderized table with R=$gnss_answered (Server $gnss_server), so hwservicemanager lists it."
+       ;;
+  no)  echo "   BUT it is NOT in lshal's binderized table: the process logged, yet hwservicemanager does not list"
+       echo "   the interface, so a HIDL caller could not have reached it. Both statements can be true at once --"
+       echo "   a process can open the QMI channel without serving the interface -- and this is that case."
+       ;;
+  *)   echo "   Registration could not be read this boot (section 4): the listing's tables were not separable."
+       ;;
+  esac
   # A fake fix must not be read as a fix: `custom.location.testing` is the test hook that makes the
   # provider hand out positions that did not come from the modem, and it is the same hook a
   # --enable-testing drop-in sets. Reporting it here is the difference between "a position arrived"
@@ -388,26 +531,51 @@ elif [ "$n_cc_feat" -gt 0 ] || [ "$n_cc_cap" -gt 0 ]; then
   echo "   and whether a fix was ever produced) rather than at the layers above."
   echo "   NOT decidable from these counts: whether that call came from a client's"
   echo "   StartPositionUpdates or from the daemon's own provider init."
+elif [ "$gnss_registered" = no ] && [ "$n_gnss" -gt 0 ] && [ -n "$A" ]; then
+  verdict="gnss-not-registered"
+  echo "   Nothing in either log shows the chain starting, and the listing names the reason: lshal's"
+  echo "   binderized table (the one hwservicemanager fills) has NO row for"
+  echo "   android.hardware.gnss@1.0::IGnss/default, while $n_gnss gnss line(s) exist elsewhere in the"
+  echo "   listing. A request from the daemon has nothing to reach, so this is the layer to fix first."
+elif [ "$n_gnss" -eq 0 ] && [ -n "$A" ]; then
+  verdict="no-gnss-listing"
+  echo "   Nothing in this chain has run, and the container's lshal does not even list a gnss entry."
+  echo "   That is the state to fix first -- there is nothing above it to talk to."
+  # Which of the two it is matters: an absent lshal is a blocker in the INSTRUMENT, and reporting it as
+  # "the container has no GNSS HAL" would aim the fix at the wrong layer (section 4 says which).
+  [ "$lshal_ran" = 1 ] || echo "   (NOTE: lshal produced no output at all this boot, so 'no gnss entry' may mean 'could"
+  [ "$lshal_ran" = 1 ] || echo "    not be asked'. Fix that before concluding anything about the HAL.)"
+  # This rung sits ABOVE daemon-only (docs 110), and the reason is that it was nearly dead code where
+  # it was: a boot that logs any provider line at all -- which is most boots where the daemon runs --
+  # reported `daemon-only`, even when the container had no GNSS HAL whatsoever. "The daemon ran and
+  # nothing reached the HAL" is then a CONSEQUENCE of this rung, not a better name for it.
 elif [ "$n_prov_inst" -gt 0 ] || [ "$n_ahl" -gt 0 ] || [ "$n_prov_issue" -gt 0 ]; then
   verdict="daemon-only"
   echo "   The location daemon ran and instantiated providers ($n_prov_inst 'Instantiating and"
   echo "   configuring', $n_prov_issue 'Issue instantiating provider'), but NOTHING in either log shows a"
   echo "   request reaching the vendor GPS HAL ($n_cc_feat, $n_cc_cap, $n_cc_fail). A provider being"
   echo "   created is not a position request -- that is the distinction docs 93 records."
-elif [ "$n_gnss" -eq 0 ] && [ -n "$A" ]; then
-  verdict="no-gnss-listing"
-  echo "   Nothing in this chain has run, and the container's lshal does not even list a gnss entry."
-  echo "   That is the state to fix first -- there is nothing above it to talk to."
+  # Said here, not left to section 4: with a gnss row present, `gnss-not-registered` above would have
+  # fired, so reaching this rung means the service the daemon would call IS registered -- which is
+  # what makes "nothing reached it" a statement about the daemon rather than about the container.
+  [ "$gnss_registered" = yes ] && echo "   (The container's IGnss/default IS registered, so what is missing is the request, not the service.)"
 else
   verdict="no-evidence"
   echo "   No evidence in either log of a request having been made: this boot cannot say where the"
   echo "   chain breaks, only that it never started."
 fi
 echo ""
-echo "   What this does NOT decide: the lshal listing's columns (not parsed on purpose -- section 4),"
-echo "   and whether the GNSS HIDL service is REGISTERED, which is the one layer this probe can only"
-echo "   print and not judge. The counts are per-boot, and this device's clock is wrong (docs 69), so"
-echo "   they are read as a boot-scoped set, never as a timeline."
+# The name, on its own line, because the explanation above is prose and prose cannot be grepped: the
+# offline harness and any reader who comes back to an archived capture need one stable token that says
+# which rung this boot stopped at.
+echo "   VERDICT: $verdict"
+echo ""
+echo "   What this does NOT decide: whether that call came from a client's StartPositionUpdates or from"
+echo "   the daemon's own provider init (the counts decide the layers, not the caller), the value of the"
+echo "   Server/Threads columns OUTSIDE lshal's first table (lshal itself warns they can be stale --"
+echo "   section 4 reads them for a table-1 row only), and whether a fix was ever produced. The counts"
+echo "   are per-boot, and this device's clock is wrong (docs 69), so they are read as a boot-scoped set,"
+echo "   never as a timeline."
 
 case "$verdict" in
 # exit 0: the chain demonstrably reaches the container's vendor GPS HAL. That is a POSITIVE finding
