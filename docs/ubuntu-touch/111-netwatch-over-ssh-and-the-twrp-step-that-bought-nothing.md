@@ -35,7 +35,7 @@
 ```
 设备回来 → 装带 ensure_addrs() 的 netwatch → 重启 → zl1-boot-address-check.sh 读 netwatch-configured
                                                                           ↓ 只有这一档发许可
-                                                              install-retire-debug-keeper.sh --install --now
+                                                              install-retire-debug-keeper.sh --install --now --after-proof
 ```
 
 第二步是卡住的那一步。`install-netwatch-service.sh` 的第一行注释就是"with the device in TWRP"，

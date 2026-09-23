@@ -160,7 +160,7 @@ sh /tmp/zl1-inst-prefix/scripts/host/zl1-installers-selftest.sh   # 5 条红，�
 sh scripts/install-no-edl-on-panic.sh --capture-only    # 免费：只装 pstore 捕获，不碰策略
 sh scripts/install-retire-debug-keeper.sh --status      # 只读：keeper 是谁拉起的、两个地址在不在
 sh scripts/install-retire-debug-keeper.sh --install     # 只装，当前这次启动什么都不变
-sh scripts/install-retire-debug-keeper.sh --install --now   # 真的退休（一次 kill）——**用户的决定**
+sh scripts/install-retire-debug-keeper.sh --install --now --after-proof   # 真的退休（一次 kill）——**用户的决定**（114 之后 --now 必须带 --after-proof）
 ```
 
 | 文件 | 作用 |

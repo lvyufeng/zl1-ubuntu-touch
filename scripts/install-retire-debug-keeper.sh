@@ -47,10 +47,27 @@
 #     that proves the new path is a boot where the keeper would have done the job anyway (docs 88).
 #   * nothing here is durable in the unsafe direction: a reboot restores the keeper exactly.
 #
-# **And it refuses to kill when it cannot see an address.** The applier waits for `rndis0`/`usb0` to
-# carry one of the two addresses and, if none appears, logs that and leaves the keeper running -- the
-# conservative direction. Run `scripts/device/zl1-boot-address-check.sh` first and require the
-# `netwatch-configured` verdict (exit 0) on the boot you just looked at; that is the gate doc 88 set.
+# **And its gate used to be unable to fail.** The applier refuses to kill unless it sees an address,
+# and that was described here as "the conservative direction". It is not a gate at all: the keeper's
+# own 1 Hz loop is what puts both addresses on the interface, so while the keeper is alive -- which is
+# every boot a kill can happen on -- the address is present *because of the process being removed*. The
+# only configuration it refuses in is one with no keeper to retire. That is docs 112's shape one level
+# down (presence of the address is not evidence that anyone can re-create it), and the fix has two
+# halves:
+#
+#   * the applier now also requires the REPLACEMENT to be deployed and running -- /etc/systemd/system/
+#     zl1-netwatch.sh executable, carrying `ensure_addrs()`, with zl1-netwatch.service active. That is
+#     the one fact the keeper cannot arrange on its own behalf, and when it is missing the applier
+#     exits **1**, so the unit shows up in `systemctl --failed`. It is not a transient: nothing on the
+#     device is going to deploy the netwatch by itself, and a heat fix that silently is not armed is
+#     worse than a unit that fails (docs 99).
+#   * `--now` requires `--after-proof`: it pushes scripts/device/zl1-address-owner-proof.sh, runs it,
+#     and kills only on `proof-obtained`. That is the measurement that distinguishes "the netwatch owns
+#     the addresses" from "the keeper owns the addresses", and it cannot be replaced by remembering to
+#     have run the boot-address check (whose verdict is a race -- docs 112).
+#
+# Run `scripts/device/zl1-boot-address-check.sh` first for the diagnosis; run `--now --after-proof` for
+# the licence.
 #
 # Installed on the `/etc/systemd/system` writable path (the same one every other unit of this port
 # lives on: `/` is a read-only image and `/etc/systemd/system` resolves into the rw `/etc/writable`
@@ -59,11 +76,13 @@
 #   /etc/systemd/system/zl1-retire-debug-keeper.sh        the applier (plain shell, idempotent)
 #   /etc/systemd/system/zl1-retire-debug-keeper.service   oneshot, after local-fs + the netwatch
 #
-# Usage: install-retire-debug-keeper.sh [--status] [--install] [--now] [--remove] [--explain]
+# Usage: install-retire-debug-keeper.sh [--status] [--install] [--now --after-proof] [--remove] [--explain]
 #   --status   (default) read-only: who started the keeper, where it lives, what the unit says, and
 #              whether the two addresses are there
 #   --install  install both files and enable the unit. Changes **nothing on this boot**.
-#   --now      with --install, also retire it on the current boot (one kill; the boot keeps running)
+#   --now      with --install, also retire it on the current boot (one kill; the boot keeps running).
+#              REFUSED without --after-proof, because the kill needs a licence measured on this boot.
+#   --after-proof  run the address-ownership proof first and kill only on `proof-obtained`
 #   --remove   disable and delete both files. Says out loud that the current boot's keeper stays dead
 #              until a reboot, because that is the truth and it is not obvious
 #   --explain  print the design and the three things that make it safe; change nothing
@@ -80,17 +99,60 @@ RK_SH=$D/zl1-retire-debug-keeper.sh
 RK_UNIT=$D/zl1-retire-debug-keeper.service
 KEEPER=/usr/local/sbin/zl1-debug-net.sh
 UNIT=zl1-debug-net.service
+PROOF_SRC=$(cd "$(dirname "$0")/device" 2>/dev/null && pwd)/zl1-address-owner-proof.sh
+PROOF_DST=/tmp/zl1-address-owner-proof.sh
 ACTION=--status
 WITH_NOW=0
+AFTER_PROOF=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --status|--install|--remove|--explain) ACTION="$1"; shift ;;
     --now) WITH_NOW=1; shift ;;
+    --after-proof) AFTER_PROOF=1; shift ;;
     --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
     *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# ---------------------------------------------------------------------------------------------
+# The licence for the kill. `--now` removes the only process that currently keeps an address on this
+# device; if it is wrong, the address is not lost immediately but the NEXT link flap is unrecoverable,
+# and recovering from that needs a finger on the phone. So the kill is not licensed by a memory of
+# having run the boot-address check, and not by the applier's address test either (that test is
+# satisfied by the keeper itself -- see the applier's comment). It is licensed by a MEASUREMENT made
+# moments earlier and by this same command: stop the keeper, take an address away, and require the
+# netwatch to put it back and say so. That is `zl1-address-owner-proof.sh` and its `proof-obtained`
+# verdict, and it is the only check that can tell "the netwatch owns the addresses" apart from "the
+# keeper owns the addresses" (docs 112).
+#
+# Requiring the flag rather than running the proof implicitly: the proof stops a process and removes an
+# address, and this project does not do that because a person asked for something else. Refusing costs
+# nothing and changes nothing on the device.
+if [ "$WITH_NOW" = 1 ] && [ "$AFTER_PROOF" != 1 ]; then
+  cat >&2 <<'LICENCE'
+refusing --now without --after-proof
+
+  --now removes the one process that currently provides 192.168.2.15/24 and 10.15.19.82/24, and the
+  recovery if that is wrong is a finger on the power button. The applier's own address test cannot
+  catch that: the keeper is what puts the address there, so the test passes whenever the keeper is
+  alive -- which is every boot this kill can happen on.
+
+  The licence is a measurement: --after-proof pushes scripts/device/zl1-address-owner-proof.sh to the
+  device, stops the keeper for a few seconds, takes 192.168.2.15/24 away, and requires the NETWATCH to
+  put it back and say so in its log. Only `proof-obtained` proceeds. Nothing on the device is changed
+  by this refusal.
+
+    scripts/install-retire-debug-keeper.sh --install --now --after-proof
+
+  Read the ordering and why it is this way: docs/ubuntu-touch/112 (the gate is a race) and 114.
+LICENCE
+  exit 2
+fi
+if [ "$AFTER_PROOF" = 1 ] && [ "$WITH_NOW" != 1 ]; then
+  echo "--after-proof only means anything with --now (nothing else here kills anything)" >&2
+  exit 2
+fi
 
 if [ "$ACTION" = --explain ]; then
   cat <<'EXPLAIN'
@@ -130,9 +192,20 @@ Three things make that safe:
     and that was installed before this on purpose;
   * a reboot restores the keeper exactly -- nothing here is durable in the unsafe direction.
 
-The applier waits for an address and refuses to kill if it never sees one. Run
-scripts/device/zl1-boot-address-check.sh first and require netwatch-configured (exit 0) on the boot
-you just looked at.
+The applier's gate, and why the address test in it is not the one that matters:
+
+  It refuses to kill unless rndis0/usb0 carries one of the two addresses -- but the KEEPER is what puts
+  those addresses there, so that test passes on every boot a kill can happen on. What actually gates
+  it is the other half: our netwatch must be deployed (/etc/systemd/system/zl1-netwatch.sh, executable,
+  carrying ensure_addrs()) and zl1-netwatch.service must be active. If that half fails, the applier
+  exits 1 so the unit shows up in `systemctl --failed` -- an unarmed heat fix is not a transient.
+
+  And `--now` needs --after-proof: it runs scripts/device/zl1-address-owner-proof.sh on the device and
+  kills only on `proof-obtained`, which is the one measurement that tells "the netwatch owns the
+  addresses" apart from "the keeper owns the addresses" (docs 112).
+
+Run scripts/device/zl1-boot-address-check.sh first for the diagnosis; --now --after-proof is the
+licence.
 EXPLAIN
   exit 0
 fi
@@ -145,15 +218,49 @@ read -r -d '' RK_EOF <<'RK'
 # Retire the v63 debug network keeper for THIS boot. Installed by scripts/install-retire-debug-keeper.sh
 # -- read that file for why this is a kill and not a unit edit, and for what makes it safe.
 #
-# It refuses to kill unless rndis0/usb0 carries one of the two addresses: the whole premise is that our
-# own netwatch can do the keeper's job, so "no address" means do not proceed. Always exits 0 -- a
-# retirement that failed is a log line, not a failed boot.
+# THE GATE HAS TWO PARTS, and the second one is the point.
+#
+#   1. our netwatch must be DEPLOYED AND RUNNING, and the build that is deployed must contain
+#      `ensure_addrs()` -- the function that re-asserts the addresses every sample. This is the one
+#      fact the keeper cannot arrange on its own behalf.
+#   2. an address must be on rndis0/usb0.
+#
+# Part 2 ALONE IS NOT A GATE, and this file used to have only that one. The keeper's 1 Hz loop calls
+# `configure_iface rndis0 usb0` -- it is what PUTS 192.168.2.15/24 and 10.15.19.82/24 on the interface.
+# So while the keeper is alive the address is present *because of the process we are about to remove*,
+# and the check passes on every boot a kill can happen on. It cannot fail for the reason it exists: the
+# only configuration it refuses in is one where there is no keeper to retire. That is docs 112's shape
+# one level down -- *presence of the address is not evidence that anyone can re-create it.*
+#
+# So a missing part 1 exits **1**, not 0: it means the heat fix is NOT ARMED on this boot, and no later
+# boot will arm it either, because nothing on the device is going to deploy the netwatch by itself. A
+# failed unit in `systemctl --failed` says that. A log line does not (docs 99). A missing part 2 stays a
+# log line with exit 0 -- the keeper is alive and something transient is wrong with the link, which is
+# the conservative direction and not a thing to alarm anyone about.
 KEEPER=/usr/local/sbin/zl1-debug-net.sh
 UNIT=zl1-debug-net.service
+NETWATCH=/etc/systemd/system/zl1-netwatch.sh
+NETWATCH_UNIT=zl1-netwatch.service
 WAIT_S=45
 VERIFY_S=30
 
 log() { logger -t zl1-retire-keeper "$*" 2>/dev/null; echo "zl1-retire-keeper: $*"; }
+
+# The replacement's capability, read from the DEPLOYED file rather than inferred from the fact that
+# addresses are on the wire (docs 113's lesson: a check must ask the thing that can answer it). The
+# netwatch installer already verifies `^ensure_addrs()` in the build it lands, so this is the same
+# question asked at the other end of the device's life.
+replacement_ready() {
+    [ -x "$NETWATCH" ] || return 1
+    grep -q '^ensure_addrs()' "$NETWATCH" 2>/dev/null || return 1
+    # The STATE, read as a string, not the exit code. Real `systemctl is-active` does exit 3 for
+    # inactive -- and that is exactly why it is not enough on its own: this harness's stub used to
+    # print `inactive` and exit 0, and the check `systemctl is-active X >/dev/null || return 1` sailed
+    # straight through it. A gate may only rely on something that cannot agree with it by accident.
+    # (Both were fixed: the stub now exits 3 like the real tool, and the gate reads the answer.)
+    [ "$(systemctl is-active "$NETWATCH_UNIT" 2>/dev/null)" = active ] || return 1
+    return 0
+}
 
 # Deliberately NOT a substring match on the whole cmdline. A shell whose command line merely mentions
 # the keeper's path -- somebody running `ps | grep zl1-debug-net.sh`, or this project's own tooling --
@@ -218,8 +325,15 @@ has_address() {
     return 1
 }
 
-# 1. the gate: an address must exist before we take away the thing that used to provide one.
-#    (`_w`, not `i`: see the note on iface() above -- this is the counter a helper used to clobber.)
+# 1a. the gate that can actually fail: is the REPLACEMENT deployed and running?
+if ! replacement_ready; then
+    log "NOT ARMED: $NETWATCH is missing, not executable, has no ensure_addrs(), or $NETWATCH_UNIT is not active -- so nothing on this device would re-create the addresses once the keeper goes. Leaving the keeper running and FAILING this unit, because no later boot will fix this by itself."
+    exit 1
+fi
+
+# 1b. the gate the keeper cannot fail: an address must exist before we take away the thing that
+#     provides one. Necessary, not sufficient -- see the note at the top.
+#     (`_w`, not `i`: see the note on iface() above -- this is the counter a helper used to clobber.)
 _w=0
 while [ "$_w" -lt "$WAIT_S" ]; do
     has_address && break
@@ -369,6 +483,21 @@ else
 fi
 
 echo
+echo '== the REPLACEMENT (the gate that can fail: is anything here able to do the keeper job?)'
+NW=/etc/systemd/system/zl1-netwatch.sh
+if [ -f "\$NW" ]; then
+  echo "  \$NW: present, \$(stat -c '%a %s bytes' "\$NW" 2>/dev/null)"
+  if grep -q '^ensure_addrs()' "\$NW" 2>/dev/null; then
+    echo '  ensure_addrs(): present -- this build re-asserts the addresses every sample'
+  else
+    echo '  ensure_addrs(): MISSING -- this build cannot re-assert an address (the gate would refuse)'
+  fi
+else
+  echo "  \$NW: ABSENT -- nothing on this device can re-create the addresses (the gate refuses)"
+fi
+echo -n '  zl1-netwatch.service: '; systemctl is-active zl1-netwatch.service 2>&1 | head -1
+
+echo
 echo '== our retirement unit'
 if [ -f $RK_UNIT ]; then
   systemctl show zl1-retire-debug-keeper.service -p ActiveState -p SubState -p Result -p ExecMainStartTimestamp 2>/dev/null | sed 's/^/  /'
@@ -420,12 +549,40 @@ RK_UNIT_EOF
     systemctl is-enabled zl1-retire-debug-keeper.service 2>&1 | head -1" 2>&1 | tail -6
   if [ "$WITH_NOW" = 1 ]; then
     echo
-    echo "== --now: retiring the keeper on the CURRENT boot (one kill; the boot keeps running)"
+    echo "== --after-proof: the licence for the kill, measured on the device right now"
+    if [ ! -r "$PROOF_SRC" ]; then
+      echo "cannot read $PROOF_SRC -- refusing to kill without the proof (nothing was started)" >&2
+      exit 2
+    fi
+    $SSH "cat > $PROOF_DST" < "$PROOF_SRC" || { echo "could not push the proof script" >&2; exit 2; }
+    # Bounded on the DEVICE, for the reason zl1-post-recovery-capture.sh gives: a device-side script
+    # that runs away is not hypothetical here, it is what put this phone in EDL on 2026-09-23 (docs
+    # 108). The proof's own --wait defaults to 30 s, so 120 s is generous and still finite.
+    PROOF_OUT=$($SSH "timeout -k 5 120 sh $PROOF_DST --yes" 2>&1); PROOF_RC=$?
+    printf '%s\n' "$PROOF_OUT" | sed 's/^/  | /'
+    # The verdict LINE, not the string. `grep -q proof-obtained` would accept a run that merely mentions
+    # it -- the harness has a fixture for exactly that, and it caught this check when it was written the
+    # looser way. The exit code and the line are both required: neither alone says the measurement was
+    # made, and both together say it was made and came out the right way.
+    if [ "$PROOF_RC" != 0 ] || ! printf '%s\n' "$PROOF_OUT" | grep -qx '== verdict: proof-obtained'; then
+      echo
+      echo "REFUSING the kill: the proof did not come back proof-obtained (rc=$PROOF_RC)." >&2
+      echo "  The keeper is still running and the unit has NOT been started. A netwatch that" >&2
+      echo "  cannot put an address back on this boot is a netwatch that cannot do the keeper's job," >&2
+      echo "  and killing the keeper on this boot would trade a core for the SSH link." >&2
+      echo "  Read the verdict above; docs 112 section 3 and docs 114 section 4." >&2
+      exit 1
+    fi
+    echo
+    echo "== proof-obtained: --now (one kill; the boot keeps running)"
     $SSH "systemctl start zl1-retire-debug-keeper.service; systemctl show zl1-retire-debug-keeper.service -p Result -p ExecMainStatus | sed 's/^/  /'" 2>&1 | tail -4
+    echo
+    echo "--- the applier's own log for this boot (it is the only record of WHY it refused, if it did):"
+    $SSH "journalctl -t zl1-retire-keeper --no-pager -n 12 2>/dev/null | sed 's/^/  /' || true" 2>&1
   else
     echo
     echo "nothing was changed on the current boot. The keeper is retired from the NEXT boot on."
-    echo "To retire it now as well: $0 --install --now"
+    echo "To retire it now as well: $0 --install --now --after-proof"
   fi
   exit 0
   ;;

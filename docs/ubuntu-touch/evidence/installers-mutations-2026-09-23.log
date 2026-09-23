@@ -1,0 +1,170 @@
+# zl1-installers-selftest.sh -- mutations, and the same harness against the PRE-FIX installer
+# 2026-09-23
+#
+# Baseline: sh scripts/host/zl1-installers-selftest.sh   ->   pass=336 fail=0 skip=0 (rc=0)
+#
+# The fix under test (docs 114) is the pair of gates on the v63 debug keeper's retirement:
+#   * the replacement gate   -- the applier kills only if /etc/systemd/system/zl1-netwatch.sh is
+#     executable, carries `ensure_addrs()`, and zl1-netwatch.service is active; otherwise it exits 1
+#     so the unit lands in `systemctl --failed` (a silent unarmed heat fix is worse, docs 99);
+#   * the licence gate       -- `--now` without `--after-proof` exits 2 having touched nothing; with
+#     it, the installer pushes device/zl1-address-owner-proof.sh, runs it under `timeout -k 5 120`,
+#     and kills only on the exact line `== verdict: proof-obtained`.
+#
+# Every mutation is applied to a COPY of the whole scripts/ tree (cp -a), and the harness is run with
+# the REPOSITORY as the working directory. That last part is load-bearing and was measured, not
+# assumed: the "shipped applier" section walks `git log -- scripts/install-cpufreq-governor.sh`, so a
+# copy standing outside the repository has no history to walk -- it SKIPs that section (335 checks, 1
+# skip) and the checks that depend on it then fail. The first version of this runner ran from /tmp and
+# reported a BASE with 4 failures, none of them about the code under test.
+#
+# Each mutation ASSERTS its own edit landed before the harness is run: a mutation that changes nothing
+# and a check that tests nothing are the same object (docs 113 section 5).
+
+===== BASE (no mutation) =====
+rc=0  pass=336 fail=0 skip=0
+
+
+################ M1: the replacement gate itself is removed from the applier -- must go RED ################
+  (mutation landed: the call site `if ! replacement_ready; then ... exit 1; fi` is gone;
+   replacement_ready is now dead code, which is why the mutation asserts BOTH facts)
+  The point: the one gate that can fail is deleted, so the applier goes back to being gated only by
+  "an address is present" -- the test the keeper satisfies on its own behalf.
+
+===== M1 =====
+rc=1  pass=322 fail=14 skip=0
+  FAIL  it exited 0
+  FAIL  and says the heat fix is not armed, in those words
+  FAIL  naming the consequence
+  FAIL  it killed the keeper
+  FAIL  it signalled something
+  FAIL  it masked the unit before refusing
+  FAIL  it exited 0
+  FAIL  with the same sentence
+  FAIL  it killed the keeper
+  FAIL  it exited 0
+  FAIL  and it is the same refusal
+  FAIL  it killed the keeper
+  FAIL  it killed the keeper
+  FAIL  and the operator sees WHY, in the installer's own output
+
+############ M2: the gate trusts the exit code again, AND the stub exits 0 again -- must go RED ############
+  (mutation landed: in the installer, `[ "$(systemctl is-active ...)" = active ]` becomes
+   `systemctl is-active ... >/dev/null 2>&1`; in the harness, the netwatch stub's
+   `{ echo inactive; exit 3; } || { echo active; exit 0; }` becomes `{ echo inactive; } || { echo active; }`)
+  This is the original defect restored on BOTH sides, and it has to be both: a gate that trusts the
+  exit code is only wrong when the fixture exits 0, and a fixture that exits 0 is only wrong when
+  something trusts it. One of the two alone is green -- see docs 114 section 6.
+
+===== M2 =====
+rc=1  pass=333 fail=3 skip=0
+  FAIL  it exited 0
+  FAIL  and it is the same refusal
+  FAIL  it killed the keeper
+
+################ M3: --now no longer requires the licence -- must go RED ################
+  (mutation landed: the licence gate's condition becomes `if false; then`)
+  The refusal must come BEFORE anything is pushed or run: the proof itself stops a process and takes an
+  address away, so "refuse first, touch nothing" is the property, and the section asserts the whole
+  fake device is byte-identical afterwards.
+
+===== M3 =====
+rc=1  pass=328 fail=8 skip=0
+  FAIL  it exited 0
+  FAIL  and says so in those words
+  FAIL  and explaining why the applier's own address test cannot be the gate
+  FAIL  and printing the exact command that would work
+  FAIL  the refusal touched the device:
+  FAIL  the keeper was killed by a refused call
+  FAIL  it called systemd to change state:
+  FAIL  it signalled something
+
+############ M4: the verdict check accepts the string instead of the line -- must go RED ############
+  (mutation landed: `grep -qx '== verdict: proof-obtained'` becomes `grep -q 'proof-obtained'`)
+  The harness carries a decoy for exactly this: a proof fixture that exits 0 and PRINTS
+  `proof-obtained` in a sentence that is not the verdict line. A substring gate lets it through.
+
+===== M4 =====
+rc=1  pass=333 fail=3 skip=0
+  FAIL  it exited 0 -- it was fooled by a substring
+  FAIL  it killed the keeper
+  FAIL  the unit was not started
+
+######## PRE-FIX: the same 336 checks against the installer as of HEAD (c14d7bf) -- 66 must go RED ########
+  (mutation landed: scripts/install-retire-debug-keeper.sh is replaced by
+   `git show HEAD:scripts/install-retire-debug-keeper.sh`, asserted to contain neither
+   `replacement_ready` nor `AFTER_PROOF`)
+  This is the run that shows the harness has teeth: a harness that is green against the broken build
+  too is a harness that measures nothing. Every failure below is a statement the pre-fix installer
+  does not satisfy -- no replacement gate (so it kills on a boot where nothing would put the addresses
+  back), no --after-proof (no measurement at all), no `--status` reading of the replacement, and an
+  applier whose only refusal is the address test the keeper itself satisfies.
+
+===== PRE-FIX =====
+rc=1  pass=270 fail=66 skip=0
+  FAIL  --status asks the question the kill actually turns on
+  FAIL  and finds the function in the deployed build
+  FAIL  and that the replacement is running
+  FAIL  with nothing deployed it says ABSENT, not silence
+  FAIL  and says what that means for the kill
+  FAIL  the applier has no netwatch path in the fake root -- the replacement gate is absent from this build (or the rewrite did not land)
+  FAIL  it exited 0
+  FAIL  and says so in those words
+  FAIL  naming the flag that licenses it
+  FAIL  and explaining why the applier's own address test cannot be the gate
+  FAIL  and printing the exact command that would work
+  FAIL  the refusal touched the device:
+  FAIL  the keeper was killed by a refused call
+  FAIL  it called systemd to change state:
+  FAIL  it signalled something
+  FAIL  and says why
+  FAIL  it exited 2
+  FAIL  no proof was pushed
+  FAIL  the pushed payload is not the proof script
+  FAIL  the verdict the proof gave is shown to the operator
+  FAIL  and only then is the unit started
+  FAIL  the keeper survived
+  FAIL  it exited 2
+  FAIL  it says it is refusing the kill
+  FAIL  and shows the verdict it is refusing on
+  FAIL  it exited 2
+  FAIL  it exited 2 -- it was fooled by a substring
+  FAIL  it exited 0
+  FAIL  and says the heat fix is not armed, in those words
+  FAIL  naming the consequence
+  FAIL  it killed the keeper
+  FAIL  it signalled something
+  FAIL  it masked the unit before refusing
+  FAIL  it exited 0
+  FAIL  with the same sentence
+  FAIL  it killed the keeper
+  FAIL  it exited 0
+  FAIL  and it is the same refusal
+  FAIL  it killed the keeper
+  FAIL  it exited 2
+  FAIL  and the operator sees WHY, in the installer's own output
+  FAIL  it exited 2
+  FAIL  --now starts the unit
+  FAIL  the applier refuses
+  FAIL  and says what it is leaving alone
+  FAIL  and names the interface it looked at
+  FAIL  a build whose gate does not recognise the address that IS there refuses too
+  FAIL  it exited 2
+  FAIL  it names the pid it is retiring
+  FAIL  and measures what it is taking away (utime+stime), so the effect is checkable later
+  FAIL  and prints the matched command line as the evidence for the match
+  FAIL  it SIGTERMs first (the keeper's trap removes its own lock)
+  FAIL  the keeper survived
+  FAIL  and it reports the retirement
+  FAIL  naming where the addresses now come from
+  FAIL  it masks the unit for this boot, so nothing restarts it
+  FAIL  a survivor is named and escalated
+  FAIL  and KILLed
+  FAIL  when even KILL does not take, it says so and does not claim success
+  FAIL  a pid that was not there before is reported as a RESTART, not as a failed kill
+  FAIL  and it names what that means (docs 94)
+  FAIL  the watch loop sees it come back and re-kills
+  FAIL  and at the end it does not claim a retirement that did not hold
+  FAIL  which is also the line the operator sees (the installer shows the tail of the applier's output)
+  FAIL  only the two whose ARGV IS the keeper are matched
+  FAIL  the real keeper survived

@@ -258,6 +258,6 @@ install-netwatch-service.sh --yes --ssh     # 不再需要 TWRP
 重启                                         # 新构建只有开机才生效
 zl1-boot-address-check.sh                   # inconclusive 是正常读数，不是失败
 zl1-address-owner-proof.sh --yes            # 确定性地量它，而不是再掷一次骰子
-install-retire-debug-keeper.sh --install --now
+install-retire-debug-keeper.sh --install --now --after-proof
 install-cpufreq-governor.sh                 # 发烫的另一半（它自己的头这一轮更正过）
 ```

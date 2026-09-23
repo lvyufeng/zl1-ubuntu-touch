@@ -259,6 +259,6 @@ install-netwatch-service.sh --yes --ssh        # 不再需要 TWRP（docs 111）
 重启                                            # 新构建只有开机才生效（装了不重启 = S10 那一行）
 zl1-boot-address-check.sh                      # 读 netwatch-configured；inconclusive 是正常的
 zl1-address-owner-proof.sh --yes               # ← 这一轮新增：不用再掷骰子
-install-retire-debug-keeper.sh --install --now # 只有 --prove 给了 proof-obtained 才做
+install-retire-debug-keeper.sh --install --now --after-proof  # 114 之后这一步自己会先跑那个 proof，只有 proof-obtained 才杀
 install-cpufreq-governor.sh                    # 发烫的另一半
 ```

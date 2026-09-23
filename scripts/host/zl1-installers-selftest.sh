@@ -13,11 +13,18 @@
 #
 # Why they need one:
 #
-#   * `install-retire-debug-keeper.sh --install --now` KILLS A PROCESS ON THE DEVICE. Its whole safety
-#     argument is a refusal gate -- "it refuses to kill when it cannot see an address" -- and a refusal
-#     gate that does not actually refuse is indistinguishable from no gate at all until the day the
-#     network does not come back. It also has a matching function that deliberately is NOT a substring
-#     test, because "killing the wrong process" is the one failure mode worth being pedantic about.
+#   * `install-retire-debug-keeper.sh --install --now` KILLS A PROCESS ON THE DEVICE. Its safety
+#     argument used to be a refusal gate -- "it refuses to kill when it cannot see an address" -- and
+#     that gate could not fail: the keeper's own 1 Hz loop is what puts the address on the interface, so
+#     the address is present BECAUSE OF the process being removed, on every boot a kill can happen on.
+#     The gate that can fail is the other one, added by docs 114: the replacement (our netwatch) must be
+#     deployed, carry `ensure_addrs()` and be active -- and the kill additionally needs --after-proof,
+#     a measurement made seconds earlier rather than a memory of having run the boot-address check. A
+#     refusal gate that does not actually refuse is indistinguishable from no gate at all until the day
+#     the network does not come back, which is why sections 2b and 2c exist and why they have teeth
+#     against the pre-fix build (66 failures). It also has a matching function that deliberately is NOT
+#     a substring test, because "killing the wrong process" is the one failure mode worth being
+#     pedantic about.
 #   * `install-no-edl-on-panic.sh` decides whether a kernel panic puts the phone in EDL. It is the one
 #     installer whose *absence of effect* is the safety property, and its comment records that an
 #     earlier draft's `--capture-only` disabled and deleted the policy unit -- i.e. re-running a
@@ -52,6 +59,14 @@
 # `$W/killignore/<pid>` makes a kill not take, and `$W/restart` makes something come back afterwards.
 # `systemctl start <unit>` runs the unit's own `ExecStart`, so `--install --now` exercises the applier
 # through the same path the device would use.
+#
+# Two fixtures are load-bearing in a way worth naming, because both were wrong first. The fake device's
+# `is-active` printed the state and exited **0** -- and the applier's gate trusted the exit code, so the
+# stub agreed with the script for no reason at all. Both halves are faithful now (the stub exits 3 for
+# inactive, as systemd does; the gate reads the state). And the fake device's netwatch is a copy that
+# scenarios move between `installed`, `absent`, `no-ensure` and `inactive`, because the retirement's
+# gate and the netwatch installer's own section are correct about opposite states of the same
+# directory. See the note on NMODE.
 #
 # Usage: zl1-installers-selftest.sh [--keep]
 #   --keep   leave the fake root, the stubs and the run logs in place for inspection
@@ -118,6 +133,30 @@ printf 'the keeper itself, for the status listing\n' > "$FR/usr/local/sbin/zl1-d
 printf '100.0 900.0\n' > "$FR/proc/uptime"
 printf 'deadbeef-0000-0000-0000-000000000000\n' > "$FR/proc/sys/kernel/random/boot_id"
 printf 'rndis0\n' > "$FR/sys/class/net/rndis0/uevent"
+
+# The REPLACEMENT. This directory's reason to exist is that the applier's address test cannot fail --
+# the keeper is what puts the address there -- so the gate that can fail is "is the thing that is
+# supposed to take over actually deployed and running". That means the fixture has to look like a
+# device where the netwatch WAS installed, or every "it kills" scenario below would be measuring a
+# refusal instead. It is written with the real function name (`ensure_addrs`) because the check is
+# `grep -q '^ensure_addrs()'` on the DEPLOYED file -- the same question install-netwatch-service.sh
+# asks of the build it lands, at the other end of the device's life.
+mkdir -p "$FR/etc/systemd/system"
+cat > "$FR/etc/systemd/system/zl1-netwatch.sh" <<'NETWATCH_FIXTURE'
+#!/bin/sh
+# The netwatch, as installed. Only the shape the retirement's gate reads is reproduced here: the
+# function that re-asserts the addresses, which is what makes the keeper redundant.
+IFACES="rndis0 usb0"
+ensure_addrs() {
+    for i in $IFACES; do
+        [ -e "/sys/class/net/$i" ] || continue
+        ip -4 addr show dev "$i" | grep -q '192.168.2.15/24' || ip addr add 192.168.2.15/24 dev "$i"
+        ip -4 addr show dev "$i" | grep -q '10.15.19.82/24' || ip addr add 10.15.19.82/24 dev "$i"
+    done
+}
+while :; do ensure_addrs; sleep 2; done
+NETWATCH_FIXTURE
+chmod 0755 "$FR/etc/systemd/system/zl1-netwatch.sh"
 
 # The four cores install-cpufreq-governor.sh exists to move off `performance`, with the clocks the
 # device reported on 2026-09-22 (cpu0/1 max 1132800, cpu2/3 max 1363200). Written as a fixture rather
@@ -255,8 +294,16 @@ is-enabled)
   *) echo enabled ;;
   esac ;;
 is-active)
+  # THE EXIT CODE IS PART OF THE ANSWER. Real systemd's `is-active` prints the state AND exits 3 when it
+  # is not `active`; this stub used to print `inactive` and exit 0, and an applier gate written as
+  # `systemctl is-active X >/dev/null 2>&1 || refuse` passed straight through it -- a fixture whose
+  # answer agreed with the script for no reason. Both halves are real now.
   case "\$*" in
-  *zl1-retire-debug-keeper*) [ -e "$W/active-retire" ] && echo active || echo inactive ;;
+  *zl1-retire-debug-keeper*) [ -e "$W/active-retire" ] && { echo active; exit 0; } || { echo inactive; exit 3; } ;;
+  # The replacement's liveness is one of the applier's gate conditions, so it is an explicit fixture
+  # and not a fall-through: a stub whose default answer is "active" is a fixture that agrees with
+  # whatever the script asserts.
+  *zl1-netwatch*)            [ -e "$W/netwatch-inactive" ] && { echo inactive; exit 3; } || { echo active; exit 0; } ;;
   *) echo active ;;
   esac ;;
 show)
@@ -388,6 +435,16 @@ emit "s|/proc/\\\$p/|$FR/proc/\\\$p/|g"
 # guards this way; install-fingerprint-store-dir.sh does too, and has its own selftest.)
 emit "s#/proc/device-tree#$FR/proc/device-tree#g"
 
+# The proof. `--now --after-proof` pushes it and then runs it, and the two have to land in different
+# places or the push would overwrite the fixture. The push is `cat > /tmp/zl1-address-owner-proof.sh`,
+# the run is `timeout ... sh /tmp/zl1-address-owner-proof.sh --yes`: the `--yes` rule is first, so it
+# takes the invocation, and by the time the bare rule applies there is no occurrence left to match.
+# The pushed bytes are the REAL script (asserted below: the transport is faithful), and it is never
+# executed here -- the proof's own behaviour is what scripts/host/zl1-address-proof-selftest.sh covers,
+# with 49 checks. What is under test in this file is the installer's handling of its VERDICT.
+emit "s#/tmp/zl1-address-owner-proof.sh --yes#$W/proof-answer.sh --yes#g"
+emit "s#/tmp/zl1-address-owner-proof.sh#$W/pushed-proof.sh#g"
+
 cat > "$STUB/ssh" <<EOF
 #!/bin/sh
 printf 'ssh %s\n' "\$*" >> "$ACT"
@@ -468,7 +525,63 @@ snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
 # $1 = script, rest = args. Output in $OUT, exit code in $RC. FAKE_ADDR is what the fake device's
 # rndis0 would answer, so a scenario that wants "no address" sets it to none and calls env_reset after.
 RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe
-env_reset() { RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; RUN_SSH_SHORT=""; rm -f "$W/restart" "$W/active-retire"; rm -rf "$W/killignore"; mkdir -p "$W/killignore"; }
+# The replacement, as it is on a device where the netwatch was installed. Kept as a copy so a scenario
+# can take it away and put it back; every scenario starts from the installed state, because that is the
+# only state in which "it kills" is the interesting answer.
+cp "$FR/etc/systemd/system/zl1-netwatch.sh" "$W/netwatch.good"
+netwatch_mode() { # installed | absent | no-ensure | inactive
+  rm -f "$W/netwatch-inactive"
+  case "$1" in
+  installed) cp "$W/netwatch.good" "$FR/etc/systemd/system/zl1-netwatch.sh"
+             chmod 0755 "$FR/etc/systemd/system/zl1-netwatch.sh" ;;
+  absent)    rm -f "$FR/etc/systemd/system/zl1-netwatch.sh" ;;
+  no-ensure) # an older build: it brings the interface up, but nothing RE-ASSERTS the addresses --
+             # which is exactly the build install-netwatch-service.sh refuses to land (docs 88).
+             printf '#!/bin/sh\n# older build: no ensure_addrs()\nbring_up() { ip link set "$1" up; }\n' \
+               > "$FR/etc/systemd/system/zl1-netwatch.sh"
+             chmod 0755 "$FR/etc/systemd/system/zl1-netwatch.sh" ;;
+  inactive)  touch "$W/netwatch-inactive" ;;
+  esac
+}
+# What the proof ANSWERS. The proof's own behaviour is covered by its own harness (49 checks); what is
+# under test here is the installer's handling of the verdict, so the answer is a fixture. `obtained` is
+# the default because that is the state a device must be in for a retirement to be licensed at all.
+proof_answer() { # obtained | unclear | failed | not-armed | explode
+  case "$1" in
+  obtained)  printf '#!/bin/sh\nprintf "== verdict: proof-obtained\\n"\nexit 0\n' > "$W/proof-answer.sh" ;;
+  unclear)   printf '#!/bin/sh\nprintf "== verdict: proof-unclear (exit 1)\\n"\nexit 1\n' > "$W/proof-answer.sh" ;;
+  not-armed) printf '#!/bin/sh\nprintf "== verdict: not armed\\n"\nexit 2\n' > "$W/proof-answer.sh" ;;
+  # The shape that makes the installer's check a check: it exits 0 and it says `proof-obtained`, but
+  # NOT on the verdict line. A gate written as `grep -q proof-obtained` passes this; one written against
+  # the exact line `== verdict: proof-obtained` does not. (Same lesson as the drill that asked a guard
+  # for a string in neither version of a file -- docs 110.)
+  explode)   printf '#!/bin/sh\nprintf "ran to the end without a verdict line; proof-obtained is what we wanted\\n"\nexit 0\n' > "$W/proof-answer.sh" ;;
+  esac
+  chmod 0755 "$W/proof-answer.sh"
+}
+# A scenario starts from a BOOT, and on this device that means the ramdisk has just started the keeper.
+# So the reset recreates it rather than leaving whatever the previous scenario did to it -- which is a
+# real defect this harness grew into: several scenarios KILL the keeper, and every scenario after the
+# first one that did was measuring a device where the keeper had already been retired. (The two hand-
+# written `env_reset; keeper_proc 900` pairs below were papering over exactly that.)
+#
+# NMODE is the fake device's netwatch state, and it is a variable rather than a constant because TWO
+# sections of this file disagree about it -- and both are right. The retirement's gate asks whether the
+# netwatch is deployed, so a boot where the answer is yes is the only one where "it kills" is the
+# interesting outcome; the netwatch installer's own section asserts that it wrote NOTHING before --yes
+# --ssh, which is only checkable on a device where nothing has deployed one. They write into the same
+# directory ($FR/etc/systemd/system) because on the real device they are the same directory. Section 13
+# sets NMODE=absent for exactly that reason, and nothing after it uses the retirement.
+NMODE=installed
+env_reset() {
+  RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; RUN_SSH_SHORT=""
+  rm -f "$W/restart" "$W/active-retire"
+  rm -rf "$W/killignore"; mkdir -p "$W/killignore"
+  rm -rf "$FR/proc"/9*
+  keeper_proc 900
+  netwatch_mode "$NMODE"
+  proof_answer "${PANS:-obtained}"
+}
 run() {
   s="$1"; shift
   : > "$ACT"
@@ -506,6 +619,17 @@ want 'cpu_ticks=10' "$OUT" "and the keeper's own CPU ticks (utime+stime from its
 want 'no lock directory' "$OUT" "and says so when the lock is absent rather than printing nothing"
 want '192\.168\.2\.15/24: present' "$OUT" "and reads the interface's addresses the way the applier's gate does"
 want '10\.15\.19\.82/24: MISSING' "$OUT" "distinguishing the two, so the gate's own reading is visible before it is trusted"
+# The gate that CAN fail gets the same treatment as the one that cannot: --status has to be able to say
+# "this device could not do the keeper's job", because that is the answer that decides whether the kill
+# is licensed. Before docs 114 the applier had no such condition and --status had nothing to report.
+want '== the REPLACEMENT' "$OUT" "--status asks the question the kill actually turns on"
+want 'ensure_addrs\(\): present' "$OUT" "and finds the function in the deployed build"
+want 'zl1-netwatch.service: active' "$OUT" "and that the replacement is running"
+netwatch_mode absent
+run "$RK" --status
+want 'zl1-netwatch.sh: ABSENT' "$OUT" "with nothing deployed it says ABSENT, not silence"
+want 'the gate refuses' "$OUT" "and says what that means for the kill"
+netwatch_mode installed
 
 run "$RK" --explain
 printf '%s\n' "$OUT" > "$W/out.rk.explain"
@@ -519,6 +643,12 @@ want 'a kill and not a unit edit|kill and not a unit edit' "$OUT" "and names wha
 echo
 echo "== 2. --install: two files, that content, enabled -- and NOTHING on this boot =="
 # ==================================================================================================
+# "the only two files it added" -- measured as a DIFFERENCE, not as a total. The total was equal to 2
+# only while this directory happened to hold nothing else, and this harness now puts the REPLACEMENT
+# there ($FR/etc/systemd/system/zl1-netwatch.sh, the thing the applier's gate asks about -- and on the
+# real device it is the same directory, which is why the collision is real rather than an artefact).
+# A total that is really "nothing else is here yet" is not a check on the installer.
+find "$FR/etc/systemd/system" -type f | sort > "$W/eedir.before"
 run "$RK" --install
 printf '%s\n' "$OUT" > "$W/out.rk.install"
 [ "$RC" = 0 ] && ok "retire --install exits 0" || bad "retire --install exited $RC"
@@ -526,8 +656,10 @@ RKS="$FR/etc/systemd/system/zl1-retire-debug-keeper.sh"
 RKU="$FR/etc/systemd/system/zl1-retire-debug-keeper.service"
 [ -f "$RKS" ] && ok "it wrote the applier" || bad "no applier at $RKS"
 [ -f "$RKU" ] && ok "it wrote the unit" || bad "no unit at $RKU"
-[ "$(find "$FR/etc/systemd/system" -type f | wc -l)" = 2 ] && ok "and those are the only two files it added" \
-  || { bad "it added more:"; find "$FR/etc/systemd/system" -type f | sed 's/^/        | /'; }
+find "$FR/etc/systemd/system" -type f | sort > "$W/eedir.after"
+comm -13 "$W/eedir.before" "$W/eedir.after" > "$W/eedir.added"
+[ "$(grep -c . "$W/eedir.added")" = 2 ] && ok "and exactly two files were added by this run" \
+  || { bad "it added $(grep -c . "$W/eedir.added") files:"; sed 's/^/        | /' "$W/eedir.added"; }
 if [ -f "$RKU" ]; then
   want '^Type=oneshot$' "$(cat "$RKU")" "the unit is oneshot"
   want '^After=local-fs\.target zl1-netwatch\.service$' "$(cat "$RKU")" "and ordered AFTER the netwatch -- the thing that makes the keeper redundant"
@@ -560,12 +692,26 @@ sed -e "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g" \
     -e "s#/proc/\$p/#$FR/proc/\$p/#g" \
     -e "s#/sys/class/net#$FR/sys/class/net#g" \
     -e "s#/usr/local/sbin/zl1-debug-net.sh#$FR/usr/local/sbin/zl1-debug-net.sh#g" \
+    -e "s#/etc/systemd/system/zl1-netwatch.sh#$FR/etc/systemd/system/zl1-netwatch.sh#g" \
     -e "s#kill -#$STUB/kill -#g" \
     "$RKS" > "$W/applier/zl1-retire-debug-keeper.sh"
 APPLIER=$W/applier/zl1-retire-debug-keeper.sh
 sh -n "$APPLIER" || { echo "the rewritten applier does not parse" >&2; exit 2; }
 grep -qF "$FR/proc/[0-9]*" "$APPLIER" && grep -qF "$FR/proc/\$p/" "$APPLIER" \
   || { echo "the applier rewrite did not land" >&2; exit 2; }
+# The replacement's path is a gate condition now, so an unmapped one would point the check at the
+# HOST's /etc/systemd/system -- where there is no netwatch, making every kill scenario a refusal for a
+# reason that has nothing to do with the script under test. This is a CHECK and not a setup abort: a
+# build without the replacement gate at all (i.e. the pre-fix installer) has no such path to map, and
+# aborting here would mean the harness could never be run against the defect it was written for -- the
+# one thing that shows the harness has teeth (docs 107: an instrument that cannot be pointed at the
+# broken build cannot report on it).
+grep -qF "$FR/etc/systemd/system/zl1-netwatch.sh" "$APPLIER" \
+  && ok "the applier's replacement check was mapped into the fake root" \
+  || bad "the applier has no netwatch path in the fake root -- the replacement gate is absent from this build (or the rewrite did not land)"
+grep -qE '^NETWATCH=/etc/systemd/system/' "$APPLIER" \
+  && bad "a device-absolute netwatch path survived the rewrite -- the gate would read the HOST's /etc" \
+  || ok "and no device-absolute copy of it survived the rewrite"
 grep -qF "$STUB/kill -TERM" "$APPLIER" || { echo "the kill rewrite did not land" >&2; exit 2; }
 grep -qE '(^|[^-/])kill -' "$APPLIER" && grep -vE "^ *#" "$APPLIER" | grep -qE '(^|[^-/])kill -' \
   && { echo "a bare kill - survived the rewrite, which would signal a real host pid" >&2; exit 2; }
@@ -574,11 +720,159 @@ grep -qE '(^|[^-/])kill -' "$APPLIER" && grep -vE "^ *#" "$APPLIER" | grep -qE '
 
 # ==================================================================================================
 echo
+echo "== 2b. THE LICENCE: --now cannot be reached without the proof =="
+# ==================================================================================================
+# The applier's address test cannot fail (the keeper is what puts the address there), so the question
+# "may this boot lose the keeper" has to be answered by a measurement instead: stop the keeper, take an
+# address away, and require the netwatch to put it back and say so. That is what --after-proof runs, and
+# the point of these four scenarios is that the flag is REQUIRED -- not that the proof works, which its
+# own 49-check harness covers.
+env_reset
+BEFORE=$(snap)
+run "$RK" --install --now
+printf '%s\n' "$OUT" > "$W/out.rk.now.nolicence"
+[ "$RC" = 2 ] && ok "--now without --after-proof exits 2 (a refusal, not a failed attempt)" || bad "it exited $RC"
+want 'refusing --now without --after-proof' "$OUT" "and says so in those words"
+want '\-\-after-proof' "$OUT" "naming the flag that licenses it"
+want 'the keeper is what puts the address there' "$OUT" "and explaining why the applier's own address test cannot be the gate"
+want 'install-retire-debug-keeper.sh --install --now --after-proof' "$OUT" "and printing the exact command that would work"
+# POSIX sh: no process substitution. `diff <(...) <(...)` is a bashism -- this file is `#!/bin/sh`, and
+# the sibling harness died on its own line 126 for exactly this.
+printf '%s\n' "$BEFORE" > "$W/snap.before"
+snap > "$W/snap.after"
+if [ "$(snap)" = "$BEFORE" ]; then
+  ok "and it changed NOTHING on the device -- not the unit, not the keeper"
+else
+  bad "the refusal touched the device:"
+  diff "$W/snap.before" "$W/snap.after" | sed 's/^/        | /' | head -6
+fi
+[ -d "$FR/proc/900" ] && ok "the keeper is still there" || bad "the keeper was killed by a refused call"
+[ -z "$(syswrite)" ] && ok "and no systemd call that changes anything was made" || { bad "it called systemd to change state:"; syswrite | sed 's/^/        | /'; }
+[ -z "$(kills)" ] && ok "and no signal" || bad "it signalled something"
+
+echo
+echo "   -- --after-proof without --now is also refused, because nothing else here kills anything:"
+env_reset
+BEFORE=$(snap)
+run "$RK" --install --after-proof
+[ "$RC" = 2 ] && ok "it exits 2" || bad "it exited $RC"
+want 'only means anything with --now' "$OUT" "and says why"
+[ "$(snap)" = "$BEFORE" ] && ok "and changed nothing" || bad "it changed the device"
+
+echo
+echo "   -- the proof is PUSHED (the real bytes) and its verdict is what decides:"
+env_reset
+run "$RK" --install --now --after-proof
+[ "$RC" = 0 ] && ok "proof-obtained: the call exits 0" || bad "it exited $RC"
+[ -f "$W/pushed-proof.sh" ] && ok "the proof script was pushed to the device" || bad "no proof was pushed"
+cmp -s "$W/pushed-proof.sh" "$HERE/../device/zl1-address-owner-proof.sh" \
+  && ok "and the bytes pushed are the repo's own proof script, unaltered" \
+  || bad "the pushed payload is not the proof script"
+want 'verdict: proof-obtained' "$OUT" "the verdict the proof gave is shown to the operator"
+want '^systemctl start zl1-retire-debug-keeper\.service' "$(sysacts)" "and only then is the unit started"
+[ ! -d "$FR/proc/900" ] && ok "so the keeper is retired" || bad "the keeper survived"
+
+echo
+echo "   -- a proof that does not come back proof-obtained must NOT license the kill:"
+env_reset; proof_answer unclear
+run "$RK" --install --now --after-proof
+[ "$RC" = 1 ] && ok "proof-unclear: it exits 1" || bad "it exited $RC"
+want 'REFUSING the kill' "$OUT" "it says it is refusing the kill"
+want 'verdict: proof-unclear' "$OUT" "and shows the verdict it is refusing on"
+notwant '^systemctl start zl1-retire-debug-keeper\.service' "$(sysacts)" "the unit is NOT started"
+[ -d "$FR/proc/900" ] && ok "the keeper is still running -- a core is worth less than the link" || bad "it killed the keeper anyway"
+[ -z "$(kills)" ] && ok "and nothing was signalled" || bad "it signalled something"
+
+echo
+echo "   -- and 'not armed' (exit 2) is a refusal too, not a pass:"
+env_reset; proof_answer not-armed
+run "$RK" --install --now --after-proof
+[ "$RC" = 1 ] && ok "not-armed: the call fails rather than proceeding" || bad "it exited $RC"
+[ -d "$FR/proc/900" ] && ok "and the keeper is still there" || bad "it killed the keeper"
+notwant '^systemctl start zl1-retire-debug-keeper\.service' "$(sysacts)" "the unit was not started"
+
+echo
+echo "   -- the string in the wrong place: exit 0 and the words, but no verdict line"
+# This is the fixture that makes the check a check. A gate written as `grep -q proof-obtained` passes
+# this; one written against the verdict LINE does not. (The other harness in this repo learned the same
+# thing about a gate asking for a string in neither version of a file -- docs 110/112.)
+env_reset; proof_answer explode
+run "$RK" --install --now --after-proof
+[ "$RC" = 1 ] && ok "the sentence without the verdict does NOT license the kill" || bad "it exited $RC -- it was fooled by a substring"
+[ -d "$FR/proc/900" ] && ok "and the keeper is still running" || bad "it killed the keeper"
+notwant '^systemctl start zl1-retire-debug-keeper\.service' "$(sysacts)" "the unit was not started"
+
+# ==================================================================================================
+echo
+echo "== 2c. the gate that CAN fail: the replacement must be deployed and running =="
+# ==================================================================================================
+# This is the defect this section exists for. The applier's address test cannot fail -- the keeper's own
+# 1 Hz loop is what puts the address on the interface, so while the keeper is alive (which is every boot
+# a kill can happen on) the address is there BECAUSE OF the process being removed. The only gate that
+# can distinguish "the netwatch can do this job" from "the keeper is doing it right now" is the one that
+# asks about the replacement. And the refusal has to be LOUD: an unarmed heat fix that logs a line and
+# exits 0 is the failure docs 99 names, so it exits 1 and the unit lands in `systemctl --failed`.
+#
+# Every scenario here has an ADDRESS PRESENT. That is the point: the old gate is satisfied, and the
+# refusal has to come from somewhere else.
+
+echo
+echo "   -- nothing deployed the replacement (the netwatch was never installed):"
+env_reset; netwatch_mode absent
+RUN_ADDR=yes
+runsh "$APPLIER"
+printf '%s\n' "$OUT" > "$W/out.rk.noreplacement"
+[ "$RC" = 1 ] && ok "the applier exits 1 -- a FAILED unit, not a log line (docs 99)" || bad "it exited $RC"
+want 'NOT ARMED' "$(applier_log)" "and says the heat fix is not armed, in those words"
+want 'nothing on this device would re-create the addresses' "$(applier_log)" "naming the consequence"
+notwant 'REFUSING' "$(applier_log)" "it is NOT the address gate that refused -- that gate is satisfied here"
+[ -d "$FR/proc/900" ] && ok "the keeper is still running" || bad "it killed the keeper"
+[ -z "$(kills)" ] && ok "and nothing was signalled" || bad "it signalled something"
+[ -z "$(grep -E '^systemctl mask' "$ACT")" ] && ok "and it did not even mask the unit -- the gate is before that" \
+  || bad "it masked the unit before refusing"
+
+echo
+echo "   -- an OLDER build: the script is deployed, but it has no ensure_addrs():"
+# The exact build install-netwatch-service.sh refuses to land (docs 88) -- and the same question asked
+# at the other end of the device's life.
+env_reset; netwatch_mode no-ensure
+runsh "$APPLIER"
+[ "$RC" = 1 ] && ok "it refuses an older build too" || bad "it exited $RC"
+want 'NOT ARMED' "$(applier_log)" "with the same sentence"
+[ -d "$FR/proc/900" ] && ok "and the keeper is still running" || bad "it killed the keeper"
+
+echo
+echo "   -- deployed and carrying the function, but NOT RUNNING:"
+env_reset; netwatch_mode inactive
+runsh "$APPLIER"
+[ "$RC" = 1 ] && ok "an inactive netwatch is not a replacement" || bad "it exited $RC"
+want 'NOT ARMED' "$(applier_log)" "and it is the same refusal"
+[ -d "$FR/proc/900" ] && ok "keeper still running" || bad "it killed the keeper"
+
+echo
+echo "   -- and through the real path (--install --now --after-proof), the refusal reaches the operator:"
+env_reset; netwatch_mode absent
+run "$RK" --install --now --after-proof
+[ "$RC" = 0 ] && ok "the install itself still exits 0 -- the files landed, the unit is enabled" || bad "it exited $RC"
+[ -d "$FR/proc/900" ] && ok "but the keeper is alive, so nothing was retired" || bad "it killed the keeper"
+want 'NOT ARMED' "$OUT" "and the operator sees WHY, in the installer's own output"
+[ -f "$RKS" ] && ok "the applier is on the device, so the next boot runs the gate again" || bad "no applier was installed"
+
+echo
+echo "   -- the replacement in place: the same call retires it (so the gate is not just a wall):"
+env_reset; netwatch_mode installed
+runsh "$APPLIER"
+[ "$RC" = 0 ] && ok "with the replacement deployed and active it proceeds" || bad "it exited $RC"
+[ ! -d "$FR/proc/900" ] && ok "and retires the keeper" || bad "the keeper survived"
+want 'keeper retired for this boot' "$(applier_log)" "reporting the retirement"
+
+# ==================================================================================================
+echo
 echo "== 3. the refusal gate: without an address it must NOT kill =="
 # ==================================================================================================
 env_reset
 RUN_ADDR=none
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now.noaddr"
 [ "$RC" = 0 ] && ok "with no address the applier still exits 0 (a failed retirement is a log line, not a failed boot)" \
   || bad "it exited $RC"
@@ -598,7 +892,7 @@ sed -e 's#\(192\.168\.2\.15\|10\.15\.19\.82\)/24#not-this-address/24#g' "$APPLIE
 grep -qF 'not-this-address/24' "$W/applier/only10.sh" || { echo "the only10 fixture did not land" >&2; exit 2; }
 cp "$APPLIER" "$W/keep-applier"
 cp "$W/applier/only10.sh" "$APPLIER"
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 want 'REFUSING' "$(applier_log)" "a build whose gate does not recognise the address that IS there refuses too"
 [ -d "$FR/proc/900" ] && ok "and leaves the keeper alone" || bad "it killed the keeper anyway"
 cp "$W/keep-applier" "$APPLIER"
@@ -608,7 +902,7 @@ echo
 echo "== 4. with an address: it kills, it verifies, and it says which failure it is =="
 # ==================================================================================================
 env_reset
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now"
 [ "$RC" = 0 ] && ok "with an address it exits 0" || bad "it exited $RC"
 want 'retiring keeper pids=\[900\]' "$(applier_log)" "it names the pid it is retiring"
@@ -626,7 +920,7 @@ echo "   -- a keeper that refuses to die: KILL, and the right sentence about it 
 env_reset
 keeper_proc 901
 : > "$W/killignore/901"
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now.termpass"
 want 'pid 901 survived SIGTERM; sending SIGKILL' "$(applier_log)" "a survivor is named and escalated"
 want '^kill -KILL 901' "$(kills)" "and KILLed"
@@ -644,7 +938,7 @@ echo "   -- something RESTARTS it: the applier must say the lever is wrong, not 
 env_reset
 keeper_proc 902
 : > "$W/restart"
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now.restart"
 want 'RESTARTED the keeper as pid 9001' "$(applier_log)" "a pid that was not there before is reported as a RESTART, not as a failed kill"
 want 'the retirement needs a different lever' "$(applier_log)" "and it names what that means (docs 94)"
@@ -655,7 +949,7 @@ notwant '^retiring keeper pids=\[[0-9]+$' "$(applier_log)" "and no record is spl
 want 'the retirement did NOT hold' "$(applier_log)" "and at the end it does not claim a retirement that did not hold"
 want 'the retirement did NOT hold' "$OUT" "which is also the line the operator sees (the installer shows the tail of the applier's output)"
 rm -f "$W/restart"; rm -rf "$FR/proc/9001"
-env_reset; keeper_proc 900
+env_reset
 
 # ==================================================================================================
 echo
@@ -672,7 +966,7 @@ printf '/bin/sh\0%s\0' "$KEEPER_F"                            > "$FR/proc/905/cm
 printf '/sbin/init\0'                                         > "$FR/proc/1/cmdline"
 for p in 903 904 905 1; do printf 'S 1 %s\n' "$p" > "$FR/proc/$p/stat"; done
 printf '/bin/sh\000%s\000' "$KEEPER_F"                        > "$FR/proc/900/cmdline"
-run "$RK" --install --now
+run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now.pedantic"
 want 'retiring keeper pids=\[900 905\]' "$(applier_log)" "only the two whose ARGV IS the keeper are matched"
 notwant '903' "$OUT" "the shell that merely mentions the path is NOT matched"
@@ -684,7 +978,7 @@ notwant 'retiring keeper pids=\[1' "$OUT" "and pid 1 is never even matched"
 [ -d "$FR/proc/1" ] && ok "pid 1 survived" || bad "pid 1 was signalled"
 [ ! -d "$FR/proc/905" ] && ok "and the real keeper was retired" || bad "the real keeper survived"
 rm -rf "$FR/proc/903" "$FR/proc/904" "$FR/proc/905" "$FR/proc/1"
-env_reset; keeper_proc 900
+env_reset
 
 # ==================================================================================================
 echo
@@ -1065,6 +1359,10 @@ echo
 # ==================================================================================================
 echo
 echo "== 13. netwatch: the TWRP-side installer, and the only backup of the misc partition =="
+# From here the fake device is a device where NO netwatch has been deployed yet: that is the only state
+# in which "it wrote nothing before --yes --ssh" is a statement about the installer rather than about
+# what the rest of this harness left lying around. (See the note on NMODE.)
+NMODE=absent
 # ==================================================================================================
 # Why this one is in here, in one sentence: it is the thing that makes retiring the debug keeper safe
 # (`zl1-netwatch.service` re-asserts the addresses every sample, docs 88), and it is also the only
@@ -1406,7 +1704,29 @@ printf '%s\n' "$OUT" > "$W/out.nwssh.noyes"
 [ "$RC" = 2 ] && ok "and --ssh without --yes is still refused" || bad "it exited $RC"
 want 'refusing without --yes' "$OUT" "by the same gate as the adb route"
 
+# ==================================================================================================
 echo
-echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here; see the SKIP line above)")"
+echo "== the health check cites this harness's count, and that citation cannot drift =="
+# The same guard every other harness here carries (docs 110). It is in this file because the health
+# check now names it -- it did not, until docs 114: the offline verification of BOTH HALVES OF THE HEAT
+# FIX was a harness the page never told anyone to run, which is most of the way to not having it.
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -r "$HEALTH" ]; then
+  cited=$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' |
+            sed -n 's/.*zl1-installers-selftest\.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')
+  total=$((PASS + FAIL + 1))
+  if [ -z "$cited" ]; then
+    bad "the health check does not cite this harness's count -- either the citation is gone or its wording changed"
+  elif [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has exactly that many"
+  else
+    bad "the health check cites $cited checks, but this harness has $total -- fix host/zl1-health-check.sh"
+  fi
+else
+  bad "cannot read $HEALTH -- its citations are unchecked"
+fi
+
+echo
+echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that COULD NOT run here; see the SKIP line above)")"
 [ "$KEEP" = 1 ] || rm -rf "$W"
 [ "$FAIL" = 0 ]
