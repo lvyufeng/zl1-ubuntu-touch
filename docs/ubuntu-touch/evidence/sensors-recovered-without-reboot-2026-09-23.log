@@ -1,0 +1,205 @@
+zl1 sensors: the stack came back without a reboot -- 2026-09-23
+=============================================================
+
+One boot, uptime 41,183 s -> 41,914 s, no reboot, no partition write.
+
+
+THE STATE IT STARTED IN
+=======================
+scripts/device/zl1-sensorfw-probe.sh --load-all --settle 12 --gap 8 --keep 45
+at uptime 41,183 s. All nine plugins load (true,) and every sensor is STALE:
+
+  local.AccelerometerSensor.xyz     timestamp 12323934179 (uptime 12323.9 s)
+  local.GyroscopeSensor.value       timestamp 12323912176
+  local.MagnetometerSensor.magneticField  timestamp 12323951238
+  local.OrientationSensor.orientation (11902936926, 6)
+  local.ALSSensor.lux               timestamp 0 -- never
+
+Ages printed by the probe: accel 28,975 s, gyro 29,037 s, mag 29,068 s,
+orientation 29,520 s, ALS 41,330 s (i.e. never).
+
+THE DISCRIMINATOR: the ages are OLDER THAN THE RUNNING HAL
+=========================================================
+ps -eo pid,etimes at uptime 40,806 s:
+
+  sensors@1.0-service  pid 938936  etimes 28437   -> started at uptime 12369 s
+  sensorfwd            pid 216350  etimes 33007   -> started at uptime  7799 s
+  sensors.qti          pid 41607   etimes 40758   -> since boot
+
+The newest sample anywhere was uptime 12,323.9 s, which is 45 s BEFORE the
+running sensors HAL was even started (12,369 s). So the HAL instance that was
+alive had never delivered a single sample: its whole life was silent, and the
+"last" values came from its predecessor. (That is the same argument the probe's
+own footer makes -- compare the age against the uptime -- applied to a process
+instead of to the daemon.)
+
+
+WHAT THE KERNEL COULD SHOW: A STUCK HIDL CALL
+=============================================
+On this kernel /sys/kernel/debug/binder is ONE file holding both contexts --
+"context binder" and "context hwbinder" per process -- so a HIDL call is
+readable from the host. At uptime 40,982 s:
+
+proc 938936                                  (the sensors HAL)
+context hwbinder
+  thread 938936: l 02 need_return 0 tr 0
+    incoming transaction 1838445: ffffffc0ed8f6600 from 216350:939021 to 938936:938936 \
+      code 4 flags 10 pri 0:120 r1 node 1838258 size 44:0 data ffffff800fd00000
+  thread 939020: l 11 need_return 0 tr 0
+  node 1838258: u0000007aca42d380 c0000007aca4411e0 pri 0:120 hs 1 hw 1 ls 1 lw 0 \
+      is 2 iw 2 tr 1 proc 216350 40677
+proc 216350                                  (sensorfwd)
+context hwbinder
+  thread 939021: l 10 need_return 0 tr 0
+    outgoing transaction 1838445: ... from 216350:939021 to 938936:938936 code 4 flags 10 ... r1
+  ref 1838283: desc 1 node 1838258 s 1 w 0 d 0000000000000000
+
+  * node 1838258 is the ISensors node, held by exactly sensorfwd (216350) and
+    hwservicemanager (40677).
+  * code 4 is HIDL method index 4 = ISensors::batch(); r1 = need_reply = 1, so
+    it is a two-way call. size 44 = 24 bytes of HIDL parcel padding + handle(4)
+    + sampling period(8) + max report latency(8).
+  * The client's thread 939021 sits in binder_thread_read -- waiting for the
+    reply. The server's main thread 938936 has that transaction on its stack
+    (i.e. it is INSIDE batch()) and its wchan is futex_wait_queue_me, so it is
+    parked on a userspace lock inside the call, not in the kernel.
+  * Re-read 6 s later: identical. The call is permanent, not slow.
+  * Its age is consistent with the silence: the newest sample is 12,323.9 s and
+    the stack has been mute for 28,900 s.
+
+Rest of the HAL at the same moment (75 threads, all state S):
+  37 futex_wait_queue_me | 36 poll_schedule_timeout | 1 diagchar_read | 1 binder_thread_read
+
+The container's binder is otherwise silent -- sampling the highest transaction
+id twice, 61 s apart:
+
+  tx id t0=1993203 uptime=40982
+  tx id t1=1993203 uptime=41043
+  delta=0 over 61 s -> 0 tx/s
+
+i.e. at that point nothing in the container was transacting at all, which is
+why the stuck call could not be dated by the rate and was dated by the sample
+ages instead.
+
+
+STEP 1 -- KILL THE CONTAINER'S SENSORS HAL (init restarts it)
+============================================================
+uptime 41,260 s:  kill -9 938936
+uptime 41,273 s:  new pid 1785710, comm sensors@1.0-ser, ppid 35057 (container
+                  init), 74 threads, main thread idle in binder_thread_read
+                  -- the wedge is gone (the transaction disappeared with the
+                  process).
+init's service name is vendor.sensors-hal-1-0 (class hal, no oneshot);
+getprop init.svc.vendor.sensors-hal-1-0 -> running.
+It re-registered: node 2174420, held by 40677 (hwservicemanager) ONLY.
+
+That alone changed nothing: a probe at uptime ~41,300 s still reported every
+sensor STALE with the SAME timestamps as before the kill (orientation still
+11,902,936,926). The fresh HAL was healthy and talking to nobody -- no client
+held a reference to its node.
+
+
+STEP 2 -- RESTART THE CLIENT (systemctl restart sensorfwd)
+=========================================================
+uptime 41,575 s. Old sensorfwd 216350 -> new 1796648, ActiveState active,
+NRestarts 0, and it did NOT take the HAL down with it: 1785710 was still the
+HAL 60 s later (0 of 1 restarts killed it -- docs/ubuntu-touch/71 records 6/6,
+see doc 78 section 4). repowerd (pid 1320231) was untouched throughout.
+
+What the fresh daemon exported: only three bus objects exist after the restart
+-- /SensorManager/alssensor, /SensorManager/magnetometersensor and
+/SensorManager/orientationsensor, i.e. what repowerd subscribes to. Its
+requestSensor session ids started at 11, not 58, confirming a fresh daemon.
+
+Measurements after it, all by a NEW client pid (so not a leftover session):
+
+  uptime 41,754 s probe (settle 20 / gap 12):
+    local.MagnetometerSensor.magneticField
+      read #1: (41807325000, 3, 14700, -15420, -44219, ...)   age 0 s
+      read #2: (41819417006, 3, 14460, -16200, -43980, ...)   age 0 s
+      => STREAMING
+    local.ALSSensor.lux         (0, 96)  => STALE (timestamp 0: still never)
+    local.OrientationSensor.orientation (41576823352, 6) => STALE, age 262 s
+
+  uptime 41,878 s, accelerometer and gyroscope requested explicitly
+  (they have no bus object until someone asks, so the probe above never saw
+  them), 10 s apart:
+    accel  (41887172570, -3.3655, 20.9915, 1010.416)  age 10 s
+    accel  (41897270091, -3.2784, 21.4754, 1009.705)  age  0 s   => STREAMING
+    gyro   (41887234338, 26.2279,  6.9941,   13.1140) age 10 s
+    gyro   (41897381847, 26.2279, 31.4735,   13.1140) age  0 s   => STREAMING
+
+So accelerometer, gyroscope and magnetometer are back, each confirmed by a
+client pid that did not exist before. Nothing was measured for pressure /
+proximity / compass / rotation.
+
+
+ORIENTATION: ONE SAMPLE, AT THE ADAPTOR START
+=============================================
+Its value went from timestamp 11,902,936,926 (age 29,520 s, a relic of the last
+working instance) to timestamp 41,576,823,352 -- uptime 41,576.8 s, which is
+1.8 s after the new sensorfwd started and 8.2 hours after the previous one. It
+is a REAL new sample, from the new daemon, and it is the first orientation
+sample since uptime 11,902.9 s.
+
+Then it stopped again: two further reads 10 s and 262-320 s later still read
+41576823352, and it stayed frozen through ~5 minutes of held sessions.
+
+If the adaptor start is what produced it, that matches the probe's own caveat --
+"an adaptor start is itself what makes this hardware emit a sample" -- and it
+narrows the orientation problem: the whole chain (SSC orientation algorithm ->
+sensors HAL -> hidlorientationadaptor -> bus object) can produce, once, at
+start; what is missing is the update.
+
+
+ALS: NOT "NEVER" -- IT JUST NEVER STAMPS ITS SAMPLES
+====================================================
+local.ALSSensor.lux was recorded as "timestamp 0, so it has never had a sample"
+(the probe's age verdict, and docs/ubuntu-touch/71). Its TIMESTAMP is indeed always
+0, but its second field moves, read across the session:
+
+  (0, 94)   uptime ~41,183 s   (baseline probe)
+  (0, 96)   uptime ~41,774 s
+  (0, 98)   uptime ~42,004 s
+  (0, 97)   uptime ~42,014 s
+
+So the adaptor produces values and never stamps them. An age-only check calls this
+"dead", a value-diff-only check calls it "live", and neither alone is right. The
+probe now says which case it is. (That the level tracks real light, or that
+repowerd's autobrightness therefore works, is NOT tested.)
+
+
+VERIFICATION RUN WITH THE UPDATED SCRIPTS
+=========================================
+uptime ~42,000 s, probe with --sensor accelerometersensor --sensor gyroscopesensor
+(their bus objects do not exist until someone asks, which is what --sensor is for):
+
+  accel  (41985548544, -3.1975, 22.4852, 1008.964) age 0 s
+  accel  (41995646094, -3.0715, 20.9168, 1010.037) age 0 s   => STREAMING
+  gyro   (42022351353, -6.9941, 20.9823, 50.7073)  age 0 s
+  gyro   (42032448883, -6.9941, 20.9823, 48.0845)  age 0 s   => STREAMING
+  mag    (42040793396, 3, 14819, -14759, -44700, ...) age 0 s
+  mag    (42050848744, 3, 14340, -14939, -44700, ...) age 0 s => STREAMING
+  als    (0, 98) -> (0, 97)  => the branch above
+  orient (41576823352, 6)    => STALE, age 482 s and 492 s -- still the single sample
+
+A client that did not exist before the repair is getting fresh samples from three
+sensors 8 minutes after it. That is the whole claim.
+
+zl1-sensors-recover.sh --status on the repaired stack:
+
+  == container sensors HAL: pid 1785710, age 837 s
+  == sensorfwd:             pid 1796648  (active)
+  == ISensors node held by: 1796648 40677   (40677 is hwservicemanager; any other pid is a client)
+  == calls in flight on it: 2297732
+     still in flight after 5 s:            <-- empty: a streaming call comes and goes
+                                              (the wedge was one that never did)
+
+
+DEVICE STATE AT THE END
+=======================
+uptime 41,914 s (no reboot), systemctl --failed empty, lxc container RUNNING,
+sensorfwd + repowerd active, the debug keeper pid 817 still T (stopped, its
+runtime state from doc 72), ActiveOutputs (ii) 0 0 (as found), thermal_zone1
+45.4 C, no leftover session keepers, no partition write, nothing written
+outside /userdata and /tmp.
