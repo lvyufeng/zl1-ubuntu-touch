@@ -31,10 +31,11 @@
 # plus its uid from /proc/<hal-pid>/status. Not the host's view, not guesswork about namespace flags.
 #
 # Nothing here writes. `--create-store-dir` is off by default and is the only thing that would: it
-# creates exactly the directory Android's own FingerprintService creates, inside the container's
-# mount namespace, owned by the HAL's uid, and prints its rmdir undo. It is a directory in Android's
-# own /data (= /android/data, /dev/sda10[/android-data], a rw ext4 that Android writes to normally) --
-# it is not a partition image, not one of the forbidden partitions, and not a flash.
+# creates exactly the directory Android's own FingerprintService creates -- the ONE path section 2
+# determined biometryd passes, not both candidates, and it prints the rmdir undo for that path. It is a
+# directory in Android's own /data (= /android/data, /dev/sda10[/android-data], a rw ext4 that Android
+# writes to normally) -- it is not a partition image, not one of the forbidden partitions, and not a
+# flash. (Before docs 97 it created both candidates and printed an undo for one of them.)
 #
 # Usage (on the device, as root): zl1-fingerprint-probe.sh [--create-store-dir] [--quiet]
 
@@ -119,6 +120,13 @@ fi
 
 # --- 2. which path biometryd will pass ---------------------------------------------------------
 
+# TARGET is the single path this run decided on, and section 5 writes only that one. It used to write
+# BOTH candidates while printing an undo for one of them, in a script whose entire point is that the
+# two paths are different answers: creating /data/vendor_de/0/fpdata on a device whose api_level says
+# the <=27 branch is a write that nothing will ever read, and its undo was not even printed -- so the
+# one thing this script is allowed to write could leave something behind that no line of output
+# mentioned. Deciding it here means section 5 cannot disagree with section 2 (docs 97).
+TARGET=""
 echo "== which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)"
 if [ -n "$A" ]; then
   # Read the properties INSIDE the container: the host's getprop is a stub (docs 50).
@@ -127,11 +135,14 @@ if [ -n "$A" ]; then
   lvl=${fal:-$sdk}
   printf '   ro.product.first_api_level = %s\n   ro.build.version.sdk      = %s\n' "${fal:-<unset>}" "${sdk:-<unset>}"
   case "$lvl" in
-    ''|*[!0-9]*) echo "   -> both unset/garbage: atoi(\"\")=0, so biometryd takes the <=27 branch: /data/system/users/0/fpdata/" ;;
+    ''|*[!0-9]*) echo "   -> both unset/garbage: atoi(\"\")=0, so biometryd takes the <=27 branch: /data/system/users/0/fpdata/"
+                 TARGET=/data/system/users/0/fpdata ;;
     *) if [ "$lvl" -le 27 ] 2>/dev/null; then
          echo "   -> level $lvl <= 27: biometryd passes /data/system/users/0/fpdata/"
+         TARGET=/data/system/users/0/fpdata
        else
          echo "   -> level $lvl > 27: biometryd passes /data/vendor_de/0/fpdata/  (check THAT one above)"
+         TARGET=/data/vendor_de/0/fpdata
        fi ;;
   esac
 else
@@ -193,23 +204,34 @@ if [ "$CREATE" = 1 ]; then
     echo "   aborted: need both a container and a running HAL (to learn the uid it must be writable by)"
     exit 1
   fi
+  if [ -z "$TARGET" ]; then
+    echo "   aborted: section 2 could not decide which of the two paths biometryd passes, so there is no"
+    echo "   single directory to create. Creating both would be a write nothing reads -- run section 2's"
+    echo "   properties by hand first."
+    exit 1
+  fi
   uid=$(awk '/^Uid:/{print $2}' "/proc/$H/status" 2>/dev/null)
   gid=$(awk '/^Gid:/{print $2}' "/proc/$H/status" 2>/dev/null)
-  for p in /data/system/users/0/fpdata /data/vendor_de/0/fpdata; do
-    # Through the container's namespace: nsenter -m makes /data mean the container's /data.
-    if nsenter -t "$A" -m -- test -e "$p"; then
-      echo "   exists already: $p"
-      nsenter -t "$A" -m -- ls -ldn "$p" 2>/dev/null | sed 's/^/   /'
-    else
-      nsenter -t "$A" -m -- mkdir -p "$p" && echo "   created $p"
-      # chown only if the HAL is not root: root can write anything, so the mode is then irrelevant.
-      if [ -n "$uid" ] && [ "$uid" != 0 ]; then
-        nsenter -t "$A" -m -- chown "$uid:$gid" "$p" 2>/dev/null && echo "   chown $uid:$gid $p"
-        nsenter -t "$A" -m -- chmod 0700 "$p" 2>/dev/null && echo "   chmod 0700 $p"
-      fi
-      nsenter -t "$A" -m -- ls -ldn "$p" 2>/dev/null | sed 's/^/   now: /'
+  case "$TARGET" in
+  /data/system/users/0/fpdata) OTHER=/data/vendor_de/0/fpdata ;;
+  *)                           OTHER=/data/system/users/0/fpdata ;;
+  esac
+  # Through the container's namespace: nsenter -m makes /data mean the container's /data.
+  if nsenter -t "$A" -m -- test -e "$TARGET"; then
+    echo "   exists already: $TARGET"
+    nsenter -t "$A" -m -- ls -ldn "$TARGET" 2>/dev/null | sed 's/^/   /'
+  else
+    nsenter -t "$A" -m -- mkdir -p "$TARGET" && echo "   created $TARGET"
+    # chown only if the HAL is not root: root can write anything, so the mode is then irrelevant.
+    if [ -n "$uid" ] && [ "$uid" != 0 ]; then
+      nsenter -t "$A" -m -- chown "$uid:$gid" "$TARGET" 2>/dev/null && echo "   chown $uid:$gid $TARGET"
+      nsenter -t "$A" -m -- chmod 0700 "$TARGET" 2>/dev/null && echo "   chmod 0700 $TARGET"
     fi
-  done
-  echo "   UNDO: nsenter -t $A -m -- rmdir /data/system/users/0/fpdata   (only if it is still empty)"
+    nsenter -t "$A" -m -- ls -ldn "$TARGET" 2>/dev/null | sed 's/^/   now: /'
+  fi
+  echo "   NOT created: $OTHER (section 2 says biometryd passes $TARGET, so nothing would ever read the"
+  echo "   other one; if the evidence later contradicts section 2, make it by hand:"
+  echo "     nsenter -t $A -m -- mkdir -p $OTHER"
+  echo "   UNDO: nsenter -t $A -m -- rmdir $TARGET   (only if it is still empty)"
   echo "   then restart whatever reports the failure and re-read the logcat counts above."
 fi

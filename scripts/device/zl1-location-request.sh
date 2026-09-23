@@ -101,6 +101,13 @@ grep -qa msm8996 /proc/device-tree/compatible 2>/dev/null ||
   { echo "not the zl1 (no msm8996 in /proc/device-tree/compatible) -- refusing" >&2; exit 1; }
 
 say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
+# The consent notice, which --quiet must not silence. This script has exactly one mode that takes
+# something away from the user -- --enable-testing installs a permission bypass that lets anything on
+# the device obtain its location -- and that notice was being printed through say(), i.e. it vanished
+# under --quiet and the bypass got installed with nothing said. "Be quieter" means fewer read-only
+# findings, never "do not tell me what I am about to give up"; the same rule the post-mortem harness
+# exists to enforce on the other side (a mode that acts must be the one thing that still speaks).
+warn() { printf '%s\n' "$*" >&2; }
 hdr() { [ "$QUIET" = 1 ] || printf '\n== %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -240,9 +247,9 @@ EOF
 fi
 
 if [ "$MODE" = enable ]; then
-  say "This installs a PERMISSION BYPASS: while it is in place, anything on the device can obtain"
-  say "the device's location. It is the image's own testing switch and it is reversible with"
-  say "  $0 --disable-testing"
+  warn "This installs a PERMISSION BYPASS: while it is in place, anything on the device can obtain"
+  warn "the device's location. It is the image's own testing switch and it is reversible with"
+  warn "  $0 --disable-testing"
   mkdir -p "$DROPIN_DIR" || { echo "cannot create $DROPIN_DIR" >&2; exit 1; }
   cat > "$TESTING_DROPIN" <<'EOF'
 [Service]

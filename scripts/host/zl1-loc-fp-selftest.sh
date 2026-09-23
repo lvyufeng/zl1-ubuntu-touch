@@ -1,0 +1,433 @@
+#!/bin/sh
+# zl1 location-request + fingerprint-probe -- offline self-test. Host-side, touches no device.
+#
+# Why these two together: they are the instruments for the two pieces of hardware that still have no
+# fix at all (docs 82/83/93), they are items 2b and 3 of the post-recovery order, and **each of them
+# has exactly one mode that writes to the device** -- `--enable-testing` installs a permission bypass
+# that lets anything on the phone obtain its location, `--create-store-dir` creates a directory in
+# Android's own /data. Everything else in both scripts is read-only, and the property that matters
+# most is therefore the one nothing on the host can observe by accident: **the write does not happen
+# unless it was asked for, and what was written is what gets undone.**
+#
+# Design note, and the difference from the other harnesses here: this one does NOT stub the writes.
+# It rewrites the two write *destinations* (the drop-in directory, the QML path) into a fake root and
+# lets the real `mkdir`/`cat >`/`rm` run, then asserts the fake root's state. That is a stronger
+# statement than an action log -- "the file the script claims to have written exists and holds
+# exactly this line" is checkable, while "a stub was called" is not. Only the commands that must not
+# act (systemctl) or must answer for a device that is not here (lxc-info, nsenter, logcat, getprop,
+# qmlscene, sleep) are stubbed.
+#
+# Two defects came out of writing this, both fixed (docs 97):
+#   * `--quiet --enable-testing` installed the permission bypass with NO notice anywhere, because the
+#     consent warning went through say(), which --quiet suppresses;
+#   * `--create-store-dir` created BOTH candidate paths while section 2 had already decided which one
+#     biometryd passes, and its undo line named only one of them.
+#
+# Usage: zl1-loc-fp-selftest.sh [--keep]
+#   --keep   leave the fake root, the rewritten scripts and the stub bin in place for inspection
+#
+# Exit codes: 0 every scenario behaved; 1 something did not; 2 the harness could not set up.
+
+set -u
+
+KEEP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --keep) KEEP=1; shift ;;
+  --help|-h) sed -n '2,30p' "$0"; exit 0 ;;
+  *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+HERE=$(dirname "$0")
+LOC="$HERE/../device/zl1-location-request.sh"
+FP="$HERE/../device/zl1-fingerprint-probe.sh"
+for f in "$LOC" "$FP"; do [ -r "$f" ] || { echo "cannot read $f" >&2; exit 2; }; done
+
+W=${TMPDIR:-/tmp}/zl1-loc-fp-selftest
+FR="$W/fake"
+STUB="$W/stub"
+ACT="$W/actions"
+rm -rf "$W"
+mkdir -p "$FR/proc/device-tree" "$FR/etc/systemd/system" "$FR/usr/bin" "$FR/usr/lib/qt5/bin" \
+         "$FR/dev" "$FR/sys/fs/selinux" "$FR/proc/4242" "$FR/proc/4242/root/data/system/users/0" \
+         "$FR/proc/4242/fd" "$W/tmp" "$STUB" "$W/exists" "$FR/proc/1/ns" || exit 2
+printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
+
+# The v63 stub over /usr/bin/getprop, which is what the real port has: a shell script with no custom.*
+# case. The probe's own detector looks for the shebang -- this is the branch that must fire.
+printf '#!/bin/sh\n# no-attach diagnostic stub\nexit 0\n' > "$FR/usr/bin/getprop"
+printf '#!/bin/sh\nexit 0\n' > "$FR/usr/lib/qt5/bin/qmlscene"
+chmod +x "$FR/usr/bin/getprop" "$FR/usr/lib/qt5/bin/qmlscene"
+
+# A fake HAL process in the fake /proc, so the probes' process walk finds one and the branch that
+# reads its uid, its namespaces and the store paths through /proc/<pid>/root is the one exercised.
+printf 'android.hardware.biometrics.fingerprint@2.1-service\x00' > "$FR/proc/4242/cmdline"
+cat > "$FR/proc/4242/status" <<'EOF'
+Name:	android.hardware.biometrics.fingerprint@2.1-service
+Uid:	1000	1000	1000	1000
+Gid:	1005	1005	1005	1005
+EOF
+printf '# the container init, for the namespace comparisons\n' > "$FR/proc/4242/root/x"
+# the daemon's maps, so "is the bridge library loaded" has something to find (section 4 of --status)
+printf '7f000000-7f001000 r-xp 00000000 fe:00 1 /usr/lib/aarch64-linux-gnu/libubuntu_platform_hardware_api.so\n' \
+  > "$FR/proc/4242/maps"
+
+# --- the stub bin --------------------------------------------------------------------------------
+#
+# Only what must not act, or must answer for a device that is not here. Everything else (awk, grep,
+# sed, cat, ls, tr, cut, date, readlink -- and the writes themselves) runs for real, inside the fake
+# root, so that the assertions can look at actual files.
+mkstub() { # name
+  printf '#!/bin/sh\nprintf "%%s %%s\\n" "%s" "$*" >> "%s"\n' "$1" "$ACT" > "$STUB/$1"
+  chmod +x "$STUB/$1"
+}
+mkstub sleep
+# systemctl: records every call AND answers the read-only queries, so the branches that read a unit's
+# state are reached -- "no pid to inspect" would hide the bridge-library check entirely.
+cat > "$STUB/systemctl" <<EOF
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >> "$ACT"
+case "\$*" in
+*"show -p ExecMainPID"*) printf '4242\n' ;;
+*"show -p ExecStart"*)   printf '{ path=/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper ; argv[]=/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper --provider gps::Provider ; ignore_errors=no }\n' ;;
+*"show -p NRestarts"*)   printf '0\n' ;;
+*"is-enabled"*)          printf 'enabled\n' ;;
+*"is-active"*)           printf 'active\n' ;;
+*"status"*)              printf '  a canned unit status block\n' ;;
+esac
+exit 0
+EOF
+chmod +x "$STUB/systemctl"
+
+cat > "$STUB/lxc-info" <<EOF
+#!/bin/sh
+printf 'lxc-info %s\n' "\$*" >> "$ACT"
+case "\${FAKE_CONTAINER_PID:-4242}" in none) ;; *) printf '%s\n' "\${FAKE_CONTAINER_PID:-4242}" ;; esac
+exit 0
+EOF
+
+# nsenter: records, and answers the three questions the scripts ask through it -- the two api-level
+# properties and "does this path exist". The existence answer comes from $W/exists/<basename>, so a
+# scenario pre-creates a directory by touching a file.
+cat > "$STUB/nsenter" <<EOF
+#!/bin/sh
+printf 'nsenter %s\n' "\$*" >> "$ACT"
+case "\$*" in
+*"getprop ro.product.first_api_level"*) printf '%s' "\$FAKE_FAL" ;;
+*"getprop ro.build.version.sdk"*)       printf '%s' "\$FAKE_SDK" ;;
+*"test -e"*)  p="\${*##*test -e }"; p="\${p%% *}"
+              [ -n "\$p" ] && [ -e "$W/exists/\$(basename "\$p")" ] && exit 0
+              exit 1 ;;
+esac
+exit 0
+EOF
+
+cat > "$STUB/lshal" <<EOF
+#!/bin/sh
+printf 'lshal %s\n' "\$*" >> "$ACT"
+printf '%s\n' 'android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default'
+exit 0
+EOF
+
+cat > "$STUB/logcat" <<EOF
+#!/bin/sh
+printf 'logcat %s\n' "\$*" >> "$ACT"
+cat "$W/logcat.txt" 2>/dev/null
+exit 0
+EOF
+
+cat > "$STUB/getprop" <<EOF
+#!/bin/sh
+printf 'getprop %s\n' "\$*" >> "$ACT"
+exit 0
+EOF
+cat > "$STUB/setprop" <<EOF
+#!/bin/sh
+printf 'setprop %s\n' "\$*" >> "$ACT"
+exit 0
+EOF
+cat > "$STUB/qmlscene" <<EOF
+#!/bin/sh
+printf 'qmlscene %s\n' "\$*" >> "$ACT"
+printf 'ZL1POS ready name=lomiri valid=false active=true supportedMethods=0\n'
+printf 'ZL1POS tick active=true valid=false err=0 lat=none\n'
+exit 0
+EOF
+chmod +x "$STUB"/*
+
+# --- the scripts under test ---------------------------------------------------------------------
+#
+# Only the destinations of the writes and the paths the guards read are moved. `sh -n` plus a landed
+# check per rewrite, because a rewrite that silently misses is an untested copy -- the failure mode
+# doc 95 records for the post-mortem harness.
+rewrite() { # $1 src, $2 dst
+  sed -e "s#/proc/device-tree/compatible#$FR/proc/device-tree/compatible#g" \
+      -e "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g" \
+      -e "s|\${p#/proc/}|\${p#$FR/proc/}|g" \
+      -e "s#/proc/\$H#$FR/proc/\$H#g" \
+      -e "s#/proc/\$_pid#$FR/proc/\$_pid#g" \
+      -e "s#/proc/\$A#/proc/\$A#g" \
+      -e "s#/etc/systemd/system#$FR/etc/systemd/system#g" \
+      -e "s#^QML=/tmp/#QML=$W/tmp/#" \
+      -e "s#/usr/bin/getprop#$FR/usr/bin/getprop#g" \
+      -e "s#/usr/lib/qt5/bin/qmlscene#$FR/usr/lib/qt5/bin/qmlscene#g" \
+      -e "s#/dev/goodix_fp#$FR/dev/goodix_fp#g" \
+      -e "s#/sys/fs/selinux#$FR/sys/fs/selinux#g" \
+      "$1" > "$2" || return 1
+  sh -n "$2" || return 1
+  return 0
+}
+rewrite "$LOC" "$W/loc.sh" || { echo "the rewritten location script does not parse" >&2; exit 2; }
+rewrite "$FP"  "$W/fp.sh"  || { echo "the rewritten fingerprint script does not parse" >&2; exit 2; }
+grep -qF "$FR/proc/device-tree/compatible" "$W/loc.sh" && grep -qF "$FR/proc/device-tree/compatible" "$W/fp.sh" \
+  || { echo "the zl1-guard rewrite did not land" >&2; exit 2; }
+# double-quoted so $FR expands and ${UNIT} does not -- the point is that the file still says ${UNIT}.d
+grep -qF "DROPIN_DIR=$FR/etc/systemd/system/\${UNIT}.d" "$W/loc.sh" \
+  || { echo "the drop-in directory rewrite did not land (and it must still be \${UNIT}.d -- the FULL unit name, which systemd requires)" >&2; exit 2; }
+grep -qF "QML=$W/tmp/zl1-location-request.qml" "$W/loc.sh" \
+  || { echo "the QML path rewrite did not land" >&2; exit 2; }
+grep -qF "$FR/proc/[0-9]*" "$W/fp.sh" || { echo "the process-walk rewrite did not land" >&2; exit 2; }
+
+DROPIN="$FR/etc/systemd/system/lomiri-location-service.service.d"
+TESTING="$DROPIN/zl1-testing.conf"
+QMLF="$W/tmp/zl1-location-request.qml"
+
+# --- the checks ----------------------------------------------------------------------------------
+
+PASS=0
+FAIL=0
+ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
+want()    { if printf '%s\n' "$2" | grep -Eq "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
+notwant() { if printf '%s\n' "$2" | grep -Eq "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+# The stub log. `systemctl` is called for read-only queries in every mode (is-active, show, status),
+# so "did not call systemd" is the wrong assertion -- what must not happen is a call that changes the
+# device: a daemon-reload, a restart, a mask, a stop.
+sysacts() { grep -E '^systemctl ' "$ACT" 2>/dev/null; }
+syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|enable|disable|reload)' "$ACT" 2>/dev/null; }
+
+# $1 = script, rest = args. stdout+stderr in $OUT, exit code in $RC (124 = it hung). The three
+# FAKE_* values are what the device would have answered through lxc-info/nsenter, so a scenario that
+# wants a different device state sets them and calls env_reset afterwards.
+RUN_FAL=27; RUN_SDK=27; RUN_PID=4242
+env_reset() { RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; }
+run() {
+  s="$1"; shift
+  : > "$ACT"
+  OUT=$(PATH="$STUB:$PATH" FAKE_FAL="$RUN_FAL" FAKE_SDK="$RUN_SDK" FAKE_CONTAINER_PID="$RUN_PID" \
+        timeout 60 sh "$s" "$@" 2>&1); RC=$?
+}
+
+echo "zl1 location-request + fingerprint-probe -- offline self-test"
+echo "  scripts under test: $LOC"
+echo "                      $FP"
+echo "  fake root:          $FR"
+echo
+
+# ==================================================================================================
+echo "== 1. --status: read-only, and it says the true thing about the two levers =="
+# ==================================================================================================
+run "$W/loc.sh" --status
+printf '%s\n' "$OUT" > "$W/out.status"
+[ "$RC" = 0 ] && ok "--status exits 0" || bad "--status exited $RC"
+[ -z "$(syswrite)" ] && ok "--status makes no systemd call that changes anything" \
+                    || { bad "--status would change the device:"; syswrite | sed 's/^/        | /'; }
+[ -d "$DROPIN" ] && bad "--status created the drop-in directory" || ok "--status created nothing on disk"
+want 'com\.lomiri\.location\.Service' "$OUT" "--status asks the bus who owns the service"
+want 'v63 STUB' "$OUT" "--status detects the v63 getprop stub (which is what makes both doc 82 levers dead)"
+want 'custom\.location\.testing' "$OUT" "--status names the property the wrapper reads"
+want 'libubuntu_platform_hardware_api' "$OUT" "--status looks for the bridge library in the daemon"
+want 'not mapped|MAPPED' "$OUT" "--status answers that question rather than skipping it"
+
+# ==================================================================================================
+echo
+echo "== 2. --explain: prints the two drop-ins, installs neither =="
+# ==================================================================================================
+run "$W/loc.sh" --explain
+printf '%s\n' "$OUT" > "$W/out.explain"
+[ "$RC" = 0 ] && ok "--explain exits 0" || bad "--explain exited $RC"
+[ ! -d "$DROPIN" ] && ok "--explain wrote nothing (the drop-in directory still does not exist)" \
+                   || bad "--explain created the drop-in directory"
+[ -z "$(syswrite)" ] && ok "--explain makes no systemd call that changes anything" || bad "--explain would change the device"
+want 'TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING=1' "$OUT" "--explain prints gate 1's drop-in"
+want 'lomiri-location-service\.service\.d' "$OUT" "--explain spells the directory with the FULL unit name"
+want 'PERMISSION BYPASS' "$OUT" "--explain says out loud what A is"
+want 'still behind gate 1' "$OUT" "--explain keeps the fake-coordinate drop-in behind gate 1 (the second reason it never worked)"
+want '^ *ExecStart=$' "$OUT" "--explain shows the bare ExecStart= that resets the list"
+
+# ==================================================================================================
+echo
+echo "== 3. --enable-testing: one file, that content, that restart -- and a notice nobody can silence =="
+# ==================================================================================================
+run "$W/loc.sh" --enable-testing
+printf '%s\n' "$OUT" > "$W/out.enable"
+[ "$RC" = 0 ] && ok "--enable-testing exits 0" || bad "--enable-testing exited $RC"
+[ -d "$DROPIN" ] && ok "it created the drop-in directory" || bad "no drop-in directory"
+# The file itself, not a stub log: this is the permission bypass, so its exact content matters.
+if [ -f "$TESTING" ]; then
+  ok "it wrote $TESTING"
+  got=$(grep -v '^ *#\|^$\|^\[Service\]$' "$TESTING")
+  [ "$got" = 'Environment=TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING=1' ] \
+    && ok "the drop-in holds exactly that one Environment= line under [Service] and nothing else" \
+    || { bad "the drop-in content is [$got]"; sed 's/^/        | /' "$TESTING"; }
+else
+  bad "the drop-in was not written at all"
+fi
+[ "$(ls "$DROPIN" | tr -d ' ')" = "zl1-testing.conf" ] && ok "that is the only file it added" \
+  || { bad "the directory holds more than that:"; ls "$DROPIN" | sed 's/^/        | /'; }
+want '^systemctl daemon-reload' "$(sysacts)" "and it asks for a daemon-reload"
+want '^systemctl restart lomiri-location-service\.service' "$(sysacts)" "and restarts exactly that one unit"
+notwant '^systemctl restart (?!lomiri-location-service)' "$(sysacts)" "and nothing else"
+want 'PERMISSION BYPASS' "$OUT" "it says what it is doing"
+
+echo
+echo "   -- the notice under --quiet, which is the defect this round found:"
+run "$W/loc.sh" --enable-testing --quiet
+printf '%s\n' "$OUT" > "$W/out.enable.quiet"
+want 'PERMISSION BYPASS' "$OUT" "--quiet --enable-testing STILL says it is installing a permission bypass"
+want 'anything on the device can obtain' "$OUT" "and still says what that means"
+want 'disable-testing' "$OUT" "and still names the way back"
+notwant 'is-enabled|ExecStart|drop-ins  ' "$OUT" "--quiet did suppress the read-only analysis, so this is not just 'quiet is broken'"
+[ -f "$TESTING" ] && ok "and the bypass really was installed, so the notice was needed" \
+                  || bad "the bypass was not installed, so this scenario proves nothing"
+
+# ==================================================================================================
+echo
+echo "== 4. --disable-testing: removes that one file, and only when it is there =="
+# ==================================================================================================
+: > "$DROPIN/zl1-dummy.conf"     # the other drop-in must survive
+run "$W/loc.sh" --disable-testing
+printf '%s\n' "$OUT" > "$W/out.disable"
+[ ! -f "$TESTING" ] && ok "it removed the testing drop-in" || bad "the testing drop-in is still there"
+[ -f "$DROPIN/zl1-dummy.conf" ] && ok "it left the fake-coordinate drop-in alone" \
+                               || bad "it removed zl1-dummy.conf as well"
+want '^systemctl restart lomiri-location-service\.service' "$(sysacts)" "it restarts the unit, so gate 1 closes now"
+want 'removed' "$OUT" "it reports the removal"
+
+echo
+echo "   -- and with nothing installed: nothing removed, and no false claim:"
+rm -f "$DROPIN/zl1-dummy.conf"; rmdir "$DROPIN" 2>/dev/null
+run "$W/loc.sh" --disable-testing
+printf '%s\n' "$OUT" > "$W/out.disable.absent"
+[ ! -d "$DROPIN" ] && ok "with nothing installed it created nothing" || bad "it created the drop-in directory"
+notwant '^removed ' "$OUT" "it does not claim to have removed anything"
+want 'nothing to remove' "$OUT" "it says there was nothing to remove"
+want '^systemctl restart lomiri-location-service\.service' "$(sysacts)" "and still restarts the unit (unambiguous state, no write involved)"
+
+# ==================================================================================================
+echo
+echo "== 5. --request: writes the client and nothing else =="
+# ==================================================================================================
+rm -f "$QMLF"
+run "$W/loc.sh" --request --seconds 5
+printf '%s\n' "$OUT" > "$W/out.request"
+[ "$RC" = 0 ] && ok "--request exits 0" || bad "--request exited $RC"
+[ -f "$QMLF" ] && ok "it wrote the client to its own /tmp path" || bad "no QML client was written"
+if [ -f "$QMLF" ]; then
+  want 'name: "lomiri"' "$(cat "$QMLF")" "the client asks for the lomiri plugin (the key from the .so's own metadata)"
+  want 'deadlineMs: 5000' "$(cat "$QMLF")" "--seconds 5 reached the client's own deadline"
+  want 'PositionSource' "$(cat "$QMLF")" "it is a PositionSource, so the marshalling is the library's, not a guess"
+fi
+[ ! -d "$DROPIN" ] && ok "--request installed no drop-in (it only measures)" || bad "--request created the drop-in directory"
+[ -z "$(syswrite)" ] && ok "--request makes no systemd call that changes anything" || bad "--request would change the device"
+want 'ZL1POS' "$OUT" "it prints the client's own lines unaltered"
+want 'supportedMethods=0' "$OUT" "including the one that means 'plugin loaded, no backend'"
+want 'gate 1' "$OUT" "and it states which gate state the result is to be read against"
+
+# ==================================================================================================
+echo
+echo "== 6. the zl1 guard and the flag surface (see the device these must refuse on) =="
+# ==================================================================================================
+printf 'qcom,msm8997\n' > "$FR/proc/device-tree/compatible"
+run "$W/loc.sh" --enable-testing
+[ "$RC" = 1 ] && ok "not-the-zl1 exits 1 rather than proceeding" || bad "not-the-zl1 exited $RC"
+[ ! -d "$DROPIN" ] && ok "and on the wrong device it wrote nothing" || bad "it installed the bypass on the wrong device"
+run "$W/fp.sh" --create-store-dir
+[ "$RC" = 1 ] && ok "the fingerprint probe refuses too" || bad "the fingerprint probe exited $RC"
+printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
+
+for s in "$W/loc.sh" "$W/fp.sh"; do
+  run "$s" --nope
+  [ "$RC" = 2 ] && ok "$(basename "$s"): an unknown argument exits 2" || bad "$(basename "$s"): unknown argument exited $RC"
+  run "$s" --help
+  want 'Usage|--' "$OUT" "$(basename "$s"): --help prints a usage block"
+done
+msg=$(PATH="$STUB:$PATH" sh "$W/loc.sh" --seconds 2>&1 >/dev/null | head -1)
+case "$msg" in
+*"parameter not set"*|*"unbound variable"*) bad "'--seconds' with no value aborted the shell: $msg" ;;
+*) ok "'--seconds' with no value does not abort the shell (this script defaults it)" ;;
+esac
+
+# ==================================================================================================
+echo
+echo "== 7. fingerprint: the default run writes nothing at all =="
+# ==================================================================================================
+printf 'setActiveGroup failed: SYS_EINVAL\nStart biometrics\nConnected to IBiometricsFingerprint::2.1 service\n' > "$W/logcat.txt"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp"
+[ "$RC" = 0 ] && ok "the default run exits 0" || bad "the default run exited $RC"
+[ -z "$(syswrite)" ] && ok "the default run makes no systemd call that changes anything" || bad "the default run would change the device"
+[ ! -d "$FR/data/system/users/0/fpdata" ] && ok "and it created no store directory" || bad "it created one"
+want 'read-only' "$OUT" "it announces that it is read-only when --create-store-dir is not given"
+want 'access\(W_OK\) with uid=1000' "$OUT" "it states the real question: access() with the HAL's own uid"
+want '/data/system/users/0/fpdata' "$OUT" "and lists the path biometryd actually passes"
+want 'MISSING  /data/system/users/0/fpdata' "$OUT" "whose absence is the finding"
+want 'setActiveGroup failed' "$OUT" "it counts the caller's line"
+want 'Bad path length' "$OUT" "and the HAL's own line, whose being zero is the evidence"
+want 'Start biometrics' "$OUT" "and the line that puts the failure after openHal()"
+want 'level 27 <= 27' "$OUT" "it decides which of the two paths biometryd passes, and says so"
+
+# ==================================================================================================
+echo
+echo "== 8. --create-store-dir: ONE path, decided by section 2, with its own undo =="
+# ==================================================================================================
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create"
+want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "level 27 -> it creates /data/system/users/0/fpdata"
+notwant 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "and NOT the other candidate (the defect this round fixed)"
+want 'created /data/system/users/0/fpdata' "$OUT" "it reports what it created"
+want 'UNDO: nsenter -t 4242 -m -- rmdir /data/system/users/0/fpdata' "$OUT" "the undo names the path it created"
+want 'NOT created: /data/vendor_de/0/fpdata' "$OUT" "and it says which path it deliberately did not create"
+notwant 'UNDO:.*vendor_de' "$OUT" "the undo does not name a path that was never created"
+
+echo
+echo "   -- the other branch of section 2, driven by the property it reads:"
+RUN_FAL=29; RUN_SDK=29
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create29"
+want 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "level 29 -> it creates /data/vendor_de/0/fpdata"
+notwant 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and not the <=27 path"
+want 'UNDO: nsenter -t 4242 -m -- rmdir /data/vendor_de/0/fpdata' "$OUT" "with the matching undo"
+
+echo
+echo "   -- an unreadable property lands on the SAME path a correct Android 8 would use:"
+RUN_FAL=; RUN_SDK=
+run "$W/fp.sh" --create-store-dir
+want 'atoi\(""\)=0' "$OUT" "it explains that atoi(\"\")=0"
+want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and creates the <=27 path, as biometryd would"
+
+echo
+echo "   -- already there: no mkdir, no chown, no chmod -- and it does not pretend otherwise:"
+: > "$W/exists/fpdata"
+env_reset
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create.exists"
+notwant 'mkdir ' "$(cat "$ACT")" "with the directory present it creates nothing"
+notwant 'chown |chmod ' "$(cat "$ACT")" "and changes no ownership or mode"
+want 'exists already' "$OUT" "it says the directory was already there"
+
+echo
+echo "   -- the uid it would chown to comes from the HAL, so no HAL means no write:"
+rm -f "$W/exists/fpdata"
+RUN_PID=none
+run "$W/fp.sh" --create-store-dir
+printf '%s\n' "$OUT" > "$W/out.fp.create.nohal"
+[ "$RC" = 1 ] && ok "with no container it exits 1" || bad "with no container it exited $RC"
+notwant 'mkdir ' "$(cat "$ACT")" "and writes nothing at all"
+want 'aborted' "$OUT" "it says it aborted rather than reporting a success"
+
+echo
+echo "pass=$PASS fail=$FAIL"
+[ "$KEEP" = 1 ] || rm -rf "$W"
+[ "$FAIL" = 0 ]
