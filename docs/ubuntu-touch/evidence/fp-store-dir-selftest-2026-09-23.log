@@ -1,0 +1,242 @@
+zl1 fingerprint store directory installer -- offline harness evidence
+date: 2026-09-23   host: Linux 5.15.0-190-generic   uid: 1001
+subject: scripts/install-fingerprint-store-dir.sh (new, this round)
+harness: scripts/host/zl1-fp-store-dir-selftest.sh
+device: NOT touched. The zl1 is in Qualcomm EDL (05c6:9008); nothing here talks to it.
+
+==============================================================================
+1. the harness against the shipped installer
+==============================================================================
+zl1 fingerprint store directory -- offline self-test for the fix
+  installer under test: scripts/host/../install-fingerprint-store-dir.sh
+  fake device:          /tmp/zl1-fp-store-dir-selftest/fake   (Android data at /tmp/zl1-fp-store-dir-selftest/fake/var/lib/android-data)
+  HAL in the fixture:   pid 1234, uid 1001 (the harness's own uid: see the file header)
+
+== 1. the fake device is the shape the script expects ==
+PASS  the fake UT-side getprop is executable
+PASS  and with no values file it answers nothing, which IS the v63 stub shape (docs 101)
+PASS  the HAL's namespace resolves /data to the Android partition
+PASS  and its cmdline is the one the script matches
+PASS  the partition is in /proc/mounts
+
+== 2. the flag surface, and the device guard ==
+PASS  an unknown argument exits 2
+PASS  --help exits 0
+PASS  and prints its own usage block
+PASS  which names the branch this fix is about
+PASS  on a device that is not the zl1 it exits 1
+PASS  and says what it looked for, rather than failing somewhere later
+PASS  and it stopped before any other ssh call
+
+== 3. the PRE-FIX state: the directory is missing and --status says so ==
+PASS  before anything: the directory biometryd passes does NOT exist (the blocker)
+PASS  --status exits 0
+PASS  --status writes nothing to the fake device
+PASS  and makes no systemd call that changes anything
+PASS  it reports the missing directory by asking through the HAL's OWN namespace
+PASS  and names the HAL process and the uid it runs as
+PASS  it resolves the path the way biometryd does, and shows the level it read
+PASS  printing the empty answer the v63 stub gives, so 'why 0' is visible
+PASS  and the path it deliberately does NOT create is stated, not omitted (docs 97)
+PASS  and the partition question is answered from /proc/mounts
+PASS  and the caller's own failure count, from biometryd's JOURNAL (never logcat, docs 103)
+PASS  with the daemon's state and restart count
+PASS  and the container's SELinux state, so 'no restorecon' is a checked assumption
+PASS  it says the unit is not installed
+PASS  --explain exits 0
+PASS  --explain writes nothing
+PASS  it names the thing whose job this was
+PASS  and quotes what Android actually does, so the fix is a copy of it
+PASS  and states that the write alone is not reported as a fix
+PASS  and what it deliberately does not create
+PASS  and what --remove leaves behind, before anyone runs it
+
+== 4. --install: exactly two files, that content, enabled, and the directory really created ==
+PASS  --install exits 0
+PASS  it wrote the applier
+PASS  and the unit
+PASS  and those are the only two files it added
+PASS  the landed applier still carries the DEVICE path, not the harness's
+PASS  and nothing of the fake root leaked into it
+PASS  it is an sh script
+PASS  it sets the mode access(W_OK) needs
+PASS  and carries the refusal gate for an unmounted partition
+PASS  and the read-back that makes a silent failure impossible
+PASS  naming what the read-back is for
+PASS  the unit is oneshot
+PASS  RemainAfterExit, so its result stays readable
+PASS  ordered after the Android data mount
+PASS  and after the port's container-configuration point
+PASS  and BEFORE biometryd, which is what calls setActiveGroup
+PASS  with the applier as its ExecStart, by DEVICE path
+PASS  and it is wanted by multi-user
+PASS  it enables the unit
+PASS  and verifies with systemctl cat, not is-enabled (docs 63)
+PASS  the enable created the wants symlink
+PASS  THE DIRECTORY EXISTS: this is the fix
+PASS  and the other candidate was NOT created (docs 97)
+PASS  and it reports the applier's own run as a success
+PASS  the applier says 'created', not 'checked'
+PASS  naming the rule it followed, so the reason the path is this one is on screen
+PASS  and taking the owner from the HAL's own /proc entry
+PASS  and prints the read-back, so the fix is measured and not asserted
+PASS  with no mismatch on a healthy device
+PASS  and lists both candidates, from the host path
+PASS  naming the second one as absent rather than leaving it blank
+PASS  and it created exactly the four directories that one path needs, nothing else in the partition
+
+   -- and --install changes NOTHING else: no restart, no flash, no other partition
+PASS  it starts and stops nothing: the retry logic belongs to biometryd
+PASS  and nothing in its output mentions a flash
+
+== 5. --status after the fix: AGREE, and the two questions it answers ==
+PASS  --status exits 0 with the fix installed
+PASS  it reports the unit as present
+PASS  and that systemd can read it
+PASS  and that it is enabled
+PASS  and that the installed directory is the one biometryd's rule selects -- the cross-check
+PASS  the directory now exists as the HAL sees it
+PASS  and its owner matches the HAL's uid (the access(W_OK) test)
+PASS  with the host-side view of the same directory
+PASS  and the second candidate is still absent, and said to be
+
+   -- while the HAL is not running, it says what it would fall back to:
+PASS  with no matching cmdline it says the HAL is not running
+PASS  and names the fallback uid, so the absence is not silent
+
+== 6. the refusal gate: with the partition NOT mounted it must create nothing ==
+PASS  the applier exits 1 when the partition is not mounted
+PASS  and says exactly which path it refused
+PASS  and why creating it there would be wrong
+PASS  and nothing at all was written
+
+   -- and --status reports the same thing rather than guessing:
+PASS  the read-only report says the applier would refuse, which is the gate's own sentence
+
+== 7. WHICH path: the applier follows biometryd's rule, re-read every boot ==
+PASS  a getprop answering 29 makes the applier take the > 27 branch
+PASS  and it works on /data/vendor_de/0/fpdata
+PASS  the vendor_de directory is the one it created
+PASS  and it did NOT create the system/users/0 one
+
+   -- and --status says DISAGREE when the directory on disk is not the one the rule selects:
+PASS  --status re-reads the rule and now finds the <= 27 branch
+PASS  so it says the directory on disk is not the one biometryd will pass
+PASS  and names the fix for that state
+PASS  and says out loud that the directory nothing reads is present
+
+   -- and with neither on disk it says so, rather than reporting a fix:
+PASS  a device with no directory at all is not reported as AGREE or DISAGREE
+
+   -- the answer that is not a number takes the same branch an empty answer does:
+PASS  atoi() of garbage is 0, exactly like atoi("") -- both take <= 27
+PASS  and the system/users/0 directory is the one created
+
+   -- and a getprop that is not executable is the same as one that answers nothing:
+PASS  an unusable getprop still lands on the <= 27 branch, as biometryd would
+PASS  and the directory is still the right one
+
+   -- while a build whose rule has been replaced by a CONSTANT gets it wrong on the same device:
+PASS  the constant build prints a reason that contradicts itself, which is the tell
+PASS  and works on the path level 29 does not select
+PASS  so on the SAME fixture it creates a directory biometryd will never pass
+PASS  and not the one the shipped applier made, which is the whole difference
+
+== 8. the read-back: a directory that merely EXISTS is not the fix ==
+PASS  it exits 1 when the directory does not read back as the caller's
+PASS  naming what it got and what access(W_OK) needs
+PASS  and saying the one thing an operator must not conclude
+PASS  it took the 'checked' branch, because the directory was already there
+
+   -- and a chown the kernel refuses is caught by the same read-back:
+PASS  with the HAL's own uid it still exits 0, because chown was not needed
+PASS  and the repair is reported: the mode it found was not the mode it needs
+PASS  and the mode really is 770 afterwards
+
+   -- a directory that is ALREADY right is left alone:
+PASS  the second run exits 0
+PASS  it takes the 'checked' branch, not 'created'
+PASS  and does not claim a repair it did not make
+
+== 9. the safety guard: the landed applier must never be run with device paths ==
+PASS  with no rewritten copy the stub refuses to run the landed applier
+PASS  and says so in the run's own output, not just in a log
+PASS  and the installer reports that failure instead of a fix
+PASS  it does not tell the operator the fingerprint is fixed
+PASS  and nothing was created on THIS host (the guard's whole purpose)
+PASS  the applier is still on the device (the run failed, the write did not)
+
+== 10. --remove: its own three paths, and the directory left behind on purpose ==
+PASS  the fix is installed before the removal is tested
+PASS  --remove exits 0
+PASS  the applier is gone
+PASS  the unit is gone
+PASS  and the wants symlink
+PASS  and it removed nothing else
+PASS  it disables and stops the unit
+PASS  it names each path it removed
+PASS  THE DIRECTORY SURVIVES: removing it would break the fingerprint again
+PASS  and it says so rather than leaving the reader to guess
+PASS  printing the exact undo, as a DEVICE path
+PASS  with the emptiness check that has to come first
+PASS  a second --remove also exits 0
+PASS  and still removed nothing of anyone else's
+
+== 11. what this cannot test, and says so ==
+SKIP  that biometryd really passes the path the rule picks, and that setActiveGroup then returns
+      0. Both are device facts (docs 83 measured the first offline, the second never): the
+      instrument is scripts/device/zl1-fingerprint-probe.sh, run after this fix is installed.
+SKIP  that access(W_OK) passes once the owner matches. It follows from the HAL source, but the
+      HAL has never been observed succeeding on this device.
+
+pass=130 fail=0 skip=2 (device facts, named above)
+
+==============================================================================
+2. teeth: the same harness against four mutations of that installer
+   (a harness that cannot fail proves nothing; each line is the tail of a full run)
+==============================================================================
+
+--- mutation: the read-back is removed, so 'the directory exists' is reported as the fix
+    sed: s/^log "MISMATCH: \$D is uid=.*/log "read back: ignoring what the directory says"/
+    what this breaks, in the harness's words:
+      FAIL  and the read-back that makes a silent failure impossible
+      FAIL  naming what it got and what access(W_OK) needs
+    pass=128 fail=2 skip=2 (device facts, named above)
+
+--- mutation: the refusal gate is removed, so it would create the directory on an unmounted partition
+    sed: s/^if ! awk -v m="\$MNT" .*$/if false; then/
+    what this breaks, in the harness's words:
+      FAIL  it exited 0
+      FAIL  and says exactly which path it refused
+      FAIL  and why creating it there would be wrong
+    pass=127 fail=3 skip=2 (device facts, named above)
+
+--- mutation: the /data prefix strip is dropped, so the host path is one 'data' too many
+    sed: s/^PH=\/var\/lib\/android-data\${P#\/data}$/PH=\/var\/lib\/android-data$P/
+    what this breaks, in the harness's words:
+      FAIL  and that the installed directory is the one biometryd's rule selects -- the cross-check
+      FAIL  with the host-side view of the same directory
+    pass=128 fail=2 skip=2 (device facts, named above)
+
+--- mutation: the path is HARDCODED in the applier, so the rule the device actually uses is ignored
+    sed: s/^if \[ "\$api" -le 27 \]; then$/if :; then/
+    what this breaks, in the harness's words:
+      FAIL  a getprop answering 29 makes the applier take the > 27 branch
+      FAIL  and it works on /data/vendor_de/0/fpdata
+      FAIL  it did not create the vendor_de one
+      FAIL  it created both paths
+      FAIL  so it says the directory on disk is not the one biometryd will pass
+      FAIL  and names the fix for that state
+      FAIL  and says out loud that the directory nothing reads is present
+    pass=123 fail=7 skip=2 (device facts, named above)
+
+==============================================================================
+3. restored, and re-run:
+==============================================================================
+pass=130 fail=0 skip=2 (device facts, named above)
+
+note on mutation 3: it is the defect the harness found in the first draft of the
+installer -- --status computed the host path as /var/lib/android-data$P where $P is
+already /data/..., i.e. /var/lib/android-data/data/system/..., so on a device where
+--install had just created the directory, --status reported NEITHER exists. The
+harness reported it as a failure of the cross-check, not as a bug in itself.
