@@ -1,0 +1,38 @@
+zl1 boot-address check -- offline self-test
+  script under test: scripts/host/../device/zl1-boot-address-check.sh
+  fake root:         /tmp/zl1-ba-selftest/fake
+
+== verdict logic ==
+PASS  A: the netwatch configured it, no heal -> netwatch-configured (exit 0)
+PASS  B: the addresses arrived only after a heal -> heal-first (exit 1)
+PASS  C: the newest boot says nothing (an older one did) -> inconclusive (exit 1)
+PASS  D: the newest boot is clean (an older one healed) -> netwatch-configured (exit 0)
+PASS  E: a heal and no addresses at all -> heal-first (exit 1)
+
+== the netwatch's own state line ==
+PASS  the process age comes from field 22 after stripping comm
+PASS  the unit state prints once (not twice when systemctl prints and fails)
+
+== the stale-install branch (an installed build without ensure_addrs) ==
+PASS  it says so and points at the reinstall
+
+== a flag with no value must not abort the shell ==
+PASS  '--log' with no value -> a message and a clean exit
+PASS  '--log ""' is handled without a shell error (it reports the log unreadable)
+
+== a log with no boot boundary at all ==
+PASS  F: no boundary anywhere -> 'has never run' (exit 1)
+PASS  G: a boundary with nothing under it is still a boot
+PASS  G: it is not confused with a log that has no boundary
+
+== the cap ==
+PASS  H: it says the section was cut at the cap
+
+== the scan on a log the size of the real one, under the device's kind of awk ==
+  section: 2301046 bytes, one boundary (mawk as awk)
+PASS  BIG: a 2301046-byte section scanned under mawk in 0s, verdict inconclusive (exit 1)
+PASS  BIG: the OLD accumulator is still over 15 s on this log under mawk (15s) -- the size is decisive
+PASS  the accumulator is gone from the script under test (the header may still name it)
+PASS  the reader bounds what it keeps (the cap is in the script)
+
+pass=18 fail=0 skip=0

@@ -12,10 +12,14 @@
 # script's own --log flag (that is what the flag is for) and rewrites the device paths into a fake
 # root, so the real script is the thing under test -- not a copy of its logic.
 #
+# It also runs the log scan against a LARGE log under an `awk` that is not gawk, because the shape of
+# the device's `awk` is what broke it (docs 108): the accumulator that cost one core for 11 minutes on
+# the device runs in 0.4 s on the workstation that wrote it.
+#
 # Usage: zl1-boot-address-selftest.sh [--keep]
 #   --keep   leave the fake root and the rewritten script in place for inspection
 #
-# Exit codes: 0 every scenario behaved; 1 something did not.
+# Exit codes: 0 every scenario behaved; 1 something did not; 2 the harness itself could not run.
 
 set -u
 
@@ -23,7 +27,7 @@ KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --keep) KEEP=1; shift ;;
-  --help|-h) sed -n '2,20p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -119,6 +123,7 @@ EOF
 
 PASS=0
 FAIL=0
+SKIP=0
 ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
 
@@ -191,6 +196,152 @@ case "$out" in
 esac
 
 echo
-echo "pass=$PASS fail=$FAIL"
+echo "== a log with no boot boundary at all =="
+# The header line the reader writes now exists even when the section holds nothing, so "no start
+# line" and "a start line with nothing interesting under it" have to be told apart by the COUNT,
+# not by the section file being empty. These two logs are that pair.
+printf '3.00s sample rx=1 tx=1 frozen=0\n9.00s sample rx=2 tx=2 frozen=0\n' > "$FR/userdata/F.log"
+out=$(sh "$W/check.sh" --log "$FR/userdata/F.log" 2>/dev/null); rc=$?
+case "$out" in
+*"has never run on this device"*) ok "F: no boundary anywhere -> 'has never run' (exit $rc)" ;;
+*) bad "F: a log with no 'netwatch start' line was not reported as never-run" ;;
+esac
+[ "$rc" = 1 ] || bad "F: exit was $rc, wanted 1"
+
+# G is the same log PLUS a boundary and nothing else: the section is empty of ADDRS/STALL/HEAL, and
+# that must NOT read as "never run". This is the branch the streaming reader could have broken.
+printf '1.10s netwatch start pid=812 heal=1 stall=45s\n3.00s sample rx=1 tx=1 frozen=0\n' \
+  > "$FR/userdata/G.log"
+out=$(sh "$W/check.sh" --log "$FR/userdata/G.log" 2>/dev/null)
+case "$out" in
+*"boots in this log: 1"*) ok "G: a boundary with nothing under it is still a boot" ;;
+*) bad "G: 'boots in this log: 1' missing for a boundary-only section" ;;
+esac
+case "$out" in
+*"has never run on this device"*) bad "G: an empty-but-present section was read as never-run" ;;
+*) ok "G: it is not confused with a log that has no boundary" ;;
+esac
+
+echo
+echo "== the cap =="
+{
+  echo '1.10s netwatch start pid=812 heal=1 stall=45s'
+  i=0; while [ "$i" -lt 2500 ]; do echo "60.00s STALL: host unreachable for 45s"; i=$((i + 1)); done
+} > "$FR/userdata/H.log"
+out=$(sh "$W/check.sh" --log "$FR/userdata/H.log" 2>/dev/null)
+case "$out" in
+*"only the first 2000 ADDRS/STALL/HEAL lines were kept"*) ok "H: it says the section was cut at the cap" ;;
+*) bad "H: 2500 interesting lines produced no cap advisory" ;;
+esac
+
+echo
+echo "== the scan on a log the size of the real one, under the device's kind of awk =="
+#
+# The defect docs 108 records is not a wrong verdict, it is a scan that never finishes -- and it is
+# invisible under the host's `awk`, whose `s = s x` append is done in place. Measured on a 2.2 MB
+# single section: gawk ~0.0 s, mawk 43 s, busybox awk > 100 s at a larger size. So the test is run
+# twice: once with the real script, and once with the OLD accumulator put back, and the second one
+# is REQUIRED to time out. A harness that passes both would be testing nothing.
+DEV_AWK=""
+for a in mawk busybox; do
+  if command -v "$a" >/dev/null 2>&1; then
+    case "$a" in
+    mawk) DEV_AWK="mawk" ;;
+    busybox) busybox awk 'BEGIN{}' >/dev/null 2>&1 && DEV_AWK="busybox awk" ;;
+    esac
+    [ -n "$DEV_AWK" ] && break
+  fi
+done
+
+if [ -z "$DEV_AWK" ]; then
+  # Count the skip loud rather than quietly passing: without a non-gawk awk this section cannot fail,
+  # and a section that cannot fail is not evidence (the lesson in docs 107 section 6).
+  printf 'SKIP  no mawk and no busybox awk on this host: the quadratic scan cannot be reproduced here\n'
+  SKIP=$((SKIP + 1))
+else
+  # One ~1.6 KB block per sample, exactly the shape the netwatch writes (scripts/device/zl1-netwatch.sh
+  # sample()), and ONE boundary at the top -- so the newest section is the whole file, which is the
+  # input that did the damage.
+  BLOCK="$W/block.txt"
+  cat > "$BLOCK" <<'EOF'
+===== uptime X.00 12345.00 =====
+--- iface ---
+rx_bytes=123456 rx_packets=1000 tx_bytes=654321 tx_packets=900
+--- gadget ---
+state=CONFIGURED functions=rndis enable=1 iface=usb0
+--- ip -s -s ---
+    RX: bytes  packets  errors  dropped
+    TX: bytes  packets  errors  dropped
+--- addr ---
+usb0  UP  192.168.2.100/24 10.15.19.100/24
+--- route ---
+default via 192.168.2.1 dev usb0
+--- arp ---
+IP address  HW type  Flags  HW address  Mask  Device
+192.168.2.1  0x1  0x2  aa:bb:cc:dd:ee:ff  *  usb0
+--- counters ---
+tx_dropped=0 tx_errors=0 tx_aborted_errors=0 rx_dropped=0 rx_errors=0
+--- container progress ---
+lxc-start=RUNNING ueventd=RUNNING hwservicemanager=RUNNING servicemanager=RUNNING
+vndservicemanager=RUNNING zygote=RUNNING netd=RUNNING
+fwmarkd socket: present
+EOF
+  # 3000 blocks in one process, bounded memory: the block file is 2 KB.
+  awk -v n=3000 '{ l[NR] = $0 } END { for (i = 0; i < n; i++) for (j = 1; j <= NR; j++) print l[j] }' \
+      "$BLOCK" > "$W/big.body"
+  { echo '1.10s netwatch start pid=812 heal=1 stall=45s'; cat "$W/big.body"; } > "$FR/userdata/BIG.log"
+  bytes=$(wc -c < "$FR/userdata/BIG.log")
+
+  # A PATH that resolves `awk` to the device's kind of awk, for the check script only.
+  mkdir -p "$W/bin"
+  case "$DEV_AWK" in
+  mawk)   printf '#!/bin/sh\nexec mawk "$@"\n' > "$W/bin/awk" ;;
+  *)      printf '#!/bin/sh\nexec busybox awk "$@"\n' > "$W/bin/awk" ;;
+  esac
+  chmod +x "$W/bin/awk"
+
+  echo "  section: $bytes bytes, one boundary ($DEV_AWK as awk)"
+
+  s=$(date +%s)
+  out=$(PATH="$W/bin:$PATH" timeout 15 sh "$W/check.sh" --log "$FR/userdata/BIG.log" 2>/dev/null); rc=$?
+  el=$(( $(date +%s) - s ))
+  if [ "$rc" = 124 ]; then
+    bad "BIG: the real script did NOT finish a $bytes-byte section in 15 s under $DEV_AWK (this is the docs 108 hang)"
+  else
+    case "$out" in
+    *"boots in this log: 1"*)
+      ok "BIG: a $bytes-byte section scanned under $DEV_AWK in ${el}s, verdict inconclusive (exit $rc)" ;;
+    *) bad "BIG: the scan finished (${el}s, exit $rc) but did not report the boot" ;;
+    esac
+  fi
+
+  # The mutation. Rather than rewrite the awk inside check.sh (three lines of quoting that would
+  # rot), this runs the OLD body itself against the same log under the same awk, and the durable
+  # regression assertion is that the body is GONE from the script. Both halves are needed: this one
+  # says the log size is in the danger zone on this host, that one says the script is not in it.
+  OLD_AWK='  / netwatch start / { n++; buf=""; next }
+  { if (n > 0) buf = buf $0 "\n" }
+  END { printf "%s", buf }'
+  s=$(date +%s)
+  PATH="$W/bin:$PATH" timeout 15 awk "$OLD_AWK" "$FR/userdata/BIG.log" >/dev/null 2>&1; rc=$?
+  el=$(( $(date +%s) - s ))
+  if [ "$rc" = 124 ]; then
+    ok "BIG: the OLD accumulator is still over 15 s on this log under $DEV_AWK (${el}s) -- the size is decisive"
+  else
+    bad "BIG: the OLD accumulator finished in ${el}s (exit $rc): this log is too small to tell the two apart, so the line above proves nothing"
+  fi
+
+  if grep -v '^[[:space:]]*#' "$SRC" | grep -q 'buf = buf'; then
+    bad "the accumulator ('buf = buf') is BACK in $SRC as code -- that is the docs 108 hang"
+  else
+    ok "the accumulator is gone from the script under test (the header may still name it)"
+  fi
+  grep -q 'kept <= cap' "$SRC" \
+    && ok "the reader bounds what it keeps (the cap is in the script)" \
+    || bad "the reader has no cap: nothing bounds the section it keeps"
+fi
+
+echo
+echo "pass=$PASS fail=$FAIL${SKIP:+ skip=$SKIP}"
 [ "$KEEP" = 1 ] || rm -rf "$W"
 [ "$FAIL" = 0 ]

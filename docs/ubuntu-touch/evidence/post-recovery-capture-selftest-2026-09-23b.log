@@ -1,0 +1,172 @@
+scripts/host/zl1-post-recovery-capture-selftest.sh: 1: -o: not found
+zl1 post-recovery capture -- offline self-test
+  subject: scripts/host/zl1-post-recovery-capture.sh
+  fake device: /tmp/zl1-post-recovery-capture-selftest/fake   (serial 33e80afe, keeper pid 900)
+  callees are recording stand-ins in /tmp/zl1-post-recovery-capture-selftest/callees; the real ones have their own harnesses
+
+== 1. the flag surface, and the rewrite guard ==
+PASS  an unknown argument exits 2
+PASS  --help exits 0
+PASS  and prints its usage block from the header
+PASS  which states the property the rest of this file checks
+PASS  --outdir with no value names the flag instead of aborting the shell
+
+== 2. in EDL it must refuse, and touch NOTHING ==
+PASS  with the device in EDL it exits 2
+PASS  naming the mode it found
+PASS  and the USB id that identifies it
+PASS  and saying the next move is a finger, not a command
+PASS  with the actual instruction
+PASS  the fake device is unchanged
+PASS  it made NO ssh call at all
+PASS  and pushed nothing
+PASS  and ran none of the steps
+PASS  and created no archive directory -- there is nothing to archive
+PASS  and says so, so the refusal cannot be mistaken for a failed capture
+
+   -- and the same for 'no device on the bus' (the other phone shares this bus, docs 33):
+PASS  with no device on the bus it exits 2
+PASS  and distinguishes 'absent' from 'edl'
+PASS  and names the other phone as the thing to rule out
+PASS  and ran nothing
+
+   -- and a device that is on the bus but has no SSH yet (a boot still in progress):
+PASS  with the serial present and ssh down it exits 2
+PASS  and says it may still be booting, rather than 'absent'
+PASS  and points at the OTHER known failure, the host-side enum (docs 76)
+PASS  and ran nothing
+
+   -- the SERIAL MATCH, which is the bug the first real run found:
+PASS  a serial with the image suffix is the device (exit 0, not a refusal)
+PASS  and the run really proceeded
+PASS  the OTHER phone's serial alone is 'absent' (exit 2)
+PASS  and it is absent, not present-and-confusing
+PASS  and nothing ran against the wrong phone
+
+== 3. the default run: the read-only chain, in the only order that works ==
+PASS  the default run exits 0
+PASS  it reads this boot's identity first
+PASS  the identity block captures the keeper's pid
+PASS  and its accumulated ticks (41+17), the number that only exists before the kill
+PASS  and the boot's uptime
+PASS  and not the bystander whose cmdline only MENTIONS the keeper
+PASS  step 0 (the post-mortem) runs FIRST
+PASS  then the boot-address verdict
+PASS  then the keeper's status (read-only)
+PASS  then the health check
+PASS  then the GPS probe
+PASS  then the fingerprint probe
+PASS  and the orientation survey last
+PASS  exactly seven steps: nothing extra is run by default
+PASS  and NOT the one step that writes
+
+   -- the arguments each step got, which is where a silent misuse would show:
+PASS  the keeper is asked with --status, the read-only mode
+PASS  the health check is run bare (its own defaults are the survey)
+PASS  the post-mortem is run bare -- its flags would narrow it
+PASS  and the orientation step is the SURVEY, not the decisive --portrait-up run
+PASS  which needs a person holding the phone still, so it is not run here
+PASS  and no step is invoked with --install
+
+   -- the device scripts were PUSHED, by their real paths:
+PASS  the post-mortem is pushed to /tmp by name, and the source is the path the script resolved
+PASS  and the boot-address check
+PASS  and run from /tmp, which is where the health check sends them too
+PASS  five pushes: the five DEVICE steps, and no more
+
+== 4. the archive: everything survives as a file, with an index and a checksum ==
+PASS  the index exists
+PASS  and the checksums
+PASS  the identity block is archived
+PASS  step output archived: 01-edl-postmortem.txt
+PASS  step output archived: 02-boot-address.txt
+PASS  step output archived: 03-keeper-status.txt
+PASS  step output archived: 04-health-check.txt
+PASS  step output archived: 05-gps-probe.txt
+PASS  step output archived: 06-fingerprint.txt
+PASS  step output archived: 07-orientation.txt
+PASS  the index names the boot it describes
+PASS  and whether the writing step was included
+PASS  and lists each step with its exit code and its file
+PASS  the checksums verify
+PASS  a step's own output is what is archived
+PASS  and the operator is told the file, not just 'ok'
+
+   -- and a second capture of the SAME boot lands in the same directory:
+PASS  the index is rewritten in place
+PASS  and the file set does not grow (8 archived outputs, not 16)
+
+== 5. the flags that change the SET, and what they must not change ==
+PASS  --skip-probes exits 0
+PASS  the two probes are not run
+PASS  leaving five steps
+PASS  and the skip is SAID, not silent
+PASS  and no file pretends the probe ran
+
+   -- --no-orientation, and --with-capture, and both together:
+PASS  --no-orientation drops the orientation step
+PASS  and says so
+PASS  --with-capture exits 0
+PASS  the writing step runs, in its read-only-looking mode
+PASS  eight steps
+PASS  and it is listed in the index
+PASS  with the index recording that the archive is not read-only-only
+
+   -- and WITHOUT the flag the writing step is not merely unlisted, it is not run:
+PASS  the step that writes is not run by default
+PASS  and the operator is told it exists and why it did not run
+PASS  by name, so the decision is theirs
+
+== 6. a failing step does not stop the capture, and does not hide ==
+PASS  with one step failing the run exits 1
+PASS  the failing step is named, with its code
+PASS  and the index carries the code
+PASS  its output is still archived
+PASS  and it is the step's own output
+PASS  the steps AFTER it still ran -- the evidence is not thrown away
+PASS  all seven ran
+PASS  and the summary says the archive is still worth reading
+PASS  while the next-move text still explains what 02 decides
+PASS  and it does not claim a clean capture
+
+   -- and a step that fails only in its PUSH (scp) is reported as such, not as a silence:
+PASS  an un-pushable device script fails the run
+PASS  the file says the copy failed, rather than being empty
+
+== 7. no device-side step may run unbounded, and an interrupt must still leave the record ==
+PASS  --step-limit 30 still exits 0
+PASS  the DEVICE runs the step under timeout(1)
+PASS  and the default is not also there
+PASS  the index records the bound it ran under
+PASS  and it is not a host-side timeout around ssh
+PASS  the step is guarded rather than assumed
+PASS  and a device without timeout(1) says so instead of running silently unbounded
+
+   -- that 'no timeout(1)' branch, RUN rather than read:
+PASS  the restricted PATH has no timeout(1) -- the fallback branch is reachable
+PASS  with no timeout(1) the capture still completes (exit 0)
+PASS  and the step's own output says the bound is missing
+PASS  all four steps still ran
+
+   -- an interrupt mid-step: the archive is written anyway
+PASS  a TERM mid-step exits 3, a code of its own (not 1 'a step failed', not 2 'nothing ran')
+PASS  it says so
+PASS  INDEX.txt exists even though the run never reached the archive step
+PASS  and SHA256SUMS
+PASS  the index records that this is a partial capture
+PASS  the step that DID finish is listed with its code
+PASS  the interrupted step is named, with no rc claimed
+PASS  and its file is marked partial
+PASS  and no step that never started is listed
+PASS  the partial archive verifies
+PASS  and no file pretends a step ran that never did
+
+== 8. what this harness does NOT test, and says so ==
+SKIP  what the steps themselves decide. Their callees here are recording stand-ins: the
+      post-mortem, the boot-address verdict, the probes and the health check each have their own
+      offline harness (see the table in scripts/README.md), and this file checks only that they
+      are called, in order, with these arguments, and that their output is kept.
+SKIP  the device-side truth behind each step: whether pstore really holds an oops, whether the
+      netwatch really configured the addresses. Those need the boot itself.
+
+pass=121 fail=0 skip=2 (named above)

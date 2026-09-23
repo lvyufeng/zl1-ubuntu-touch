@@ -40,7 +40,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
   --quiet) QUIET=1; shift ;;
   --log) NETLOG="${2?--log needs a FILE argument}"; shift 2 ;;
-  --help|-h) sed -n '2,33p' "$0"; exit 0 ;;
+  --help|-h)
+    # The header whatever its current length, not `sed -n '2,33p'` -- a fixed line range silently
+    # truncates the usage text the moment the header grows past it (docs 104, and docs 108 for the
+    # two places it was still wrong).
+    awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -129,26 +133,68 @@ fi
 
 # The log appends across boots and every line is prefixed with the uptime it was written at. The
 # `netwatch start` line is the boot boundary.
-awk '
-  / netwatch start / { n++; buf=""; start=$0; next }
-  { if (n > 0) buf = buf $0 "\n" }
-  END { printf "%s", buf }
-' "$NETLOG" > /tmp/.bootaddrs.$$
+#
+# ONE STREAMING PASS, and it prints ONLY the lines section 3 and 4 look at.
+#
+# It used to accumulate the newest section into a string (`buf = buf $0 "\n"`) and print it from
+# END. That is quadratic in the section's length whenever `awk` has no in-place append, and the
+# `awk` a `#!/bin/sh` script gets on this rootfs is one of those. Measured on the host with a
+# 36 MB single section (the shape this log really has: a ~1.6 KB block every 5 s, and a boundary
+# only when the service starts, so the newest section is the whole tail of the file):
+#
+#     gawk   0.41 s        <- which is why nobody saw this from a workstation
+#     mawk   > 120 s, killed, nothing written out
+#
+# On 2026-09-23 the device ran this at 94 % of a core for 11+ minutes on a 63 MB log, at load ~9,
+# and that boot ended in Qualcomm EDL (docs 108). The section size on the device was never
+# measured, because the device it was running on is the one that went to EDL.
+#
+# The count now comes out of the same pass, so the 63 MB is read once instead of twice, and `CAP`
+# bounds what is kept, so no log can make this file -- or the greps below -- large.
+#
+# The kept lines are held until END and printed there, but that is NOT the old accumulator: only the
+# newest section survives (`kept` resets at every boundary, so the array is overwritten and the loop
+# at the end ignores the stale tail), and it is capped, so its size is O(CAP) and not O(section). The
+# first version of this fix printed each line as it was matched and so leaked the PREVIOUS boots'
+# ADDRS/HEAL lines into the newest section's verdict -- the harness caught it as scenario C.
+CAP=2000   # ADDRS/STALL/HEAL lines are rare; the report shows 1 of the first and 12 of the second
+SEC=/tmp/.bootaddrs.$$
+awk -v cap="$CAP" '
+  / netwatch start / { n++; kept=0; next }
+  n > 0 && /^[0-9.]+s (ADDRS|STALL|HEAL)/ { if (++kept <= cap) keep[kept] = $0 }
+  END {
+    for (i = 1; i <= kept; i++) print keep[i]
+    printf "#section boots=%d kept=%d cap=%d\n", n, kept + 0, cap
+  }
+' "$NETLOG" > "$SEC"
 
-if [ ! -s /tmp/.bootaddrs.$$ ]; then
+# A section that exists but holds no ADDRS/STALL/HEAL line now leaves a file with ONE line (the
+# header), where it used to leave an empty one -- so emptiness can no longer mean "the service has
+# never run". That verdict is read out of the header instead, and an unreadable header is its own
+# answer rather than being folded into "no start line".
+n_start=$(sed -n 's/^#section boots=\([0-9][0-9]*\) kept=.*$/\1/p' "$SEC" 2>/dev/null)
+if [ -z "$n_start" ]; then
+  always "   the log could not be scanned: the reader produced no header. Is '$NETLOG' readable,"
+  always "   and does the awk on this device handle it?"
+  rm -f "$SEC"
+  exit 1
+fi
+n_kept=$(sed -n 's/^#section boots=[0-9][0-9]* kept=\([0-9][0-9]*\) .*$/\1/p' "$SEC" 2>/dev/null)
+
+if [ "$n_start" = 0 ]; then
   always "   no 'netwatch start' line in the log: it has never run on this device."
-  rm -f /tmp/.bootaddrs.$$
+  rm -f "$SEC"
   exit 1
 fi
 
-n_start=$(grep -c ' netwatch start ' "$NETLOG" 2>/dev/null)
 say "   boots in this log: $n_start   (showing the newest)"
+[ "${n_kept:-0}" -gt "$CAP" ] && always "   (only the first $CAP ADDRS/STALL/HEAL lines were kept)"
 
 say ""
 say "   the address line, if there is one:"
-if grep -q '^[0-9.]*s ADDRS:' /tmp/.bootaddrs.$$; then
-  grep '^[0-9.]*s ADDRS:' /tmp/.bootaddrs.$$ | sed 's/^/   | /'
-  addrs_line=$(grep '^[0-9.]*s ADDRS:' /tmp/.bootaddrs.$$ | head -1)
+if grep -q '^[0-9.]*s ADDRS:' "$SEC"; then
+  grep '^[0-9.]*s ADDRS:' "$SEC" | sed 's/^/   | /'
+  addrs_line=$(grep '^[0-9.]*s ADDRS:' "$SEC" | head -1)
   addrs_uptime=$(printf '%s' "$addrs_line" | sed 's/^\([0-9.]*\)s .*/\1/' | cut -d. -f1)
 else
   addrs_line=""
@@ -158,9 +204,9 @@ fi
 
 say ""
 say "   stalls and heals on this boot:"
-if grep -qE '^[0-9.]*s (STALL|HEAL)' /tmp/.bootaddrs.$$; then
-  grep -E '^[0-9.]*s (STALL|HEAL)' /tmp/.bootaddrs.$$ | head -12 | sed 's/^/   | /'
-  first_heal=$(grep -E '^[0-9.]*s HEAL [AB]:' /tmp/.bootaddrs.$$ | head -1 | sed 's/^\([0-9.]*\)s .*/\1/' | cut -d. -f1)
+if grep -qE '^[0-9.]*s (STALL|HEAL)' "$SEC"; then
+  grep -E '^[0-9.]*s (STALL|HEAL)' "$SEC" | head -12 | sed 's/^/   | /'
+  first_heal=$(grep -E '^[0-9.]*s HEAL [AB]:' "$SEC" | head -1 | sed 's/^\([0-9.]*\)s .*/\1/' | cut -d. -f1)
 else
   always "   (none)"
   first_heal=""
@@ -233,7 +279,7 @@ say "   a ping from the host), and one boot is one boot: the 2026-09-17 stall wo
 say "   not a sample. Retire the keeper on a boot that reads 'netwatch-configured', and keep the"
 say "   reinstall command to hand in case the next boot disagrees."
 
-rm -f /tmp/.bootaddrs.$$
+rm -f "$SEC"
 case "$verdict" in
 netwatch-configured) exit 0 ;;
 *) exit 1 ;;

@@ -29,6 +29,7 @@
 # answer then is a finger, and a script cannot help with that.
 #
 # Usage: zl1-post-recovery-capture.sh [--outdir DIR] [--with-capture] [--skip-probes] [--no-orientation]
+#                                     [--step-limit SECS]
 #
 #   --outdir DIR        where to archive (default: repo tmp-post-recovery-<utc timestamp>/)
 #   --with-capture      ALSO run install-no-edl-on-panic.sh --capture-only (a device write; opt-in)
@@ -36,11 +37,15 @@
 #                       has ever produced a fix, so on a boot where the evidence above matters more
 #                       they are the ones to drop)
 #   --no-orientation    skip the orientation-axes probe (it needs a person holding the phone still)
+#   --step-limit SECS   kill a DEVICE-side step that runs longer than this (default 240). See the note
+#                       in the step runner: a device-side script that runs away is not a hypothetical,
+#                       it is what put this phone in EDL on 2026-09-23 (docs 108).
 #
 # Exit codes:
 #   0  everything in the set ran and every step's own verdict was acceptable
 #   1  the capture completed but at least one step failed (its output is still archived -- read it)
 #   2  the device is not reachable (EDL, no link, no SSH): NOTHING was run
+#   3  the capture was INTERRUPTED: whatever had been collected is archived and indexed anyway
 #
 # Env: ZL1_HOST (default root@10.15.19.82), ZL1_SERIAL (default 33e80afe)
 
@@ -48,8 +53,8 @@ set -uo pipefail
 
 HOST="${ZL1_HOST:-root@10.15.19.82}"
 DEV="${ZL1_SERIAL:-33e80afe}"
-SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 "$HOST")
-SCP=(scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)
+SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 "$HOST")
+SCP=(scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10)
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
@@ -58,6 +63,7 @@ OUT=""
 WITH_CAPTURE=0
 SKIP_PROBES=0
 NO_ORIENTATION=0
+STEP_LIMIT=240
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -65,6 +71,7 @@ while [ $# -gt 0 ]; do
   --with-capture) WITH_CAPTURE=1; shift ;;
   --skip-probes) SKIP_PROBES=1; shift ;;
   --no-orientation) NO_ORIENTATION=1; shift ;;
+  --step-limit) STEP_LIMIT="${2?--step-limit needs SECONDS}"; shift 2 ;;
   --help|-h)
     # The header, whatever its current length -- not a fixed line range, which silently truncates the
     # usage text every time the header grows (the defect docs 104 records, in two other scripts).
@@ -72,6 +79,10 @@ while [ $# -gt 0 ]; do
   *) echo "unknown argument ${1:-} (try --help)" >&2; exit 2 ;;
   esac
 done
+
+case "$STEP_LIMIT" in
+""|*[!0-9]*) echo "--step-limit must be a whole number of seconds, not [$STEP_LIMIT]" >&2; exit 2 ;;
+esac
 
 PASS=0
 FAIL=0
@@ -87,8 +98,16 @@ note() { printf '   %s\n' "$*"; }
 # id finds a phone that cannot be talked to.
 edl_state() {
   if lsusb -d 05c6:9008 >/dev/null 2>&1; then echo edl; return; fi
+  # PREFIX match, not equality -- and this was a real bug, found by the first run against the real
+  # device: the gadget's serial is `33e80afe-v63-usbd-disabled-rndis`, i.e. the id followed by the
+  # image that produced it. An `=` here reported "absent" for a phone that was up, SSHable, and
+  # answering ping, i.e. the most expensive possible false negative on the one boot that cannot be
+  # revisited. The health check has always matched on the prefix (that is the rule in
+  # [[ignore-xiaomi-4a2fe00b]]: identify the target BY SERIAL, never by bare USB id).
   for d in /sys/bus/usb/devices/*/; do
-    if [ "$(cat "$d/serial" 2>/dev/null)" = "$DEV" ]; then echo present; return; fi
+    case "$(cat "$d/serial" 2>/dev/null)" in
+    "$DEV"*) echo present; return ;;
+    esac
   done
   echo absent
 }
@@ -143,6 +162,90 @@ say "  boot_id: $BOOT_ID"
 say "  outdir:  $OUT"
 say
 
+# ==================================================================================================
+# The archive. An index and a SHA256SUMS, because the point of the directory is that it is the record
+# of a boot that cannot be revisited -- and a record nobody can check the integrity of is a liability
+# the next time someone asks "did that really say that".
+#
+# It is a FUNCTION, it is defined HERE (before the first step, not after the last), and it is also the
+# SIGINT/SIGTERM handler. The first real run of this script was killed by a timeout before it ever got
+# to the archive: 00-06 were on disk and the directory had no INDEX.txt and no SHA256SUMS, so nothing
+# tied the files together and nothing said which step had produced which. On a boot that cannot be
+# revisited that is the whole loss. Interrupting now costs the steps not yet run and nothing else.
+ARCHIVED=0
+INTERRUPTED=0
+archive() {
+  [ "$ARCHIVED" = 1 ] && return 0
+  ARCHIVED=1
+  {
+    printf '# zl1 post-recovery capture\n'
+    printf 'boot_id: %s\n' "$BOOT_ID"
+    printf 'device: %s (serial %s)\n' "$HOST" "$DEV"
+    printf 'captured: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'with_capture: %s   skip_probes: %s   no_orientation: %s   step_limit: %ss\n' \
+      "$WITH_CAPTURE" "$SKIP_PROBES" "$NO_ORIENTATION" "$STEP_LIMIT"
+    [ "$INTERRUPTED" = 1 ] && printf 'INTERRUPTED: yes -- the steps below are all that ran\n'
+    printf '\n# step                 rc   file\n'
+    i=0
+    while [ "$i" -lt "${#STEP_NAMES[@]}" ]; do
+      # `:-` on EVERY array read, because this function is also the signal handler and a signal can
+      # arrive between `STEP_NAMES+=(...)` and `STEP_RC+=(...)` -- i.e. in the middle of a step. Plain
+      # `${STEP_RC[$i]}` then aborts the whole function under `set -u`, which is precisely the loss the
+      # handler exists to prevent: the first version of it wrote an INDEX.txt and then died before
+      # writing the SHA256SUMS next to it. Found by the harness's interrupt test, which is the only
+      # thing that runs this function in that state.
+      local rc_i="${STEP_RC[$i]:-?}"
+      local f_i="${STEP_FILES[$i]:-${STEP_NAMES[$i]}.txt (partial: the interrupt landed here)}"
+      printf '%-20s %3s   %s\n' "${STEP_NAMES[$i]}" "$rc_i" "$f_i"
+      i=$((i + 1))
+    done
+    printf '\n# every step is read-only except 08-no-edl-capture, which only runs with --with-capture\n'
+  } > "$OUT/INDEX.txt"
+  ( cd "$OUT" && sha256sum ./*.txt 2>/dev/null > SHA256SUMS )
+}
+
+# `set -e` is deliberately not on, so a trap plus the final call are the only two ways the archive gets
+# written. The handler archives first and exits 3 -- a DIFFERENT code from 1 ("a step failed") and 2
+# ("nothing was run"), so a wrapper can tell "incomplete capture, but it is on disk" apart.
+#
+# It writes its own message to fd 9, NOT to stdout. A signal arrives while a step is running, and a
+# step's ssh call carries `> $step.txt 2>&1` -- so plain `say` inside the handler lands in the middle
+# of the interrupted step's output file, AND changes that file after `archive` has hashed it, which
+# makes the partial archive fail its own `sha256sum -c`. Both were observed; the harness's
+# `sha256sum -c` on the partial archive is what caught the second one.
+RB_PID=""
+on_signal() {
+  INTERRUPTED=1
+  # Stop the step that is IN FLIGHT before hashing what it is still writing to: a child that outlives
+  # the parent keeps the step's output file open and appends to it later.
+  if [ -n "$RB_PID" ]; then
+    kill -TERM "$RB_PID" 2>/dev/null
+    sleep 1
+    kill -9 "$RB_PID" 2>/dev/null
+    wait "$RB_PID" 2>/dev/null
+  fi
+  archive
+  printf '\nINTERRUPTED: archived what had run into %s\n' "$OUT" >&9
+  exit 3
+}
+exec 9>&1
+trap on_signal INT TERM HUP
+
+# Every long call goes through this, and it is not decoration. bash runs a TRAP for a signal only
+# after the FOREGROUND command finishes; it runs it at once when the signal arrives during `wait`.
+# Measured on this host: a TERM sent 2 s into a foreground `sleep 20` was handled at +20.0 s, and the
+# same TERM during `sleep 20 & wait` at +2.0 s. So a foreground ssh call would make Ctrl-C wait out
+# the very step it is trying to abandon -- and the step is bounded by the DEVICE's timeout, which is
+# 240 s. Backgrounding is what makes the interrupt-handler above worth having.
+RB_RC=0
+run_bg() {
+  "$@" &
+  RB_PID=$!
+  wait "$RB_PID"
+  RB_RC=$?
+  RB_PID=""
+}
+
 # --- the step runner -------------------------------------------------------------------------------
 #
 # Two kinds of step, and the difference is where the script lives:
@@ -158,6 +261,7 @@ say
 # failure is recorded and the exit code reports it at the end, instead of aborting.
 step() { # name, kind, localpath, remote-args...
   local name="$1" kind="$2" src="$3"; shift 3
+  local args="$*"
   local out="$OUT/$name.txt"
   say "-- $name"
   STEP_NAMES+=("$name")
@@ -165,15 +269,32 @@ step() { # name, kind, localpath, remote-args...
   case "$kind" in
   device)
     local base; base=$(basename "$src")
-    "${SCP[@]}" "$src" "$HOST:/tmp/$base" >/dev/null 2>&1 || rc=90
+    run_bg "${SCP[@]}" "$src" "$HOST:/tmp/$base" >/dev/null 2>&1 || rc=90
+    rc=$RB_RC
     if [ "$rc" = 0 ]; then
-      "${SSH[@]}" "sh /tmp/$base $*" > "$out" 2>&1 || rc=$?
+      # A DEVICE-SIDE bound, and it is on the device on purpose. `timeout` (GNU, and it is in the
+      # rootfs -- /usr/bin/timeout) runs the command in its OWN PROCESS GROUP and signals the group
+      # on expiry, which is the property that matters: on 2026-09-23 a device-side step spawned a
+      # child that took one core for 11+ minutes and the phone ended in EDL. Killing only the shell
+      # would have left that child running. `-k 5` is the same signal again if it ignores the first.
+      #
+      # And when timeout is NOT there the step still runs, but it says so in its own output rather
+      # than being silently unbounded -- an absent guard must be visible, not inferred (docs 99).
+      run_bg "${SSH[@]}" "
+        if command -v timeout >/dev/null 2>&1; then
+          timeout -k 5 $STEP_LIMIT sh /tmp/$base $args
+        else
+          printf '%s\n' 'NOTE: this device has no timeout(1): THIS STEP IS NOT TIME-BOUNDED.' >&2
+          sh /tmp/$base $args
+        fi" > "$out" 2>&1
+      rc=$RB_RC
     else
       printf 'could not copy %s to the device\n' "$base" > "$out"
     fi
     ;;
   host)
-    bash "$src" "$@" > "$out" 2>&1 || rc=$?
+    run_bg bash "$src" "$@" > "$out" 2>&1
+    rc=$RB_RC
     ;;
   esac
   STEP_RC+=("$rc")
@@ -182,6 +303,14 @@ step() { # name, kind, localpath, remote-args...
     PASS=$((PASS + 1)); note "ok   ($(wc -l < "$out") lines -> $(basename "$out"))"
   else
     FAIL=$((FAIL + 1)); note "FAILED rc=$rc -- its output is still archived, read it"
+    # 124 is `timeout`'s own code, and it means something specific and actionable: the step did not
+    # finish. Saying that here is the difference between "a verdict was bad" and "the phone is
+    # probably at high load right now, go and look at 04". 137 is the -k 5 case.
+    case "$rc" in
+    124) note "        ^ that is timeout(1): the step did not finish in ${STEP_LIMIT}s. This is NOT a" \
+              ; note "          verdict, it is a hung device-side script -- check the load in 04." ;;
+    137) note "        ^ that is timeout(1) -k: it had to be SIGKILLed at ${STEP_LIMIT}s+5s." ;;
+    esac
     # The verdict that matters is usually the last non-empty line, and printing it here is the
     # difference between "something failed" and knowing what without opening a file.
     grep -av '^[[:space:]]*$' "$out" 2>/dev/null | tail -3 | sed 's/^/        | /'
@@ -195,7 +324,7 @@ say "=== the boot's identity, before anything can change it ==="
   printf 'boot_id: %s\n' "$BOOT_ID"
   printf 'captured: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'host: %s\n' "$(uname -sr)"
-  "${SSH[@]}" '
+  run_bg "${SSH[@]}" '
     printf "uptime: %s\n" "$(cat /proc/uptime | tr "\n" " ")"
     printf "kernel: %s\n" "$(uname -r)"
     printf "keeper pids: %s\n" "$(for p in /proc/[0-9]*; do [ -r "$p/cmdline" ] || continue; case "$(tr "\0" " " < "$p/cmdline")" in "/bin/sh /usr/local/sbin/zl1-debug-net.sh "*) printf "%s " "${p#/proc/}";; esac; done)"
@@ -253,24 +382,8 @@ else
 fi
 
 # ==================================================================================================
-# The archive. An index and a SHA256SUMS, because the point of the directory is that it is the record
-# of a boot that cannot be revisited -- and a record nobody can check the integrity of is a liability
-# the next time someone asks "did that really say that".
-{
-  printf '# zl1 post-recovery capture\n'
-  printf 'boot_id: %s\n' "$BOOT_ID"
-  printf 'device: %s (serial %s)\n' "$HOST" "$DEV"
-  printf 'captured: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'with_capture: %s   skip_probes: %s   no_orientation: %s\n' "$WITH_CAPTURE" "$SKIP_PROBES" "$NO_ORIENTATION"
-  printf '\n# step                 rc   file\n'
-  i=0
-  while [ "$i" -lt "${#STEP_NAMES[@]}" ]; do
-    printf '%-20s %3s   %s\n' "${STEP_NAMES[$i]}" "${STEP_RC[$i]}" "${STEP_FILES[$i]}"
-    i=$((i + 1))
-  done
-  printf '\n# every step is read-only except 08-no-edl-capture, which only runs with --with-capture\n'
-} > "$OUT/INDEX.txt"
-( cd "$OUT" && sha256sum ./*.txt 2>/dev/null > SHA256SUMS )
+# The archive is written here (and by the signal handler above, if one arrives first).
+archive
 
 say "=== archived ==="
 say "  $OUT"

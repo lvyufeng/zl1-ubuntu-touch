@@ -141,7 +141,10 @@ emit "s|\${p#/proc/}|\${p#$FR/proc/}|g"
 
 cat > "$STUB/ssh" <<EOF
 #!/bin/sh
-printf 'ssh %s\n' "\$*" >> "$ACT"
+# ONE line per call: the commands this script sends are multi-line shell programs, and `printf '%s\n'`
+# would put their bodies on their own lines -- where \`grep '^ssh '\` cannot see them, which is every
+# assertion in this file that reads an ssh command.
+printf 'ssh %s\n' "\$(printf '%s' "\$*" | tr '\n' ' ')" >> "$ACT"
 while [ \$# -gt 0 ]; do
   case "\$1" in *@*) shift; break ;; *) shift ;; esac
 done
@@ -149,7 +152,9 @@ done
 # is not up yet" is a reachable scenario instead of an untested branch.
 case "\$*" in true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;; esac
 cmd=\$(printf '%s' "\$*" | sed -f "$W/paths.sed")
-exec env PATH="$STUB:\$PATH" FP_STATE="\${FP_STATE:-present}" sh -c "\$cmd"
+# FP_STUB_PATH exists so the "this device has no timeout(1)" branch can be RUN rather than read: with a
+# PATH of our own we decide whether `command -v timeout` succeeds, which is the whole branch condition.
+exec env PATH="\${FP_STUB_PATH:-$STUB:\$PATH}" FP_STATE="\${FP_STATE:-present}" sh -c "\$cmd"
 EOF
 
 # scp: pushes a callee stand-in into the fake device's /tmp, and records the SOURCE path -- so "it
@@ -183,7 +188,7 @@ chmod +x "$STUB/ssh" "$STUB/scp"
 # the right order, and keeps what they said.
 #
 # `FP_RC_<name>` chooses a callee's exit code, which is how "a failing step does not stop the capture"
-# is tested.
+# is tested. `FP_SLEEP_<name>` makes it slow, which is how the interrupt handler is tested.
 callee() { # relative path, marker name
   mkdir -p "$CAL/$(dirname "$1")"
   # Each callee records its invocation in $ACT as well as printing it: the printed line goes into the
@@ -193,6 +198,7 @@ callee() { # relative path, marker name
   cat > "$CAL/$1" <<EOF
 #!/bin/sh
 printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
+[ -n "\${FP_SLEEP_$2:-}" ] && sleep "\${FP_SLEEP_$2}"
 rc=\$(printf '%s' "\${FP_RC_$2:-0}")
 [ -n "\$rc" ] || rc=0
 echo "CALLEE $2: done rc=\$rc"
@@ -277,10 +283,33 @@ run() {
   *)      serial_on ;;
   esac
   OUT=$(PATH="$STUB:$PATH" FP_STATE="${FP_STATE:-present}" FP_SSH="${FP_SSH:-yes}" \
+        FP_STUB_PATH="${FP_STUB_PATH:-}" \
+        FP_SERIAL="${FP_SERIAL:-33e80afe}" \
+        FP_SLEEP_EDLPM="${FP_SLEEP_EDLPM:-}" FP_SLEEP_BOOTADDR="${FP_SLEEP_BOOTADDR:-}" \
         FP_RC_EDLPM="${FP_RC_EDLPM:-}" FP_RC_BOOTADDR="${FP_RC_BOOTADDR:-}" \
         timeout 120 bash "$CAP" --outdir "$od" "$@" 2>&1); RC=$?
 }
-reset_rc() { FP_RC_EDLPM=; FP_RC_BOOTADDR=; }
+# The same, but left running, so a signal can be delivered to it. $BGPID is its pid and $W/out.bg gets
+# its output. No `timeout` wrapper: the signal has to reach the script itself, and whether `timeout`
+# forwards one is a second thing that could be wrong while the assertion looked right.
+run_bg() {
+  od="$1"; shift
+  : > "$ACT"
+  serial_on
+  PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_SERIAL="${FP_SERIAL:-33e80afe}" \
+    FP_SLEEP_EDLPM="${FP_SLEEP_EDLPM:-}" FP_SLEEP_BOOTADDR="${FP_SLEEP_BOOTADDR:-}" \
+    bash "$CAP" --outdir "$od" "$@" > "$W/out.bg" 2>&1 &
+  BGPID=$!
+}
+# Bound the wait for a signalled process, so a trap that never fires shows up as rc=137 rather than as a
+# harness that hangs (docs 107 section 6: an instrument that cannot report is not an instrument).
+wait_bg() {
+  i=0
+  while [ "$i" -lt 15 ]; do kill -0 "$BGPID" 2>/dev/null || break; sleep 1; i=$((i + 1)); done
+  kill -9 "$BGPID" 2>/dev/null
+  wait "$BGPID" 2>/dev/null; RC=$?
+}
+reset_rc() { FP_RC_EDLPM=; FP_RC_BOOTADDR=; FP_SLEEP_EDLPM=; FP_SLEEP_BOOTADDR=; }
 
 echo "zl1 post-recovery capture -- offline self-test"
 echo "  subject: $SRC"
@@ -347,6 +376,32 @@ want 'SSH does not answer yet' "$OUT" "and says it may still be booting, rather 
 want 'zl1-rndis-recover\.sh' "$OUT" "and points at the OTHER known failure, the host-side enum (docs 76)"
 [ -z "$(order)" ] && ok "and ran nothing" || bad "it ran steps before SSH answered"
 FP_SSH=yes
+
+echo
+echo "   -- the SERIAL MATCH, which is the bug the first real run found:"
+# The gadget's serial is not `33e80afe`, it is `33e80afe-v63-usbd-disabled-rndis` -- the id followed by
+# the image that produced it. The first version compared with `=` and therefore reported ABSENT for a
+# phone that was up, SSHable and answering ping: the most expensive possible false negative, on the one
+# boot that cannot be revisited. So this pair is the test -- the right device WITH its suffix must be
+# accepted, and the OTHER phone on this bus must not be (docs 33, and the reason the rule is "match
+# the serial", not "is anything there").
+FP_STATE=present
+FP_SERIAL=33e80afe-v63-usbd-disabled-rndis
+ODS="$W/out/prefixed"
+rm -rf "$ODS"
+run "$ODS" --no-orientation --skip-probes
+printf '%s\n' "$OUT" > "$W/out.prefixed"
+[ "$RC" != 2 ] && ok "a serial with the image suffix is the device (exit $RC, not a refusal)" \
+  || bad "the prefixed serial was reported as not reachable -- that is the first-run bug"
+want 'boot_id: deadbeef' "$OUT" "and the run really proceeded"
+FP_SERIAL=4a2fe00b
+FP_STATE=present
+run "$W/out/otherphone"
+printf '%s\n' "$OUT" > "$W/out.otherphone"
+[ "$RC" = 2 ] && ok "the OTHER phone's serial alone is 'absent' (exit 2)" || bad "it exited $RC"
+want 'NOT reachable: absent' "$OUT" "and it is absent, not present-and-confusing"
+[ -z "$(order)" ] && ok "and nothing ran against the wrong phone" || bad "it ran steps against the other phone"
+FP_SERIAL=33e80afe
 
 # ==================================================================================================
 echo
@@ -506,7 +561,88 @@ want 'could not copy zl1-edl-postmortem\.sh to the device' "$(cat "$W/out/pushfa
 
 # ==================================================================================================
 echo
-echo "== 7. what this harness does NOT test, and says so =="
+echo "== 7. no device-side step may run unbounded, and an interrupt must still leave the record =="
+# ==================================================================================================
+# This section exists because of what the first real run did. One device-side step spun a child at 94 %
+# of a core for 11+ minutes, at load ~9, and that boot ended in Qualcomm EDL -- and the run itself was
+# then killed by a timeout with 00-06 on disk and NO index and NO checksums (docs 108). Two properties
+# come out of that: the bound is on the DEVICE, and the archive survives an interrupt.
+FP_STATE=present; reset_rc
+ODT="$W/out/steplimit"
+run "$ODT" --step-limit 30
+printf '%s\n' "$OUT" > "$W/out.steplimit"
+[ "$RC" = 0 ] && ok "--step-limit 30 still exits 0" || bad "it exited $RC"
+want 'timeout -k 5 30 sh .*zl1-edl-postmortem\.sh' "$(sshacts)" "the DEVICE runs the step under timeout(1)"
+notwant 'timeout -k 5 240' "$(sshacts)" "and the default is not also there"
+want '^with_capture: 0 .*step_limit: 30s$' "$(cat "$ODT/INDEX.txt")" "the index records the bound it ran under"
+# The bound is on the device, not on the ssh client: a host-side `timeout` around ssh would leave the
+# device-side process running and only stop waiting for it, which is the opposite of the fix.
+notwant '^timeout .*ssh ' "$(sshacts)" "and it is not a host-side timeout around ssh"
+want 'command -v timeout' "$(sshacts)" "the step is guarded rather than assumed"
+want 'NOT TIME-BOUNDED' "$(sshacts)" "and a device without timeout(1) says so instead of running silently unbounded"
+
+echo
+echo "   -- that 'no timeout(1)' branch, RUN rather than read:"
+# A PATH of our own that deliberately has no `timeout` in it. Without this the branch is two lines
+# nobody has ever executed -- which is the shape of most of the defects in docs 106/107 section 6.
+BINONLY="$W/binonly"
+rm -rf "$BINONLY"; mkdir -p "$BINONLY"
+for t in sh dash bash cat tr awk sed grep egrep basename wc tee cp mv rm mkdir rmdir ls find date \
+         sleep chmod stat id dirname head tail cut sort uniq expr env test true false kill; do
+  p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$BINONLY/$t"
+done
+cp "$STUB/lsusb" "$STUB/systemctl" "$STUB/scp" "$BINONLY/" 2>/dev/null || true
+# The ssh stub too, but the copy must be the one that honours FP_STUB_PATH -- and it must not be able to
+# find `timeout` inside $BINONLY, which is the whole point.
+cp "$STUB/ssh" "$BINONLY/ssh"
+if PATH="$BINONLY" command -v timeout >/dev/null 2>&1; then
+  bad "the restricted PATH still has a timeout(1): this test would prove nothing"
+else
+  ok "the restricted PATH has no timeout(1) -- the fallback branch is reachable"
+fi
+ODN="$W/out/notimeout"
+rm -rf "$ODN"
+: > "$ACT"
+OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_STUB_PATH="$BINONLY" \
+      timeout 120 bash "$CAP" --outdir "$ODN" --skip-probes --no-orientation 2>&1); RC=$?
+printf '%s\n' "$OUT" > "$W/out.notimeout"
+[ "$RC" = 0 ] && ok "with no timeout(1) the capture still completes (exit 0)" || bad "it exited $RC"
+want 'THIS STEP IS NOT TIME-BOUNDED' "$(cat "$ODN/01-edl-postmortem.txt")" "and the step's own output says the bound is missing"
+[ "$(order | wc -l)" = 4 ] && ok "all four steps still ran" || bad "$(order | wc -l) steps ran"
+
+echo
+echo "   -- an interrupt mid-step: the archive is written anyway"
+# THE case the first real run lost. The signal is delivered while a step is running, which is exactly
+# when a foreground-only script would not act on it (measured on this host: a TERM during a foreground
+# `sleep 20` is handled 20 s later, during a `wait` immediately).
+FP_STATE=present; reset_rc
+ODI="$W/out/interrupted"
+rm -rf "$ODI"
+FP_SLEEP_BOOTADDR=30
+run_bg "$ODI"
+sleep 4
+kill -TERM "$BGPID" 2>/dev/null
+wait_bg
+printf '%s\n' "$(cat "$W/out.bg")" > "$W/out.interrupted"
+[ "$RC" = 3 ] && ok "a TERM mid-step exits 3, a code of its own (not 1 'a step failed', not 2 'nothing ran')" \
+  || bad "an interrupted run exited $RC (137 means the trap never fired)"
+want 'INTERRUPTED: archived what had run' "$(cat "$W/out.bg")" "it says so"
+[ -f "$ODI/INDEX.txt" ] && ok "INDEX.txt exists even though the run never reached the archive step" || bad "no INDEX.txt after the interrupt"
+[ -f "$ODI/SHA256SUMS" ] && ok "and SHA256SUMS" || bad "no SHA256SUMS after the interrupt"
+want '^INTERRUPTED: yes' "$(cat "$ODI/INDEX.txt")" "the index records that this is a partial capture"
+want '^01-edl-postmortem +0' "$(cat "$ODI/INDEX.txt")" "the step that DID finish is listed with its code"
+# The step the signal landed in the middle of: it is listed, with `?` for an rc it never produced and its
+# file marked partial. Omitting it would leave the operator unable to tell WHICH step was cut off.
+want '^02-boot-address +\? ' "$(cat "$ODI/INDEX.txt")" "the interrupted step is named, with no rc claimed"
+want 'partial: the interrupt landed here' "$(cat "$ODI/INDEX.txt")" "and its file is marked partial"
+notwant '^0[3-9]-' "$(cat "$ODI/INDEX.txt")" "and no step that never started is listed"
+( cd "$ODI" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "the partial archive verifies" || bad "the partial checksums do not verify"
+[ ! -e "$ODI/07-orientation.txt" ] && ok "and no file pretends a step ran that never did" || bad "a step file exists for a step that never ran"
+FP_SLEEP_BOOTADDR=
+
+# ==================================================================================================
+echo
+echo "== 8. what this harness does NOT test, and says so =="
 # ==================================================================================================
 printf 'SKIP  what the steps themselves decide. Their callees here are recording stand-ins: the\n'
 printf '      post-mortem, the boot-address verdict, the probes and the health check each have their own\n'
