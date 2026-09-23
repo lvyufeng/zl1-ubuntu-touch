@@ -73,6 +73,21 @@ Instantiating and configuring                  6
 并且**明确写下它判不了的那件事**——那次调用是客户端发起的还是 daemon 自己的 provider 初始化发出的，
 这些计数决定不了。
 
+**"谁发起的"这一点，静态地追到哪一步为止。** 顺着 `93` 的方法把 `liblomiri-location-service.so.3.0.0`
+再读了一遍（`llvm-objdump-14`；`objdump` 在这台主机上对这个架构是 `can't disassemble for architecture
+UNKNOWN`），每一个 `u_hardware_gps_*` 都有自己的 GOT 槽（`objdump -R` 列了 13 个），把槽地址换算成 PLT
+桩、再找 `bl`/`b` 到该桩的位置：
+
+* `u_hardware_gps_start` 的桩是 `0x33610`，调用者**只有一个**：`start_positioning`（`0xdab84` 的尾跳）。
+  这条方法能找出已知的调用者，所以下面的"找不到"是真的找不到。
+* `u_hardware_gps_new` 在 `Impl::register_callbacks()`（`0xdaa64` 的 `bl 0x33a70`）。
+* `u_hardware_gps_set_position_mode` 的桩是 `0x34274`，**整份 `.text` 里没有任何 `bl`/`b` 指向它**。
+
+也就是说：`start_positioning` 这条链上直接出现的只有 `new` 和 `start`，而 `set_position_mode` 是**通过
+`u_hardware_gps_new` 返回的那个 handle 分派**过去的（和 `93` 发现 `start_positioning` 是虚调用是同一个形状）。
+所以"这一次到底是谁叫的"要靠**数据流**读（谁持有那个 handle、在什么条件下调到这一格），不是 grep 能回答的；
+判词因此把这件事写成"计数决定不了"，而不是猜一个答案。
+
 ---
 
 ## 3. 探针的缺陷：一个不会给自己判词的仪器
