@@ -194,7 +194,7 @@ CHK="$(ssh_d '
     echo "unit_$u=$(systemctl is-active $u 2>/dev/null)"
   done
   echo "keeper=$(for p in /proc/[0-9]*; do c=$(tr "\0" " " < $p/cmdline 2>/dev/null); case \"$c\" in *zl1-debug-net.sh*) echo \"$(awk "{print \$3}" $p/stat)\"; break ;; esac; done)"
-  echo "thermal=$(cat /sys/class/thermal/thermal_zone1/temp 2>/dev/null)"
+  echo "thermal=$(for z in /sys/class/thermal/thermal_zone*; do [ -r "$z/temp" ] || continue; printf "%s:%s " "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"; done)"
   echo "gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
   echo "load=$(cut -d\" \" -f1-3 /proc/loadavg)"
   adb devices 2>/dev/null | sed -n "s/^\(.*\)\tdevice$/adb=\1/p"
@@ -240,8 +240,50 @@ T) say "   debug keeper: STOPPED (state T) -- the quieter runtime state, docs 72
 *) say "   debug keeper: RUNNING (state $keeper) -- it costs ~a core and makes systemd reload every ~6s; scripts/device/zl1-quiet-debug-keeper.sh --stop" ;;
 esac
 
+# The temperature, and the trap that makes this line wrong if it is written the obvious way.
+#
+# "read thermal_zone1/temp and divide by 1000" is what this line used to do, and on this device it
+# prints "0.6 C" while the SoC is at 55.8 C -- because **the zones do not share a unit** and only the
+# zone's `type` says which one it is: tsens_tz_sensor* are deci-degC, pm8994_tz/battery are milli-degC,
+# and msm_therm/quiet_therm/pa_therm*/emmc_therm are plain degC (measured 2026-09-22; the raw snapshot
+# is docs/ubuntu-touch/evidence/thermal-2026-09-22.log section 7, the units section 9). Picking
+# thermal_zone1 was itself arbitrary -- its number is the 1-based index of a tsens sensor.
+#
+# So: ask the device for every zone as type:temp (one ssh field, no arithmetic on the device) and scale
+# here, where a wrong answer is visible. The table is the same one scripts/device/zl1-thermal.sh uses,
+# and scripts/host/zl1-thermal-selftest.sh drives both with the same fake zones and asserts they agree,
+# so the two copies cannot drift apart silently.
+#
+# Report the hottest zone by *scaled* value, with its raw value and unit on the line: on this device the
+# hottest zone has the numerically SMALLEST raw reading (580 against the battery's 42500), so a reader
+# who sees only "58.0 C" cannot tell a correct answer from a 100x one -- "raw 580 = deci-degC" can be
+# checked in the head, and that is the whole point of printing it.
 t="$(field thermal)"
-[ -n "$t" ] && say "   thermal_zone1: $(awk -v m="$t" 'BEGIN{printf "%.1f", m/1000}') C" || say "   thermal_zone1: unreadable"
+say "   $(printf '%s\n' "$t" | awk '
+  function zl1_scale(type,   f, u) {
+    f = 1; u = "assumed-milli-degC"; flag = 0
+    if      (type ~ /^tsens_tz_sensor[0-9]+$/)                             { f = 100;  u = "deci-degC" }
+    else if (type == "pm8994_tz" || type == "battery")                     { f = 1;    u = "milli-degC" }
+    else if (type ~ /^(msm_therm|quiet_therm|pa_therm[0-9]*|emmc_therm)$/) { f = 1000; u = "degC" }
+    else flag = 1
+    zl1_unit = u
+    return f
+  }
+  { for (i = 1; i <= NF; i++) {
+      split($i, p, ":"); if (p[2] == "") continue
+      n++
+      m = p[2] * zl1_scale(p[1])
+      if (m < -40000 || m > 160000) { bad++; continue }
+      if (++picked == 1 || m > hot) { hot = m; ht = p[1]; hr = p[2]; hu = zl1_unit; hf = flag }
+    } }
+  END {
+    if (n == 0)  { print "thermal: no readable zone"; exit }
+    if (!picked) { printf "thermal: %d zones, every one implausible -- the unit table is wrong\n", n; exit }
+    printf "thermal: hottest of %d zones: %s %.1f C (raw %s = %s)", n, ht, hot/1000, hr, hu
+    if (hf)      printf "; that zone is not in the unit table"
+    if (skip)    printf ", %d excluded as implausible", skip
+    print ""
+  }')"
 say "   cpu0 governor: $(field gov)"
 
 # --- what to run next ---------------------------------------------------------------------------
@@ -327,6 +369,12 @@ always "      (read-only: does the store directory exist through the HAL's own n
 always "   4. heat                     ->  scp scripts/device/zl1-thermal.sh root@$IP:/tmp/ && \\"
 always "                                   ssh root@$IP 'sh /tmp/zl1-thermal.sh --seconds 60 --top 15'"
 always "      (doc 81; the sensor stack came back in doc 78 and its thermal cost has not been re-measured)"
+always "      Read the hottest line, not just the number: the zones on this device use THREE different units"
+always "      (tsens deci-degC, pm8994/battery milli-degC, msm_therm/quiet_therm plain degC), so it prints"
+always "      the raw value and the unit too -- 'raw 580 = deci-degC' is the part you can check in your head,"
+always "      and it is the part that was missing while this script reported the SoC at 0.6 C (doc 96)."
+always "      Its arithmetic is pre-verifiable without the device: scripts/host/zl1-thermal-selftest.sh,"
+always "      44 checks, all three units at once in a fake root, and the doc 72 A/B as an assertion)"
 
 if [ "${failed:-0}" != 0 ]; then exit 1; fi
 exit 0

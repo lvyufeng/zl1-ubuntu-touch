@@ -36,7 +36,7 @@
 | `sensorfwd` / `repowerd` / `lightdm` 三个 unit | `69`：repowerd 排在 sensorfwd 的 READY=1 之前会死，而它是这台设备上**屏幕策略的唯一拥有者** |
 | `ActiveOutputs` | 抓图/上屏那套协议的起点状态 |
 | keeper 的状态（`T` / 运行） | `72`：它在跑的时候烧掉约一个核、还让 systemd 每 ~6 秒 reload 一次；`T` 是安静的那个状态 |
-| `thermal_zone1`、cpu0 governor | `72` 的两个热源之一（governor 是否还是 `interactive`）；顺带把 `81` 那个仪器要用的读数确认一遍 |
+| 热区（**全部**，不是 `thermal_zone1`）、cpu0 governor | `72` 的两个热源之一（governor 是否还是 `interactive`）；热区那一行原来读 `thermal_zone1` 再除以 1000，而**这台设备的区不是一个单位**，于是它把 55.8 °C 的 SoC 报成 0.6 °C（`96`）。现在它取全区的 `type:temp`、在宿主机用和 `device/zl1-thermal.sh` 同一张表换算，并印出最热那个的原始值与单位 |
 
 最后它把**欠着的四条测量**连同各自的命令打出来（上屏/相机、GPS、指纹、发热），所以"设备回来了"和"下一步做什么"是同一个输出。
 

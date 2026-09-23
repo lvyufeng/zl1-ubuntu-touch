@@ -1,0 +1,198 @@
+### thermal units on the zl1 -- what the instrument used to print, and what it prints now
+### 2026-09-23, host-side only. The device is in EDL (05c6:9008, port 3-3) for this whole round:
+### nothing below is a device measurement except the raw zone values, which are quoted from the
+### on-device capture of 2026-09-22 in thermal-2026-09-22.log (section 7) and are marked as such.
+
+===== 1. the raw snapshot this round is built on (measured on the device, 2026-09-22) =====
+### thermal-2026-09-22.log, the quiet 5 minutes (keeper SIGSTOPped), t0:
+t0  uptime=9892  keeper=T  systemd_cpu=00:37:38  load=6.76
+    tsens_tz_sensor1=558 (55.8 C)  tsens_tz_sensor8=580 (58.0 C)  pm8994_tz=49125 (49.1 C)
+    msm_therm=49  quiet_therm=50  battery=42500 (42.5 C, CHARGING)
+### and five minutes later (t1), after the keeper had been stopped:
+    tsens_tz_sensor1=503 (50.3 C)  tsens_tz_sensor8=519 (51.9 C)  pm8994_tz=46434 (46.4 C)
+    msm_therm=46  quiet_therm=47  battery=42200 (42.2 C)
+### Three units in one snapshot: tsens in deci-degC, pm8994/battery in milli-degC, msm_therm/
+### quiet_therm in plain degC. That is the whole problem, and it is invisible in the file contents.
+
+===== 2. what the instrument printed for those numbers BEFORE this round =====
+### `zone_print` and the `hottest` picker divided every zone by 1000. Reproduced by hand:
+   tsens_tz_sensor1   raw 558     ->    0.6 C   (truth: 55.8 C)
+   pm8994_tz          raw 49125   ->   49.1 C   (truth: 49.1 C)
+   battery            raw 42500   ->   42.5 C   (truth: 42.5 C)
+   msm_therm          raw 49      ->    0.0 C   (truth: 49 C)
+   quiet_therm        raw 50      ->    0.1 C   (truth: 50 C)
+   --- what 'hottest' picks (max of raw, then /1000):
+   hottest: pm8994_tz at 49.1 C
+   --- doc 72's A/B (tsens_tz_sensor1 538 -> 490, the 5.5 C cooling):
+   -0.0 C   (0.5 -> 0.5)
+
+### Read that again as a user: the SoC is at 55.8 C and the instrument says 0.6 C; the hottest thing on
+### the device is tsens_tz_sensor8 at 58.0 C and the instrument names the pm8994 die sensor at 49.1 C;
+### and doc 72's conclusion -- "stopping the keeper cools the SoC by 5.5 C" -- prints as "-0.0 C",
+### which reads as "it costs nothing".
+
+===== 3. the same numbers AFTER the unit table (zone_read, per-zone output) =====
+### from the self-test's scenario 1, which builds its fake /sys/class/thermal out of section 1's
+### values: the six zones the health check's ssh line carries.
+== thermal zones:
+   thermal_zone1 tsens_tz_sensor1             55.8 C
+   thermal_zone21 pm8994_tz                    49.1 C
+   thermal_zone22 battery                      42.5 C
+   thermal_zone23 msm_therm                    49.0 C
+   thermal_zone24 quiet_therm                  50.0 C
+   thermal_zone8 tsens_tz_sensor8             58.0 C
+   hottest: tsens_tz_sensor8 58.0 C  (raw 580 = deci-degC, of 6 zones)
+
+===== 4. the per-zone A/B, before and after (doc 72's own measurement) =====
+### BEFORE: `sort -rn` over raw values, every delta divided by 1000. Doc 72's A/B was
+### tsens_tz_sensor1 538 -> 490 and pm8994_tz 48000 -> 46923, i.e. the real answer was -4.8 C on the SoC
+### and -1.1 C on the PMIC, and the tool said:
+###     538  -> 490     =  -0.0 C   (0.5 -> 0.5)     tsens_tz_sensor1, really -4.8 C
+###     49   -> 46      =  -0.0 C   (0.0 -> 0.0)     msm_therm, really -3.0 C
+###     48000 -> 46923  =  -1.1 C                    pm8994_tz: the one family the old code had right,
+###                                                  and therefore the one it put at the top of the list
+###
+### AFTER: both windows in milli-degC, sorted by the size of the change in either direction.
+== B minus A per thermal zone (sorted by the size of the change, either direction):
+   thermal_zone8 tsens_tz_sensor8           -6.1 C   (58.0 -> 51.9)
+   thermal_zone1 tsens_tz_sensor1           -5.5 C   (55.8 -> 50.3)
+   thermal_zone24 quiet_therm                -3.0 C   (50.0 -> 47.0)
+   thermal_zone23 msm_therm                  -3.0 C   (49.0 -> 46.0)
+   thermal_zone21 pm8994_tz                  -2.7 C   (49.1 -> 46.4)
+   thermal_zone22 battery                    -0.3 C   (42.5 -> 42.2)
+
+===== 5. the per-process A/B, where the answer used to be missing =====
+### The mode exists to answer "what did stopping that thing change?". A process that went quiet is by
+### definition absent from window B's top list, and the old code walked only B's list -- so it was not
+### reported at all. Doc 81 section 3 described the behaviour it did not have.
+== B minus A per process (ticks in the same 2s window; + = hotter, sorted by size):
+       -166  keeper 812
+         -6  sensorfwd 8885
+         -6  systemd 1
+         -6  composer 1696
+   (processes in either top-10 list)
+== B minus A per thermal zone (sorted by the size of the change, either direction):
+
+===== 6. the flags, when the table goes stale =====
+### Scenario 2: `zs_temp` is a driver this port does not have (so the unit is a guess, and saying so
+### beats hiding it), and `emmc_therm` is reporting the milli value a driver that switched units would
+### produce -- 40000 for 40 C. The second one is caught by the plausibility band, is printed with its
+### raw value, and is then refused a place in the hottest pick.
+== thermal zones:
+   thermal_zone1 tsens_tz_sensor1             55.8 C
+   thermal_zone21 pm8994_tz                    49.1 C
+   thermal_zone22 battery                      42.5 C
+   thermal_zone23 msm_therm                    49.0 C
+   thermal_zone24 quiet_therm                  50.0 C
+   thermal_zone25 zs_temp                      41.5 C   <- type not in the unit table; assumed milli-degC (raw 41500)
+   thermal_zone26 emmc_therm                40000.0 C   <- IMPLAUSIBLE as degC: raw 40000
+   thermal_zone8 tsens_tz_sensor8             58.0 C
+   hottest: tsens_tz_sensor8 58.0 C  (raw 580 = deci-degC, of 8 zones; 2 flagged above; 1 implausible, left out of the pick)
+
+### The band is not a substitute for the table and the script says so: a family mis-assumed by 1000x is
+### caught (47000 milli read as degC -> 40000 C), a family mis-assumed by 10x is not (580 deci read as
+### milli -> 0.58 C, which is a believable temperature). That is why the hottest line prints the raw
+### value and the unit as well -- `raw 580 = deci-degC` can be checked in the head.
+
+===== 7. the health check, which is the first number a person reads =====
+### It used to read thermal_zone1 -- a tsens sensor, chosen only because "1" looked like a sensible
+### index -- and divide by 1000, so it announced "thermal_zone1: 0.6 C" on a phone whose SoC was 55.8 C.
+### Now it asks for every zone as type:temp over the one ssh round trip and scales host-side, using the
+### same table.
+   thermal: hottest of 6 zones: tsens_tz_sensor8 58.0 C (raw 580 = deci-degC)
+
+### the whole device-side command it now sends, verbatim from the script:
+197:  echo "thermal=$(for z in /sys/class/thermal/thermal_zone*; do [ -r "$z/temp" ] || continue; printf "%s:%s " "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"; done)"
+
+### And the anti-drift check: the instrument (device-side loop) and the health check (host-side awk)
+### must agree on the same six zones, so the two copies of the table cannot separate silently.
+instrument:      hottest: tsens_tz_sensor8 58.0 C  (raw 580 = deci-degC, of 6 zones)
+health check:    thermal: hottest of 6 zones: tsens_tz_sensor8 58.0 C (raw 580 = deci-degC)
+
+### The assertion is scoped to the heat line and not to the whole output on purpose: the router's own
+### prose explains the bug it used to have ("reported the SoC at 0.6 C"), and an assertion over the
+### whole output trips on that explanation rather than on the bug.
+
+===== 8. the self-test, whole =====
+### 44 checks, all passing. Sections 1/2 are the unit table, 3 is the A/B, 4 is the read_stat assertion
+### doc 81's own bug left behind, 5 the flags, 6 read-only-ness, 7 the health check + the agreement.
+zl1 thermal instrument -- offline self-test
+  script under test: scripts/host/../device/zl1-thermal.sh
+  fake root:         /tmp/zl1-thermal-selftest/fake
+
+== 1. the unit table: three conventions in one snapshot ==
+PASS  tsens8 580 -> 58.0 C (deci-degC)
+PASS  tsens1 558 -> 55.8 C
+PASS  pm8994_tz 49125 -> 49.1 C (milli-degC, unchanged)
+PASS  battery 42500 -> 42.5 C
+PASS  msm_therm 49 -> 49.0 C (plain degC)
+PASS  quiet_therm 50 -> 50.0 C
+PASS  the hottest zone is the SoC, named, with its raw value and unit
+PASS  no tsens zone is reported in single-digit C
+PASS  msm_therm is not reported as 0.x C
+PASS  the hottest zone is not a board/battery zone
+
+== 2. a table that goes stale has to be loud ==
+PASS  an unknown type is flagged, not assumed silently
+PASS  a 1000x-mis-scaled zone is flagged IMPLAUSIBLE
+PASS  an implausible zone does not win the hottest pick
+PASS  the summary still reports every zone it read
+PASS  and says how many it left out of the pick
+
+   -- and when nothing is believable:
+PASS  it refuses to name a hottest zone rather than inventing one
+
+== 3. the A/B has to reproduce the doc 72 measurement, not merely move ==
+PASS  the A/B run exits 0 (rc=0)
+PASS  tsens8: -6.1 C (58.0 -> 51.9) -- doc 72's headline, not +0.0
+PASS  tsens1: -5.5 C (55.8 -> 50.3)
+PASS  msm_therm: -3.0 C
+PASS  pm8994_tz: -2.7 C
+PASS  battery: -0.3 C
+PASS  no delta is rounded to +0.0 C
+PASS  the biggest mover comes first (order: tsens_tz_sensor8 tsens_tz_sensor1 quiet_therm msm_therm pm8994_tz battery)
+PASS  the smallest mover is last (the battery's 0.3 C drift, not the 6.1 C drop)
+PASS  a process that STOPPED burning is reported (it is absent from window B's top list)
+
+== 4. read_stat's own guard (doc 81's second bug) ==
+PASS  a /proc/stat with no aggregate cpu line aborts loudly
+PASS  and it exits 1 (got 1)
+
+== 5. flags, on a shell that has 'set -u' ==
+PASS  '--seconds' with no value -> a message naming the flag
+PASS  '--seconds' with no value does not abort the shell
+PASS  --help prints the usage block
+PASS  an unknown argument exits 2
+PASS  the usage block itself carries the unit trap (the next reader needs it)
+PASS  --quiet keeps the per-process table out
+PASS  --quiet keeps the rest of the report
+
+== 6. read-only: nothing written outside the fake root, nothing left behind ==
+PASS  the fake /proc and /sys are byte-identical after a run
+PASS  the script's temp dir is removed on exit (the EXIT trap works)
+
+== 7. the health check's heat line, on the same zones ==
+PASS  the health check reports the SoC at 58.0 C with its raw value
+PASS  the heat line is present and labelled
+PASS  it no longer reports a zone by its index
+PASS  and the heat line never prints the 0.6 C it used to
+PASS  the health check still exits 0 on this fixture
+PASS  it asked the stub for the interface address
+PASS  the instrument and the health check agree on the hottest zone and its value
+
+pass=44 fail=0
+
+===== 9. what this round does NOT establish =====
+### * No device measurement at all: the device is in EDL, the fake root's /proc and /sys are synthetic,
+###   and the *only* real numbers here are the raw zone values quoted from 2026-09-22.
+### * The unit table is a table. It is derived from a measurement (558 = 55.8 C, 49 = 49 C), not from a
+###   driver symbol, and it covers the six families this device has shown. A driver that reports deci
+###   under a name in the milli row would be scaled wrong and the band would not catch it -- the raw
+###   value and unit printed on the hottest line are the guard against that, and a new family is
+###   supposed to be added to the table when it appears.
+### * `pa_therm0/1` and `emmc_therm` were grouped with msm_therm/quiet_therm as plain degC in the
+###   2026-09-22 units section, but msm_therm/quiet_therm are the two that were actually read and
+###   quoted; if the pa_therm group turns out to be deci, the band will flag it loudly, which is the
+###   behaviour scenario 2 pins.
+### * The A/B ordering and the per-process union are asserted against a synthetic two-window run on
+###   the host; neither has been exercised on the device.
