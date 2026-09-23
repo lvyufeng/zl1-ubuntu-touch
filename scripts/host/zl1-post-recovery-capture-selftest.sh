@@ -38,7 +38,7 @@ KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --keep) KEEP=1; shift ;;
-  --help|-h) sed -n '2,26p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done

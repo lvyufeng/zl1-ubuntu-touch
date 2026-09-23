@@ -150,6 +150,8 @@ for u in $UNITS; do
 done
 REMOTE
   ;;
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;   # printing the manual is not an error
+# Everything else, including no argument at all, keeps this script's own exit code.
 *)
-  sed -n '2,54p' "$0"; exit 1;;
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

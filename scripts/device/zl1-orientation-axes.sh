@@ -93,7 +93,10 @@ while [ $# -gt 0 ]; do
     --interval)    INTERVAL="${2?--interval needs a number}"; shift 2 ;;
     --explain)     EXPLAIN=1; shift ;;
     --quiet)       QUIET=1; shift ;;
-    *) echo "unknown argument $1" >&2; exit 2 ;;
+    # The header, whatever its length -- every other script in this tree answers --help this way,
+    # and a fixed line range silently truncates (or leaks code) the moment the header changes.
+    --help|-h)     awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
+    *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
 

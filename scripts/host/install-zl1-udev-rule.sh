@@ -20,6 +20,13 @@ HELPER_SRC="$HERE/zl1-rndis-udev-helper.sh"
 RULE_DST="/etc/udev/rules.d/99-zl1-rndis.rules"
 HELPER_DST="/usr/local/sbin/zl1-rndis-udev-helper.sh"
 
+# Reading the manual is not an action, so --help comes before the --yes gate: a script whose own
+# header documents a Usage line should be able to print that header without being handed a
+# permission flag first. (This is the one script the health check names that could not.)
+case "${1:-}" in
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
+esac
+
 [[ "${1:-}" == "--yes" || "${1:-}" == "--remove" ]] || { echo "refusing without --yes" >&2; exit 2; }
 
 if [[ "${1:-}" == "--remove" ]]; then

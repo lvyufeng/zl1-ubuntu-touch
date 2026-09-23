@@ -92,7 +92,7 @@ while [ $# -gt 0 ]; do
   --explain) MODE=explain; shift ;;
   --seconds) SECONDS_="${2:-30}"; shift; [ $# -gt 0 ] && shift ;;
   --quiet) QUIET=1; shift ;;
-  --help|-h) sed -n '2,64p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done

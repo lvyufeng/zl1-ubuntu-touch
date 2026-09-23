@@ -60,6 +60,11 @@ SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev
 
 TRANSPORT=adb
 MODE=""
+# Before the --yes gate on purpose: reading the manual is not an action, and requiring --yes to see the
+# usage is how a script's own documentation becomes unreachable.
+case "${1:-}" in
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
+esac
 [[ "${1:-}" == "--yes" ]] || { echo "refusing without --yes" >&2; exit 2; }
 shift
 while [[ $# -gt 0 ]]; do

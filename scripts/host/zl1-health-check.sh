@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
   --quiet) QUIET=1; shift ;;
   --no-ssh) NO_SSH=1; shift ;;
-  --help|-h) sed -n '2,30p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -288,6 +288,30 @@ say "   cpu0 governor: $(field gov)"
 
 # --- what to run next ---------------------------------------------------------------------------
 
+always "   BEFORE ANY OF IT, and with no device involved at all -- every command below is a script,"
+always "   and every script here documents itself in its own header. This checks that it can:"
+always "       scripts/host/zl1-cli-usage-selftest.sh,"
+always "   98 checks. It sweeps every script THIS page names (28 of them -- 24 the page spells out as a"
+always "   path, 4 it names by bare basename) and requires --help to print that script's"
+always "   own header and nothing else (docs 113). Two were printing something else before it existed:"
+always "   install-retire-debug-keeper.sh printed 12 lines of its own shell code, and zl1-thermal.sh"
+always "   printed 'set -u' -- because 17 scripts printed their usage with a hard-coded line range, a"
+always "   defect docs 104 had named and 'fixed' at the one site in front of it (52 became 53, so the"
+always "   number travelled with the header) while docs 108 replaced two. It is a PROPERTY test:"
+always "   it appends a line to a copy of each header and requires the output to grow, which a"
+always "   hard-coded range cannot do however long the header is today. Six mutations each make it fail:"
+always "   revert one script to a range, delete a --help case, print one line too few, print the code,"
+always "   drop the exec bit, write a NEW script outside the covered set with a range -- plus two that have"
+always "   to redden DIFFERENT files (a stale citation in the thermal harness, a guard pointing elsewhere)."
+always "   A seventh must stay GREEN: this page WRAPS, so one path it names is split across two string"
+always "   literals, and the sweep has to keep covering it anyway. The covered set is read from THIS page"
+always "   in two shapes for that reason -- the path it spells out (24) and the bare basename it names (4)"
+always "   -- and reading only the first shape is what the check used to do while reporting that everything"
+always "   this page names was fine: it swept 7 of the 10 harnesses below and said so as 'all 7'."
+always "   It checks the same rule one level"
+always "   up as well -- every harness THIS page names must carry the citation drift guard (docs 110) --"
+always "   which is how it caught that this page named one harness with no number at all."
+always ""
 always ""
 always "== what is owed, in the order it has to be done (0-series first: each one is only"
 always "== answerable by the boot you are on, or by the next one)"
@@ -393,7 +417,8 @@ always "       AXES-INVERTED, 5/6 = the phone was flat, so hold it up and run ag
 always "       run (--flat-up) can decide NOTHING: qtmir ignores FaceUp/FaceDown by design, so a flat"
 always "       phone never moves the screen -- docs 92 sections 1/5. Nothing is changed by the probe."
 always "       Its parsers are pre-verifiable without the device and without a hand: scripts/host/"
-always "       zl1-orientation-axes-selftest.sh stubs gdbus and drives eight canned postures through"
+always "       zl1-orientation-axes-selftest.sh"
+always "       (33 checks; stubs gdbus and drives eight canned postures through"
 always "       the real script -- worth running first, since the run below costs a person holding"
 always "       still. It passes clean, so a surprising verdict is about the phone, not the parsing)"
 always "   2. GPS                      ->  scp scripts/device/zl1-gps-probe.sh root@$IP:/tmp/ && \\"

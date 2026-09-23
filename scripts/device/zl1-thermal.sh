@@ -60,7 +60,7 @@ while [ $# -gt 0 ]; do
   --ab)      AB=1; shift ;;
   --hold)    HOLD="${2?--hold needs a number}"; shift 2 ;;
   --quiet)   QUIET=1; shift ;;
-  --help|-h) sed -n '2,49p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done

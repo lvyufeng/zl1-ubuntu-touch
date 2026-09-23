@@ -96,8 +96,10 @@ case "${1:-}" in
       \"\$(systemctl is-active lightdm)\""
   ;;
 --explain)
-  sed -n '2,30p' "$0"
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"
   ;;
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;   # printing the manual is not an error
+# Everything else, including no argument at all, keeps this script's own exit code.
 *)
-  sed -n '2,30p' "$0"; exit 1;;
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

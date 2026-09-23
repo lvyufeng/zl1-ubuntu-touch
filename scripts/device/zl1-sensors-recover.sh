@@ -68,7 +68,10 @@ while [ $# -gt 0 ]; do
     --wait)    WAIT="$2"; shift 2 ;;
     --no-probe) PROBE=0; shift ;;
     --quiet)   QUIET=1; shift ;;
-    *) echo "unknown argument $1" >&2; exit 2 ;;
+    # --help prints this file's own header: the header IS the manual (it carries the Usage line),
+    # and the length of it is not something a fixed line range can know.
+    --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
+    *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
 

@@ -22,7 +22,7 @@
 # not this:
 #
 #   * `zl1-debug-net.sh` -- the v63 debug network keeper, running as an orphaned `/bin/sh` (unsigned by
-#     any unit: its unit exits after 67 ms because the script daemonizes itself) -- burns **6.6% of a
+#     any unit: its unit exits after 67 ms because the script daemonizes itself) -- burns **a whole
 #     core, permanently**, in a 1 Hz loop that walks `/proc/[0-9]*`, rewrites systemd unit files and
 #     configures the RNDIS gadget. The rewrite is expensive: it triggers a `systemd daemon-reload`
 #     **every ~6 s**, and each one takes ~2 s of systemd CPU (`Reloading finished in 2044 ms`). Stopping
@@ -30,6 +30,17 @@
 #     safety net) dropped the load average from 6.66-7.36 to 5.38-6.02 and **stopped the reloads
 #     entirely** (last reload [9259.4], none in the following minutes), and the SoC cooled:
 #     `tsens_tz_sensor1` 538 -> 490 (deci-degrees: 53.8 -> 49.0 C), `pm8994_tz` 48000 -> 46923 (46.9 C).
+#
+#     **That "a whole core" is a correction, and the number this line used to carry is worth knowing.**
+#     The first measurement said **6.6% of a core** -- it added up the ticks of the keeper's own
+#     `/bin/sh` process. That accounting cannot see this keeper's cost, because the expensive work is
+#     done by OTHERS: `systemctl` runs as a child, and the `daemon-reload` is executed by systemd
+#     itself (pid 1). A clean 15 s A/B (nothing changed but `SIGSTOP`/`SIGCONT`) gave busy 1.84 cores
+#     running vs 0.87 stopped: **~0.97 cores, 24% of this 4-core SoC** (docs 72 section 4b). So the
+#     real win from retiring it is ~15x what the old figure implied -- and the lesson generalises:
+#     *"how much does process X burn" is the wrong question when X makes something else do the
+#     burning.*
+#
 #     It is **not stopped here** on purpose: the keeper is what configures `rndis0`/`usb0` at boot
 #     (`192.168.2.15/24` and `10.15.19.82/24`, announced with `arping -A`), and our own
 #     `zl1-netwatch.sh` has an equivalent `restore_addrs()` -- but that function was reachable **only
@@ -38,17 +49,21 @@
 #     (docs 88). The netwatch now re-asserts the addresses every sample (`ensure_addrs()`), which is
 #     what makes the next stage a small step; retiring it still needs a reboot test;
 #     losing the address means losing SSH, i.e. needing hands on the phone, which is exactly the sort of
-#     step that does not get taken to save a few percent of CPU on someone else's behalf.
-#   * About half of the remaining CPU is **kernel** time: a 20 s `/proc/stat` delta gave
+#     step that does not get taken to save a core on someone else's behalf.
+#     (The gate for that step, and why it is a race rather than a retry, is docs 112: too small a win to
+#     risk is not the same as too uncertain to measure.)
+#   * ~~About half of the remaining CPU is **kernel** time: a 20 s `/proc/stat` delta gave
 #     user 16.9% / idle 24.1% / everything else 59%, i.e. ~3.0 of 4 cores busy with 2.4 of them in
-#     the kernel. The container's own top agrees (`215%sys`). The named consumers only account for
-#     ~0.5 cores (`sensorfwd` + `android.hardware.sensors@1.0-service` ~18% of one core, the graphics
-#     composer ~4%), so most of it is IPC/reclaim/interrupt work with no owner. `ksoftirqd` has
-#     accumulated ~6.5 minutes in 2.6 h and RCU ~6.7 minutes, which is the shape of heavy syscall
-#     churn rather than one hot loop.
-#   * The container is nearly full: **3.70 GB used of 3.87 GB** (162 MB free). Reclaim pressure is a
-#     real contributor to that kernel time, but `kswapd0` has only 14 s of CPU on it, so it is not the
-#     main cost. Worth knowing before blaming the governor for everything.
+#     the kernel.~~ **Withdrawn (docs 72 section 4b): that 59% was `iowait` and `irq/softirq` counted as
+#     work.** `iowait` is waiting, not computing, and it barely heats anything. Measured properly
+#     (user+sys over a clean window) the machine was busy **0.87 cores**, so there is no hidden
+#     half-a-machine to go looking for. The rule this leaves behind is in `zl1-thermal.sh`: never read
+#     `busy = (total-idle)/total` on this device -- read `user` and `sys` separately.
+#   * ~~The container is nearly full: **3.70 GB used of 3.87 GB** (162 MB free).~~ **That is the whole
+#     PHONE, not the container (docs 87).** This kernel is built without `CONFIG_MEMCG` and the rootfs
+#     ships no `lxcfs`, so a `free` run inside the container reads the host's `/proc/meminfo`. 3.70 of
+#     3.87 GB is therefore UT+Android together, there is no per-container quota to tune, and nothing
+#     isolates the two at OOM time. The 96% figure stands; the interpretation does not.
 #
 # What this installs (both files are new, on the `/etc/systemd/system` writable path -- `/` is a
 # read-only image, and `/etc/systemd/system` here resolves into the rw `/etc/writable` mount, which is
@@ -83,7 +98,7 @@ while [ $# -gt 0 ]; do
     # trailing --governor aborts the shell with "$2: unbound variable" and no indication of which flag
     # was short a value. (Found by scripts/host/zl1-installers-selftest.sh.)
     --governor) GOVERNOR="${2?--governor needs a NAME (e.g. interactive, ondemand, powersave)}"; shift 2 ;;
-    --help|-h) sed -n '2,68p' "$0"; exit 0 ;;   # the header is lines 1-68; line 70 is `set -u`
+    --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
     *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done

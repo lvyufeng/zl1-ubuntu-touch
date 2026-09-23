@@ -68,7 +68,7 @@ while [ $# -gt 0 ]; do
   # at 40, i.e. short of the Usage line it exists to print. scripts/host/zl1-loc-fp-selftest.sh now
   # asserts both halves of that -- the usage block IS printed, and no `set -u` is -- because a line
   # number drifts with the header and only the negative assertion can see the other direction.
-  --help|-h) sed -n '2,56p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done

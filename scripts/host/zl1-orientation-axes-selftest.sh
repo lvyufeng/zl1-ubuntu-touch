@@ -24,7 +24,7 @@ KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --keep) KEEP=1; shift ;;
-  --help|-h) sed -n '2,16p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -227,6 +227,30 @@ case "$msg" in
 esac
 
 echo
+
+echo
+echo "== the health check cites this harness's count, and that citation cannot drift =="
+# Until docs 113 the health check NAMED this harness with no number at all -- the same defect as a stale
+# number, with the number missing: a reader cannot tell a 12-check harness from a 200-check one, and
+# nothing here would have noticed if it had been reworded away. (Its four siblings already check theirs;
+# this was the one that did not, which is what the sweep for it found.)
+HERE=$(cd "$(dirname "$0")" && pwd)
+HEALTH="$HERE/zl1-health-check.sh"
+if [ ! -r "$HEALTH" ]; then
+  bad "cannot read $HEALTH -- its citation is unchecked"
+else
+  cited=$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' |
+            sed -n 's/.*zl1-orientation-axes-selftest\.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')
+  total=$((PASS + FAIL + 1))
+  if [ -z "$cited" ]; then
+    bad "the health check no longer cites this harness's count -- either the citation is gone or its wording changed"
+  elif [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has exactly that many"
+  else
+    bad "the health check cites $cited checks, but this harness has $total -- fix host/zl1-health-check.sh"
+  fi
+fi
+
 echo "pass=$PASS fail=$FAIL"
 [ "$KEEP" = 1 ] || rm -rf "$W"
 [ "$FAIL" = 0 ]

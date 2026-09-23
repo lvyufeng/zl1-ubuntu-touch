@@ -152,6 +152,8 @@ takes it. Its .rc has "onrestart restart zygote", so every time it loses the
 fight it takes zygote and half the container's services down with it.
 EOF
   ;;
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;   # printing the manual is not an error
+# Everything else, including no argument at all, keeps this script's own exit code.
 *)
-  sed -n '2,30p' "$0"; exit 1;;
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

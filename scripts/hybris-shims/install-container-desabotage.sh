@@ -236,5 +236,7 @@ case "${1:-}" in
 --install) install_it ;;
 --remove)  remove_it ;;
 --status)  status_it ;;
-*) sed -n '2,26p' "$0"; exit 1;;
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;   # printing the manual is not an error
+# Everything else, including no argument at all, keeps this script's own exit code.
+*) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

@@ -131,6 +131,8 @@ EOF
     echo '== last compositor output'
     tail -6 /var/log/lightdm/unity-system-compositor.log"
   ;;
+--help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;   # printing the manual is not an error
+# Everything else, including no argument at all, keeps this script's own exit code.
 *)
-  sed -n '2,25p' "$0"; exit 1;;
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 1;;
 esac

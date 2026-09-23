@@ -74,7 +74,7 @@ while [ $# -gt 0 ]; do
   --keep-display) KEEP_DISPLAY=1; shift ;;
   --extra-args) EXTRA="${2?--extra-args needs a value}"; shift 2 ;;
   --outdir) OUTDIR="${2?--outdir needs a directory}"; shift 2 ;;
-  --help|-h) sed -n '2,53p' "$0"; exit 0 ;;
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done

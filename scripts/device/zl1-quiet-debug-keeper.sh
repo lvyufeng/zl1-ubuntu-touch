@@ -81,11 +81,17 @@ show_status() {
 
 WAIT=0
 ACTION=${1:---status}
+# `--help` before the shift, because this script takes its action as the FIRST argument and a bare
+# `--help` would otherwise be consumed as $ACTION and fall through to the usage line at the bottom --
+# which prints one line, not the header that says what the keeper is and why stopping it is safe.
+case "${1:-}" in
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
+esac
 [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
   case "$1" in
-    --wait) WAIT="$2"; shift 2 ;;
-    *) echo "unknown argument $1" >&2; exit 2 ;;
+    --wait) WAIT="${2?--wait needs SECONDS}"; shift 2 ;;
+    *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
 

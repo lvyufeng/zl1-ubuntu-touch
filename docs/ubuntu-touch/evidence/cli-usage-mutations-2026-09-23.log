@@ -1,0 +1,98 @@
+# zl1-cli-usage-selftest.sh -- mutations, 2026-09-23
+#
+# Baseline: sh scripts/host/zl1-cli-usage-selftest.sh  ->  pass=98 fail=0 skip=0 (rc=0),
+#           28 scripts named by the health check (24 path + 4 basename) + 17 converted ones = 45.
+#
+# Every mutation is applied to a COPY of scripts/ (cp -a into a temp root) and the harness is run with
+# --sweep-root. Each one ASSERTS its own edit landed before running: a mutation that changes nothing
+# and a check that tests nothing are the same object (docs 113 section 5, M6).
+
+################ M1-M6: each must go RED ################
+# (M7 appears below, as the pair M7/M7b, because it is the one that must stay green.)
+
+===== BASE (no mutation) =====
+rc=0  pass=98 fail=0 skip=0
+
+--- M1: a covered script back on a hard-coded range
+  (mutation landed: 1 line rewritten)
+
+===== M1 =====
+rc=1  pass=96 fail=3 skip=0
+  FAIL  scripts/device/zl1-thermal.sh: adding one line to the header changed the printed block by 0 lines, not 1 -- the printer's end is hard-coded
+  FAIL  1 script(s) still print usage with a hard-coded range:
+  FAIL  the health check cites '98' checks for this harness; this run has 99
+
+--- M2: a covered script loses its --help arm
+  (mutation landed: 1 line deleted)
+
+===== M2 =====
+rc=1  pass=95 fail=2 skip=0
+  FAIL  scripts/device/zl1-thermal.sh is named by the health check but does not answer --help at all
+  FAIL  the health check cites '98' checks for this harness; this run has 97
+
+--- M3: a covered script's header print drops its last line (a truncation)
+  (mutation landed: last printed line dropped)
+
+===== M3 =====
+rc=1  pass=96 fail=2 skip=0
+  FAIL  scripts/device/zl1-thermal.sh --help printed a line that is not a comment:
+  FAIL  scripts/device/zl1-thermal.sh: adding one line to the header changed the printed block by 0 lines, not 1 -- the printer's end is hard-coded
+
+--- M4: a covered script prints its header as CODE (the # stripped)
+  (mutation landed: the comment marker is stripped)
+
+===== M4 =====
+rc=1  pass=95 fail=2 skip=0
+  FAIL  scripts/device/zl1-thermal.sh --help printed a line that is not a comment:
+  FAIL  the health check cites '98' checks for this harness; this run has 97
+
+--- M5: a covered script loses its executable bit
+  (mutation landed: not executable)
+
+===== M5 =====
+rc=1  pass=97 fail=1 skip=0
+  FAIL  1 script(s) under scripts/ are not executable:
+
+--- M6: a NEW script outside the covered set, written with a hard-coded range
+  (mutation landed: scripts/stage-machinery/zl1-old-flash-step.sh)
+
+===== M6 =====
+rc=1  pass=97 fail=1 skip=0
+  FAIL  1 script(s) still print usage with a hard-coded range:
+
+################ M7/M7b: the extractor defect, as a pair ################
+  (the tree is doctored: the thermal path now breaks before its basename,
+   which is the shape the page already has for zl1-orientation-axes-selftest.sh)
+=== M7: the split path, the CURRENT harness -- must stay GREEN ===
+  rc=0  pass=98 fail=0 skip=0
+  zl1 CLI usage -- offline self-test
+    repo:        /tmp/tmp.PipGDU2LUC/t
+  PASS  the health check names 28 scripts (a floor of 20, so an empty extract cannot pass)
+  PASS    of those, 24 came from a path the page spells out and 4 from a bare basename it resolves to
+    covered set: 45 scripts = the 28 the health check names + 17 this sweep converted outside it
+  the count is still 98 with the citation check green, so nothing was dropped from the sweep.
+
+  (harness copy with the extractor reverted to the path-only form)
+=== M7b: the SAME doctored tree, the PRE-FIX extractor -- must go RED ===
+  rc=1  pass=90 fail=1 skip=0
+  zl1 CLI usage -- offline self-test
+    repo:        /tmp/tmp.PipGDU2LUC/t
+  PASS    (extractor reverted: path form only)
+  PASS  the health check names 24 scripts (a floor of 20, so an empty extract cannot pass)
+  PASS    of those, 24 came from a path the page spells out and 0 from a bare basename it resolves to
+  FAIL  the health check cites '98' checks for this harness; this run has 91
+  4 scripts the page names are gone from the sweep (28 -> 24); the harness's own citation check is
+  what says so. Without M7b, M7 would prove nothing -- a green run after a no-op is still green.
+
+################ C1/C2: the citation chain, both must redden DIFFERENT files ################
+  (mutation landed: health-check line 537 -> 999 checks)
+=== C1: a stale citation, the thermal harness on the same copy ===
+  rc=1  pass=44 fail=1
+  FAIL  the health check cites 999 checks, but this harness has 45 -- fix host/zl1-health-check.sh
+=== C1b: and the usage harness on that same copy -- must stay GREEN (the division of labour) ===
+  rc=0  pass=98 fail=0 skip=0
+
+=== C2: a named harness's drift guard points at a file that is not the health check ===
+  (mutation landed)
+  rc=1  pass=97 fail=1 skip=0
+  FAIL  these named harnesses cannot check their own citation: zl1-thermal-selftest.sh
