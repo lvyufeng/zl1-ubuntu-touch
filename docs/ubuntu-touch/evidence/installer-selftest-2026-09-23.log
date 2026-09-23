@@ -1,0 +1,327 @@
+zl1 installer self-test -- the two installers that write device state, and the two defects it found
+2026-09-23. Host-side. Device: EDL (05c6:9008, port 3-3). Nothing here touched the device.
+================================================================================
+
+1. the defect: a helper function's loop variable is the CALLER's
+--------------------------------------------------------------------------------
+$ git show HEAD:scripts/install-retire-debug-keeper.sh | sed -n "/RK_EOF/,/^RK$/p" > head-applier.sh
+has_address() {
+    i=$(iface)
+    [ -n "$i" ] || return 1
+    live=$(ip -4 addr show dev "$i" 2>/dev/null | awk '/inet /{printf "%s ", $2}')
+    case " $live " in
+    *" 192.168.2.15/24 "*) return 0 ;;
+    *" 10.15.19.82/24 "*) return 0 ;;
+    esac
+    return 1
+}
+   ... and the gate it is called from:
+# 1. the gate: an address must exist before we take away the thing that used to provide one.
+i=0
+while [ "$i" -lt "$WAIT_S" ]; do
+    has_address && break
+    sleep 1
+    i=$((i + 1))
+
+   iface() is called by has_address(), has_address() is called from that loop, and a shell
+   function's variables are the caller's -- so the counter is left holding the string 'rndis0'.
+
+2. the three cases, run against the HEAD applier in a fake device
+--------------------------------------------------------------------------------
+   A. neither rndis0 nor usb0 exists  (the loop's own guard is what is being tested)
+$ timeout 10 sh head-run.sh          # WAIT_S shortened to 3 so this is quick
+   rc=124  <-- still running when the timeout fired: it never advances, it SPINS
+           the arithmetic is $((' + 1)) = 1 every time round, so 1 < 45 forever.
+           On the device that is a full core, in the script whose whole purpose is to give
+           a core back (and systemd's TimeoutStartSec=180 is the only thing that ends it).
+
+   B. rndis0 exists AND carries 192.168.2.15/24
+$ timeout 10 sh head-run.sh
+   (it gets past the gate: has_address succeeds on the FIRST iteration, so '&& break' fires and
+    the fatal arithmetic is never reached. The kill and the verify do work in this case -- which
+    is why the harness's kill assertions PASS against HEAD. The defect is not 'it never kills'.)
+
+   C. rndis0 exists, NO address        <-- the case the refusal gate exists for
+$ timeout 10 sh head-run.sh
+   /tmp/kp/head-run.sh: 68: Illegal number: rndis0
+   rc=2
+           dash does not treat that as a failed assignment: it prints Illegal number and EXITS
+           THE SCRIPT. So the applier dies on its first iteration -- before the refusal check,
+           before the log line, before anything. The safety property that matters most,
+           'it refuses to kill when it cannot see an address', was never exercised, and an
+           operator would see a FAILED UNIT AND NOTHING IN THE LOG.
+
+           (The outcome is still the safe one -- it died before killing anything -- but by
+            accident, not by design, and with the explanation missing.)
+
+3. the second defect: a log line that splits into two journal records
+--------------------------------------------------------------------------------
+$ the applier with two keeper processes, at HEAD:
+   logger -t zl1-retire-keeper retiring keeper pids=[900
+   logger -t zl1-retire-keeper 905] cpu_ticks_so_far=20 (HZ=100) uptime=... matched= [...]
+   keeper_pids echoes one pid per line, PIDS=$(keeper_pids) kept the newlines, and log() builds
+   ONE line. The second record starts mid-sentence, so the one line whose job is to say WHICH
+   processes are being taken away is the one that cannot be read as a line.
+
+4. the fixes
+--------------------------------------------------------------------------------
+# A shell function's variables are its CALLER's -- there are no locals here. `iface()` used to be
+# `for i in rndis0 usb0`, and `has_address()` is called from the wait loop, so the loop's counter was
+# left holding the string "rndis0" every time round:
+#
+#   i=0; while [ "$i" -lt "$WAIT_S" ]; do has_address && break; sleep 1; i=$((i + 1)); done
+#
+# With rndis0 present -- i.e. always, on this port -- `i=$((i + 1))` is then arithmetic on "rndis0":
+# dash prints "Illegal number: rndis0" and **exits the whole script** (status 2), so the applier died
+# on its first iteration, before the refusal gate and before the kill, and `--install --now` would have
+# reported a failed unit with nothing in the log. With neither interface present it was worse: `iface`
+# echoed nothing, `i` became empty, `$(( + 1))` is 1, and the loop never advanced -- a spin at a full
+# core, in the one script whose purpose is to give a core back. Found offline by
+# scripts/host/zl1-installers-selftest.sh, which is also what keeps it found.
+#
+# So: every helper's variables are underscore-prefixed, and the counter has a name of its own.
+iface() {
+    for _i in rndis0 usb0; do
+        [ -e "/sys/class/net/$_i" ] && { echo "$_i"; return; }
+    done
+}
+   ...
+# keeper_pids echoes one pid per line, so join them: `log` builds ONE line, and an embedded newline
+# would split it into two journal records with the second starting mid-sentence. (Found by
+# scripts/host/zl1-installers-selftest.sh, with two keeper processes -- which is the case this log line
+# exists to make visible.)
+PIDS=$(keeper_pids | tr '\n' ' ')
+PIDS=${PIDS% }
+CMDS=""
+for p in $PIDS; do
+    t=$(awk '{print $14 + $15}' "/proc/$p/stat" 2>/dev/null) || t=0
+    TICKS=$((TICKS + ${t:-0}))
+    c=$(tr '\000' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+
+5. the harness: the whole run, as it stands
+================================================================================
+zl1 installer self-test -- the two installers that write device state
+  retire the debug keeper: scripts/host/../install-retire-debug-keeper.sh
+  no-EDL-on-panic:         scripts/host/../install-no-edl-on-panic.sh
+  fake device:             /tmp/zl1-installers-selftest/fake
+
+== 1. --status and --explain change nothing on the device ==
+PASS  retire --status exits 0
+PASS  retire --status wrote nothing to the fake device
+PASS  retire --status makes no systemd call that changes anything
+PASS  retire --status finds the keeper and names it
+PASS  and reports who started it (the ramdisk, not systemd)
+PASS  and the keeper's own CPU ticks (utime+stime from its stat), so 'a full core' is measurable later
+PASS  and says so when the lock is absent rather than printing nothing
+PASS  and reads the interface's addresses the way the applier's gate does
+PASS  distinguishing the two, so the gate's own reading is visible before it is trusted
+PASS  retire --explain exits 0
+PASS  retire --explain wrote nothing
+PASS  retire --explain gives the reason a unit edit cannot work
+PASS  and the reason the systemd instance is not the survivor
+PASS  and names what is left as the only lever
+
+== 2. --install: two files, that content, enabled -- and NOTHING on this boot ==
+PASS  retire --install exits 0
+PASS  it wrote the applier
+PASS  it wrote the unit
+PASS  and those are the only two files it added
+PASS  the unit is oneshot
+PASS  and ordered AFTER the netwatch -- the thing that makes the keeper redundant
+PASS  ExecStart is the applier, by its device path
+PASS  RemainAfterExit, so its result is readable afterwards
+PASS  and no start limit, because it waits for an address before it acts
+PASS  the applier is executable
+PASS  the applier is sh, as the ramdisk-started keeper's environment implies
+PASS  the applier masks the unit at runtime (a /run file, so it outlives the keeper)
+PASS  and carries the refusal gate
+PASS  and matches the keeper by argv, not by substring
+PASS  it asks for a daemon-reload
+PASS  and enables the unit
+PASS  --install does NOT start it: the current boot is untouched
+PASS  and nothing was killed
+PASS  the keeper is still there -- --install alone takes nothing away
+PASS  and it says so out loud
+PASS  and names the flag that would also retire it now
+PASS  the unit was not started
+
+== 3. the refusal gate: without an address it must NOT kill ==
+PASS  with no address the applier still exits 0 (a failed retirement is a log line, not a failed boot)
+PASS  --now starts the unit
+PASS  the applier refuses
+PASS  and says what it is leaving alone
+PASS  and names the interface it looked at
+PASS  the keeper is STILL RUNNING -- the gate held
+PASS  and no signal was sent at all
+
+   -- and the other address shape, so the gate is not accidentally the 192.168 one:
+PASS  a build whose gate does not recognise the address that IS there refuses too
+PASS  and leaves the keeper alone
+
+== 4. with an address: it kills, it verifies, and it says which failure it is ==
+PASS  with an address it exits 0
+PASS  it names the pid it is retiring
+PASS  and measures what it is taking away (utime+stime), so the effect is checkable later
+PASS  and prints the matched command line as the evidence for the match
+PASS  it SIGTERMs first (the keeper's trap removes its own lock)
+PASS  and does not KILL something that went away
+PASS  the keeper is gone
+PASS  and it reports the retirement
+PASS  naming where the addresses now come from
+PASS  it masks the unit for this boot, so nothing restarts it
+
+   -- a keeper that refuses to die: KILL, and the right sentence about it ==
+PASS  a survivor is named and escalated
+PASS  and KILLed
+PASS  when even KILL does not take, it says so and does not claim success
+PASS  and it does not report a retirement that did not happen
+
+   -- something RESTARTS it: the applier must say the lever is wrong, not that the kill failed ==
+PASS  a pid that was not there before is reported as a RESTART, not as a failed kill
+PASS  and it names what that means (docs 94)
+PASS  the watch loop sees it come back and re-kills
+PASS  and no record is split mid-line after the first pid
+PASS  and at the end it does not claim a retirement that did not hold
+PASS  which is also the line the operator sees (the installer shows the tail of the applier's output)
+
+== 5. the match is by argv, NOT by substring ==
+PASS  only the two whose ARGV IS the keeper are matched
+PASS  the shell that merely mentions the path is NOT matched
+PASS  and neither is the grep
+PASS  and pid 1 is never a candidate for a signal
+PASS  and pid 1 is never even matched
+PASS  the bystander survived
+PASS  grep survived
+PASS  pid 1 survived
+PASS  and the real keeper was retired
+
+== 6. --remove: it disables, deletes exactly its own two files, and tells the truth ==
+PASS  retire --remove exits 0
+PASS  the applier is gone
+PASS  the unit is gone
+PASS  and it removed nothing else
+PASS  it disables the unit
+PASS  and lifts the runtime mask, so the keeper comes back next boot
+PASS  it says the current boot's keeper stays dead -- not obvious, and it is the truth
+PASS  and says why the next boot restores it
+
+== 7. no-edl: --capture-only must not touch the policy unit ==
+PASS  --capture-only exits 0
+PASS  it installed the pstore capture
+PASS  and its unit
+PASS  and did NOT install the policy applier
+PASS  nor the policy unit
+PASS  it says the policy was not touched
+PASS  and reports the policy unit's state rather than assuming it
+PASS  the flag still reads 1 -- no policy change happened
+PASS  and it never enables the policy unit
+
+   -- and it leaves an ALREADY INSTALLED policy unit exactly as it found it:
+PASS  the pre-existing policy unit survived
+PASS  and it reports that it is present
+
+   -- --capture-only does not DELETE anything either, in either state:
+PASS  the file set is unchanged by that second run
+
+== 8. no-edl: --install writes four files and both units get enabled -- and started ==
+PASS  --install exits 0
+PASS  both policy files are there
+PASS  the policy unit runs after local-fs
+PASS  and its ExecStart is the applier
+PASS  the applier is about download_mode
+PASS  the capture unit is enabled and started
+PASS  and so is the policy unit
+PASS  and it verifies with systemctl cat, not is-enabled -- the only honest check
+PASS  and repeats the caveat: this lowers a probability, it is not a proof
+
+== 9. the policy applier: write, read back, and FAIL when the write does not take ==
+PASS  with the parameter present and writable it exits 0
+PASS  the flag is 0 afterwards
+PASS  it prints before -> after, so the change is witnessed
+PASS  and logs the before -> after under the zl1-no-edl tag
+PASS  the caveat goes to the log, on every boot -- where someone deciding 'could a trip have been prevented' will find it
+
+   -- the parameter absent: a driver not built in is a FAILURE, not a silent success:
+PASS  it exits 1 when the parameter does not exist
+PASS  and says which of the two failures it is
+PASS  naming the actual cause -- in the log, where an operator reads it
+
+   -- the write does not take: the unit must FAIL, because a guard that silently is not armed is worse:
+PASS  an unchanged flag exits 1
+PASS  and it says what that means: a panic would still arm EDL
+
+== 10. the pstore applier: reads the kernel, writes only under /userdata ==
+PASS  with an empty pstore it exits 0 (a boot with nothing to capture is not a failure)
+PASS  and writes nothing at all
+
+   -- one oops record: copied, dated by boot_id, indexed, and pruned to the newest four:
+PASS  with records present it exits 0
+PASS  the records went to a directory named for this boot's boot_id
+PASS  both records were copied
+PASS  and the index line says which boot and how many files -- so an absence is visible, not a gap
+PASS  six boots of captures leave exactly four archives (the same policy as the kmsg archive)
+
+== 11. the flag surface, and the guards ==
+PASS  install-retire-debug-keeper.sh: an unknown argument exits 2
+PASS  install-retire-debug-keeper.sh: --help prints a usage block
+PASS  install-no-edl-on-panic.sh: an unknown argument exits 2
+PASS  install-no-edl-on-panic.sh: --help prints a usage block
+PASS  retire --explain names the unit whose edit cannot work
+PASS  and never the other installer's files
+PASS  no-edl --status names its own files
+PASS  and never the other installer's
+
+pass=128 fail=0
+exit=0
+
+================================================================================
+6. the harness has teeth: the same harness against the scripts as they are at HEAD
+================================================================================
+$ git show HEAD:scripts/install-retire-debug-keeper.sh > /tmp/zl1-inst-prefix/scripts/...
+$ git show HEAD:scripts/install-no-edl-on-panic.sh   > /tmp/zl1-inst-prefix/scripts/...
+FAIL  the applier refuses
+FAIL  and says what it is leaving alone
+FAIL  and names the interface it looked at
+FAIL  a build whose gate does not recognise the address that IS there refuses too
+FAIL  only the two whose ARGV IS the keeper are matched
+pass=123 fail=5
+
+   All five are the SAME defect seen from five sides: section 3's refusal gate never fires (three
+   assertions) and section 5's two-keeper match never happens -- because with no address the
+   applier dies at line 68 before it can match anything or say anything. Section 4's kill and
+   verify assertions PASS against HEAD, which is the honest reading: this was a bug on the
+   failure path, not the happy path. A harness that reported 'it never kills' would have been
+   describing a different script.
+
+================================================================================
+7. what the harness covers, section by section
+================================================================================
+  == 1. --status and --explain change nothing on the device ==
+  == 2. --install: two files, that content, enabled -- and NOTHING on this boot ==
+  == 3. the refusal gate: without an address it must NOT kill ==
+  == 4. with an address: it kills, it verifies, and it says which failure it is ==
+  == 5. the match is by argv, NOT by substring ==
+  == 6. --remove: it disables, deletes exactly its own two files, and tells the truth ==
+  == 7. no-edl: --capture-only must not touch the policy unit ==
+  == 8. no-edl: --install writes four files and both units get enabled -- and started ==
+  == 9. the policy applier: write, read back, and FAIL when the write does not take ==
+  == 10. the pstore applier: reads the kernel, writes only under /userdata ==
+  == 11. the flag surface, and the guards ==
+
+================================================================================
+8. what this round does NOT show
+================================================================================
+  * NOTHING ABOUT THE DEVICE. Every container property, /proc entry, kernel parameter, unit and
+    address in this run is a fixture. The device is in EDL and none of it has been executed there.
+  * The two installers have still never run on the device. What is proven is what they WRITE and when
+    they refuse -- which is what they were written for, and what could be settled offline.
+  * The `systemctl start <unit>` path is simulated by a stub that runs the unit's own ExecStart. That
+    is the device's behaviour as systemd documents it (Type=oneshot, RemainAfterExit=yes), not a
+    measurement of this device's systemd.
+  * The keeper's cost (docs 72's full core, the 5.5/6.1/2.7 C drop) is NOT re-measured here -- that
+    measurement is owed on the device, and it is the one that decides whether the retirement is worth
+    its risk.
+  * install-no-edl-on-panic.sh passes its own section, which says nothing about whether clearing
+    download_mode actually keeps the device out of EDL -- its own header says the forced watchdog bite
+    still happens and whether the bootloader enters EDL independently of the flag is untested. That can
+    only be tested by panicking the device, and it should not be.

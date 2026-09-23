@@ -186,17 +186,32 @@ keeper_pids() {
     done
 }
 
+# A shell function's variables are its CALLER's -- there are no locals here. `iface()` used to be
+# `for i in rndis0 usb0`, and `has_address()` is called from the wait loop, so the loop's counter was
+# left holding the string "rndis0" every time round:
+#
+#   i=0; while [ "$i" -lt "$WAIT_S" ]; do has_address && break; sleep 1; i=$((i + 1)); done
+#
+# With rndis0 present -- i.e. always, on this port -- `i=$((i + 1))` is then arithmetic on "rndis0":
+# dash prints "Illegal number: rndis0" and **exits the whole script** (status 2), so the applier died
+# on its first iteration, before the refusal gate and before the kill, and `--install --now` would have
+# reported a failed unit with nothing in the log. With neither interface present it was worse: `iface`
+# echoed nothing, `i` became empty, `$(( + 1))` is 1, and the loop never advanced -- a spin at a full
+# core, in the one script whose purpose is to give a core back. Found offline by
+# scripts/host/zl1-installers-selftest.sh, which is also what keeps it found.
+#
+# So: every helper's variables are underscore-prefixed, and the counter has a name of its own.
 iface() {
-    for i in rndis0 usb0; do
-        [ -e "/sys/class/net/$i" ] && { echo "$i"; return; }
+    for _i in rndis0 usb0; do
+        [ -e "/sys/class/net/$_i" ] && { echo "$_i"; return; }
     done
 }
 
 has_address() {
-    i=$(iface)
-    [ -n "$i" ] || return 1
-    live=$(ip -4 addr show dev "$i" 2>/dev/null | awk '/inet /{printf "%s ", $2}')
-    case " $live " in
+    _if=$(iface)
+    [ -n "$_if" ] || return 1
+    _live=$(ip -4 addr show dev "$_if" 2>/dev/null | awk '/inet /{printf "%s ", $2}')
+    case " $_live " in
     *" 192.168.2.15/24 "*) return 0 ;;
     *" 10.15.19.82/24 "*) return 0 ;;
     esac
@@ -204,11 +219,12 @@ has_address() {
 }
 
 # 1. the gate: an address must exist before we take away the thing that used to provide one.
-i=0
-while [ "$i" -lt "$WAIT_S" ]; do
+#    (`_w`, not `i`: see the note on iface() above -- this is the counter a helper used to clobber.)
+_w=0
+while [ "$_w" -lt "$WAIT_S" ]; do
     has_address && break
     sleep 1
-    i=$((i + 1))
+    _w=$((_w + 1))
 done
 if ! has_address; then
     log "REFUSING: after ${WAIT_S}s neither 192.168.2.15/24 nor 10.15.19.82/24 is on $(iface) -- leaving the keeper running (docs 94)"
@@ -221,7 +237,12 @@ systemctl mask --runtime "$UNIT" >/dev/null 2>&1 || true
 
 # 3. what we are taking away, measured: the keeper's own CPU ticks, so the effect is checkable later
 TICKS=0
-PIDS=$(keeper_pids)
+# keeper_pids echoes one pid per line, so join them: `log` builds ONE line, and an embedded newline
+# would split it into two journal records with the second starting mid-sentence. (Found by
+# scripts/host/zl1-installers-selftest.sh, with two keeper processes -- which is the case this log line
+# exists to make visible.)
+PIDS=$(keeper_pids | tr '\n' ' ')
+PIDS=${PIDS% }
 CMDS=""
 for p in $PIDS; do
     t=$(awk '{print $14 + $15}' "/proc/$p/stat" 2>/dev/null) || t=0
@@ -271,7 +292,8 @@ log "keeper gone; watching ${VERIFY_S}s in case something restarts it"
 i=0
 while [ "$i" -lt "$VERIFY_S" ]; do
     sleep 5
-    back=$(keeper_pids)
+    back=$(keeper_pids | tr '\n' ' ')
+    back=${back% }
     if [ -n "$back" ]; then
         log "keeper CAME BACK as [$back] -- re-killing; if this repeats, the kill lever is insufficient and only a boot-image change retires it (docs 94)"
         for p in $back; do kill -KILL "$p" 2>/dev/null; done
