@@ -73,6 +73,7 @@ echo 0 > /sys/module/msm_poweroff/parameters/download_mode      # 仅本 boot �
 * **在合成测试里抓出两个真 bug，这正是"跑一遍而不是相信它"的价值**：
   1. 判语里那句 `(`reboot edl` -> ...)` 的反引号被 shell 当成**命令替换**了——脚本在宿主机上真的去执行了一次 `reboot edl`（宿主机上失败："Failed to write reboot parameter file: Permission denied"）。**如果在设备上跑，它会真的把手机送进 EDL。** 已改成引号。
   2. 归档那一段用 `ls -t` 只取了文件名，`grep` 却是在当前目录下找它——于是"文件里明明有 panic"被判成"没有特征"。已改成拼完整路径。
+* **这两个 case 现在是可重跑的**（`95`）：`scripts/host/zl1-edl-postmortem-selftest.sh` 把这段合成测试做成了 7 种设备状态、34 项检查的 harness，测的是**真脚本**（把设备路径 `sed` 改到假根树里跑），并且额外断言"什么都没被执行、什么都没被写"（PATH 最前面放 23 个记录自己被调用的桩 + 前后对假根树做 `find -printf` 快照对比）。**重跑立刻抓出第三个 bug**：§1b 的兜底快照查找是 `ls -tr "$K"/boot-*/`，**少了 `-d`**——它列的是归档目录的**内容**，循环拿到裸文件名，下一条 `ls` 就在调用者的当前目录里跑（演示里命中了宿主机一个无关的 `.log`）。那正是"这个脚本能找到的最有价值的东西"所在的那条路，而且失败是静默的（"快照里没有这行"看起来很正常）。和上面第 2 个 bug 同一族：当时修掉了 §3 那一处，漏了 §1b 的孪生兄弟——**一次性测试找不到这种，可重跑的 harness 第二次跑就找到了**。
 * **没验过的**：整条路径在**真机**上的样子——`/sys/module/msm_poweroff/parameters/download_mode` 是不是这个路径（`msm-poweroff.o` → 模块名 `msm_poweroff`，脚本是 `for p in /sys/module/*/parameters/download_mode`，不写死）、`/sys/kernel/dload/` 存不存在、`/sys/fs/pstore` 复位后是不是真有东西、`/userdata/zl1-kmsg/keep/` 里是不是真的躺着那个死掉的 boot。**四件都还没在真机上出现过一次**，所以脚本凡取不到的地方都明确写"unavailable"并让退出码变 1，而不是把"读不到"说成"没有"。
 * **不证明 2026-09-23 那次就是 panic**：它证明的是"这条路径存在且默认开着，并且证据会被留下"。真正的归因要等设备回来、`zl1-edl-postmortem.sh` 跑过一遍、看到那份 oops（并且时间对得上）才算。
 

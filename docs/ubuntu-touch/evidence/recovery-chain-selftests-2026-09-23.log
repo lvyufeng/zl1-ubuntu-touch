@@ -1,0 +1,353 @@
+================================================================================
+THE FIRST COMMANDS AFTER RECOVERY, PRE-VERIFIED OFFLINE
+zl1 (LeEco Pro3, MSM8996pro), Ubuntu Touch 24.04-2.x, 2026-09-23
+OFFLINE ONLY: the device was in Qualcomm EDL (05c6:9008, port 3-3) for this whole
+session. Nothing below ran on it. Two host-side harnesses, the real device
+scripts under test, three real defects found.
+================================================================================
+
+
+0. WHAT THIS FILE IS FOR
+--------------------------------------------------------------------------------
+The device has been in EDL, and the first boot after the long power press is
+expensive: the pstore witness to the previous death is readable only on that
+boot (the kmsg ring wraps in ~1 minute and a reboot destroys the rest), the
+keeper-retirement verdict has to come from that boot's netwatch log, and if the
+addresses do not come up there is no SSH and getting SSH back needs another
+finger on the power button. A shell error in the first command wastes that boot.
+
+So the two scripts that run first were exercised on the host instead:
+
+  scripts/device/zl1-edl-postmortem.sh      (health-check item 0, docs 86)
+  scripts/device/zl1-boot-address-check.sh  (health-check item 0b, the gate that
+                                             licenses item 0d, docs 88/94)
+
+Both harnesses are committed, because the previous exercises of these two
+scripts were one-off: docs 86 section 5 records that five synthetic cases were
+run by hand, and docs 88 that four logs were, and neither could be re-run. Both
+exercises had already found real bugs (86: a backtick that executed `reboot edl`;
+88/94: a cmdline substring match that killed the test shell). Re-running them
+found three more:
+
+  1. every `--flag) V="$2"; shift 2` under `set -u` aborts the whole script when
+     the flag is last -- `2: parameter not set` (dash), `$2: unbound variable`
+     (bash). Five of the scripts in the recovery chain had one (section 2);
+  2. zl1-boot-address-check.sh printed a stopped netwatch's state AND the
+     "systemctl is not here" fallback, on two lines, because
+     `systemctl is-active` prints "inactive" and exits non-zero (section 3);
+  3. zl1-edl-postmortem.sh's fallback snapshot lookup never worked: `ls -tr`
+     without `-d` lists the CONTENTS of the archive directories, so the next
+     `ls` ran in the caller's working directory -- where, in the demonstration
+     in section 4, it matched an unrelated host file. That path exists to find
+     the driver's own probe-time line, which the script itself calls the most
+     valuable thing it can find.
+
+Nothing was written to the device, no partition, no boot image, no QDL/firehose
+tool, and no reboot was attempted.
+
+
+1. HOW THE TWO HARNESSES TEST THE REAL SCRIPTS
+--------------------------------------------------------------------------------
+Neither harness reimplements the logic it checks. Each copies the device script
+with `sed`, rewriting only the OPERATIONAL occurrences of its device paths so
+they point into a fake root, and then runs that copy:
+
+  /proc/device-tree/model, /proc/uptime, /proc/sys/kernel/random/boot_id,
+  /proc/config.gz, /sys/module/*/parameters/download_mode, /sys/kernel/dload,
+  /sys/fs/pstore, /userdata/zl1-kmsg (D=), /sys/class/net/*, /etc/systemd/system
+
+Paths that appear inside printed strings are left alone, so the report still
+reads like the report. Each harness then verifies `sh -n` on the rewritten copy
+and, for the address check, that its `D=`/`NETLOG=` rewrite actually applied --
+a harness that silently tests an unpatched copy would be worse than none.
+
+Three properties are checked per scenario, not one:
+
+  * the verdict text (a substring the script itself prints) -- and for the
+    post-mortem, also what it must NOT say;
+  * the exit code (they carry meaning: address check 0 = netwatch-configured
+    only; post-mortem 0 = ran, 1 = a witness was unavailable, 2 = not the zl1);
+  * that NOTHING was executed and NOTHING was written. The post-mortem harness
+    arms 23 stubs in a directory prepended to PATH -- reboot, poweroff, halt,
+    qdl, QSaharaServer, fh_loader, firehose, fastboot, adb, dd, mount, umount,
+    tee, mkfs.ext4, mkfs.vfat, systemctl, nsenter, lxc-start, lxc-stop, i2cset,
+    i2cget, scp, ssh, flash -- each of which records its invocation into a
+    marker file instead of acting. It then snapshots `find "$FR" -printf
+    '%p %s %T@'` before and after and diffs it. "Read-only" is a claim; that is
+    the check. It is aimed at this script in particular: its first version
+    executed `reboot edl` while merely printing a report (docs 86 section 5).
+
+
+2. THE DEFECT IN EVERY VALUE-TAKING FLAG
+--------------------------------------------------------------------------------
+Reproduced on the host, in both shells, before the fix:
+
+  $ sh scripts/device/zl1-boot-address-check.sh --log
+  scripts/device/zl1-boot-address-check.sh: 42: 2: parameter not set
+  rc=2
+  $ bash scripts/device/zl1-thermal.sh --seconds
+  scripts/device/zl1-thermal.sh: line 49: $2: unbound variable
+  rc=1
+
+`$2` is unbound when the flag is the last argument, and `set -u` turns that into
+an exit -- so the message names the shell's own parameter ("2: parameter not
+set") rather than the flag, and nothing in the script runs. On the device this
+would be the whole first command doing nothing.
+
+The fix is one idiom, `${2?message}` instead of `"$2"`, applied to every
+value-taking flag in the recovery chain and verified one by one on the host:
+
+| script (host path shown as `host/`) | flags |
+|---|---|
+| `device/zl1-boot-address-check.sh` | `--log` |
+| `device/zl1-gps-probe.sh` | `--seconds` |
+| `device/zl1-orientation-axes.sh` | `--seconds`, `--interval` |
+| `device/zl1-thermal.sh` | `--seconds`, `--top`, `--hold` |
+| `host/zl1-camera-app-test.sh` | `--seconds`, `--run-seconds`, `--extra-args`, `--outdir` |
+
+It is deliberately `${2?...}` and not `${2:?...}`: a MISSING value now says what
+is wrong, while an explicitly empty value (`--extra-args ""`) keeps behaving
+exactly as it did. Verified, per flag: with no value -> a message naming the
+flag and rc 2 (dash) / 1 (bash); with a value -> the parse still works and the
+script proceeds; with `--log ""` -> no shell error at all (the address check
+then reports the log as unreadable, which is the correct behaviour).
+
+
+3. THE ADDRESS CHECK: SIX LOGS, TEN CHECKS
+--------------------------------------------------------------------------------
+The verdict logic is what licenses retiring the v63 debug keeper (docs 94), so
+the harness pins all three verdicts plus the boot-boundary behaviour. The six
+fixture logs are in the harness; what matters here is why two of them exist:
+
+  * uptime RESETS each boot, and every netwatch log line begins with the uptime
+    it was written at, so a two-boot log contains a large number followed by a
+    small one. Only the `netwatch start` boundary separates them;
+  * scenario C's newest boot logs no `ADDRS:` line and no heal, while an OLDER
+    boot in the same file logs an `ADDRS:` line. Reading the wrong section would
+    say "netwatch-configured" on a boot where the keeper did it -- the one
+    direction of error that costs SSH;
+  * scenario D is its mirror: the newest boot is clean and an older one healed.
+    The older heal must not leak in and turn it into "heal-first".
+
+Output of `sh scripts/host/zl1-boot-address-selftest.sh`:
+
+  zl1 boot-address check -- offline self-test
+    script under test: scripts/host/../device/zl1-boot-address-check.sh
+    fake root:         /tmp/zl1-ba-selftest/fake
+  
+  == verdict logic ==
+  PASS  A: the netwatch configured it, no heal -> netwatch-configured (exit 0)
+  PASS  B: the addresses arrived only after a heal -> heal-first (exit 1)
+  PASS  C: the newest boot says nothing (an older one did) -> inconclusive (exit 1)
+  PASS  D: the newest boot is clean (an older one healed) -> netwatch-configured (exit 0)
+  PASS  E: a heal and no addresses at all -> heal-first (exit 1)
+  
+  == the netwatch's own state line ==
+  PASS  the process age comes from field 22 after stripping comm
+  PASS  the unit state prints once (not twice when systemctl prints and fails)
+  
+  == the stale-install branch (an installed build without ensure_addrs) ==
+  PASS  it says so and points at the reinstall
+  
+  == a flag with no value must not abort the shell ==
+  PASS  '--log' with no value -> a message and a clean exit
+  PASS  '--log ""' is handled without a shell error (it reports the log unreadable)
+  
+  pass=10 fail=0
+
+
+  The same harness also pins the two smaller things found while writing it:
+    * the netwatch process age must be computed from field 22 of /proc/<pid>/stat AFTER
+      stripping the parenthesised comm (docs 81's trap) -- uptime 412 with starttime 10000
+      ticks must read 312 s;
+    * the stale-install branch, i.e. an installed netwatch whose ensure_addrs() is gone.
+
+
+4. THE POST-MORTEM: SEVEN DEVICE STATES, AND A FALLBACK THAT NEVER WORKED
+--------------------------------------------------------------------------------
+docs 86 section 5 records five cases run by hand, and two bugs they caught. The
+committed harness runs seven states and checks 34 things; the seventh state is
+the new one and it is the reason the paragraph above says "re-running". Two of
+the seven are the same state reached two different ways:
+
+  A  an oops in pstore, drain installed            -> FOUND (exit 0)
+  B  pstore empty, the kmsg archive carries it      -> FOUND (exit 0)
+  C  the driver's own probe line in THIS boot's live snapshot
+                                                    -> "the hazard is inert" (exit 0)
+  C2 the same line reachable ONLY through the keep/ fallback
+                                                    -> the same verdict; this is
+                                                       the scenario that failed
+  D  armed, no witness anywhere                     -> "Still unattributed" (exit 0)
+  E  download_mode = 0                              -> "not armed as compiled" (exit 0)
+  F  no pstore directory and no kmsg directory      -> exit 1, and the verdict
+                                                       still refuses to conclude
+  G  not the zl1                                    -> exit 2, before reading
+                                                       anything as ours
+
+F is checked with `notwant` as well: it must not say FOUND, and it must not turn
+an unavailable witness into an absence. That is the property docs 86 section 7
+promised, and it is the property that decides whether a post-mortem is evidence
+or a story.
+
+C2 failed on the first run. The fallback is one line in section 1b:
+
+    early="$(ls -tr "$D"/boot-*.log 2>/dev/null | head -1)"
+    [ -n "$early" ] || early="$(ls -tr "$K"/boot-*/ 2>/dev/null | while read -r d; do
+                                 ls -tr "$d"*.log 2>/dev/null | head -1; done | head -1)"
+
+`ls -tr "$K"/boot-*/` has no `-d`, so `ls` does not list the archive
+DIRECTORIES: with one directory it lists that directory's contents, and with
+several it prints `dir/:` headers first. Either way the loop body receives bare
+file names instead of paths, and `ls -tr "boot-0002.log"*.log` then runs from the
+CALLER'S working directory. Demonstrated (a throwaway tree, one file per
+archive):
+
+$ tree: keep/boot-aaaa/boot-1.log, keep/boot-bbbb/boot-2.log; cwd contains an unrelated *.log
+$ ls -tr "$K"/boot-*/            # what the script did:
+      /tmp/lsdemo/keep/boot-bbbb/:
+      boot-2.log
+      
+      /tmp/lsdemo/keep/boot-aaaa/:
+      boot-1.log
+$ ls -dtr "$K"/boot-*/           # what it should be:
+      /tmp/lsdemo/keep/boot-bbbb/
+      /tmp/lsdemo/keep/boot-aaaa/
+$ the loop as written  -> an unrelated file from the cwd (or nothing):
+      v51-recovery-watch-20260611T095059Z.log
+$ the loop with -dtr    -> the earliest archived snapshot, as intended:
+      /tmp/lsdemo/keep/boot-bbbb/boot-2.log
+
+Note what the as-written form returned: not an error, and not the archive -- an
+unrelated `.log` that happens to live in the working directory here (a host-side
+watch log). The exact name is not the point and it is not reproducible either:
+`ls -tr` orders by mtime, so which stray file wins changes with the directory
+contents and the clock. On the device, `early` would therefore be either empty
+or an arbitrary log, and the four probe-message greps in section 1b would run
+against the wrong file -- silently, since "not in that snapshot" is a
+normal-looking line. Section 1b is where the script looks for the two lines it
+calls the most valuable thing it can find ("Failed to set secure DLOAD mode"
+downgrades the whole hazard from armed to inert).
+
+This is the same bug family as docs 86 section 5's bug 2 (`ls -t` gave a
+basename and the grep ran from the wrong directory): the fix then corrected
+section 3 and left its sibling in the fallback. A one-off exercise does not find
+that; a re-runnable harness does, on its second run.
+
+The fix is the one character `-d`, with the reason written next to it, and the
+harness now pins C (this boot's snapshot) and C2 (the archived one) separately
+so the fallback cannot rot again unnoticed.
+
+Output of `sh scripts/host/zl1-edl-postmortem-selftest.sh`:
+  zl1 EDL post-mortem -- offline self-test
+    script under test: scripts/host/../device/zl1-edl-postmortem.sh
+    fake root:         /tmp/zl1-edlpm-selftest/fake
+  
+  == A: an oops in pstore (the primary witness) ==
+  PASS  A: no mutating command was invoked (23 stubs armed)
+  PASS  A: nothing under the device paths changed
+  PASS  A: exit 0 (attributed from pstore)
+  PASS  A: verdict says: attributed from pstore
+  
+  == B: pstore empty, the kmsg archive carries the death ==
+  PASS  B: no mutating command was invoked (23 stubs armed)
+  PASS  B: nothing under the device paths changed
+  PASS  B: exit 0 (attributed from the second witness)
+  PASS  B: verdict says: attributed from the second witness
+  
+  == C: the driver's own probe-time line in this boot's earliest snapshot ==
+  PASS  C: no mutating command was invoked (23 stubs armed)
+  PASS  C: nothing under the device paths changed
+  PASS  C: exit 0 (armed but the TZ write failed -> the hazard is inert)
+  PASS  C: verdict says: armed but the TZ write failed -> the hazard is inert
+  
+  == C2: the same line, reachable only through the keep/ fallback ==
+  PASS  C2: no mutating command was invoked (23 stubs armed)
+  PASS  C2: nothing under the device paths changed
+  PASS  C2: exit 0 (the fallback snapshot lookup works)
+  PASS  C2: verdict says: the fallback snapshot lookup works
+  
+  == D: armed, and no witness anywhere ==
+  PASS  D: no mutating command was invoked (23 stubs armed)
+  PASS  D: nothing under the device paths changed
+  PASS  D: exit 0 (no witness is not evidence of no panic)
+  PASS  D: verdict says: no witness is not evidence of no panic
+  
+  == E: download_mode = 0 -- the path is not armed as compiled ==
+  PASS  E: no mutating command was invoked (23 stubs armed)
+  PASS  E: nothing under the device paths changed
+  PASS  E: exit 0 (the unarmed branch)
+  PASS  E: verdict says: the unarmed branch
+  
+  == F: no pstore directory and no kmsg directory at all ==
+  PASS  F: no mutating command was invoked (23 stubs armed)
+  PASS  F: nothing under the device paths changed
+  PASS  F: exit 1 (exit 1, and the verdict still refuses to conclude)
+  PASS  F: verdict says: exit 1, and the verdict still refuses to conclude
+  PASS  F: it does not say [FOUND] (it must not invent an attribution)
+  PASS  F: it does not say [did not panic] (it must not read an unavailable witness as an absence)
+  
+  == G: not the zl1 ==
+  PASS  G: no mutating command was invoked (23 stubs armed)
+  PASS  G: nothing under the device paths changed
+  PASS  G: exit 2 (stops before reading anything as ours)
+  PASS  G: verdict says: stops before reading anything as ours
+  
+  pass=34 fail=0
+
+
+5. AND THE SAME GLOB MISTAKE ELSEWHERE? ONE HIT, AND IT IS A COMMENT
+--------------------------------------------------------------------------------
+Swept the whole script tree for the pattern (`ls` with flags, a `*/` glob
+operand, and no `-d` in those flags):
+
+  $ grep -rnE 'ls +-[a-zA-Z]+ +[^|;]*\*/' scripts/ --include='*.sh' \
+      | grep -vE 'ls +-[a-zA-Z]*d[a-zA-Z]* '
+
+  scripts/device/zl1-edl-postmortem.sh:138:# `-d` is not optional here: ...
+
+which is the comment that was just added, i.e. no other script has it. The
+surviving grep hit in `device-readonly-inventory.sh` (`ls -l /dev/block/platform/*/by-name`)
+is a case where listing contents is the intent.
+
+
+6. WHAT THIS DOES NOT SETTLE
+--------------------------------------------------------------------------------
+  * It says nothing about the device. Both harnesses are host-side, the fixture
+    device states are invented, and the device was in EDL throughout.
+  * It does not prove the real paths are the paths in the fixtures:
+    `/sys/module/msm_poweroff/parameters/download_mode`, `/sys/kernel/dload/`,
+    `/sys/fs/pstore` after a reset, `/userdata/zl1-kmsg/keep/` holding the dead
+    boot. docs 86 section 5 lists all four as unverified, and they still are.
+  * It does not prove `--log`/`--seconds` are the only way the recovery chain can
+    die. It proves these specific defects are gone; the next one will be a
+    different shape, and the honest response to that is another scenario, not a
+    larger claim.
+  * The command guard proves the post-mortem invoked none of those 23 commands
+    IN THESE SEVEN STATES. It is not a sandbox: a command not in the list, or a
+    branch these states do not reach, is not covered. What it does cover is the
+    one accident this script has already had once.
+
+
+7. REPRODUCTION
+--------------------------------------------------------------------------------
+  # both harnesses are host-side and need nothing but /bin/sh, sed, find, gzip
+  sh scripts/host/zl1-boot-address-selftest.sh          # 10 checks
+  sh scripts/host/zl1-edl-postmortem-selftest.sh        # 34 checks
+  sh scripts/host/zl1-edl-postmortem-selftest.sh --keep # keep the fake root
+
+  # the flag defect, before and after the ${2?} guard
+  sh scripts/device/zl1-boot-address-check.sh --log     # was: 2: parameter not set
+  bash scripts/device/zl1-thermal.sh --seconds          # was: $2: unbound variable
+
+  # the glob defect, standalone
+  ls -tr "$K"/boot-*/      # lists contents (and dir/: headers when there are several)
+  ls -dtr "$K"/boot-*/     # lists the directories, which is what the loop needs
+
+| file | role |
+|---|---|
+| `scripts/host/zl1-boot-address-selftest.sh` | new. Six synthetic netwatch logs, 10 checks, on the real `device/zl1-boot-address-check.sh` |
+| `scripts/host/zl1-edl-postmortem-selftest.sh` | new. Seven synthetic device states, 34 checks, a 23-command guard, a before/after write snapshot |
+| `scripts/device/zl1-edl-postmortem.sh` | fixed: `ls -dtr` in the fallback snapshot lookup (section 4) |
+| `scripts/device/zl1-boot-address-check.sh` | fixed: `${2?}` on `--log`; the unit state is captured instead of `\|\| echo`-ed (section 3) |
+| `scripts/device/zl1-gps-probe.sh`, `device/zl1-orientation-axes.sh`, `device/zl1-thermal.sh`, `host/zl1-camera-app-test.sh` | fixed: `${2?}` on every value-taking flag (section 2) |
+| `docs/ubuntu-touch/95-*.md` | the readable version of this file |

@@ -135,7 +135,11 @@ K="$D/keep"
 wd=""
 
 early="$(ls -tr "$D"/boot-*.log 2>/dev/null | head -1)"
-[ -n "$early" ] || early="$(ls -tr "$K"/boot-*/ 2>/dev/null | while read -r d; do ls -tr "$d"*.log 2>/dev/null | head -1; done | head -1)"
+# `-d` is not optional here: without it `ls -tr "$K"/boot-*/` lists the *contents* of each archive
+# directory, so the loop below ran `ls -tr "boot-0001.log"*.log` from the current directory and the
+# fallback silently found nothing. Caught by scripts/host/zl1-edl-postmortem-selftest.sh, whose C2
+# scenario reaches the driver's most valuable line through this path only.
+[ -n "$early" ] || early="$(ls -dtr "$K"/boot-*/ 2>/dev/null | while read -r d; do ls -tr "$d"*.log 2>/dev/null | head -1; done | head -1)"
 
 if [ -n "$early" ] && [ -f "$early" ]; then
   say "   earliest snapshot available: $early"
