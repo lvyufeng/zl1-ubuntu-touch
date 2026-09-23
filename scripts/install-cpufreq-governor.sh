@@ -79,8 +79,12 @@ ACTION=--install
 while [ $# -gt 0 ]; do
   case "$1" in
     --install|--remove|--status) ACTION="$1"; shift ;;
-    --governor) GOVERNOR="$2"; shift 2 ;;
-    *) echo "unknown argument $1" >&2; exit 2 ;;
+    # ${2?msg}, the same form the other scripts in this directory use: with `set -u` a bare "$2" on a
+    # trailing --governor aborts the shell with "$2: unbound variable" and no indication of which flag
+    # was short a value. (Found by scripts/host/zl1-installers-selftest.sh.)
+    --governor) GOVERNOR="${2?--governor needs a NAME (e.g. interactive, ondemand, powersave)}"; shift 2 ;;
+    --help|-h) sed -n '2,68p' "$0"; exit 0 ;;   # the header is lines 1-68; line 70 is `set -u`
+    *) echo "unknown argument $1 (try --help)" >&2; exit 2 ;;
   esac
 done
 
@@ -93,15 +97,32 @@ case "$ACTION" in
 # `performance`, which pins all four cores at their maximum clock forever).
 #
 # Safe to run by hand at any time; it is idempotent and prints what it did.
+#
+# **It reads each write back and FAILS if the cores did not take it.** The first version counted a
+# write as done whenever the echo returned, so a governor the kernel does not offer (or a core whose
+# scaling_governor is not writable after all) produced "on 0 cores", exit 0, `Result=success` and an
+# `active` unit -- i.e. an instrument that reports the heat fix as armed while all four cores still sit
+# on `performance`. That is the same shape install-no-edl-on-panic.sh deliberately refuses, and its
+# rule applies here: a guard that is silently not armed is worse than a unit that shows up in
+# `systemctl --failed`. This device has four cores with cpufreq, so "nothing took it" can only mean
+# something is wrong, and it is worth a failed unit to say so.
 GOV=${ZL1_CPUFREQ_GOVERNOR:-interactive}
 n=0
+bad=0
 for p in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
     [ -w "$p/scaling_governor" ] || continue
-    echo "$GOV" > "$p/scaling_governor" 2>/dev/null || continue
-    n=$((n + 1))
+    echo "$GOV" > "$p/scaling_governor" 2>/dev/null
+    if [ "$(cat "$p/scaling_governor" 2>/dev/null)" = "$GOV" ]; then
+        n=$((n + 1))
+    else
+        bad=$((bad + 1))
+        echo "zl1-cpufreq: ${p%/cpufreq} did NOT take '$GOV' (reads '$(cat "$p/scaling_governor" 2>/dev/null)')"
+    fi
 done
-logger -t zl1-cpufreq "set governor '$GOV' on $n cores"
-echo "zl1-cpufreq: governor '$GOV' on $n cores"
+logger -t zl1-cpufreq "set governor '$GOV' on $n cores, $bad did not take it (read back)"
+echo "zl1-cpufreq: governor '$GOV' on $n cores ($bad did not take it)"
+[ "$bad" = 0 ] || { echo "zl1-cpufreq: the heat fix is NOT armed on $bad core(s)"; exit 1; }
+[ "$n" -gt 0 ] || { echo "zl1-cpufreq: no core accepted a governor at all -- the heat fix is NOT armed"; exit 1; }
 exit 0
 APPLIER_EOF
     $SSH "chmod +x $APPLIER; cat > $UNIT" <<UNIT_EOF

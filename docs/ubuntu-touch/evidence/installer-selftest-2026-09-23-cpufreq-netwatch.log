@@ -1,0 +1,501 @@
+zl1 installer self-test, second round: cpufreq + netwatch
+2026-09-23. Host-side. Device: EDL (05c6:9008, port 3-3). Nothing here touched the device.
+================================================================================
+
+This round extended scripts/host/zl1-installers-selftest.sh from 128 checks (two installers,
+ssh transport) to 228 checks (four installers, two transports), and it found defects in BOTH
+of the new ones. Section 1 is what was wrong, section 2 is the run on the current tree,
+section 3 is the same harness run against the PRE-FIX scripts from HEAD.
+
+  $ uname -srm
+Linux 5.15.0-190-generic x86_64
+  $ ls -l /bin/sh
+lrwxrwxrwx 1 root root 4 /bin/sh -> dash
+
+1. the two defects
+================================================================================
+
+1a. install-cpufreq-governor.sh -- the OTHER half of the heat fix (docs 95, 96)
+--------------------------------------------------------------------------------
+What it is for: the image ships all four cores on the `performance` governor, so they sit at
+1132800/1363200 kHz forever and never scale down. That is the largest avoidable heat source on
+this phone, and it is half of the answer to the user's own sentence ("这台机器很容易发烫").
+
+Three defects, all of the same kind -- an instrument whose job is to say "the heat fix is
+armed" and which could not tell that it was not:
+
+  * no `--help`. Every sibling installer in scripts/ prints a usage block; this one answered
+    "unknown argument --help" and exited 2.
+  * `--governor` with no value: `case ... --governor) GOVERNOR="$2"` with `set -u` aborts the
+    shell --
+
+      $ bash scripts/install-cpufreq-governor.sh --governor
+      /tmp/zl1-headwt/scripts/host/../install-cpufreq-governor.sh: line 82: $2: unbound variable
+      (rc=1, and the message does not say which flag was short a value)
+
+    which is why the fix uses ${2?...}: the message names the flag.
+  * THE ONE THAT MATTERS: the applier never read a write back. It counted `echo > file` as
+    done whenever the echo returned, so a governor the kernel does not offer (the kernel
+    answers EINVAL and leaves the old value) produced
+
+      zl1-cpufreq: governor 'schedutil' on 0 cores
+      exit 0
+
+    -- `Result=success`, unit `active`, and all four cores still on `performance`. The whole
+    point of the script is the one claim it could not check.
+
+The read-back, and the refusal that goes with it:
+
+GOV=${ZL1_CPUFREQ_GOVERNOR:-interactive}
+n=0
+bad=0
+for p in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
+    [ -w "$p/scaling_governor" ] || continue
+    echo "$GOV" > "$p/scaling_governor" 2>/dev/null
+    if [ "$(cat "$p/scaling_governor" 2>/dev/null)" = "$GOV" ]; then
+        n=$((n + 1))
+    else
+        bad=$((bad + 1))
+        echo "zl1-cpufreq: ${p%/cpufreq} did NOT take '$GOV' (reads '$(cat "$p/scaling_governor" 2>/dev/null)')"
+    fi
+done
+logger -t zl1-cpufreq "set governor '$GOV' on $n cores, $bad did not take it (read back)"
+echo "zl1-cpufreq: governor '$GOV' on $n cores ($bad did not take it)"
+[ "$bad" = 0 ] || { echo "zl1-cpufreq: the heat fix is NOT armed on $bad core(s)"; exit 1; }
+[ "$n" -gt 0 ] || { echo "zl1-cpufreq: no core accepted a governor at all -- the heat fix is NOT armed"; exit 1; }
+exit 0
+APPLIER_EOF
+
+1b. install-netwatch-service.sh -- the only backup of the misc partition
+--------------------------------------------------------------------------------
+This is the one script in scripts/ that READS A PARTITION at install time: misc, which the
+watchdog can write "boot-recovery" into to reach TWRP. The whole block that takes the backup
+was gated on
+
+# The watchdog can ask the bootloader for recovery by writing "boot-recovery" into the
+# misc partition, and the healer can toggle the USB gadget. The 2026-06-07 backup set
+# has no misc image, so take one before anything could write to that partition.
+MISC_OUT="/mnt/data/zl1-backups/2026-09-17-misc"
+if [[ ! -f "$MISC_OUT/misc.img" ]]; then
+  mkdir -p "$MISC_OUT"
+  MISC_BLK="$(adb -s "$SER" shell 'readlink -f /dev/block/bootdevice/by-name/misc' | tr -d '\r')"
+  if [[ -n "$MISC_BLK" && "$MISC_BLK" == /dev/block/* ]]; then
+    echo "backing up misc ($MISC_BLK) -> $MISC_OUT/misc.img"
+    adb -s "$SER" exec-out "cat $MISC_BLK" > "$MISC_OUT/misc.img"
+    ls -l "$MISC_OUT/misc.img"
+    ( cd "$MISC_OUT" && sha256sum misc.img > SHA256SUMS )
+
+  -- `[[ -f ]]` alone, and nothing ever looked at the file again. So a run whose `exec-out`
+  produced a 0-byte or truncated image (adb dropped, device unplugged, cat failed) leaves a
+  file that satisfies every LATER run's `-f` test, and `sha256sum` would record the hash of
+  nothing and be believed. This is the same shape the project has already been bitten by once:
+  the 2026-06-07-...-exact backup set verifies 31/31 SHA256 and still cannot be mounted.
+
+The fix: an existing image is accepted only if it is NON-EMPTY and its recorded hash still
+matches (otherwise re-taken, which is the safe direction), and a freshly taken image is
+cross-checked against a SECOND, independent read of the same partition before it is recorded:
+
+misc_backup_ok() {
+  [[ -s "$MISC_IMG" ]] || { echo "existing misc.img is EMPTY (size $(stat -c%s "$MISC_IMG" 2>/dev/null || echo '?'))" >&2; return 1; }
+  [[ -f "$MISC_OUT/SHA256SUMS" ]] || { echo "existing misc.img has no SHA256SUMS to check it against" >&2; return 1; }
+  ( cd "$MISC_OUT" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) \
+    || { echo "existing misc.img FAILS its recorded SHA256 (it is not the image it claims to be)" >&2; return 1; }
+  return 0
+}
+
+
+2. the run on the current tree
+================================================================================
+zl1 installer self-test -- the installers that write device state
+  retire the debug keeper: scripts/host/../install-retire-debug-keeper.sh
+  no-EDL-on-panic:         scripts/host/../install-no-edl-on-panic.sh
+  cpufreq governor:        scripts/host/../install-cpufreq-governor.sh
+  netwatch service:        scripts/host/../install-netwatch-service.sh
+  fake device (ssh):       /tmp/zl1-installers-selftest/fake
+  fake device (adb/TWRP):  /tmp/zl1-installers-selftest/nw
+
+== 1. --status and --explain change nothing on the device ==
+PASS  retire --status exits 0
+PASS  retire --status wrote nothing to the fake device
+PASS  retire --status makes no systemd call that changes anything
+PASS  retire --status finds the keeper and names it
+PASS  and reports who started it (the ramdisk, not systemd)
+PASS  and the keeper's own CPU ticks (utime+stime from its stat), so 'a full core' is measurable later
+PASS  and says so when the lock is absent rather than printing nothing
+PASS  and reads the interface's addresses the way the applier's gate does
+PASS  distinguishing the two, so the gate's own reading is visible before it is trusted
+PASS  retire --explain exits 0
+PASS  retire --explain wrote nothing
+PASS  retire --explain gives the reason a unit edit cannot work
+PASS  and the reason the systemd instance is not the survivor
+PASS  and names what is left as the only lever
+
+== 2. --install: two files, that content, enabled -- and NOTHING on this boot ==
+PASS  retire --install exits 0
+PASS  it wrote the applier
+PASS  it wrote the unit
+PASS  and those are the only two files it added
+PASS  the unit is oneshot
+PASS  and ordered AFTER the netwatch -- the thing that makes the keeper redundant
+PASS  ExecStart is the applier, by its device path
+PASS  RemainAfterExit, so its result is readable afterwards
+PASS  and no start limit, because it waits for an address before it acts
+PASS  the applier is executable
+PASS  the applier is sh, as the ramdisk-started keeper's environment implies
+PASS  the applier masks the unit at runtime (a /run file, so it outlives the keeper)
+PASS  and carries the refusal gate
+PASS  and matches the keeper by argv, not by substring
+PASS  it asks for a daemon-reload
+PASS  and enables the unit
+PASS  --install does NOT start it: the current boot is untouched
+PASS  and nothing was killed
+PASS  the keeper is still there -- --install alone takes nothing away
+PASS  and it says so out loud
+PASS  and names the flag that would also retire it now
+PASS  the unit was not started
+
+== 3. the refusal gate: without an address it must NOT kill ==
+PASS  with no address the applier still exits 0 (a failed retirement is a log line, not a failed boot)
+PASS  --now starts the unit
+PASS  the applier refuses
+PASS  and says what it is leaving alone
+PASS  and names the interface it looked at
+PASS  the keeper is STILL RUNNING -- the gate held
+PASS  and no signal was sent at all
+
+   -- and the other address shape, so the gate is not accidentally the 192.168 one:
+PASS  a build whose gate does not recognise the address that IS there refuses too
+PASS  and leaves the keeper alone
+
+== 4. with an address: it kills, it verifies, and it says which failure it is ==
+PASS  with an address it exits 0
+PASS  it names the pid it is retiring
+PASS  and measures what it is taking away (utime+stime), so the effect is checkable later
+PASS  and prints the matched command line as the evidence for the match
+PASS  it SIGTERMs first (the keeper's trap removes its own lock)
+PASS  and does not KILL something that went away
+PASS  the keeper is gone
+PASS  and it reports the retirement
+PASS  naming where the addresses now come from
+PASS  it masks the unit for this boot, so nothing restarts it
+
+   -- a keeper that refuses to die: KILL, and the right sentence about it ==
+PASS  a survivor is named and escalated
+PASS  and KILLed
+PASS  when even KILL does not take, it says so and does not claim success
+PASS  and it does not report a retirement that did not happen
+
+   -- something RESTARTS it: the applier must say the lever is wrong, not that the kill failed ==
+PASS  a pid that was not there before is reported as a RESTART, not as a failed kill
+PASS  and it names what that means (docs 94)
+PASS  the watch loop sees it come back and re-kills
+PASS  and no record is split mid-line after the first pid
+PASS  and at the end it does not claim a retirement that did not hold
+PASS  which is also the line the operator sees (the installer shows the tail of the applier's output)
+
+== 5. the match is by argv, NOT by substring ==
+PASS  only the two whose ARGV IS the keeper are matched
+PASS  the shell that merely mentions the path is NOT matched
+PASS  and neither is the grep
+PASS  and pid 1 is never a candidate for a signal
+PASS  and pid 1 is never even matched
+PASS  the bystander survived
+PASS  grep survived
+PASS  pid 1 survived
+PASS  and the real keeper was retired
+
+== 6. --remove: it disables, deletes exactly its own two files, and tells the truth ==
+PASS  retire --remove exits 0
+PASS  the applier is gone
+PASS  the unit is gone
+PASS  and it removed nothing else
+PASS  it disables the unit
+PASS  and lifts the runtime mask, so the keeper comes back next boot
+PASS  it says the current boot's keeper stays dead -- not obvious, and it is the truth
+PASS  and says why the next boot restores it
+
+== 7. no-edl: --capture-only must not touch the policy unit ==
+PASS  --capture-only exits 0
+PASS  it installed the pstore capture
+PASS  and its unit
+PASS  and did NOT install the policy applier
+PASS  nor the policy unit
+PASS  it says the policy was not touched
+PASS  and reports the policy unit's state rather than assuming it
+PASS  the flag still reads 1 -- no policy change happened
+PASS  and it never enables the policy unit
+
+   -- and it leaves an ALREADY INSTALLED policy unit exactly as it found it:
+PASS  the pre-existing policy unit survived
+PASS  and it reports that it is present
+
+   -- --capture-only does not DELETE anything either, in either state:
+PASS  the file set is unchanged by that second run
+
+== 8. no-edl: --install writes four files and both units get enabled -- and started ==
+PASS  --install exits 0
+PASS  both policy files are there
+PASS  the policy unit runs after local-fs
+PASS  and its ExecStart is the applier
+PASS  the applier is about download_mode
+PASS  the capture unit is enabled and started
+PASS  and so is the policy unit
+PASS  and it verifies with systemctl cat, not is-enabled -- the only honest check
+PASS  and repeats the caveat: this lowers a probability, it is not a proof
+
+== 9. the policy applier: write, read back, and FAIL when the write does not take ==
+PASS  with the parameter present and writable it exits 0
+PASS  the flag is 0 afterwards
+PASS  it prints before -> after, so the change is witnessed
+PASS  and logs the before -> after under the zl1-no-edl tag
+PASS  the caveat goes to the log, on every boot -- where someone deciding 'could a trip have been prevented' will find it
+
+   -- the parameter absent: a driver not built in is a FAILURE, not a silent success:
+PASS  it exits 1 when the parameter does not exist
+PASS  and says which of the two failures it is
+PASS  naming the actual cause -- in the log, where an operator reads it
+
+   -- the write does not take: the unit must FAIL, because a guard that silently is not armed is worse:
+PASS  an unchanged flag exits 1
+PASS  and it says what that means: a panic would still arm EDL
+
+== 10. the pstore applier: reads the kernel, writes only under /userdata ==
+PASS  with an empty pstore it exits 0 (a boot with nothing to capture is not a failure)
+PASS  and writes nothing at all
+
+   -- one oops record: copied, dated by boot_id, indexed, and pruned to the newest four:
+PASS  with records present it exits 0
+PASS  the records went to a directory named for this boot's boot_id
+PASS  both records were copied
+PASS  and the index line says which boot and how many files -- so an absence is visible, not a gap
+PASS  six boots of captures leave exactly four archives (the same policy as the kmsg archive)
+
+== 11. the flag surface, and the guards ==
+PASS  install-retire-debug-keeper.sh: an unknown argument exits 2
+PASS  install-retire-debug-keeper.sh: --help prints a usage block
+PASS  install-no-edl-on-panic.sh: an unknown argument exits 2
+PASS  install-no-edl-on-panic.sh: --help prints a usage block
+PASS  retire --explain names the unit whose edit cannot work
+PASS  and never the other installer's files
+PASS  no-edl --status names its own files
+PASS  and never the other installer's
+
+
+== 12. cpufreq: the OTHER half of the heat fix (the image ships 'performance') ==
+PASS  cpufreq --status exits 0
+PASS  cpufreq --status wrote nothing to the fake device
+PASS  and made no systemd call that changes anything
+PASS  it checks the unit with systemctl cat, not is-enabled
+PASS  it prints what governors the kernel actually offers
+PASS  and the governor on each core, which is the thing being fixed
+PASS  so the reading is the device's, not a claim
+PASS  and the thermal picture that made this a stage
+PASS  including the three-units note (docs 96), so the numbers are readable
+PASS  and names the keeper as the OTHER heat source, so the two are not confused
+
+   -- the flag surface, where the sibling scripts set the convention:
+PASS  an unknown argument exits 2
+PASS  --help exits 0
+PASS  and prints its own usage block, which the header documents
+PASS  --governor with no value names the flag instead of aborting the shell
+
+   -- --install: two files, that content, and it really moves the four cores:
+PASS  cpufreq --install exits 0
+PASS  it wrote the applier and the unit
+PASS  and those are the only two files it added
+PASS  the unit is oneshot
+PASS  RemainAfterExit, so its result is readable afterwards
+PASS  and before multi-user, so the first minutes after boot are not spent at full clock
+PASS  the governor reaches the applier through the unit's Environment=
+PASS  and ExecStart is the applier, by its device path
+PASS  it enables AND starts (unlike the keeper installer, starting changes no policy -- just the clock)
+PASS  and all four cores are now on 'interactive' (the point of the whole script)
+PASS  it reports how many cores it moved
+
+   -- --governor NAME reaches both the unit's Environment= and the run:
+PASS  --governor powersave is what the unit carries
+PASS  and that is what the cores got
+
+   -- the applier must not report success when a core did not take it:
+PASS  with every core accepting it, the applier exits 0
+PASS  and moved all four
+PASS  and says so with the count that proves each core was read back
+
+     ... and a core whose governor will NOT take the write:
+PASS  a core that did not take it FAILS the applier (rc=1), it does not report success
+PASS  it names the core that refused, and what that path reads instead
+PASS  and says what that means: the heat fix is not armed
+PASS  with the 3/1 split, which is the honest count
+     ... and the applier that actually shipped, on the very same fixture:
+PASS  the shipped applier has no read-back, so it is the behaviour the fix replaces
+PASS  and it exits 0 on a device where one core never moved -- the defect
+PASS  with nothing said about the core that refused
+PASS  and nothing said about the heat fix being unarmed
+PASS  it simply reports three, as if that were the whole device
+   -- --remove: disable --now, delete exactly its own two files:
+PASS  cpufreq --remove exits 0
+PASS  both of its files are gone
+PASS  and it removed nothing else
+PASS  it disables and stops the unit
+PASS  and reports the governors afterwards, so 'back to what the image set' is visible
+
+
+== 13. netwatch: the TWRP-side installer, and the only backup of the misc partition ==
+
+   -- the refusal that comes before everything: it must be asked for by name
+PASS  with no --yes it exits 2
+PASS  and says why
+PASS  and wrote nothing
+PASS  it did not even talk to adb
+
+   -- and the device must actually be there, matched by SERIAL:
+PASS  with the serial absent from 'adb devices' it exits 1
+PASS  and names the serial it looked for (never a bare USB id)
+PASS  it asks adb devices first, which is the only honest check
+
+   -- --status is not a mode of this script; --yes --remove is:
+PASS  --yes --remove exits 0 even with nothing installed
+PASS  and says what it removed
+PASS  and that the LOG survives -- evidence is not configuration
+PASS  and it pushed nothing
+
+   -- --yes: the four paths, the unit, both symlinks, and a misc backup
+PASS  --yes exits 0
+PASS  it reads the misc partition before anything could write to it
+PASS  it pushed the netwatch script
+PASS  and wrote the unit
+PASS  the script is executable (chmod 0755)
+PASS  the sysinit.target.wants symlink exists
+PASS  and the multi-user one
+PASS  the unit is Type=simple (the script loops by design)
+PASS  and Restart=always
+PASS  with no start limit, so systemd cannot give up and leave the device without a recorder
+PASS  and ExecStart is the device path, not the TWRP one
+PASS  it is wanted by sysinit as well, so it starts before the container
+PASS  at Nice=-5
+PASS  it syncs before the caller reboots (the page-cache hazard its own comment records)
+PASS  it took a misc backup (the partition the watchdog can write boot-recovery into)
+PASS  and with no --noheal the noheal marker is absent (healing on)
+PASS  and recorded a checksum for it
+PASS  which verifies
+PASS  and the image is the whole partition, byte for byte (the size cross-check)
+
+   -- --noheal is record-only, and it says so:
+PASS  --noheal leaves the marker that turns healing off
+PASS  and says which mode it installed
+
+   -- a backup that is present is VERIFIED, not assumed (this round's second fix):
+   -- an EXISTING, verifying backup is reused and not re-read:
+PASS  a good backup is reported as verified
+PASS  and is NOT re-taken (no second read of the partition)
+PASS  the file is unchanged
+
+   -- a TRUNCATED backup is caught and replaced:
+PASS  an existing backup that does not match its own hash is called out
+PASS  and it re-takes the backup
+PASS  and when the replacement read is short too, it REFUSES to record it
+PASS  saying why: it would satisfy every later run's check
+PASS  and that refusal is a failure exit, not a note
+PASS  leaving no .tmp behind to be mistaken for an image
+
+   -- an EMPTY backup is caught:
+PASS  a 0-byte backup is named as empty (its hash would otherwise verify: it is the hash of nothing)
+PASS  so it is re-taken
+
+   -- and a healthy device with a healthy backup leaves the real one alone:
+PASS  the backup on disk is non-empty at the end of these scenarios
+
+   -- the integrity check is live, and a build that lost functions is refused:
+PASS  the checker runs against the real netwatch script and reports what it checked
+PASS  a build missing a function exits 1 instead of being installed
+PASS  and says the integrity check is why
+PASS  and nothing reached the device
+PASS  and the checker names what is missing
+
+   -- nothing outside its four paths, and nothing flashed (fresh device, fresh backup dir):
+PASS  a clean install still works after all of the above
+PASS  it wrote none of the other installers' files
+PASS  no adb call flashes, erases or writes a partition
+PASS  the only partition access is a read (exec-out), which is the backup itself
+PASS  and it resolves the misc device BY NAME on the device, not from a hardcoded path
+PASS  the misc backup is not an executable copy of a script
+PASS  and the backup is byte-identical to the partition it claims to be
+
+pass=228 fail=0
+
+================================================================================
+3. the same harness against the PRE-FIX scripts from HEAD (proves it has teeth)
+================================================================================
+
+  $ git worktree list
+/mnt/data/zl1-bb10  3a26b66 [master]
+/tmp/zl1-headwt     3a26b66 (detached HEAD)
+  $ cp scripts/host/zl1-installers-selftest.sh /tmp/zl1-headwt/scripts/host/
+  $ sh /tmp/zl1-headwt/scripts/host/zl1-installers-selftest.sh
+  9:== 1. --status and --explain change nothing on the device ==
+  25:== 2. --install: two files, that content, enabled -- and NOTHING on this boot ==
+  49:== 3. the refusal gate: without an address it must NOT kill ==
+  62:== 4. with an address: it kills, it verifies, and it says which failure it is ==
+  88:== 5. the match is by argv, NOT by substring ==
+  99:== 6. --remove: it disables, deletes exactly its own two files, and tells the truth ==
+  109:== 7. no-edl: --capture-only must not touch the policy unit ==
+  127:== 8. no-edl: --install writes four files and both units get enabled -- and started ==
+  138:== 9. the policy applier: write, read back, and FAIL when the write does not take ==
+  154:== 10. the pstore applier: reads the kernel, writes only under /userdata ==
+  165:== 11. the flag surface, and the guards ==
+  176:== 12. cpufreq: the OTHER half of the heat fix (the image ships 'performance') ==
+  190:FAIL  --help exited 2 (every sibling installer prints usage; this one used to say 'unknown argument')
+  191:FAIL  and prints its own usage block, which the header documents
+  193:FAIL  --governor with no value aborted the shell: /tmp/zl1-headwt/scripts/host/../install-cpufreq-governor.sh: line 82: $2: unbound variable
+  215:FAIL  and says so with the count that proves each core was read back
+  219:FAIL  it exited 0 -- the unit would be 'active' with a core still on the old governor
+  220:FAIL  it names the core that refused, and what that path reads instead
+  223:FAIL  and says what that means: the heat fix is not armed
+  226:FAIL  with the 3/1 split, which is the honest count
+  243:== 13. netwatch: the TWRP-side installer, and the only backup of the misc partition ==
+  289:FAIL  a good backup is reported as verified
+  305:FAIL  an existing backup that does not match its own hash is called out
+  317:FAIL  and it re-takes the backup
+  329:FAIL  a short replacement read was recorded as a backup
+  332:FAIL  a 0-byte backup is named as empty (its hash would otherwise verify: it is the hash of nothing)
+  344:FAIL  so it is re-taken
+  358:FAIL  the scenarios left an empty misc backup behind
+
+  pass=210 fail=15
+
+  15 red, and they are TWO defects, not fifteen: 8 are the cpufreq instrument (help, the
+  unbound $2, and five sides of "it reports success while a core never moved"), 7 are the
+  misc backup (the block never re-checks its own file). Everything else in the file -- the
+  retire-debug-keeper sections, the no-EDL sections, and the parts of 12/13 that are about
+  what the scripts write rather than about what they can detect -- passes at HEAD, which is
+  the honest reading: these are FAILURE-PATH defects, not happy-path ones.
+
+4. what this round does NOT show
+================================================================================
+  * NOTHING ABOUT THE DEVICE. Device is in EDL. Every /sys, /proc, unit, partition and
+    address in this run is a fixture; neither new installer has ever run on the phone.
+  * The misc partition in this run is a 8 KiB file of random hex, not the real partition, and
+    the adb transport is a stub. What is proven is the SHAPE of the check (non-empty + hash
+    + size cross-check), not that the real partition is 1 MiB or that the real backup is good.
+  * For the record, the backup on this laptop: /mnt/data/zl1-backups/2026-09-17-misc/misc.img
+    is 1048576 bytes, sha256sum -c SHA256SUMS says OK, and the whole file is ZEROS
+    (tr -d '\0' < misc.img | wc -c -> 0). A blank misc is a legitimate image, not a broken
+    backup -- which is precisely why the check has to be size+hash and not plausibility.
+      $ ls -l /mnt/data/zl1-backups/2026-09-17-misc/
+  -rw-rw-r-- 1 lvyufeng lvyufeng 1048576 Sep 17 14:40 misc.img
+  -rw-rw-r-- 1 lvyufeng lvyufeng      75 Sep 17 14:40 SHA256SUMS
+      $ cat SHA256SUMS
+  30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58  misc.img
+  * `install-cpufreq-governor.sh` has still never run on the device, so the claim "the four
+    cores move off `performance` at boot" is not tested here -- only that the applier fails
+    when they do not.
+  * The governor named in docs 95/96 (`interactive`) and its measured idle clocks
+    (307200/460800) were measured by hand on 2026-09-22. This harness does not re-measure them
+    and could not: the fake cores are files.
+  * The three outstanding heat measurements (zl1-thermal.sh --ab) are still owed on the device.
+
+evidence-to-be-committed-by-name:
+  scripts/host/zl1-installers-selftest.sh            228 checks
+  scripts/install-cpufreq-governor.sh                the read-back + the flag surface
+  scripts/install-netwatch-service.sh                the verified backup
+  docs/ubuntu-touch/100-*.md                         the write-up

@@ -49,14 +49,47 @@ fi
 # The watchdog can ask the bootloader for recovery by writing "boot-recovery" into the
 # misc partition, and the healer can toggle the USB gadget. The 2026-06-07 backup set
 # has no misc image, so take one before anything could write to that partition.
+#
+# **An existing image is VERIFIED, not assumed.** The first version skipped this whole block on
+# `[[ -f "$MISC_OUT/misc.img" ]]` alone, and nothing ever checked the file's size or hash again -- so a
+# run whose `exec-out` produced a 0-byte or truncated image (adb dropped, device unplugged, cat failed)
+# would leave a file that satisfies every future run's `-f` test, and `sha256sum` would happily record
+# the hash of nothing. That is the one backup of the partition the watchdog *writes into*, and the same
+# shape this project has already been bitten by once (the `-exact` backup set, which verifies 31/31
+# SHA256 and still cannot be mounted). So: an existing image is accepted only if it is non-empty AND its
+# recorded hash still matches; otherwise it is re-taken, which is the safe direction.
 MISC_OUT="/mnt/data/zl1-backups/2026-09-17-misc"
-if [[ ! -f "$MISC_OUT/misc.img" ]]; then
+MISC_IMG="$MISC_OUT/misc.img"
+
+misc_backup_ok() {
+  [[ -s "$MISC_IMG" ]] || { echo "existing misc.img is EMPTY (size $(stat -c%s "$MISC_IMG" 2>/dev/null || echo '?'))" >&2; return 1; }
+  [[ -f "$MISC_OUT/SHA256SUMS" ]] || { echo "existing misc.img has no SHA256SUMS to check it against" >&2; return 1; }
+  ( cd "$MISC_OUT" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) \
+    || { echo "existing misc.img FAILS its recorded SHA256 (it is not the image it claims to be)" >&2; return 1; }
+  return 0
+}
+
+if [[ -f "$MISC_IMG" ]] && misc_backup_ok; then
+  echo "misc backup already present and verified: $MISC_IMG ($(stat -c%s "$MISC_IMG") bytes)"
+else
   mkdir -p "$MISC_OUT"
   MISC_BLK="$(adb -s "$SER" shell 'readlink -f /dev/block/bootdevice/by-name/misc' | tr -d '\r')"
   if [[ -n "$MISC_BLK" && "$MISC_BLK" == /dev/block/* ]]; then
-    echo "backing up misc ($MISC_BLK) -> $MISC_OUT/misc.img"
-    adb -s "$SER" exec-out "cat $MISC_BLK" > "$MISC_OUT/misc.img"
-    ls -l "$MISC_OUT/misc.img"
+    echo "backing up misc ($MISC_BLK) -> $MISC_IMG"
+    adb -s "$SER" exec-out "cat $MISC_BLK" > "$MISC_IMG.tmp"
+    # Cross-check the copy against a SECOND, independent read of the same partition: same device, a
+    # different round trip. A short read is exactly the failure this whole block exists to survive, and
+    # it is invisible to `ls -l` afterwards.
+    MISC_DEV_BYTES="$(adb -s "$SER" shell "wc -c < $MISC_BLK" 2>/dev/null | tr -d '\r ')"
+    MISC_LOCAL_BYTES="$(stat -c%s "$MISC_IMG.tmp" 2>/dev/null || echo 0)"
+    if [[ ! -s "$MISC_IMG.tmp" || -z "$MISC_DEV_BYTES" || "$MISC_LOCAL_BYTES" != "$MISC_DEV_BYTES" ]]; then
+      rm -f "$MISC_IMG.tmp"
+      echo "refusing to record a misc backup: read $MISC_LOCAL_BYTES bytes, the partition reports ${MISC_DEV_BYTES:-unknown}" >&2
+      echo "  (an unverified misc backup is worse than none -- it would satisfy every later run's check)" >&2
+      exit 1
+    fi
+    mv "$MISC_IMG.tmp" "$MISC_IMG"
+    ls -l "$MISC_IMG"
     ( cd "$MISC_OUT" && sha256sum misc.img > SHA256SUMS )
     cat "$MISC_OUT/SHA256SUMS"
   else

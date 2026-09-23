@@ -1,12 +1,17 @@
 #!/bin/sh
-# zl1 installer scripts -- offline self-test for the two that write DEVICE STATE and have no harness.
+# zl1 installer scripts -- offline self-test for the installers that write DEVICE STATE and have no
+# harness of their own.
 #
-# Host-side, touches no device. The two scripts:
+# Host-side, touches no device. The four scripts:
 #
 #   scripts/install-retire-debug-keeper.sh   the remaining HEAT fix (docs 72 section 4b, 94)
 #   scripts/install-no-edl-on-panic.sh       the never-brick fix (docs 86)
+#   scripts/install-cpufreq-governor.sh      the OTHER half of the heat fix: the image ships all four
+#                                            cores on `performance` (docs 95, 96)
+#   scripts/install-netwatch-service.sh      the TWRP-side installer, and the only script in this
+#                                            directory that READS A PARTITION (misc)
 #
-# Why they need one, and why they are the pair that does:
+# Why they need one:
 #
 #   * `install-retire-debug-keeper.sh --install --now` KILLS A PROCESS ON THE DEVICE. Its whole safety
 #     argument is a refusal gate -- "it refuses to kill when it cannot see an address" -- and a refusal
@@ -17,13 +22,28 @@
 #     installer whose *absence of effect* is the safety property, and its comment records that an
 #     earlier draft's `--capture-only` disabled and deleted the policy unit -- i.e. re-running a
 #     read-only-looking inspection silently DISARMED a guard, in the unsafe direction.
+#   * `install-cpufreq-governor.sh` is a heat fix whose failure mode is an instrument that reports
+#     success: writing a governor the kernel does not offer, or one it refuses, leaves the unit
+#     `active` and the phone just as hot. So the assertions are about the READ-BACK, not the write.
+#   * `install-netwatch-service.sh` takes the only backup of the misc partition -- the one the watchdog
+#     can write "boot-recovery" into -- and a backup that is accepted without being verified is worse
+#     than none, because it satisfies every later run's check.
 #
-# Both are `bash` scripts that drive a device over ssh, and both carry their device-side appliers as
-# here-docs. That is what makes them testable offline without inventing anything: the harness supplies
-# the device. `ssh` is stubbed by a script that RUNS the remote command locally, in a fake root, so
+# All four are `bash` scripts that drive a device and carry their device-side appliers as here-docs.
+# That is what makes them testable offline without inventing anything: the harness supplies the device.
+# The transport is stubbed by a script that RUNS the remote command locally, in a fake root, so
 # `--install` really writes the files, `--status` really walks a `/proc`, and the applier that systemd
 # would start is the applier that runs. The stub is the transport, not the logic: every line under test
 # is the project's own.
+#
+# There are TWO transports, and therefore two fake devices, because the fourth installer drives TWRP
+# over adb where userdata is a plain /data mount rather than the rootfs's bind mounts:
+#
+#   ssh -> $W/fake     the three rootfs-side installers
+#   adb -> $W/nw       install-netwatch-service.sh
+#
+# They are deliberately separate roots: the two families keep their state in different trees, and a
+# shared root would let one section's leftovers satisfy another section's assertions.
 #
 # Design note, and the difference from the other five harnesses: the fake device is a fake **root** and
 # the stubs are the device's *effects*. `kill` is a stub because signalling a real host pid would be
@@ -52,7 +72,9 @@ done
 HERE=$(dirname "$0")
 RK="$HERE/../install-retire-debug-keeper.sh"
 NE="$HERE/../install-no-edl-on-panic.sh"
-for f in "$RK" "$NE"; do [ -r "$f" ] || { echo "cannot read $f" >&2; exit 2; }; done
+CP="$HERE/../install-cpufreq-governor.sh"
+NW="$HERE/../install-netwatch-service.sh"
+for f in "$RK" "$NE" "$CP" "$NW"; do [ -r "$f" ] || { echo "cannot read $f" >&2; exit 2; }; done
 command -v bash >/dev/null 2>&1 || { echo "the installers are bash scripts; bash is required" >&2; exit 2; }
 
 W=${TMPDIR:-/tmp}/zl1-installers-selftest
@@ -90,6 +112,20 @@ printf 'the keeper itself, for the status listing\n' > "$FR/usr/local/sbin/zl1-d
 printf '100.0 900.0\n' > "$FR/proc/uptime"
 printf 'deadbeef-0000-0000-0000-000000000000\n' > "$FR/proc/sys/kernel/random/boot_id"
 printf 'rndis0\n' > "$FR/sys/class/net/rndis0/uevent"
+
+# The four cores install-cpufreq-governor.sh exists to move off `performance`, with the clocks the
+# device reported on 2026-09-22 (cpu0/1 max 1132800, cpu2/3 max 1363200). Written as a fixture rather
+# than as "whatever the host has", because the host is not an msm8996.
+for _c in 0 1 2 3; do
+  mkdir -p "$FR/sys/devices/system/cpu/cpu$_c/cpufreq"
+  printf 'performance\n'  > "$FR/sys/devices/system/cpu/cpu$_c/cpufreq/scaling_governor"
+  printf '1132800\n'      > "$FR/sys/devices/system/cpu/cpu$_c/cpufreq/scaling_cur_freq"
+  case "$_c" in 0|1) _mx=1132800 ;; *) _mx=1363200 ;; esac
+  printf '%s\n' "$_mx"     > "$FR/sys/devices/system/cpu/cpu$_c/cpufreq/scaling_max_freq"
+done
+printf 'interactive conservative ondemand userspace powersave performance\n' \
+  > "$FR/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
+printf '0.42 0.31 0.28 2/412 9123\n' > "$FR/proc/loadavg"
 
 # --- the stubs -----------------------------------------------------------------------------------
 #
@@ -161,14 +197,49 @@ cat > "$STUB/systemctl" <<EOF
 #!/bin/sh
 printf 'systemctl %s\n' "\$*" >> "$ACT"
 case "\$1" in
-start)
+start|restart)
   u="\$2"
   ex=\$(sed -n 's/^ExecStart=//p' "$FR/etc/systemd/system/\$u" 2>/dev/null | head -1)
-  # the applier's device paths have to point at the fake root, so a harness-prepared copy of the
-  # SAME FILE is preferred when there is one. The landed file's content is asserted separately.
+  # The applier's device paths have to point at the fake root, so a harness-prepared copy of the SAME
+  # FILE is used when there is one. The landed file's content is asserted separately.
   alt="$W/applier/\$(basename "\$ex")"
-  [ -f "\$alt" ] && ex="\$alt"
-  [ -n "\$ex" ] && exec env PATH="$STUB:\$PATH" FAKE_ADDR="\${FAKE_ADDR:-yes}" sh "\$ex"
+  if [ -f "\$alt" ]; then
+    ex="\$alt"
+  elif [ -e "\$ex" ]; then
+    # NO COPY. Running the landed file would execute the applier with the DEVICE's absolute paths --
+    # i.e. against the HOST's own /sys, /proc and /etc. Every applier here is guarded by a '[ -w ]' or
+    # a '/proc' walk, so it would not usually do damage, but it would silently measure the wrong
+    # machine and the scenario would pass or fail for reasons that have nothing to do with the script
+    # under test. This harness was written after exactly that mistake (docs 99 section 5), so it is a
+    # loud failure now instead of a quiet one.
+    printf 'NO-REWRITTEN-APPLIER %s\n' "\$ex" >> "$ACT"
+    printf 'zl1-harness: refusing to run %s with device paths -- no rewritten copy in %s\n' "\$ex" "$W/applier" >&2
+    exit 97
+  fi
+  [ -n "\$ex" ] && exec env PATH="$STUB:\$PATH" FAKE_ADDR="\${FAKE_ADDR:-yes}" ZL1_CPUFREQ_GOVERNOR="\$\{ZL1_CPUFREQ_GOVERNOR:-}" sh "\$ex"
+  ;;
+enable)
+  # 'enable --now <unit>' is systemd's "enable it and start it now", and install-cpufreq-governor.sh
+  # uses exactly that -- so this stub has to run ExecStart for it too, or the applier never runs and
+  # the scenario measures nothing. Plain 'enable' must NOT run it, which is asserted below.
+  case "\$*" in
+  *--now*)
+    u="\$3"
+    case "\$u" in
+    zl1-cpufreq-governor.service)
+      ex=\$(sed -n 's/^ExecStart=//p' "$FR/etc/systemd/system/\$u" 2>/dev/null | head -1)
+      alt="$W/applier/\$(basename "\$ex")"
+      gov=\$(sed -n 's/^Environment=ZL1_CPUFREQ_GOVERNOR=//p' "$FR/etc/systemd/system/\$u" 2>/dev/null | head -1)
+      printf 'systemctl-ran-applier %s gov=%s\n' "\$ex" "\$gov" >> "$ACT"
+      if [ -f "\$alt" ]; then
+        ZL1_CPUFREQ_GOVERNOR="\$gov" exec env PATH="$STUB:\$PATH" FAKE_ADDR="\${FAKE_ADDR:-yes}" sh "\$alt"
+      elif [ -e "\$ex" ]; then
+        printf 'NO-REWRITTEN-APPLIER %s\n' "\$ex" >> "$ACT"
+        printf 'zl1-harness: refusing to run %s with device paths -- no rewritten copy in %s\n' "\$ex" "$W/applier" >&2
+        exit 97
+      fi ;;
+    esac ;;
+  esac
   ;;
 is-enabled)
   case "\$*" in
@@ -200,6 +271,82 @@ cat)
 esac
 exit 0
 EOF
+# adb: the OTHER transport in this directory. install-netwatch-service.sh is the TWRP-side installer
+# (it drives the device over adb, with userdata as plain /data), so it needs its own device. Same idea
+# as the ssh stub: run the command locally, with the device's absolute paths mapped into the fake root,
+# and record every call so "nothing flashed" and "nothing was written" are checkable.
+#
+# It must NOT share the ssh device's root. The two scripts keep their state in different trees
+# (/data/system-data/... versus /etc/systemd/system/...), and a shared root lets one section's
+# leftovers satisfy the other section's assertions.
+#
+# The map is written on the SPECIFIC device paths this installer uses, never on a bare /data: the
+# installer's own source path is a HOST path (/mnt/data/zl1-bb10/...), and a bare /data rule would
+# rewrite the very file it is about to push.
+#
+# The misc partition is a fake BLOCK, and $W/adb-short makes `exec-out cat` return fewer bytes than
+# `wc -c` reports -- which is the one failure the backup block exists to survive, and the one that is
+# invisible afterwards.
+NWR="$W/nw"
+mkdir -p "$NWR/data" "$NWR/userdata" "$NWR/dev/block/bootdevice/by-name"
+cat > "$STUB/adb" <<EOF
+#!/bin/sh
+printf 'adb %s\n' "\$*" >> "$ACT"
+case "\$1" in
+devices)
+  case "\${FAKE_ADB_SERIAL:-33e80afe}" in none) printf 'List of devices attached\n\n' ;; *) printf 'List of devices attached\n%s\tdevice\n' "\$FAKE_ADB_SERIAL" ;; esac
+  exit 0 ;;
+-s)
+  # the serial goes in the action log, so "it addressed the right device" is checkable; the stub
+  # itself accepts any of them, because this fake device has exactly one.
+  shift; shift
+  ;;
+*) exit 0 ;;
+esac
+act="\$1"; shift
+map() { printf '%s' "\$*" | sed \
+  -e "s#/data/system-data#$NWR/data/system-data#g" \
+  -e "s#/data/zl1-netwatch#$NWR/data/zl1-netwatch#g" \
+  -e "s#/userdata#$NWR/userdata#g" \
+  -e "s#/dev/block#$NWR/dev/block#g" ; }
+case "\$act" in
+shell)
+  c=\$(map "\$*")
+  exec env PATH="$STUB:\$PATH" sh -c "\$c" ;;
+exec-out)
+  c=\$(map "\$*")
+  # "cat <blk>" short-reads when the harness asks it to; "wc -c < blk" always reports the truth
+  case "\$c" in
+  *"cat "*)
+    if [ -e "$W/adb-short" ]; then
+      # a short read: the first N bytes only, exactly what a dropped transfer looks like
+      head -c 1024 "$NWR/dev/block/bootdevice/by-name/misc" 2>/dev/null
+    else
+      env PATH="$STUB:\$PATH" sh -c "\$c"
+    fi ;;
+  *) exec env PATH="$STUB:\$PATH" sh -c "\$c" ;;
+  esac ;;
+push)
+  a=\$(map "\$1"); b=\$(map "\$2")
+  cp "\$a" "\$b" ;;
+*)
+  exec env PATH="$STUB:\$PATH" sh -c "\$(map "\$*")" ;;
+esac
+exit 0
+EOF
+# readlink: the installer asks the DEVICE for the misc block device and then tests the answer against
+# /dev/block/*, so the answer has to come back in the DEVICE's namespace. Inside this fake device NWR
+# stands in for /, so stripping the prefix is the de-faking. (Nothing else here calls readlink -- the
+# only other user in this directory, install-machine-info.sh, is not under test and talks to a real
+# device.)
+cat > "$STUB/readlink" <<EOF
+#!/bin/sh
+printf 'readlink %s\n' "\$*" >> "$ACT"
+for a in "\$@"; do
+  case "\$a" in -*) continue ;; esac
+  printf '%s\n' "\${a#$NWR}"
+done
+EOF
 chmod +x "$STUB"/*
 
 # ssh: this is the DEVICE, and it is the whole reason these two scripts are testable offline. It drops
@@ -219,6 +366,7 @@ emit "s#/usr/local/sbin/zl1-debug-net.sh#$FR/usr/local/sbin/zl1-debug-net.sh#g"
 emit "s#/sys/fs/pstore#$FR/sys/fs/pstore#g"
 emit "s#/sys/class/net#$FR/sys/class/net#g"
 emit "s#/sys/module#$FR/sys/module#g"
+emit "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g"
 emit "s#/userdata#$FR/userdata#g"
 emit "s#/run/zl1-debug-net.lock#$FR/run/zl1-debug-net.lock#g"
 emit "s#/proc/sys/kernel/random/boot_id#$FR/proc/sys/kernel/random/boot_id#g"
@@ -295,12 +443,13 @@ snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
 
 # $1 = script, rest = args. Output in $OUT, exit code in $RC. FAKE_ADDR is what the fake device's
 # rndis0 would answer, so a scenario that wants "no address" sets it to none and calls env_reset after.
-RUN_ADDR=yes
-env_reset() { RUN_ADDR=yes; rm -f "$W/restart" "$W/active-retire"; rm -rf "$W/killignore"; mkdir -p "$W/killignore"; }
+RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe
+env_reset() { RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; rm -f "$W/restart" "$W/active-retire"; rm -rf "$W/killignore"; mkdir -p "$W/killignore"; }
 run() {
   s="$1"; shift
   : > "$ACT"
-  OUT=$(PATH="$STUB:$PATH" FAKE_ADDR="$RUN_ADDR" timeout 120 bash "$s" "$@" 2>&1); RC=$?
+  OUT=$(PATH="$STUB:$PATH" FAKE_ADDR="$RUN_ADDR" FAKE_ADB_SERIAL="$RUN_ADB_SERIAL" \
+        timeout 120 bash "$s" "$@" 2>&1); RC=$?
 }
 runsh() { # same, for a device-side applier
   s="$1"; shift
@@ -308,10 +457,13 @@ runsh() { # same, for a device-side applier
   OUT=$(PATH="$STUB:$PATH" FAKE_ADDR="$RUN_ADDR" timeout 120 sh "$s" "$@" 2>&1); RC=$?
 }
 
-echo "zl1 installer self-test -- the two installers that write device state"
+echo "zl1 installer self-test -- the installers that write device state"
 echo "  retire the debug keeper: $RK"
 echo "  no-EDL-on-panic:         $NE"
-echo "  fake device:             $FR"
+echo "  cpufreq governor:        $CP"
+echo "  netwatch service:        $NW"
+echo "  fake device (ssh):       $FR"
+echo "  fake device (adb/TWRP):  $NWR"
 echo
 
 # ==================================================================================================
@@ -699,6 +851,343 @@ notwant 'zl1-panic-guard' "$OUT" "and never the other installer's files"
 run "$NE" --status
 want 'zl1-panic-guard' "$OUT" "no-edl --status names its own files"
 notwant 'zl1-retire-debug-keeper' "$OUT" "and never the other installer's"
+echo
+# ==================================================================================================
+echo
+echo "== 12. cpufreq: the OTHER half of the heat fix (the image ships 'performance') =="
+# ==================================================================================================
+# Why this is in the same harness as the keeper: docs 72/94 found two heat sources -- all four cores
+# pinned at their maximum clock, and a 1 Hz debug keeper burning a core. The keeper half now has three
+# tests in this file; this is the other half, and it is the one the user's own sentence named
+# ("这台机器很容易发烫"). What matters here is not that the write happens but that the instrument can
+# tell "the fix is armed" from "nothing changed" -- a governor the kernel does not offer, or a core
+# that refuses the write, must not be reported as success.
+CPU_SH="$FR/etc/systemd/system/zl1-cpufreq-governor.sh"
+CPU_UNIT="$FR/etc/systemd/system/zl1-cpufreq-governor.service"
+govs() { for c in 0 1 2 3; do cat "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"; done; }
+govs_reset() { for c in 0 1 2 3; do printf 'performance\n' > "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"; done; }
+
+env_reset
+BEFORE=$(snap)
+run "$CP" --status
+printf '%s\n' "$OUT" > "$W/out.cp.status"
+[ "$RC" = 0 ] && ok "cpufreq --status exits 0" || bad "cpufreq --status exited $RC"
+[ "$(snap)" = "$BEFORE" ] && ok "cpufreq --status wrote nothing to the fake device" || bad "cpufreq --status changed the fake device"
+[ -z "$(syswrite)" ] && ok "and made no systemd call that changes anything" || bad "cpufreq --status would change the device"
+want 'systemctl cat zl1-cpufreq-governor\.service' "$(sysacts)" "it checks the unit with systemctl cat, not is-enabled"
+want 'interactive conservative ondemand' "$OUT" "it prints what governors the kernel actually offers"
+want 'cpu0 +gov=performance' "$OUT" "and the governor on each core, which is the thing being fixed"
+want 'scaling_available_governors|gov=' "$OUT" "so the reading is the device's, not a claim"
+want 'thermal zones' "$OUT" "and the thermal picture that made this a stage"
+want 'deci-degC' "$OUT" "including the three-units note (docs 96), so the numbers are readable"
+want 'the thing that is still burning CPU on purpose' "$OUT" "and names the keeper as the OTHER heat source, so the two are not confused"
+
+echo
+echo "   -- the flag surface, where the sibling scripts set the convention:"
+run "$CP" --nope
+[ "$RC" = 2 ] && ok "an unknown argument exits 2" || bad "unknown argument exited $RC"
+run "$CP" --help
+[ "$RC" = 0 ] && ok "--help exits 0" || bad "--help exited $RC (every sibling installer prints usage; this one used to say 'unknown argument')"
+want 'Usage: install-cpufreq-governor' "$OUT" "and prints its own usage block, which the header documents"
+msg=$(PATH="$STUB:$PATH" bash "$CP" --governor 2>&1 >/dev/null | head -1); rc=$?
+case "$msg" in
+*"unbound variable"*) bad "--governor with no value aborted the shell: $msg" ;;
+*"--governor needs a NAME"*) ok "--governor with no value names the flag instead of aborting the shell" ;;
+*) bad "--governor with no value said neither: $msg" ;;
+esac
+
+echo
+echo "   -- --install: two files, that content, and it really moves the four cores:"
+# The shipped applier, extracted by the same rule for the fixed and the pre-fix tree: the block
+# between the `<<'APPLIER_EOF'` marker and its closing marker. The end marker is passed through the
+# environment because awk cannot put $2 into that comparison portably.
+extract_applier() { # $1 = installer, $2 = end-marker name, $3 = out
+  MK="$2" awk -v m="<<'$2'" 'index($0, m) { f=1; next } f && $0 == ENVIRON["MK"] { f=0 } f' "$1" > "$3"
+  [ -s "$3" ] || { echo "could not extract the $2 applier from $1" >&2; exit 2; }
+}
+extract_applier "$CP" APPLIER_EOF "$W/applier/cp.raw.sh"
+CPUAP=$W/applier/zl1-cpufreq-governor.sh
+sed -e "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g" "$W/applier/cp.raw.sh" > "$CPUAP"
+sh -n "$CPUAP" || { echo "the cpufreq applier copy does not parse" >&2; exit 2; }
+grep -qF "$FR/sys/devices/system/cpu" "$CPUAP" || { echo "the cpufreq applier copy was not rewritten" >&2; exit 2; }
+govs_reset
+run "$CP" --install
+printf '%s\n' "$OUT" > "$W/out.cp.install"
+[ "$RC" = 0 ] && ok "cpufreq --install exits 0" || bad "cpufreq --install exited $RC"
+[ -f "$CPU_SH" ] && [ -f "$CPU_UNIT" ] && ok "it wrote the applier and the unit" || bad "the applier or unit is missing"
+[ "$(find "$FR/etc/systemd/system" -name 'zl1-cpufreq-governor.*' | wc -l)" = 2 ] && ok "and those are the only two files it added" \
+  || { bad "it added more of its own:"; find "$FR/etc/systemd/system" -name 'zl1-cpufreq-governor.*' | sed 's/^/        | /'; }
+want '^Type=oneshot$' "$(cat "$CPU_UNIT")" "the unit is oneshot"
+want '^RemainAfterExit=yes$' "$(cat "$CPU_UNIT")" "RemainAfterExit, so its result is readable afterwards"
+want '^Before=multi-user\.target$' "$(cat "$CPU_UNIT")" "and before multi-user, so the first minutes after boot are not spent at full clock"
+want '^Environment=ZL1_CPUFREQ_GOVERNOR=interactive$' "$(cat "$CPU_UNIT")" "the governor reaches the applier through the unit's Environment="
+want '^ExecStart=/etc/systemd/system/zl1-cpufreq-governor\.sh$' "$(cat "$CPU_UNIT")" "and ExecStart is the applier, by its device path"
+want '^systemctl enable --now zl1-cpufreq-governor\.service' "$(sysacts)" "it enables AND starts (unlike the keeper installer, starting changes no policy -- just the clock)"
+[ "$(govs | sort -u)" = "interactive" ] && ok "and all four cores are now on 'interactive' (the point of the whole script)" \
+  || { bad "the cores did not move:"; govs | sed 's/^/        | /'; }
+want 'governor .interactive. on 4 cores' "$OUT" "it reports how many cores it moved"
+
+echo
+echo "   -- --governor NAME reaches both the unit's Environment= and the run:"
+govs_reset
+run "$CP" --install --governor powersave
+printf '%s\n' "$OUT" > "$W/out.cp.powersave"
+want '^Environment=ZL1_CPUFREQ_GOVERNOR=powersave$' "$(cat "$CPU_UNIT")" "--governor powersave is what the unit carries"
+[ "$(govs | sort -u)" = "powersave" ] && ok "and that is what the cores got" || { bad "the cores got something else:"; govs | sed 's/^/        | /'; }
+
+echo
+echo "   -- the applier must not report success when a core did not take it:"
+# The applier the device would run, pointed at the fake sysfs.
+CPAP=$CPUAP
+env_reset
+runsh "$CPAP"
+printf '%s\n' "$OUT" > "$W/out.cp.applier"
+[ "$RC" = 0 ] && ok "with every core accepting it, the applier exits 0" || bad "it exited $RC"
+[ "$(govs | sort -u)" = "interactive" ] && ok "and moved all four" || bad "it did not move all four"
+want 'on 4 cores \(0 did not take it\)' "$OUT" "and says so with the count that proves each core was read back"
+
+echo
+echo "     ... and a core whose governor will NOT take the write:"
+# The one case that matters, made without a fake kernel: cpu2's scaling_governor is a DIRECTORY. Its
+# mode bits make `[ -w ]` true, so the applier does not skip it as "this core has no cpufreq"; the write
+# then fails ("Is a directory") and the read-back finds something that is not the governor. That is the
+# shape of a kernel rejecting a name it does not offer -- EINVAL on the write, the old value still
+# there -- and it is what makes the difference between the two versions visible.
+rm -f "$FR/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor"
+mkdir -p "$FR/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor"
+govs() { for c in 0 1 2 3; do v=$(cat "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor" 2>/dev/null); printf '%s\n' "${v:-<not a file>}"; done; }
+govs_reset() { for c in 0 1 2 3; do [ -d "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor" ] || printf 'performance\n' > "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"; done; }
+govs_reset
+env_reset
+runsh "$CPAP"
+printf '%s\n' "$OUT" > "$W/out.cp.applier.bad"
+[ "$RC" = 1 ] && ok "a core that did not take it FAILS the applier (rc=1), it does not report success" \
+  || bad "it exited $RC -- the unit would be 'active' with a core still on the old governor"
+want 'did NOT take' "$OUT" "it names the core that refused, and what that path reads instead"
+want 'NOT armed' "$OUT" "and says what that means: the heat fix is not armed"
+want 'on 3 cores \(1 did not take it\)' "$OUT" "with the 3/1 split, which is the honest count"
+
+echo "     ... and the applier that actually shipped, on the very same fixture:"
+# Not a mutation of the new one: the applier from `git show HEAD`, extracted and rewritten the same way.
+# That is the version whose behaviour is being claimed, so it is the version to run.
+git show HEAD:scripts/install-cpufreq-governor.sh > "$W/cp.head.sh" 2>/dev/null \
+  || { echo "cannot read the pre-fix cpufreq installer from git" >&2; exit 2; }
+extract_applier "$W/cp.head.sh" APPLIER_EOF "$W/applier/cp.old.raw.sh"
+sed -e "s#/sys/devices/system/cpu#$FR/sys/devices/system/cpu#g" "$W/applier/cp.old.raw.sh" > "$W/applier/cpufreq-old.sh"
+if grep -qF 'did NOT take it' "$W/applier/cp.old.raw.sh"; then
+  bad "the HEAD applier already contains the read-back -- the comparison proves nothing"
+else
+  ok "the shipped applier has no read-back, so it is the behaviour the fix replaces"
+  govs_reset
+  env_reset
+  runsh "$W/applier/cpufreq-old.sh"
+  printf '%s\n' "$OUT" > "$W/out.cp.applier.old"
+  [ "$RC" = 0 ] && ok "and it exits 0 on a device where one core never moved -- the defect" \
+    || bad "the shipped applier exited $RC"
+  notwant 'did NOT take' "$OUT" "with nothing said about the core that refused"
+  notwant 'NOT armed' "$OUT" "and nothing said about the heat fix being unarmed"
+  want 'on 3 cores' "$OUT" "it simply reports three, as if that were the whole device"
+fi
+rm -rf "$FR/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor"
+printf 'performance\n' > "$FR/sys/devices/system/cpu/cpu2/cpufreq/scaling_governor"
+govs() { for c in 0 1 2 3; do cat "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"; done; }
+govs_reset() { for c in 0 1 2 3; do printf 'performance\n' > "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"; done; }
+
+echo "   -- --remove: disable --now, delete exactly its own two files:"
+: > "$FR/etc/systemd/system/zl1-someone-elses.service"
+govs_reset
+run "$CP" --remove
+printf '%s\n' "$OUT" > "$W/out.cp.remove"
+[ "$RC" = 0 ] && ok "cpufreq --remove exits 0" || bad "cpufreq --remove exited $RC"
+[ ! -f "$CPU_SH" ] && [ ! -f "$CPU_UNIT" ] && ok "both of its files are gone" || bad "its files survive"
+[ -f "$FR/etc/systemd/system/zl1-someone-elses.service" ] && ok "and it removed nothing else" || bad "it deleted a file it does not own"
+want '^systemctl disable --now zl1-cpufreq-governor\.service' "$(sysacts)" "it disables and stops the unit"
+want 'gov=' "$OUT" "and reports the governors afterwards, so 'back to what the image set' is visible"
+rm -f "$FR/etc/systemd/system/zl1-someone-elses.service"
+echo
+# ==================================================================================================
+echo
+echo "== 13. netwatch: the TWRP-side installer, and the only backup of the misc partition =="
+# ==================================================================================================
+# Why this one is in here, in one sentence: it is the thing that makes retiring the debug keeper safe
+# (`zl1-netwatch.service` re-asserts the addresses every sample, docs 88), and it is also the only
+# script in this directory that has to READ A PARTITION -- misc, which the watchdog can write
+# "boot-recovery" into to reach recovery. So there are two things to hold it to: it must write exactly
+# the four paths it says, and a misc backup it accepts must be a real one.
+#
+# Its device is NWR, a TWRP-like root where userdata is a plain /data mount. The ONLY rewrite below is
+# MISC_OUT, and that is because MISC_OUT is a genuine HOST path (the backup directory on this laptop);
+# everything else the installer says is a DEVICE path and the adb stub is what turns those into files.
+# Rewriting BASE as well -- the first draft did exactly that -- nests the fake root inside itself,
+# because the installer then hands the transport a path that already carries the transport's prefix.
+NWC=$W/nw.sh
+sed -e "s#^MISC_OUT=.*#MISC_OUT=\"$W/misc\"#" "$NW" > "$NWC"
+sh -n "$NWC" 2>/dev/null || bash -n "$NWC" || { echo "the rewritten netwatch installer does not parse" >&2; exit 2; }
+grep -qF "MISC_OUT=\"$W/misc\"" "$NWC" || { echo "the netwatch MISC_OUT rewrite did not land" >&2; exit 2; }
+grep -qF 'BASE="/data/system-data/etc/systemd/system"' "$NWC" || \
+  { echo "the netwatch BASE is no longer the device path the adb stub maps" >&2; exit 2; }
+# The fake misc partition has to be BIGGER than the short read (1024 bytes), otherwise "truncated" is
+# the whole file and the short-read scenario stops being distinguishable from a correct read.
+head -c 4096 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$W/misc-content.txt"
+printf 'MISC-PARTITION-CONTENT ' > "$NWR/dev/block/bootdevice/by-name/misc"
+cat "$W/misc-content.txt" >> "$NWR/dev/block/bootdevice/by-name/misc"
+MISC_PART="$NWR/dev/block/bootdevice/by-name/misc"
+NWDIR="$NWR/data/system-data/etc/systemd/system"
+rm -rf "$NWR/data/system-data" "$W/misc"; rm -f "$W/adb-short"
+nwsnap() { find "$NWR" "$W/misc" -printf '%p %s\n' 2>/dev/null | sort; }
+
+echo
+echo "   -- the refusal that comes before everything: it must be asked for by name"
+BEFORE=$(nwsnap)
+run "$NWC"
+printf '%s\n' "$OUT" > "$W/out.nw.noyes"
+[ "$RC" = 2 ] && ok "with no --yes it exits 2" || bad "without --yes it exited $RC"
+want 'refusing without --yes' "$OUT" "and says why"
+[ "$(nwsnap)" = "$BEFORE" ] && ok "and wrote nothing" || bad "it wrote something without --yes"
+[ -z "$(grep '^adb ' "$ACT" 2>/dev/null)" ] && ok "it did not even talk to adb" || bad "it ran adb anyway"
+
+echo
+echo "   -- and the device must actually be there, matched by SERIAL:"
+RUN_ADB_SERIAL=none run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.noserial"
+[ "$RC" = 1 ] && ok "with the serial absent from 'adb devices' it exits 1" || bad "it exited $RC"
+want '33e80afe not visible in adb' "$OUT" "and names the serial it looked for (never a bare USB id)"
+want 'adb devices' "$(grep -c '^adb devices' "$ACT" >/dev/null && echo "adb devices" || echo none)" "it asks adb devices first, which is the only honest check"
+
+echo
+echo "   -- --status is not a mode of this script; --yes --remove is:"
+RUN_ADB_SERIAL=33e80afe
+run "$NWC" --yes --remove
+printf '%s\n' "$OUT" > "$W/out.nw.remove.empty"
+[ "$RC" = 0 ] && ok "--yes --remove exits 0 even with nothing installed" || bad "it exited $RC"
+want 'removed the netwatch service' "$OUT" "and says what it removed"
+want 'the log at /data/zl1-netwatch.log is left in place' "$OUT" "and that the LOG survives -- evidence is not configuration"
+[ -z "$(grep -c 'push ' "$ACT" 2>/dev/null | grep -v '^0$')" ] && ok "and it pushed nothing" || bad "a remove pushed a file"
+
+echo
+echo "   -- --yes: the four paths, the unit, both symlinks, and a misc backup"
+rm -rf "$W/misc"; rm -f "$W/adb-short"
+env_reset
+run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.install"
+[ "$RC" = 0 ] && ok "--yes exits 0" || bad "--yes exited $RC"
+want 'backing up misc' "$OUT" "it reads the misc partition before anything could write to it"
+[ -f "$NWDIR/zl1-netwatch.sh" ] && ok "it pushed the netwatch script" || bad "no script at the destination"
+[ -f "$NWDIR/zl1-netwatch.service" ] && ok "and wrote the unit" || bad "no unit"
+[ -x "$NWDIR/zl1-netwatch.sh" ] && ok "the script is executable (chmod 0755)" || bad "the script is not executable"
+[ -L "$NWDIR/sysinit.target.wants/zl1-netwatch.service" ] \
+  && ok "the sysinit.target.wants symlink exists" || bad "no sysinit symlink"
+[ -L "$NWDIR/multi-user.target.wants/zl1-netwatch.service" ] \
+  && ok "and the multi-user one" || bad "no multi-user symlink"
+want '^Type=simple$' "$(cat "$NWDIR/zl1-netwatch.service")" "the unit is Type=simple (the script loops by design)"
+want '^Restart=always$' "$(cat "$NWDIR/zl1-netwatch.service")" "and Restart=always"
+want '^StartLimitIntervalSec=0$' "$(cat "$NWDIR/zl1-netwatch.service")" "with no start limit, so systemd cannot give up and leave the device without a recorder"
+want '^ExecStart=/etc/systemd/system/zl1-netwatch\.sh$' "$(cat "$NWDIR/zl1-netwatch.service")" "and ExecStart is the device path, not the TWRP one"
+want '^WantedBy=sysinit\.target$' "$(cat "$NWDIR/zl1-netwatch.service")" "it is wanted by sysinit as well, so it starts before the container"
+want '^Nice=-5$' "$(cat "$NWDIR/zl1-netwatch.service")" "at Nice=-5"
+want 'sync$|syncing' "$OUT" "it syncs before the caller reboots (the page-cache hazard its own comment records)"
+[ -f "$W/misc/misc.img" ] && ok "it took a misc backup (the partition the watchdog can write boot-recovery into)" \
+  || bad "no misc backup"
+[ ! -e "$NWR/data/zl1-netwatch-noheal" ] && ok "and with no --noheal the noheal marker is absent (healing on)" \
+  || bad "the noheal marker is present without --noheal"
+want 'misc.img' "$(cat "$W/misc/SHA256SUMS" 2>/dev/null)" "and recorded a checksum for it"
+( cd "$W/misc" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "which verifies" || bad "the recorded checksum does not verify"
+[ "$(stat -c%s "$W/misc/misc.img")" = "$(stat -c%s "$MISC_PART")" ] \
+  && ok "and the image is the whole partition, byte for byte (the size cross-check)" || bad "the image is short"
+
+echo
+echo "   -- --noheal is record-only, and it says so:"
+env_reset
+run "$NWC" --yes --noheal
+printf '%s\n' "$OUT" > "$W/out.nw.noheal"
+[ -f "$NWR/data/zl1-netwatch-noheal" ] && ok "--noheal leaves the marker that turns healing off" \
+  || bad "no noheal marker"
+want 'record-only mode' "$OUT" "and says which mode it installed"
+
+echo
+echo "   -- a backup that is present is VERIFIED, not assumed (this round's second fix):"
+# The defect: the block was gated on `[[ -f misc.img ]]` alone and nothing ever looked at the file
+# again, so a run whose exec-out produced 0 bytes (adb dropped, device unplugged) would leave a file
+# that satisfies every later run's test. This is the one backup of the partition the watchdog writes to.
+echo "   -- an EXISTING, verifying backup is reused and not re-read:"
+: > "$ACT"
+BEFORE_SUM=$(sha256sum < "$W/misc/misc.img")
+run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.reuse"
+want 'already present and verified' "$OUT" "a good backup is reported as verified"
+notwant 'backing up misc' "$OUT" "and is NOT re-taken (no second read of the partition)"
+[ "$(sha256sum < "$W/misc/misc.img")" = "$BEFORE_SUM" ] && ok "the file is unchanged" || bad "the backup changed"
+
+echo
+echo "   -- a TRUNCATED backup is caught and replaced:"
+# 1024 of 4096 bytes: what a dropped transfer leaves behind, and what `ls -l` afterwards cannot show.
+: > "$W/adb-short"
+printf 'TRUNCATED' > "$W/misc/misc.img"
+printf 'deadbeef  misc.img\n' > "$W/misc/SHA256SUMS"
+run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.short"
+want 'FAILS its recorded SHA256' "$OUT" "an existing backup that does not match its own hash is called out"
+want 'backing up misc' "$OUT" "and it re-takes the backup"
+if printf '%s\n' "$OUT" | grep -q 'refusing to record a misc backup'; then
+  # the short read also truncates the REPLACEMENT, which is what the size cross-check exists for
+  ok "and when the replacement read is short too, it REFUSES to record it"
+  want 'an unverified misc backup is worse than none' "$OUT" "saying why: it would satisfy every later run's check"
+  [ "$RC" = 1 ] && ok "and that refusal is a failure exit, not a note" || bad "it exited $RC while refusing"
+  [ ! -e "$W/misc/misc.img.tmp" ] && ok "leaving no .tmp behind to be mistaken for an image" || bad "a .tmp was left behind"
+else
+  bad "a short replacement read was recorded as a backup"
+fi
+rm -f "$W/adb-short"
+
+echo
+echo "   -- an EMPTY backup is caught:"
+: > "$W/misc/misc.img"
+printf 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  misc.img\n' > "$W/misc/SHA256SUMS"
+run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.empty"
+want 'EMPTY' "$OUT" "a 0-byte backup is named as empty (its hash would otherwise verify: it is the hash of nothing)"
+want 'backing up misc' "$OUT" "so it is re-taken"
+
+echo
+echo "   -- and a healthy device with a healthy backup leaves the real one alone:"
+[ -s "$W/misc/misc.img" ] && ok "the backup on disk is non-empty at the end of these scenarios" \
+  || bad "the scenarios left an empty misc backup behind"
+
+echo
+echo "   -- the integrity check is live, and a build that lost functions is refused:"
+want 'functions checked' "$(bash "$HERE/../check-netwatch-integrity.sh" 2>&1)" "the checker runs against the real netwatch script and reports what it checked"
+grep -qF 'check-netwatch-integrity.sh' "$NWC" || bad "the installer no longer calls the integrity checker at all"
+# A build missing a required function must be refused, so make one. The checker is found RELATIVE to
+# the source it is given ($SRC/../), so the fake tree has to carry a copy of it too -- without that the
+# installer's `[[ -x ... ]]` test fails, the whole check is silently skipped, and a build that lost a
+# function gets installed (which is what happened on 2026-09-19 and why the check exists).
+mkdir -p "$W/badbuild/scripts/device"
+cp "$HERE/../check-netwatch-integrity.sh" "$W/badbuild/scripts/"
+sed 's/^restore_addrs()/# restore_addrs()/' "$HERE/../device/zl1-netwatch.sh" > "$W/badbuild/scripts/device/zl1-netwatch.sh"
+sed -e "s#^SRC=.*#SRC=\"$W/badbuild/scripts/device/zl1-netwatch.sh\"#" "$NWC" > "$W/nw.badsrc.sh"
+rm -rf "$NWR/data/system-data"
+env_reset
+run "$W/nw.badsrc.sh" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.badbuild"
+[ "$RC" = 1 ] && ok "a build missing a function exits 1 instead of being installed" || bad "it exited $RC"
+want 'refusing to install: integrity check failed' "$OUT" "and says the integrity check is why"
+[ -f "$NWDIR/zl1-netwatch.sh" ] && bad "it installed the broken build anyway" || ok "and nothing reached the device"
+want 'MISSING' "$(bash "$HERE/../check-netwatch-integrity.sh" "$W/badbuild/scripts/device/zl1-netwatch.sh" 2>&1)" "and the checker names what is missing"
+
+echo
+echo "   -- nothing outside its four paths, and nothing flashed (fresh device, fresh backup dir):"
+rm -rf "$NWR/data/system-data" "$W/misc"; rm -f "$W/adb-short"
+env_reset
+run "$NWC" --yes
+printf '%s\n' "$OUT" > "$W/out.nw.final"
+[ "$RC" = 0 ] && ok "a clean install still works after all of the above" || bad "the final clean install exited $RC"
+[ ! -e "$NWDIR/zl1-retire-debug-keeper.service" ] && [ ! -e "$NWDIR/zl1-no-edl-on-panic.sh" ] \
+  && ok "it wrote none of the other installers' files" || bad "it wrote another installer's file"
+notwant 'adb .*(flash|erase|write|dd )[^ ]* /dev/block' "$(grep '^adb ' "$ACT" 2>/dev/null)" "no adb call flashes, erases or writes a partition"
+want 'exec-out' "$(grep '^adb ' "$ACT" 2>/dev/null | grep -q 'exec-out' && echo 'exec-out' || echo none)" "the only partition access is a read (exec-out), which is the backup itself"
+want "readlink -f /dev/block/bootdevice/by-name/misc" "$(grep '^adb ' "$ACT" 2>/dev/null)" "and it resolves the misc device BY NAME on the device, not from a hardcoded path"
+[ -x "$W/misc/misc.img" ] && bad "the misc backup came out executable (cp of the wrong thing)" || ok "the misc backup is not an executable copy of a script"
+cmp -s "$W/misc/misc.img" "$MISC_PART" && ok "and the backup is byte-identical to the partition it claims to be" || bad "the backup differs from the partition"
 
 echo
 echo "pass=$PASS fail=$FAIL"
