@@ -196,6 +196,82 @@ zl1-sensors-recover.sh --status on the repaired stack:
                                               (the wedge was one that never did)
 
 
+THE NINE SENSORS, ONE PAGE
+==========================
+Every one of them asked the same three things (loadPlugin, requestSensor with a held
+session, then id/type/description/interval/isValid), plus a two-read value probe.
+uptime ~42,400-42,900 s.
+
+sensor                iface                      interval isValid  description
+accelerometersensor   local.AccelerometerSensor  (100,)   (true,)  'x, y, and z axes accelerations in mG'
+alssensor             local.ALSSensor            (0,)     (true,)  'ambient light intensity in lux'
+compasssensor         local.CompassSensor        (100,)   (true,)  'compass north in degrees'
+gyroscopesensor       local.GyroscopeSensor      (50,)    (true,)  'x, y, and z axes angular velocity in mdps'
+magnetometersensor    local.MagnetometerSensor   (10,)    (true,)  'magnetic flux density in nT'
+orientationsensor     local.OrientationSensor    (100,)   (true,)  'orientation of the device screen as 6 pre-defined positions'
+pressuresensor        (no object)                --       --       --
+proximitysensor       local.ProximitySensor      (0,)     (true,)  'whether an object is close to device screen'
+rotationsensor        local.RotationSensor       (100,)   (true,)  'x, y, and z axes rotation in degrees'
+
+values and verdicts, same run:
+
+  accel  (42444636498, -3.1882, 20.2400, 1009.1403)        => STREAMING
+  als    (0, 99) -> (0, 99)                                => STALE, timestamp 0 (never stamped)
+  compass(42473268471, 225, 225, 225, 3)                   => STREAMING
+  gyro   (42487687738, -92.672, -53.330, 8.743)            => STREAMING
+  mag    (42502176902, 3, 14939, -15420, -43800, ...)      => STREAMING
+  orient (41576823352, 6)                                  => STALE, age 947 s (by design, see below)
+  pressure  (no object; loadPlugin returns true)
+  prox   (42524902253, uint32 5)                           => SLOW (6 s old, 14 s at the 2nd read)
+  rotation (42545211944, -1.0, 180.0, -45.0)               => STREAMING
+
+Five sensors are continuous streams (accel, gyro, mag, compass, rotation); proximity is an
+on-change sensor too (its value was 6 s old and did not move in the window -- "whether an
+object is close to device screen", so a per-second rate was never the right expectation);
+orientationsensor is the six-position classifier (below); alssensor streams without
+stamping; pressure has no object.
+
+
+THE ORIENTATION SENSOR IS A SIX-POSITION CLASSIFIER
+===================================================
+sensorfw's own introspection of /SensorManager/orientationsensor:
+
+  description: 'orientation of the device screen as 6 pre-defined positions'
+  type:        OrientationSensorChannel
+  interval:    100 ms;  getAvailableIntervals [(5.0, 1000.0, 0.0)]
+
+That is Android's DEVICE ORIENTATION (HIDL SENSOR_TYPE_DEVICE_ORIENTATION = 25): six
+discrete positions (1 portrait, 2 landscape, 3 reverse portrait, 4 reverse landscape,
+5 face up, 6 face down), not a stream of angles. A position classifier is on-change by
+definition, so "no new sample while the phone sits still" is correct behaviour and the
+probe's age test can never report anything but STALE for it. That is a limit of the
+criterion, not a fault of the sensor. Docs 70/71/78 listed it as "does not produce";
+that reading is withdrawn.
+
+THE ORIENTATION WATCH
+=====================
+scripts/device/zl1-orientation-watch.sh --seconds 8 --interval 2, phone untouched
+(uptime 42,595-42,602 s, display off):
+
+   uptime    orientation  sample age        accelerometer (mG)
+     42595   6            1018              -4.0719561576843262, 22.42921257019043, 1010.0505981445312
+     42597   6            1020              -3.7063050270080566, 21.357154846191406, 1010.0505981445312
+     42599   6            1023              -3.9552590847015381, 21.957756042480469, 1010.850341796875
+     42602   6            1025              -3.062136173248291, 21.310476303100586, 1010.4893798828125
+  positions seen: 6   changes: 0
+
+The accelerometer z is steady at +1010 mG. In Android's frame (+Z out of the screen) a
+phone lying face up reads z ~ +1000 mG, i.e. position 5 (face up) -- and the classifier
+says 6 (face down). The two disagree. Which one is wrong needs a hand: pick the phone up,
+turn it over, and watch both columns. If 6 becomes 5 when the screen faces down, the
+classifier's numbering simply differs from AOSP's; if it stays 6, the classification
+itself is stuck (note ro.vendor.sensors.dev_ori: false).
+
+This matters beyond curiosity: qtmir reads this value to decide the shell's orientation,
+and docs 71 measured 6 being mapped to Qt::InvertedLandscapeOrientation -- which is where
+"the shell keeps going landscape" (docs 70/71) comes from.
+
+
 DEVICE STATE AT THE END
 =======================
 uptime 41,914 s (no reboot), systemctl --failed empty, lxc container RUNNING,
