@@ -39,7 +39,7 @@ NETLOG=/userdata/zl1-netwatch.log
 while [ $# -gt 0 ]; do
   case "$1" in
   --quiet) QUIET=1; shift ;;
-  --log) NETLOG="$2"; shift 2 ;;
+  --log) NETLOG="${2?--log needs a FILE argument}"; shift 2 ;;
   --help|-h) sed -n '2,33p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -93,7 +93,10 @@ if [ -n "$nw_pid" ]; then
   st=$(awk '{ sub(/^[^)]*\) /, ""); print $20 }' "/proc/$nw_pid/stat" 2>/dev/null)
   age=""
   [ -n "$st" ] && age="$(( $(cut -d. -f1 /proc/uptime) - st / 100 )) s ago"
-  say "   running, pid $nw_pid${age:+ (started $age)}, unit: $(systemctl is-active zl1-netwatch 2>/dev/null || echo '<not a unit here>')"
+  # `systemctl is-active` prints "inactive" AND exits non-zero, so a `|| echo` after it printed both
+  # the state and the fallback. Capture instead: an empty capture means systemctl is not set up here.
+  u=$(systemctl is-active zl1-netwatch 2>/dev/null)
+  say "   running, pid $nw_pid${age:+ (started $age)}, unit: ${u:-<not a unit here>}"
 else
   always "   NOT RUNNING. Without it nothing re-asserts the addresses, and nothing heals a stall."
   always "   That is the more urgent problem -- install it before anything else."

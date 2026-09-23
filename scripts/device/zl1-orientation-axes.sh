@@ -89,8 +89,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --portrait-up) PORTRAIT_UP=1; shift ;;
     --flat-up)     FLAT_UP=1; shift ;;
-    --seconds)     SECONDS_TO_RUN="$2"; shift 2 ;;
-    --interval)    INTERVAL="$2"; shift 2 ;;
+    --seconds)     SECONDS_TO_RUN="${2?--seconds needs a number}"; shift 2 ;;
+    --interval)    INTERVAL="${2?--interval needs a number}"; shift 2 ;;
     --explain)     EXPLAIN=1; shift ;;
     --quiet)       QUIET=1; shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;

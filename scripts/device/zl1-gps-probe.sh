@@ -49,7 +49,7 @@ QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --test-gps) TEST_GPS=1; shift ;;
-  --seconds) SECONDS_="$2"; shift 2 ;;
+  --seconds) SECONDS_="${2?--seconds needs a number}"; shift 2 ;;
   --quiet) QUIET=1; shift ;;
   --help|-h) sed -n '2,48p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;

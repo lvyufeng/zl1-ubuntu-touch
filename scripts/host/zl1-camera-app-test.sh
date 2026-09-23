@@ -58,12 +58,12 @@ APP_ID=camera.ubports_camera_4.1.1
 
 while [ $# -gt 0 ]; do
   case "$1" in
-  --seconds) SECS="$2"; shift 2 ;;
-  --run-seconds) RUN_SECS="$2"; shift 2 ;;
+  --seconds) SECS="${2?--seconds needs a number}"; shift 2 ;;
+  --run-seconds) RUN_SECS="${2?--run-seconds needs a number}"; shift 2 ;;
   --no-shot) SHOT=0; shift ;;
   --keep-display) KEEP_DISPLAY=1; shift ;;
-  --extra-args) EXTRA="$2"; shift 2 ;;
-  --outdir) OUTDIR="$2"; shift 2 ;;
+  --extra-args) EXTRA="${2?--extra-args needs a value}"; shift 2 ;;
+  --outdir) OUTDIR="${2?--outdir needs a directory}"; shift 2 ;;
   --help|-h) sed -n '2,52p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac

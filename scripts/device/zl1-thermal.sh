@@ -46,10 +46,10 @@ QUIET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-  --seconds) SECONDS_WIN="$2"; shift 2 ;;
-  --top)     TOP="$2"; shift 2 ;;
+  --seconds) SECONDS_WIN="${2?--seconds needs a number}"; shift 2 ;;
+  --top)     TOP="${2?--top needs a number}"; shift 2 ;;
   --ab)      AB=1; shift ;;
-  --hold)    HOLD="$2"; shift 2 ;;
+  --hold)    HOLD="${2?--hold needs a number}"; shift 2 ;;
   --quiet)   QUIET=1; shift ;;
   --help|-h) sed -n '2,42p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
