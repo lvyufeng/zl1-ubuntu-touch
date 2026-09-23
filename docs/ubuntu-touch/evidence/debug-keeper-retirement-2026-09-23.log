@@ -1,0 +1,282 @@
+================================================================================
+RETIRING THE v63 DEBUG KEEPER — WHY IT IS A KILL AND NOT A UNIT EDIT
+RAW EVIDENCE
+zl1 (LeEco Pro3, MSM8996pro), Ubuntu Touch 24.04-2.x, 2026-09-23
+OFFLINE ONLY: every line below comes from this repository's copy of the v63 boot image
+(boot/v63/scripts/init-bottom/zl1-postswitch-debug-init), i.e. from the image that was flashed, plus
+the port's own records. Nothing was run against the device (it was in EDL for this session) and
+nothing was installed.
+================================================================================
+
+
+0. THE QUESTION
+--------------------------------------------------------------------------------
+doc 72 section 4b identified the second heat source on this port: /usr/local/sbin/zl1-debug-net.sh,
+the v63 debug network keeper — a 1 Hz /bin/sh loop that costs a full core (an A/B with it SIGSTOPped:
+1.84 -> 0.87 busy cores) and makes systemd daemon-reload every ~6 s at ~2 s each. Stopping it took the
+SoC down 5.5/6.1/2.7 C (tsens1/tsens8/pm8994) while the battery was still charging.
+
+doc 72 then proposed how to retire it *durably*:
+
+    "它的 unit 文件在 /etc/systemd/system/zl1-debug-net.service —— 是可写的，所以不用去碰只读镜像
+     里的脚本，改 unit 的 ExecStart 指向一个我们自己写的、开机只跑一次的 bring-up"
+
+That plan assumes editing that unit file survives. This file records why it does not, why the obvious
+fallback (a drop-in) does not help either, and what is left.
+
+
+1. THE BOOT HOOK REWRITES BOTH THE SCRIPT AND THE UNIT ON EVERY BOOT
+--------------------------------------------------------------------------------
+boot/v63/scripts/init-bottom/zl1-postswitch-debug-init, with line numbers:
+
+      4  ROOT="${rootmnt:-/root}"                     # the REAL rootfs during initramfs
+
+    313  cat > "$ROOT/usr/local/sbin/zl1-debug-net.sh" <<'EOF_ZL1_DEBUG_NET'
+    ...
+    630  EOF_ZL1_DEBUG_NET
+    631  chmod 0755 "$ROOT/usr/local/sbin/zl1-debug-net.sh" 2>/dev/null || true
+    632  cat > "$ROOT/etc/systemd/system/zl1-debug-net.service" <<'EOF_ZL1_DEBUG_NET_UNIT'
+    633  [Unit]
+    634  Description=zl1 V63 single-keeper USB debug network keeper
+    635  DefaultDependencies=no
+    636  After=local-fs.target systemd-udevd.service
+    637  Before=basic.target usb-moded.service
+    638  Conflicts=usb-moded.service
+    639  [Service]
+    640  Type=simple
+    641  ExecStart=/usr/local/sbin/zl1-debug-net.sh
+    642  Restart=on-failure
+    643  RestartSec=2
+    644  [Install]
+    645  WantedBy=sysinit.target multi-user.target
+    646  EOF_ZL1_DEBUG_NET_UNIT
+    647  chmod 0644 "$ROOT/etc/systemd/system/zl1-debug-net.service" 2>/dev/null || true
+    648  ln -sf ../zl1-debug-net.service "$ROOT/etc/systemd/system/sysinit.target.wants/zl1-debug-net.service"
+    649  ln -sf ../zl1-debug-net.service "$ROOT/etc/systemd/system/multi-user.target.wants/zl1-debug-net.service"
+    650  log "installed persistent debug network keeper"
+
+$ROOT is the real root filesystem (rootmnt while the initramfs is still running), so 313/632/648/649
+write the LIVE paths. Both files — and the two enablement symlinks — are recreated unconditionally at
+every boot. An edit to either is undone at the next boot.
+
+What this does NOT touch: drop-in directories. `/etc/systemd/system/zl1-debug-net.service.d/` is never
+mentioned in the hook, so a drop-in there would survive. It also outranks the /run copy (systemd's
+search order is /etc/systemd/system before /run/systemd/system).
+
+
+2. BUT A DROP-IN WOULD NOT HELP — THE SURVIVOR IS NOT SYSTEMD'S INSTANCE
+--------------------------------------------------------------------------------
+The same hook also starts the keeper DIRECTLY, before systemd exists at all:
+
+   1587  if [ -x /usr/local/sbin/zl1-debug-net.sh ]; then
+   1588      /usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &
+   1589      log "started zl1 debug network keeper from init wrapper pid=$!"
+
+and the keeper's mutual exclusion is an atomic mkdir, not anything systemd knows about:
+
+    329  LOCKDIR=/run/zl1-debug-net.lock
+    330  LOCKPID="$LOCKDIR/pid"
+    ...
+    347  if mkdir "$LOCKDIR" 2>/dev/null; then
+    348      record_primary_lock
+    ...
+    350      trap cleanup_primary EXIT HUP INT TERM
+    351  else
+    352      primary="$(cat "$LOCKPID" 2>/dev/null || true)"
+    353      if [ -n "$primary" ] && kill -0 "$primary" 2>/dev/null; then
+    354          log "keeper duplicate exit v63 pid=$$ ppid=$PPID primary=$primary ..."
+    355          exit 0
+    356      fi
+    ...
+    367  fi
+
+and cleanup_primary removes the lock on the way out:
+
+    340  cleanup_primary() {
+    341      rc=$?
+    342      trap - EXIT HUP INT TERM
+    343      log "keeper exit v63 pid=$$ rc=$rc uptime=$(uptime_now)"
+    344      rm -rf "$LOCKDIR" 2>/dev/null || true
+    345      exit "$rc"
+    346  }
+
+So the sequence on an ordinary boot is:
+
+    1. the ramdisk starts the keeper and it takes the lock (pid 817 in doc 72);
+    2. systemd later starts its own instance from the unit; that one finds a live primary, logs
+       `keeper duplicate exit v63`, and exits with status 0;
+    3. `Restart=on-failure` therefore never fires, and the unit sits `inactive (dead)` for the rest
+       of the boot.
+
+This is the mechanism behind doc 72's observation that the unit "believed it exited after 67 ms" —
+and it means the systemd unit is a red herring: overriding its ExecStart changes the instance that
+already gives up.
+
+INFERENCE, not a measurement: steps 2 and 3 above follow from the lock code and from doc 72's recorded
+`systemctl status` (MainPID gone after 67 ms, unit not in a failed state). It was not re-measured on
+the device — the device was in EDL. `install-retire-debug-keeper.sh --status` is built to show exactly
+this on the next boot (it prints every keeper pid, its ppid/comm/cgroup, and the lock directory
+contents), so the inference is checkable in one command.
+
+
+3. WHAT IS LEFT: THE KEEPER'S OWN SHAPE
+--------------------------------------------------------------------------------
+    611  while :; do
+    612      write_runtime_systemd_units
+    613      maybe_systemctl_mask_usb
+    614      if kill_usb_managers; then
+    615          force_android_usb_rndis usb-manager-killed || true
+    616      else
+    617          force_android_usb_rndis steady || true
+    618      fi
+    619      configured=0
+    620      configure_iface usb0 && configured=1
+    621      configure_iface rndis0 && configured=1
+    622      start_debug_servers
+    ...
+    627      i=$((i + 1))
+    628      sleep 1
+    629  done
+
+It is a plain shell script, started by the ramdisk, with no self-heal and no supervisor: its unit is
+inactive, and nothing else references it. Kill the process and nothing starts it again until the next
+boot, at which point the hook recreates it. That is the whole leverage, and it is honest to state what
+it is: a per-boot retirement, not a durable one.
+
+What makes the kill safe to perform:
+
+  a. the usb-moded suppression outlives the keeper. `maybe_systemctl_mask_usb` (line 423) is
+     `systemctl mask --runtime usb-moded.service` + `stop`, and the hook additionally does the blunter
+     `ln -sfn /dev/null /run/systemd/system/usb-moded.service` (line 404). Both are files under /run,
+     so they last for the rest of the boot. Killing the keeper does not let usb-moded back in to
+     fight RNDIS.
+
+  b. the addresses come from our own service now. zl1-netwatch.service re-asserts rndis0's addresses
+     on every sample (`ensure_addrs()`, logged as `ADDRS:`), and it was installed BEFORE this on
+     purpose, so the first boot that proves the new path is a boot where the keeper would have done
+     the job anyway (docs 88; `scripts/device/zl1-boot-address-check.sh` is the verdict).
+
+  c. nothing here is durable in the unsafe direction. A reboot restores the keeper exactly, because
+     the hook recreates both files.
+
+And the applier refuses to kill unless it can see an address:
+
+    while [ "$i" -lt "$WAIT_S" ]; do has_address && break; sleep 1; i=$((i + 1)); done
+    if ! has_address; then
+        log "REFUSING: after ${WAIT_S}s neither 192.168.2.15/24 nor 10.15.19.82/24 is on $(iface) -- leaving the keeper running (docs 94)"
+        exit 0
+    fi
+
+-- i.e. if the netwatch (and the keeper) failed to produce an address, the keeper stays. That is the
+conservative direction: no address is the one state in which the keeper might still be the only thing
+that can produce one.
+
+
+4. THE APPLIER, AND WHAT TESTING IT OFFLINE CHANGED
+--------------------------------------------------------------------------------
+`scripts/install-retire-debug-keeper.sh` installs, on the rw /etc/systemd/system path (the same path
+every other unit of this port lives on):
+
+    /etc/systemd/system/zl1-retire-debug-keeper.sh        the applier
+    /etc/systemd/system/zl1-retire-debug-keeper.service   oneshot, DefaultDependencies=no,
+                                                         After=local-fs.target zl1-netwatch.service,
+                                                         Before=multi-user.target
+
+Modes: `--status` (default, read-only) / `--install` (installs and enables; changes nothing on the
+current boot) / `--install --now` (also retires it on the current boot) / `--remove` / `--explain`.
+
+The applier, the kill path, the refusal path and the resurrection path were all exercised on the host
+with stubs (`systemctl`, `logger`) and a fake keeper whose cmdline is `/bin/sh /tmp/fk/keeper.sh`:
+
+    A. gate closed (no rndis0/usb0 on the host) -> REFUSED, fake keeper untouched      PASS
+    B. something respawns the keeper every 4 s  -> detected and reported as a RESTART   PASS
+    C. clean kill                               -> gone, verified over the watch window PASS
+
+The first version of the split failed test B in a way worth recording, because it is the difference
+between an instrument and a hazard. It matched the keeper with a substring test over the whole
+cmdline:
+
+    c=$(tr '\000' ' ' < "$d/cmdline" 2>/dev/null)
+    case "$c" in *"$KEEPER"*) echo "$p" ;; esac
+
+A substring test matches ANY process whose command line happens to mention the path — a `ps | grep
+zl1-debug-net.sh`, a shell running one of this project's own scripts, an editor with the file open. In
+the offline test it matched the test shell itself, and the applier killed it: the test harness died
+mid-run with the tool reporting exit 144 and truncated output. On the device the same match would have
+killed an unrelated process, possibly the shell someone was debugging from.
+
+The applier now requires the path to BE an argument:
+
+    is_keeper_cmdline() {
+        set -- $(tr '\000' '\n' < "$1" 2>/dev/null)
+        case "${1:-}" in
+        "$KEEPER") return 0 ;;
+        esac
+        case "${1:-}" in
+        */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox)
+            case "${2:-}" in
+            "$KEEPER") return 0 ;;
+            esac
+            ;;
+        esac
+        return 1
+    }
+
+which matches the keeper's real shape (`#!/bin/sh` shebang, so its cmdline is
+"/bin/sh /usr/local/sbin/zl1-debug-net.sh" — what doc 72's `ps` output showed) and nothing else. It
+also skips its own pid.
+
+The verify step was also made to distinguish two failures that have different answers, which the first
+version conflated:
+
+    survivor of the original pid set  -> "SIGKILL did not take"      (a kill problem)
+    a pid that was not there before   -> "something RESTARTED the keeper as pid N -- SIGKILL was not
+                                           the problem; the retirement needs a different lever (docs 94)"
+
+The second is the one that would mean only a boot-image change retires the keeper, so it is logged as
+its own fact rather than being folded into "still running".
+
+
+5. WHAT WOULD RETIRE IT DURABLY (NOT DONE)
+--------------------------------------------------------------------------------
+One thing only: change the boot image. `boot/v63/scripts/init-bottom/zl1-postswitch-debug-init` is the
+file that creates both the script and the unit; editing it and rebuilding the ramdisk
+(`scripts/make-halium-postswitch-debug-boot.sh`) plus flashing boot would remove the keeper at the
+source. That is a boot-image write, i.e. the class of change this project gates behind an explicit
+decision, and it is not needed in order to get the heat down: the per-boot kill above has the same
+thermal effect on every boot, at the cost of doing it again after each reboot.
+
+
+6. REPRODUCTION
+--------------------------------------------------------------------------------
+  cd /mnt/data/zl1-bb10
+
+  # the hook rewrites both files (lines 313, 632, 648-649) and starts the keeper itself (1587-1589)
+  grep -n 'cat > "\$ROOT/usr/local/sbin/zl1-debug-net.sh"\|cat > "\$ROOT/etc/systemd/system/zl1-debug-net.service"\|zl1-debug-net.sh >/dev/kmsg' \
+       boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
+
+  # the lock, the duplicate-exit path and the EXIT trap
+  sed -n '329,356p' boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
+
+  # the loop and its per-second work
+  sed -n '611,629p' boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
+
+  # the offline exercise of the applier (stubs + a fake keeper)
+  bash scripts/install-retire-debug-keeper.sh --explain
+  # and, on the device, before installing anything:
+  ssh root@10.15.19.82 'sh /tmp/zl1-boot-address-check.sh'     # require: netwatch-configured (exit 0)
+
+
+7. WHAT THIS DOES NOT SETTLE
+--------------------------------------------------------------------------------
+  * It does not verify on the device that the systemd instance is the one that exits. The lock code
+    and doc 72's recorded status are consistent with it; `--status` shows it on the next boot.
+  * It does not prove a keeper-less boot keeps its address. That is exactly what
+    `scripts/device/zl1-boot-address-check.sh` measures, and why it is the gate.
+  * It does not measure the heat difference. The applier logs the keeper's own CPU ticks
+    (`/proc/<pid>/stat` fields 14+15, HZ from getconf) at the moment it retires it, so
+    `scripts/device/zl1-thermal.sh --ab` has a before/after to compare — but that comparison has not
+    been made.
+  * It does not make the retirement durable. Nothing here changes the boot image, and nothing here
+    survives a reboot except the unit that re-runs the kill.
+  * Nothing was installed. The device is in EDL and this is a prepared change, awaiting a decision.
