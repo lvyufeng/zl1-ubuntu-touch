@@ -33,6 +33,13 @@
 #   2. credentials.profile non-empty -- empty means aa_gettaskcon could not name the caller's label
 #   3. the trust-store agent's answer -- every exception is swallowed into `rejected`
 #
+# Gate 1 is a true short circuit, read out of the *installed* library (0xd6110, 892 B): it returns
+# granted at 0xd6370 before the profile is ever read at 0xd61f4, and `default_feature()` and the
+# agent's virtual call are behind that read. So gates 2 and 3 cannot veto a caller that has already
+# passed gate 1, no AppArmor profile has to be arranged for the experiment, and because the unit's
+# wrapper ends in `exec`, the unit's environment *is* the daemon's environment -- an Environment=
+# drop-in is enough. (see docs/ubuntu-touch/evidence/location-chain-2026-09-23.log section 3f)
+#
 # Gate 1 is the bypass the image itself ships: the unit's wrapper sets that variable when
 # `getprop custom.location.testing` is "true". On this port it never is, because the v63 boot image
 # installs a /bin/sh stub over /usr/bin/getprop on every boot and that stub has no `custom.*` case --

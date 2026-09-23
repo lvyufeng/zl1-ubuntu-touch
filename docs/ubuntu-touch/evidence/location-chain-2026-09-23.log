@@ -23,6 +23,10 @@ The answer has two halves, one per section below:
   §3+§4 the lock in front of that door is TrustStorePermissionManager, and the
       image's own two bypass levers are both unreachable on this port because
       the v63 boot image installs a getprop stub over /usr/bin/getprop.
+  §3f the first gate of that lock is disassembled in the *installed* library,
+      where it turns out to be a true short circuit: it returns granted before
+      `credentials.profile` is read, so the AppArmor gate and the trust-store
+      agent are unreachable on that path.
 
 
 1. IDENTITIES
@@ -368,6 +372,87 @@ Commands to reproduce §1:
         0xd5f30  TrustStorePermissionManager::create_default_instance_with_bus(...)
         0xd6110  TrustStorePermissionManager::check_permission_for_credentials(...)   (892 B)
 
+3f. 3c is quoted from the ubports branch on gitlab. The *installed* library is
+    where the gates actually run, so the function was disassembled as well --
+    what follows is read out of the binary (sha256
+    0095442f32820d77ec96dbc45f17c8e51f417b8a012c604fd284684adc730173, the same
+    file whose strings appear above):
+
+      $ llvm-objdump-14 -d --start-address=0xd6110 --stop-address=0xd648c \
+            /mnt/utrootfs/usr/lib/aarch64-linux-gnu/liblomiri-location-service.so.3.0.0
+
+    First the two rodata operands of the env getter -- the two adrp/add pairs
+    decode to exactly the variable name and its default, and the bytes at those
+    addresses were dumped rather than assumed:
+
+        d615c: adrp x1, 0x101000 ; d6160: add x1, x1, #3656  -> 0x101e48
+        d6174: adrp x1, 0xfc000  ; d6178: add x1, x1, #976   -> 0xfc3d0
+        $ (python3 dump of the file)
+          0x101e48 b'TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING'
+          0x101e80 b'./src/location_service/com/lomiri/location/service/trust_store_permission_manager.cpp'
+          0xfc3d0  b'0'
+          0xfca08  b'Could not resolve PID '
+
+    Its result arrives as a data pointer and a length (d6190 `ldp x0, x21,
+    [sp, #168]` -> x0 = data, x21 = length; d6328 `ldrb w1, [x0]` reads the
+    data pointer). The comparison against the literal "1" is inlined into
+    length-then-first-character:
+
+        d6198: cmp  x21, #1        ; length != 1 ...
+        d619c: b.eq 0xd6328
+        d61a0: mov  w21, #0        ; ... -> under_testing = false
+        d6328: ldrb w1, [x0]
+        d632c: cmp  w1, #49        ; '1'
+        d6334: b.ne 0xd61a0        ; not "1" -> under_testing = false
+        d635c: b.eq 0xd6370        ; == "1" -> jump over everything
+        d6370: mov  w19, #0
+        d628c: ...                 ; d62ac: mov w0, w19 ; ret
+
+    and the flag is re-tested on the path that falls through the string
+    destructors:
+
+        d61f0: cbnz w21, 0xd6370   ; under_testing -> return immediately
+        d61f4: ldr  x0, [x19, #16] ; ONLY NOW is the profile touched
+        d61fc: cbz  x0, 0xd62c8    ; length 0 -> log, and rejected
+
+    Polarity, derived from three independent sites rather than assumed:
+      * the empty-profile path (d62c8-d6324) logs "Could not resolve PID " with
+        the pid and sets w19 = 1; 3c says that path returns `rejected`, so
+        **w19 = 1 is rejected and w19 = 0 is granted** (i.e. `Result` has
+        granted = 0);
+      * the agent call is `cmp w0, #1 ; cset w19, ne` (d626c-d6270) and the
+        agent answer enum, from trust-store 2.0.2 include/core/trust/request.h
+        (ubports/24.04-2.x), is
+
+            enum class Answer : std::int32_t { denied, granted };
+
+        so denied = 0, granted = 1, and w19 = 0 exactly when the agent granted
+        it -- which is the switch in 3c;
+      * therefore `d6370: mov w19, #0` on the testing path is a `granted`
+        return.
+
+    Two structural facts fall out, and both matter for the experiment:
+
+      * **The bypass is at the very top.** d61f4 reads `credentials.profile`
+        (`ldr x0, [x19, #16]` is the string's length, and 3c's first test is
+        `.empty()`), and it is only reachable when the under-testing flag is
+        false. It is also where `default_feature()` (d6240) and the agent's
+        virtual call (d6258-d6268, vtable slot `[x2, #16]`) live. So on the
+        testing path `aa_gettaskcon` is never called and the agent is never
+        asked: gates 2 and 3 cannot veto a caller that has already passed gate
+        1, and no AppArmor profile has to be arranged for the experiment.
+      * **The environment reaches the daemon.** Both branches of the wrapper
+        (4a) end in `exec lomiri-location-serviced ...`, so the unit's
+        environment *is* the daemon's environment; there is no `lxc-attach`,
+        no `lxc-execute` and no `env -i` in between to scrub it. An
+        `Environment=` drop-in on `lomiri-location-service.service` is
+        sufficient, and the wrapper's own `export` (which its dead `getprop`
+        gate can never reach) is not needed.
+
+    What this still does not prove: that the unit's `ExecStart` really is this
+    wrapper on the device (the probe prints it), and that nothing later in the
+    session path rejects the client for a different reason.
+
 
 4. THE TWO DEAD LEVERS
 --------------------------------------------------------------------------------
@@ -513,6 +598,15 @@ Commands to reproduce §1:
   sed -n '1040,1110p' boot/v63/scripts/init-bottom/zl1-postswitch-debug-init
   cat $R/usr/libexec/lxc-android-config/lomiri-location-serviced-wrapper
 
+  # the gates, in the installed binary rather than in the source
+  llvm-objdump-14 -d --start-address=0xd6110 --stop-address=0xd648c /tmp/lls.so
+  python3 - <<'PY'          # 0x101e48 -> the env name, 0xfc3d0 -> "0"; .rodata is vaddr==offset
+  d=open('/tmp/lls.so','rb').read()
+  for v in (0x101e48, 0x101e80, 0xfc3d0, 0xfca08):
+      print(hex(v), d[v:v+90].split(b'\0')[0])
+  PY
+  curl -s https://gitlab.com/ubports/development/core/trust-store/-/raw/ubports/24.04-2.x/include/core/trust/request.h | grep -A5 'enum class Answer'
+
 
 7. WHAT THIS DOES NOT SETTLE
 --------------------------------------------------------------------------------
@@ -527,6 +621,8 @@ Commands to reproduce §1:
     returns success, whether the QMI client opens, whether a fix is ever
     obtained. docs 82's line (`locClientOpen failed`) is still the one to read.
   * It does not establish that `aa_gettaskcon` succeeds or fails for a root
-    shell on this device. Both outcomes are consistent with the code above; the
-    difference decides *which* gate rejects, not whether one does.
+    shell on this device -- but 3f narrows what that is worth: on the testing
+    path it is never called at all (the bypass returns before the profile is
+    read), so it decides the outcome only for a client that reaches the gate
+    with the bypass still off.
   * Nothing here was measured on the device. The device was in EDL throughout.

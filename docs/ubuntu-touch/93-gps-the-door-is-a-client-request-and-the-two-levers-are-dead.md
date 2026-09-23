@@ -174,6 +174,33 @@ catch(...) { /* We silently drop all issues here and return rejected. */ }
 
 trust-store 这一侧在这台设备上是**接好线**的——不是空挂：`data/com.lomiri.location.Service.conf` 允许 `core.trust.dbus.Agent.LomiriLocationService`，用户单元 `lomiri-location-service-trust-stored.service`（`trust-stored-skeleton --for-service LomiriLocationService --remote-agent DBusRemoteAgent --local-agent MirAgent`）在 `graphical-session.target.wants` 里是**已启用**的（还有一个 `-wayland` 变体，靠 `ConditionPathExists=/run/user/%U/mir_socket_trusted` 二选一），而 `lomiri-indicator-location.service` 也在 `lomiri-indicators.target.wants` 里已启用，还带 `/etc/xdg/autostart/lomiri-indicator-location.desktop`。也就是说：**谁来回答"允许吗"这件事，系统是有安排的**；而没有安排的是——**第一次请求从哪里来**。
 
+### 3.4 上面这段是上游源码；设备上跑的是二进制，所以反汇编了它
+
+`sha256 0095442f…730173` 的 `liblomiri-location-service.so.3.0.0`，`0xd6110` 长度 892 B：
+
+```
+d615c: adrp x1, 0x101000 ; d6160: add x1, x1, #3656   -> 0x101e48  = 环境变量名
+d6174: adrp x1, 0xfc000  ; d6178: add x1, x1, #976    -> 0xfc3d0    = "0"（默认值）
+d6198: cmp  x21, #1        ; 长度不是 1 ...
+d619c: b.eq 0xd6328
+d61a0: mov  w21, #0        ; ... -> under_testing = false
+d6328: ldrb w1, [x0]
+d632c: cmp  w1, #49        ; '1'
+d6334: b.ne 0xd61a0        ; 不是 "1" -> under_testing = false
+d635c: b.eq 0xd6370        ; 是 "1" -> 直接跳到返回
+d6370: mov  w19, #0
+d61f0: cbnz w21, 0xd6370   ; 落空析构路径上再测一次同一个标志
+d61f4: ldr  x0, [x19, #16] ; 到这一行才第一次碰 profile
+d61fc: cbz  x0, 0xd62c8    ; 长度为 0 -> log "Could not resolve PID" 且 rejected
+```
+
+三个互相独立的点定出极性（不是猜的）：空 profile 那条路（`0xd62c8`）log 完把 `w19` 置 1，而源码说那条路返回 `rejected`，所以**`w19=1` 是 rejected、`w19=0` 是 granted**；agent 那处是 `cmp w0, #1 ; cset w19, ne`，而 trust-store 2.0.2 的 `include/core/trust/request.h` 写的是 `enum class Answer { denied, granted }`，即 `granted = 1`，正好与源码的 switch 对上。于是 `d6370: mov w19, #0` 就是豁免路径返回的 `granted`。
+
+**两个结论，都改变实验怎么跑：**
+
+* **第一道闸是真正的短路**：读 `credentials.profile` 的 `d61f4` 只在标志为假时才可达，`default_feature()`（`d6240`）和 agent 的虚调用（`d6258`-`d6268`，虚表槽 `[x2, #16]`）也在它后面。所以走豁免这条路时 **`aa_gettaskcon` 根本不会被调用**——第二、三道闸不能否决一个已经过了第一道闸的调用者，**实验不需要额外安排 AppArmor profile**。
+* **环境变量到得了守护进程**：wrapper 两个分支都以 `exec lomiri-location-serviced ...` 结尾（§4 逐字），中间没有 `lxc-attach`、没有 `lxc-execute`、没有 `env -i`，所以单元的环境就是守护进程的环境，一个 `Environment=` drop-in 就够了；wrapper 自己那句 `export`（被它那个死掉的 `getprop` 判断挡住、永远到不了）并不需要。
+
 ## 4. 为什么这道锁在这台设备上是关着的：两把钥匙同时失效
 
 wrapper 逐字是这样的：
@@ -239,7 +266,7 @@ exit 0
 Environment=TRUST_STORE_PERMISSION_MANAGER_IS_RUNNING_UNDER_TESTING=1
 ```
 
-`is_running_under_testing()` 读的就是**服务进程自己的环境**，所以 systemd 能设。效果：第一道闸对**任何**调用者返回 `granted`，于是连一个 unconfined 的 root shell 也能建会话、开位置更新——而那就是第一次调用 `u_hardware_gps_new`/`u_hardware_gps_start` 的那一刻。
+`is_running_under_testing()` 读的就是**服务进程自己的环境**，所以 systemd 能设。效果：第一道闸对**任何**调用者返回 `granted`，于是连一个 unconfined 的 root shell 也能建会话、开位置更新——而那就是第一次调用 `u_hardware_gps_new`/`u_hardware_gps_start` 的那一刻。而且这是**真正的短路**（§3.4 从装好的二进制反汇编确认）：返回发生在读 `credentials.profile` 之前，所以第二、三道闸在这条路上根本不会被问到，**不需要额外准备 AppArmor profile**；wrapper 两个分支都是 `exec`，所以单元的环境就是守护进程的环境，`Environment=` 一定到得了。
 
 **这是一个权限旁路**：drop-in 在位期间，设备上任何进程都能拿到位置。这跟 `orientationsensor=False` 和"退役 debug keeper"是同一类决定——**要用户点头，不能自己装**。
 
@@ -277,6 +304,6 @@ ExecStart=/usr/bin/lomiri-location-serviced --bus system \
 * **不证明硬件一旦被问就能工作。** 它证明的是"要问哪个调用、以及这台设备从没问过"，不是"问了就有 fix"。
 * **不证明设备当前缺的**就是一次会话请求——只证明那是门，且锁默认关着。能分开两者的实验是 §6 的三步。
 * **对 Android 侧什么也没加**：`u_hardware_gps_start` 返回什么、QMI 客户端开不开、有没有 fix，都是 `82` 那条 `locClientOpen failed` 的事。
-* **没有在设备上量过任何东西**（设备整轮都在 EDL）：`aa_gettaskcon` 对一个 root shell 是成功还是失败没测。两种结果都与上面的代码相容——它决定的是**哪一道闸**在拒，不是**有没有**在拒。
+* **没有在设备上量过任何东西**（设备整轮都在 EDL）：`aa_gettaskcon` 对一个 root shell 是成功还是失败没测。不过 §3.4 把这件事的价值缩小了——走豁免这条路时它**根本不会被调用**（返回在读 `credentials.profile` 之前），所以它只决定"没开豁免的调用者"被哪一道闸拒，不决定豁免实验的结果。
 * **那个 QML 客户端没有被任何 Qt 运行时跑过。** 它用到的类型/属性/信号（`PositionSource`、`position`、`active`、`valid`、`updateTimeout`、`sourceError`、`supportedPositioningMethods`、`positionChanged`/`sourceErrorChanged`/`validityChanged`）是逐个对着镜像里的 `plugins.qmltypes`（导出为 `QtPositioning/PositionSource 5.0`）和 `libQt5PositioningQuick.so.5.15.13` 里真实存在的信号名核过的，插件 key `"lomiri"` 来自 `libqtposition_lomiri.so` 自己的内嵌元数据——但"名字都对"不等于"跑起来就对"。`zl1-location-request.sh` 的三种模式是用 stub 过的 `systemctl`/`gdbus`/`getprop`/`qmlscene` 在离线环境里跑过的（包括 `--seconds` 后面没参数这个 `set -u` 陷阱，它当场暴露了一个会直接终止脚本的 `shift` 错误），那只证明脚本自己的逻辑，不证明设备上的结果。
 * **没有改任何东西**：两个 drop-in 都只写在这里，没有装；没有重启任何服务；没有碰引导镜像；没有分区写。
