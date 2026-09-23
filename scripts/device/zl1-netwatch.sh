@@ -264,6 +264,60 @@ restore_addrs() {
     done
 }
 
+# --- the addresses are now ours, not only the keeper's (docs 88) --------------------------------
+#
+# The v63 debug keeper is also what gives rndis0 its two addresses at boot, and this port wants to
+# retire it: its 1 Hz loop runs `systemctl mask --runtime usb-moded.service` every second, which
+# makes systemd daemon-reload every ~6 s, and it costs **a full core** (doc 72 section 4b: busy
+# 0.87 cores stopped vs 1.84 running). The swap was blocked on one unverified question -- "does a
+# boot without the keeper still get an address?" -- and reading this script answers it:
+#
+#   yes, but badly. restore_addrs() was reachable only from the two heal stages, and a heal needs
+#   `frozen >= STALL_SECONDS` (45 s of failed host pings) *and* `uptime >= SETTLE_SECONDS` (90 s).
+#   So a keeper-less boot would have no address and no SSH for ~135 s, and the first thing that
+#   would fix it is heal A -- a full RNDIS gadget re-enumeration, eating one of MAX_HEALS. Not
+#   permanently unreachable (an earlier draft of this note claimed that; the ping-failure path
+#   makes it self-correcting), but a worse boot, every boot.
+#
+# So the addresses become this service's job too, re-asserted the same way and for the same reason
+# as the policy routing below: netd is not the only thing that can take them away -- a heal, or the
+# gadget re-binding, does it too. Idempotent, no gadget action, and it logs only when something was
+# actually missing, so it cannot spam in steady state.
+#
+# This is installed **before** the keeper is retired, deliberately: the first boot that proves the
+# new path is a boot where the keeper would have done the job anyway, so the safety net is still
+# there while the claim is being tested. `zl1-quiet-debug-keeper.sh` does not mask anything for the
+# same reason.
+DESIRED_ADDRS="192.168.2.15/24 10.15.19.82/24"
+
+cur_addrs() {
+    ip -4 addr show dev "$IFACE" 2>/dev/null | awk '/inet /{printf "%s ", $2}'
+}
+
+addrs_ok() {
+    c=" $(cur_addrs) "
+    for a in $DESIRED_ADDRS; do
+        case "$c" in *" $a "*) ;; *) return 1 ;; esac
+    done
+    return 0
+}
+
+# -> 0 if the interface now carries both addresses (whether or not this call added them),
+#    1 if there is no interface to configure.
+ensure_addrs() {
+    [ -e "/sys/class/net/$IFACE" ] || return 1
+    addrs_ok && return 0
+    restore_addrs
+    # The keeper announces the pair with a gratuitous ARP; the host has static routes and would
+    # resolve on demand, but the announce costs nothing and matches what the keeper did.
+    if command -v arping >/dev/null 2>&1; then
+        arping -A -c 2 -I "$IFACE" 192.168.2.15 >/dev/null 2>&1
+        arping -A -c 2 -I "$IFACE" 10.15.19.82 >/dev/null 2>&1
+    fi
+    log "ADDRS: uptime=$(cut -d' ' -f1 /proc/uptime) iface=$IFACE now='$(cur_addrs)'"
+    return 0
+}
+
 # Stage A: a full USB re-enumeration. enable=0 disconnects the gadget from the bus and
 # enable=1 brings it back, so the host sees a fresh USB session and the endpoints are
 # reset. The netdev survives, so the static addresses stay.
@@ -429,6 +483,10 @@ while :; do
     # Re-assert the policy routing fix whenever it is missing. netd wipes and reinstalls
     # its rules as the container starts and restarts, so this cannot be a one-shot.
     [ -e "/sys/class/net/$IFACE" ] && apply_policy_routing_fix
+
+    # Same shape, same reason: the addresses can be taken away by a heal or by the gadget
+    # re-binding, not only by the boot (docs 88 -- this is what replaces the keeper's job).
+    ensure_addrs
 
     set -- $(ifname_stats)
     rx_b="$1"; rx_p="$2"; tx_b="$3"; tx_p="$4"

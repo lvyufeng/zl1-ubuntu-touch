@@ -15,7 +15,7 @@ F="${1:-/mnt/data/zl1-bb10/scripts/device/zl1-netwatch.sh}"
 
 REQUIRED="log ifname_stats gadget_stats sample probe_host write_file restore_addrs
 heal_reenumerate heal_rebind_function heal apply_policy_routing_fix hwcheck netsnap
-container_pid"
+container_pid cur_addrs addrs_ok ensure_addrs"
 
 missing=""; n=0
 for fn in $REQUIRED; do

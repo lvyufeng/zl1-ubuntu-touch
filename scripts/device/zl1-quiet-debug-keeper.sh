@@ -14,9 +14,19 @@
 # script daemonizes itself and its unit believes it exited after 67 ms. SIGSTOP is the only handle, and
 # it is instantly reversible.
 #
-# What keeps the network up while it is stopped: `zl1-netwatch.service` (ours) has a 45 s stall
+# What keeps the network up while it is stopped: `zl1-netwatch.service` (ours). It has a 45 s stall
 # detector and a heal path that unbinds/rebinds the RNDIS function and re-applies the addresses
-# (`restore_addrs()`), so the exposure is bounded and self-healing rather than silent.
+# (`restore_addrs()`), so the exposure is bounded rather than silent -- but read what "bounded" meant
+# before 2026-09-23: `restore_addrs()` was reachable **only** from the heal stages, and a heal needs
+# 45 s of failed host pings *and* uptime >= 90 s. A keeper-less boot therefore had no address and no
+# SSH for ~135 s, and the first thing that fixed it was a full RNDIS re-enumeration (docs 88). The
+# netwatch now re-asserts the addresses itself every sample (`ensure_addrs()`, logged as `ADDRS:`),
+# which is what makes retiring this keeper a small step instead of a gamble -- and it was installed
+# *before* the keeper is retired, so the first boot that proves the new path is a boot where the
+# keeper would have done the job anyway.
+#
+# Before retiring it, run `scripts/device/zl1-boot-address-check.sh` and require the
+# `netwatch-configured` verdict (exit 0) on the boot you just looked at.
 #
 # Usage (on the device): zl1-quiet-debug-keeper.sh --stop | --resume | --status [--wait SECONDS]
 #   --stop    SIGSTOP the keeper and verify it is in state T

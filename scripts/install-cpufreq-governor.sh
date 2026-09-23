@@ -32,8 +32,11 @@
 #     `tsens_tz_sensor1` 538 -> 490 (deci-degrees: 53.8 -> 49.0 C), `pm8994_tz` 48000 -> 46923 (46.9 C).
 #     It is **not stopped here** on purpose: the keeper is what configures `rndis0`/`usb0` at boot
 #     (`192.168.2.15/24` and `10.15.19.82/24`, announced with `arping -A`), and our own
-#     `zl1-netwatch.sh` has an equivalent `restore_addrs()` but no proof yet that a boot **without** the
-#     keeper still comes up with an address. Masking it is the next stage and it needs a reboot test;
+#     `zl1-netwatch.sh` has an equivalent `restore_addrs()` -- but that function was reachable **only
+#     from the heal stages**, and a heal needs 45 s of failed pings *and* uptime >= 90, so a keeper-less
+#     boot would have had no address for ~135 s and then been fixed by a full RNDIS re-enumeration
+#     (docs 88). The netwatch now re-asserts the addresses every sample (`ensure_addrs()`), which is
+#     what makes the next stage a small step; retiring it still needs a reboot test;
 #     losing the address means losing SSH, i.e. needing hands on the phone, which is exactly the sort of
 #     step that does not get taken to save a few percent of CPU on someone else's behalf.
 #   * About half of the remaining CPU is **kernel** time: a 20 s `/proc/stat` delta gave
