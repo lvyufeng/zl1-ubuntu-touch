@@ -84,9 +84,15 @@ ACT="$W/actions"
 rm -rf "$W"
 mkdir -p "$FR/etc/systemd/system" "$FR/proc" "$FR/sys/class/net/rndis0" "$FR/sys/module/msm_poweroff/parameters" \
          "$FR/sys/fs/pstore" "$FR/userdata" "$FR/usr/local/sbin" "$FR/run" \
-         "$W/applier" "$W/killignore" "$FR/proc/sys/kernel/random" "$STUB" || exit 2
+         "$W/applier" "$W/killignore" "$FR/proc/sys/kernel/random" "$FR/proc/device-tree" "$STUB" || exit 2
 
 # --- the fake device's state ---------------------------------------------------------------------
+#
+# The device-identity guard reads this. It is the same string the real device reports, and it is here
+# because the transport maps /proc/device-tree into the fake root (see paths.sed): without it the guard
+# would be satisfied or refused by the HOST's own /proc, and the section that tests it would be testing
+# the harness's machine rather than the installer.
+printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
 #
 # The keeper the retirement exists to kill. Its cmdline is "/bin/sh /usr/local/sbin/zl1-debug-net.sh",
 # which is what docs 72's `ps` showed and what the applier's `is_keeper_cmdline` is written against:
@@ -375,6 +381,12 @@ emit "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g"
 emit "s|\\\${d#/proc/}|\\\${d#$FR/proc/}|g"
 emit "s|/proc/\\\$ppid|$FR/proc/\\\$ppid|g"
 emit "s|/proc/\\\$p/|$FR/proc/\\\$p/|g"
+# The device-identity guard. install-netwatch-service.sh --ssh asks for it before it writes anything,
+# and unmapped it would read the HOST's /proc -- where there is no device tree at all, so the installer
+# would refuse with "not the zl1, or unreachable" and every assertion below would be about the
+# harness's own /proc rather than about the guard. (The installer is the only one in this harness that
+# guards this way; install-fingerprint-store-dir.sh does too, and has its own selftest.)
+emit "s#/proc/device-tree#$FR/proc/device-tree#g"
 
 cat > "$STUB/ssh" <<EOF
 #!/bin/sh
@@ -389,6 +401,17 @@ case "\$cmd" in
   sed -f "$W/paths.sed" > "$W/stdin.script"
   exec env PATH="$STUB:\$PATH" FAKE_ADDR="\${FAKE_ADDR:-yes}" sh "$W/stdin.script"
   ;;
+*"cat > "*)
+  # A payload arriving on stdin. The default is the honest transport: pass it through untouched (this is
+  # the property the installers rely on -- the bytes written are the bytes sent, with no quoting or
+  # expansion by the remote shell). FAKE_SSH_SHORT=N makes the transport drop the tail after N bytes,
+  # which is the one failure a byte-count read-back exists to catch and which leaves no trace in the
+  # file's existence afterwards.
+  if [ -n "\${FAKE_SSH_SHORT:-}" ]; then
+    f=\$cmd; f=\${f#*cat > }; f=\${f%% *}; f=\$(printf '%s' "\$f" | tr -d "'")
+    head -c "\$FAKE_SSH_SHORT" > "\$f"
+    exit 0
+  fi ;;
 esac
 exec env PATH="$STUB:\$PATH" FAKE_ADDR="\${FAKE_ADDR:-yes}" sh -c "\$cmd"
 EOF
@@ -445,11 +468,12 @@ snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
 # $1 = script, rest = args. Output in $OUT, exit code in $RC. FAKE_ADDR is what the fake device's
 # rndis0 would answer, so a scenario that wants "no address" sets it to none and calls env_reset after.
 RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe
-env_reset() { RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; rm -f "$W/restart" "$W/active-retire"; rm -rf "$W/killignore"; mkdir -p "$W/killignore"; }
+env_reset() { RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; RUN_SSH_SHORT=""; rm -f "$W/restart" "$W/active-retire"; rm -rf "$W/killignore"; mkdir -p "$W/killignore"; }
 run() {
   s="$1"; shift
   : > "$ACT"
   OUT=$(PATH="$STUB:$PATH" FAKE_ADDR="$RUN_ADDR" FAKE_ADB_SERIAL="$RUN_ADB_SERIAL" \
+        FAKE_SSH_SHORT="${RUN_SSH_SHORT:-}" \
         timeout 120 bash "$s" "$@" 2>&1); RC=$?
 }
 runsh() { # same, for a device-side applier
@@ -1221,6 +1245,166 @@ want 'exec-out' "$(grep '^adb ' "$ACT" 2>/dev/null | grep -q 'exec-out' && echo 
 want "readlink -f /dev/block/bootdevice/by-name/misc" "$(grep '^adb ' "$ACT" 2>/dev/null)" "and it resolves the misc device BY NAME on the device, not from a hardcoded path"
 [ -x "$W/misc/misc.img" ] && bad "the misc backup came out executable (cp of the wrong thing)" || ok "the misc backup is not an executable copy of a script"
 cmp -s "$W/misc/misc.img" "$MISC_PART" && ok "and the backup is byte-identical to the partition it claims to be" || bad "the backup differs from the partition"
+
+echo
+# ==================================================================================================
+echo
+echo "== 14. netwatch over ssh: the same directory through the LIVE bind mount, and no TWRP round trip =="
+# ==================================================================================================
+# Why this transport exists at all: `install-netwatch-service.sh` was the only unit installer in this
+# directory that needed TWRP, and the unit it installs is the one whose `ensure_addrs()` is what makes
+# retiring the v63 debug keeper safe -- i.e. the remaining HEAT fix. Every other installer here already
+# reaches `/etc/systemd/system` over ssh on a booted device, so the TWRP requirement was buying nothing.
+#
+# What has to be held to, in order of how badly it fails if it is wrong:
+#
+#   1. **The path follows the transport.** Over ssh, `/data/system-data/...` is the ANDROID CONTAINER's
+#      /data, not UT's userdata -- the same trap as the misc partition path differing between UT and
+#      TWRP. A write there looks like success, reports success, and is gone (or worse, is in the wrong
+#      filesystem). So the two trees are asserted to be disjoint, in both directions.
+#   2. **The replacement is atomic.** The netwatch is very likely RUNNING, and `sh` reads a script from
+#      the file as it executes it -- so a `cat > $DEST` would truncate the file under the live watchdog.
+#      The assertion is on the recorded commands: the payload goes to `$DEST.new` and is `mv`d into
+#      place, and NOTHING writes to `$DEST` directly.
+#   3. **The misc backup is required, not taken.** No partition read over ssh (that would be a second
+#      implementation of the cross-checked read), and no install at all without a verified one.
+#
+# The ssh fake device is the same one sections 1-12 use ($FR), which is the point: `/etc/systemd/system`
+# there is already a real directory that other units are installed into.
+FSD="$FR/etc/systemd/system"
+FSH="$FSD/zl1-netwatch.sh"
+FUNIT="$FSD/zl1-netwatch.service"
+
+echo
+echo "   -- with no verified misc backup it refuses, and says which route takes one:"
+rm -rf "$W/misc"
+env_reset
+run "$NWC" --yes --ssh
+printf '%s\n' "$OUT" > "$W/out.nwssh.nomisc"
+[ "$RC" = 1 ] && ok "no verified misc backup -> exit 1" || bad "it exited $RC"
+want 'refusing: --ssh needs the verified misc backup' "$OUT" "and it refuses by name"
+want 'with the adb/TWRP route first' "$OUT" "naming the route that takes one"
+[ ! -e "$FSH" ] && ok "and it wrote nothing" || bad "it installed without a misc backup"
+want 'transport: ssh' "$OUT" "it says which transport it is using (so a wrong path cannot be silent)"
+
+echo
+echo "   -- a device that is not the zl1 is refused before anything is written:"
+mkdir -p "$W/misc"; printf 'MISC-CONTENT' > "$W/misc/misc.img"
+( cd "$W/misc" && sha256sum misc.img > SHA256SUMS )
+mv "$FR/proc/device-tree/compatible" "$W/compatible.away"
+rm -f "$FSH"
+env_reset
+run "$NWC" --yes --ssh
+printf '%s\n' "$OUT" > "$W/out.nwssh.notzl1"
+[ "$RC" = 1 ] && ok "no msm8996 in the device tree -> exit 1" || bad "it exited $RC"
+want 'not the zl1' "$OUT" "and says the device is not the one it was pointed at"
+[ ! -e "$FSH" ] && ok "and wrote nothing" || bad "it wrote to a device it had not identified"
+mv "$W/compatible.away" "$FR/proc/device-tree/compatible"
+
+echo
+echo "   -- --ssh: the script, the unit and both symlinks land in the SSH tree:"
+rm -f "$FSH" "$FUNIT"
+rm -rf "$FSD/sysinit.target.wants/zl1-netwatch.service" "$FSD/multi-user.target.wants/zl1-netwatch.service"
+env_reset
+run "$NWC" --yes --ssh
+printf '%s\n' "$OUT" > "$W/out.nwssh.install"
+[ "$RC" = 0 ] && ok "--yes --ssh exits 0" || bad "it exited $RC"
+want 'unit path: /etc/systemd/system$' "$OUT" "it prints the LIVE path it is writing to"
+[ -f "$FSH" ] && ok "the script is at the ssh path" || bad "no script at $FSH"
+cmp -s "$FSH" "$HERE/../device/zl1-netwatch.sh" \
+  && ok "and it is byte-identical to the source (the stdin transport rewrites nothing)" \
+  || bad "the installed script differs from the source"
+[ -x "$FSH" ] && ok "and it is executable" || bad "not executable"
+[ -f "$FUNIT" ] && ok "the unit is there" || bad "no unit"
+[ -L "$FSD/sysinit.target.wants/zl1-netwatch.service" ] && ok "the sysinit symlink exists" \
+  || bad "no sysinit symlink"
+[ -L "$FSD/multi-user.target.wants/zl1-netwatch.service" ] && ok "and the multi-user one" \
+  || bad "no multi-user symlink"
+want '^ExecStart=/etc/systemd/system/zl1-netwatch\.sh$' "$(cat "$FUNIT")" \
+     "ExecStart is the live path, which is what systemd runs on this port"
+want '^WantedBy=sysinit\.target$' "$(cat "$FUNIT")" "and it is wanted by sysinit, so it starts before the container"
+
+echo
+echo "   -- and the TWRP tree is untouched: the path difference is the whole risk:"
+# Section 13 left an install in the TWRP tree, so it is cleared first -- otherwise this asserts that a
+# file the PREVIOUS section wrote is still there, which is a check that cannot fail while looking
+# exactly like one that can.
+rm -f "$NWR/data/system-data/etc/systemd/system/zl1-netwatch.sh" \
+      "$NWR/data/system-data/etc/systemd/system/zl1-netwatch.service"
+if [ -d "$NWR/data/system-data/etc/systemd/system" ]; then
+  [ ! -e "$NWR/data/system-data/etc/systemd/system/zl1-netwatch.sh" ] \
+    && ok "nothing was written into the adb/TWRP tree (where it would be the CONTAINER's /data)" \
+    || bad "it wrote the script into the TWRP tree as well"
+else
+  ok "nothing was written into the adb/TWRP tree (it is not even created)"
+fi
+[ -z "$(grep '^adb ' "$ACT" 2>/dev/null)" ] && ok "and it never called adb" || bad "it used adb in ssh mode"
+notwant 'exec-out' "$(grep '^ssh ' "$ACT" 2>/dev/null)" "and it never read a partition over ssh either"
+
+echo
+echo "   -- the payload is moved into place, never written onto the live path:"
+SSHCMDS=$(grep '^ssh ' "$ACT" 2>/dev/null)
+want 'mv -f' "$SSHCMDS" "it moves the new build into place (rename(2), which the running shell cannot see)"
+want "cat > .*zl1-netwatch\.sh\.new" "$SSHCMDS" "the payload goes to the .new name first"
+notwant "cat > '?$FSD/zl1-netwatch\.sh'?" "$SSHCMDS" "and NOTHING writes to the live path directly (a running sh reads its script from there)"
+want 'wc -c' "$SSHCMDS" "it reads the byte count back from the device before believing the transfer"
+want 'daemon-reload' "$SSHCMDS" "and reloads systemd, so the 'can systemd see it' check is not answered by the wrong reason"
+want 'systemctl cat zl1-netwatch\.service' "$SSHCMDS" "it asks systemctl cat -- the only honest check that a unit is in effect (docs 63)"
+want 'found \(systemd parsed it\)' "$OUT" "and reports that systemd parsed it"
+notwant 'systemctl (restart|start|stop|enable|disable)' "$SSHCMDS" \
+  "it restarts and enables NOTHING: the new build takes effect at the next boot"
+want 'was NOT restarted' "$OUT" "and it says so, so nobody reads 'installed' as 'in effect now'"
+want 'syncing' "$OUT" "it syncs before the caller reboots (the page-cache hazard the adb path records)"
+
+echo
+echo "   -- a transfer that drops bytes is caught on the DEVICE, before it can become the installed build:"
+cp "$FSH" "$W/nwssh.good"
+rm -f "$FSH"
+env_reset
+RUN_SSH_SHORT=2000
+run "$NWC" --yes --ssh
+printf '%s\n' "$OUT" > "$W/out.nwssh.short"
+[ "$RC" = 1 ] && ok "a short transfer exits 1" || bad "it exited $RC"
+want 'reads back as' "$OUT" "it names both byte counts"
+[ ! -e "$FSH" ] && ok "and the live path is untouched" || bad "a short transfer was installed"
+[ ! -e "$FSD/zl1-netwatch.sh.new" ] && ok "and the .new file is cleaned up" || bad "a partial .new was left behind"
+RUN_SSH_SHORT=""
+
+echo
+echo "   -- --ssh --noheal touches the UT-side marker, not the TWRP-side one:"
+env_reset
+run "$NWC" --yes --ssh --noheal
+printf '%s\n' "$OUT" > "$W/out.nwssh.noheal"
+[ "$RC" = 0 ] && ok "--ssh --noheal exits 0" || bad "it exited $RC"
+[ -e "$FR/userdata/zl1-netwatch-noheal" ] && ok "the marker is at /userdata/zl1-netwatch-noheal" \
+  || bad "no marker in the ssh tree"
+[ ! -e "$NWR/data/zl1-netwatch-noheal" ] && ok "and not in the TWRP tree" || bad "it used the TWRP path"
+want 'record-only mode' "$OUT" "and it says which mode it installed"
+env_reset
+run "$NWC" --yes --ssh >/dev/null 2>&1
+[ ! -e "$FR/userdata/zl1-netwatch-noheal" ] && ok "and a plain --ssh install removes it again (healing on)" \
+  || bad "the noheal marker survived a healing install"
+
+echo
+echo "   -- --ssh --remove removes exactly its own four paths, and keeps the log:"
+env_reset
+run "$NWC" --yes --ssh --remove
+printf '%s\n' "$OUT" > "$W/out.nwssh.remove"
+[ "$RC" = 0 ] && ok "--ssh --remove exits 0" || bad "it exited $RC"
+[ ! -e "$FSH" ] && [ ! -e "$FUNIT" ] && ok "the script and unit are gone" || bad "something survived"
+[ ! -e "$FSD/sysinit.target.wants/zl1-netwatch.service" ] && ok "and the symlinks" || bad "a symlink survived"
+want '/userdata/zl1-netwatch.log is left in place' "$OUT" "and it says the LOG survives: evidence is not configuration"
+want 'transport: ssh' "$OUT" "with the ssh path, not the TWRP one"
+
+echo
+echo "   -- the argument surface: unknown flags are refused, not ignored:"
+run "$NWC" --yes --nope
+[ "$RC" = 2 ] && ok "an unknown argument exits 2" || bad "it exited $RC"
+want 'unknown argument' "$OUT" "and names it"
+run "$NWC" --ssh
+printf '%s\n' "$OUT" > "$W/out.nwssh.noyes"
+[ "$RC" = 2 ] && ok "and --ssh without --yes is still refused" || bad "it exited $RC"
+want 'refusing without --yes' "$OUT" "by the same gate as the adb route"
 
 echo
 echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here; see the SKIP line above)")"
