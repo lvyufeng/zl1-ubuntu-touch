@@ -7,13 +7,21 @@
 #   description: "orientation of the device screen as 6 pre-defined positions"
 #   type:        OrientationSensorChannel
 #
-# i.e. it is Android's DEVICE ORIENTATION sensor (HIDL SENSOR_TYPE_DEVICE_ORIENTATION = 25): a
-# **classifier of six discrete positions** (1 portrait, 2 landscape, 3 reverse portrait, 4 reverse
-# landscape, 5 face up, 6 face down), not a stream of angles. A classifier of positions is
-# **on-change by definition**: while the phone sits still there is nothing to report, so a probe
-# that reads twice and sees the same value is describing correct behaviour, not a fault. The
-# continuous sources are `rotationsensor` (x/y/z rotation in degrees) and `compasssensor` (north in
-# degrees), both of which stream.
+# **CORRECTED (docs 91):** this value is NOT Android's DEVICE_ORIENTATION sensor (HIDL type 25) passed
+# through. It is sensorfw's own `local.OrientationSensor`, and its chain is `orientationchain` =
+# `accelerometerchain` + `orientationinterpreter` -- i.e. it is computed from the ACCELEROMETER. The
+# adaptors in this package that are *named* orientation/rotation/georotation emit `CompassData`
+# (degrees), so they cannot be producing a 1..6 position. Which matters here for one reason: it means
+# the pair printed below is not two independent sensors, it is a value and its own input -- so when
+# they disagree, `[accelerometer] transformation_matrix` (the identity today) is the one candidate,
+# and `scripts/device/zl1-orientation-axes.sh` is the read-only way to decide it.
+#
+# What is unchanged: it is a **classifier of six discrete positions** (1 portrait, 2 landscape, 3
+# reverse portrait, 4 reverse landscape, 5 face up, 6 face down), not a stream of angles, and a
+# classifier of positions is **on-change by definition**: while the phone sits still there is nothing
+# to report, so a probe that reads twice and sees the same value is describing correct behaviour, not
+# a fault. The continuous sources are `rotationsensor` (x/y/z rotation in degrees) and `compasssensor`
+# (north in degrees), both of which stream.
 #
 # So the question stops being "why is it silent" and becomes "what does it say, and is that right".
 # This prints the classifier's value next to the accelerometer's, once a second, so the answer is a
@@ -21,10 +29,12 @@
 #
 #   * the classifier updates only when the position *changes* -- and it reports the new position,
 #     not a rate, so a long run of identical lines is the expected shape while the phone is still;
-#   * the accelerometer is the independent check: |z| ~ 1000 mG with +z means face up, -z face down
-#     (and 5 = face up, 6 = face down). If the two disagree, one of the two frames is wrong and
-#     that matters, because qml/`qtmir` reads THIS value to decide the shell's orientation -- which
-#     is where the port's "it keeps going landscape" behaviour comes from (docs 70/71).
+#   * the accelerometer column is NOT an independent sensor (docs 91 -- it is this value's own input),
+#     but it is still the right comparison: |z| ~ 1000 mG with +z means face up, -z face down, and
+#     5 = face up, 6 = face down. If a flat, screen-up phone gives +z and the classifier says 6, the
+#     two disagree, and that matters, because qml/`qtmir` reads THIS value to decide the shell's
+#     orientation -- which is where the port's "it keeps going landscape" behaviour comes from
+#     (docs 70/71). Use zl1-orientation-axes.sh for that verdict; this script is the wider watch.
 #
 # What it does to the device: asks `sensorfwd` for two sensors and holds the sessions for the length
 # of the run, and reads properties. It writes nothing, starts and stops nothing, and touches no

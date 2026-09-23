@@ -1,0 +1,160 @@
+### where the zl1's orientation value comes from -- host-side, read-only, device NOT involved
+### 2026-09-23 (the phone was in Qualcomm EDL: 05c6:9008)
+###
+### source: the UT rootfs image, mounted read-only (loop,ro,noload), never written:
+###   /mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host-4g.img
+###   /mnt/zl1-rootfs
+
+$ sudo mount -o loop,ro,noload /mnt/data/ubports-rootfs/.../rootfs-...-zl1-host-4g.img /mnt/zl1-rootfs
+
+########## 1. the live configuration (read-only image; /etc/writable is the only rw part)
+$ ls /mnt/zl1-rootfs/etc/sensorfw/sensord.conf.d/
+   total 12
+   -rw-r--r-- 1 root root  100 Apr 29  2025 10-sensord-default.conf
+   -rw-r--r-- 1 root root 2041 Apr 29  2025 20-sensors-default.conf
+   -rw-r--r-- 1 root root  504 May 11 06:54 30-hidl.conf
+
+$ cat /mnt/zl1-rootfs/etc/sensorfw/sensord.conf.d/30-hidl.conf
+   [plugins]
+   accelerometeradaptor = hidlaccelerometeradaptor
+   alsadaptor = hidlalsadaptor
+   proximityadaptor = hidlproximityadaptor
+   magnetometeradaptor = hidlmagnetometeradaptor
+   gyroscopeadaptor = hidlgyroscopeadaptor
+   orientationadaptor = hidlorientationadaptor
+   stepcounteradaptor = hidlstepcounteradaptor
+   pressureadaptor = hidlpressureadaptor
+   
+   [magnetometer]
+   scale_coefficient = 1
+   transformation_matrix = "-1,0,0,0,1,0,0,0,1"
+   needs_calibration = 0
+   
+   [accelerometer]
+   transformation_matrix = "1,0,0,0,1,0,0,0,1"
+
+### the availability file's whole point, from /mnt/zl1-rootfs/etc/sensorfw/sensord.conf.d/20-sensors-default.conf:
+   11:accelerometersensor=Feature_AccelerationSensor
+   12:alssensor=Feature_LightSensor
+   13:compasssensor=Feature_CompassSensor
+   14:gyroscopesensor=Feature_GyroSensor
+   15:orientationsensor=Feature_GyroSensor|Feature_AccelerationSensor
+   16:proximitysensor=Feature_ProximitySensor
+   24:lidsensor=False
+   29:tapsensor=False
+   30:temperaturesensor=False
+   34:humiditysensor=False
+   35:stepcountersensor=False
+   42:magnetometersensor=True
+   43:pressuresensor=True
+   44:rotationsensor=True
+   50:wakeupsensor=False
+
+### (note: ALS and proximity also use the =Feature_ form, and both demonstrably work on this
+###  port -- so the Feature_ form cannot be what makes a sensor unavailable. See section 4.)
+
+########## 2. the plugin inventory: 11 HIDL adaptors ship, 8 are bound
+$ cat /mnt/zl1-rootfs/var/lib/dpkg/info/libsensorfw-qt5-hidl.list | grep sensord-qt5
+   libhidlaccelerometeradaptor-qt5.so
+   libhidlalsadaptor-qt5.so
+   libhidlgeorotationadaptor-qt5.so
+   libhidlgyroscopeadaptor-qt5.so
+   libhidlmagnetometeradaptor-qt5.so
+   libhidlorientationadaptor-qt5.so
+   libhidlpressureadaptor-qt5.so
+   libhidlproximityadaptor-qt5.so
+   libhidlrotationadaptor-qt5.so
+   libhidlstepcounteradaptor-qt5.so
+   libhidlwakeupadaptor-qt5.so
+/usr/lib/aarch64-linux-gnu/sensord-qt5
+
+$ grep -A9 '^\[plugins\]' /mnt/zl1-rootfs/etc/sensorfw/sensord.conf.d/30-hidl.conf
+   [plugins]
+   accelerometeradaptor = hidlaccelerometeradaptor
+   alsadaptor = hidlalsadaptor
+   proximityadaptor = hidlproximityadaptor
+   magnetometeradaptor = hidlmagnetometeradaptor
+   gyroscopeadaptor = hidlgyroscopeadaptor
+   orientationadaptor = hidlorientationadaptor
+   stepcounteradaptor = hidlstepcounteradaptor
+   pressureadaptor = hidlpressureadaptor
+   
+
+### -> adaptors shipped but NOT bound in the config:
+   georotationadaptor  (libhidlgeorotationadaptor-qt5.so exists)
+   rotationadaptor  (libhidlrotationadaptor-qt5.so exists)
+   wakeupadaptor  (libhidlwakeupadaptor-qt5.so exists)
+
+########## 3. the data path, from the binaries themselves (strings + dynamic symbols)
+### 3a. the sensor object is sensorfw's own: local.OrientationSensor lives in
+###     liborientationsensor-qt5.so, and its chain is named there:
+   orientationchain
+   orientationsensor
+   OrientationSensorChannelAdaptor
+   local.OrientationSensor
+   OrientationPlugin
+
+### 3b. that chain joins the ACCELEROMETER chain plus the interpreter (liborientationchain):
+   accelerometer
+   PoseData
+   accelerometerchain
+   accelerometer/orientationinterpreter join failed
+
+### 3c. the interpreter is a six-position classifier with explicit face handling:
+   _ZN22OrientationInterpreter16rotateToPortraitEi
+   _ZN22OrientationInterpreter17rotateToLandscapeEi
+   _ZN22OrientationInterpreter11processFaceEv
+   _ZN22OrientationInterpreter19THRESHOLD_LANDSCAPEE
+   _ZN22OrientationInterpreter18THRESHOLD_PORTRAITE
+   orientation/threshold_portrait
+   orientation/threshold_landscape
+   orientation/buffer_size
+
+### 3d. the ONLY conversion between the accelerometer adaptor's buffer and that classifier is
+###     [accelerometer] transformation_matrix, read by libaccelerometerchain-qt5.so:
+   accelerometeradaptor
+   accelerometer/transformation_matrix
+   accelerometer/acccoordinatealigner join failed
+###   and that key's live value is the IDENTITY (section 1): "1,0,0,0,1,0,0,0,1"
+
+### 3e. the adaptors that are *named* orientation/rotation/georotation cannot be producing a
+###     1..6 position: they all emit CompassData, i.e. degrees:
+   libhidlorientationadaptor-qt5.so:  8 x CompassData,  HybrisOrientationAdaptor
+   libhidlrotationadaptor-qt5.so:  8 x CompassData,  HybrisRotationAdaptor
+   libhidlgeorotationadaptor-qt5.so:  8 x CompassData,  HybrisGeoRotationAdaptor
+
+########## 4. the availability syntax is resolved through libdeviceinfo, and this port has no
+##########    Feature_* keys -- so =Feature_X cannot be the reason a sensor is unavailable
+$ readelf -d /mnt/zl1-rootfs/usr/sbin/sensorfwd | grep NEEDED
+   libsensordatatypes-qt5.so.1
+   libsensorfw-qt5.so.0
+   libsystemd.so.0
+   libdeviceinfo.so.0
+   libQt5Core.so.5
+   libstdc++.so.6
+   libgcc_s.so.1
+   libc.so.6
+   ld-linux-aarch64.so.1
+### the symbols it takes from libdeviceinfo:
+   _ZN10DeviceInfo3getENSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES5_
+   _ZN10DeviceInfoC1ENS_9PrintModeE
+   _ZN10DeviceInfo8containsENSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
+### the literal that ties the config syntax to that library (libsensorfw-qt5.so.0.9.0):
+   Feature_
+   bool evaluateAvailabilityValue(const QString&, const QString&)
+### and every Feature_* key in this port's deviceinfo:
+   (none)
+
+### no ssu-sysinfo anywhere in the image either:
+   (none)
+
+########## 5. every plugin in the image resolves its own dependencies (so this is not a missing
+##########    library story on the UT side -- contrast with docs 90 on the Android side)
+   sonames known in the image: 6233
+   sensord-qt5 plugins with an unresolved dependency: 0
+
+### and what the device's sensorfwd actually runs with (the image's unit):
+   Type=notify
+   ExecStart=/usr/sbin/sensorfwd --systemd --device-info --log-level=warning
+   Restart=always
+   RestartSec=1

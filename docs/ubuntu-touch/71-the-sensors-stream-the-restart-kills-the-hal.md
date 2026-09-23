@@ -99,6 +99,8 @@ E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry
 
 顺带一个观察，不是结论：`6` 是在手机平放、屏幕朝上、加速度计 z ≈ +1015 mG 的情况下算出来的；`30-hidl.conf` 给加速度计的坐标矩阵是单位阵。这条链里"哪一处把上下反了"还没有量到 —— 但**现在有两个在流的输入**，这条链第一次是可查的。
 
+**【91 把它缩到一行了。】** 那个 1–6 的值不是 Android 方向传感器直通，是 sensorfw 自己用**加速度计**算的（`orientationchain` ← `accelerometerchain` + `orientationinterpreter`，见 `91` §2 的字符串证据）；而这条链上唯一的换算是 `[accelerometer] transformation_matrix`，`30-hidl.conf` 里它是**单位阵**。所以"哪一处反了"这个问题现在是"z 的符号"，候选修法是一行，并且可以用 `scripts/device/zl1-orientation-axes.sh`**只读地**先测出来再改（`91` §1/§7）。
+
 ## 6. 现在设备的状态（我做过的事）
 
 - **显示**：面板从 `suspend` 唤醒到 `alive`、背光 200，用 repowerd 自己的接口（`keepDisplayOn`，返回 request id `i 7` / `i 8` / `i 9`）；另外把 `setInactivityTimeouts` 调大（1800/3600），免得刚亮又灭。
@@ -108,7 +110,7 @@ E /vendor/bin/hw/android.hardware.sensors@1.0-service: ISensors::poll() re-entry
 ## 7. 下一步
 
 1. **`orientationsensor` 为什么不出值**（§4）。现在它的输入是可用的，所以可以在不动整条链的前提下查：把 sensorfwd 的日志级别抬到 `debug`（用一条 `ExecStart` 复述型的 drop-in，**不要**用 `setsid` 手工探针 —— [`60`](60-sensorfwd-was-the-third-service-behind-the-same-wall.md) 记着那会抢走总线名把真 unit 卡在 activating），看 `OrientationSensor` 的 chain/`orientationinterpreter` 有没有在跑 `evaluateSensor`。
-2. **一个新的、可用的杠杆**：`/usr/sbin/sensorfwd --help` 里有 **`-c=P, --config-file=<path>`**（默认 `/etc/sensorfw/sensord.conf`）。`/etc/sensorfw` 是只读镜像、动不了，但 `/etc/systemd/system` 是可写白名单路径，所以**一条 drop-in 就能让 sensorfwd 吃一份我们放在 `/userdata` 的配置**。这打开了两个实验：（a）换加速度计的坐标矩阵，看 `6` 变不变；（b）`[available] orientationsensor=False`，让方向传感器干脆不注册 —— 代价是**没有自动旋转**，但换来的是**竖屏稳定**。这是取舍，不是纯技术选择，**要不要做等用户一句话**，不擅自改。
+2. **一个新的、可用的杠杆**：`/usr/sbin/sensorfwd --help` 里有 **`-c=P, --config-file=<path>`**（默认 `/etc/sensorfw/sensord.conf`）。`/etc/sensorfw` 是只读镜像、动不了，但 `/etc/systemd/system` 是可写白名单路径，所以**一条 drop-in 就能让 sensorfwd 吃一份我们放在 `/userdata` 的配置**。这打开了两个实验：（a）~~换加速度计的坐标矩阵，看 `6` 变不变~~ **【`91`：候选只剩一个——把 z 取负；先用 `zl1-orientation-axes.sh` 只读地测出"两个坐标系确实相反"再改】**；（b）`[available] orientationsensor=False`，让方向传感器干脆不注册 —— 代价是**没有自动旋转**，但换来的是**竖屏稳定**。这是取舍，不是纯技术选择，**要不要做等用户一句话**，不擅自改。
 3. **HAL 自杀这件事本身**（§3）：它是 vendor HAL 里的 `poll()` 重入保护，触发者是客户端在 poll 飞行途中消失。修它属于容器侧（改 vendor 镜像），不是现在这一步；现在只需要知道**别去踩**。可查的第一条线索是那句话里的线程号（每次自杀都不是主线程在报，例如 `7166 7166` 的主线程 vs `7733 7819` 的 `7819`）。
 4. ~~[`70`](70-the-landscape-was-the-shell-laying-itself-out.md) §6 剩下的两条仍在：`vsimd` 报 `libQSEEComAPI.so` not found（文件在）、`android.frameworks.sensorservice@1.0::ISensorManager/default` 永远在等（那个进程就是 sensors HAL 自己 pid 476）。~~
    **【更正，[`90`](90-the-one-process-that-cannot-link-and-it-is-32-bit.md)：`vsimd` 那条已经查清并且结案。】** 不是命名空间问题，是 ELF class：`vsimd` 是 32 位，而唯一的 `libQSEEComAPI.so` 是 64 位；32 位那份在这台设备的两个镜像里都不存在。它是小米虚拟 SIM 那套（不是传感器链路上的一环），所以**这一条与 §4.1 的方向传感器问题无关** —— 剩下真正没结案的只有 `ISensorManager/default` 那一条。
