@@ -874,7 +874,37 @@ notwant 'registered: *no' "$OUT" "so an absent instrument never becomes a missin
 env_reset
 
 echo
-echo "== 12. what this harness does NOT test, and says so =="
+echo "== 12. the health check cites this harness's count, and that citation cannot drift =="
+# `zl1-health-check.sh` is what a human reads first, and it names each harness WITH A CHECK COUNT. Those
+# counts are typed by hand, so every time a harness gains an assertion the citation goes stale -- and a
+# stale count in the first thing a reader sees is the same defect family as every other one in this
+# project (an instrument whose report does not match its subject). It happened here: the GPS citation
+# still said 99 while the harness had grown to 123, and nothing would ever have noticed.
+#
+# This is the check that makes it impossible, and it needs no device: at this point in the run, PASS and
+# SKIP are final, so this harness KNOWS its own total and can compare it with what the health check says.
+# (The final summary line's own SKIP is not counted, which is why this section counts its own assertion
+# in $PASS and nothing else.)
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -r "$HEALTH" ]; then
+  cited=$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' |
+            sed -n 's/.*zl1-gps-selftest.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')
+  # +1 is THIS assertion: the number a reader cites is the `pass=` line the harness ends with,
+  # so the check has to count itself or it would be off by one against its own run.
+  total=$((PASS + FAIL + 1))
+  if [ -z "$cited" ]; then
+    bad "the health check no longer cites this harness's count -- either the citation is gone or its wording changed"
+  elif [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has exactly that many"
+  else
+    bad "the health check cites $cited checks, but this harness has $total -- fix scripts/host/zl1-health-check.sh"
+  fi
+else
+  bad "cannot read $HEALTH -- its citations are unchecked"
+fi
+
+echo
+echo "== 13. what this harness does NOT test, and says so =="
 echo "SKIP  the device facts behind the verdict: whether the netwatch-style log really holds those lines,"
 echo "      whether the container's lshal lists gnss, and whether lomiri's own gate is open. Those need"
 echo "      the boot itself -- and the verdict's job is to say which of them to look at."

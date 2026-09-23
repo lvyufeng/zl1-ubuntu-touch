@@ -829,6 +829,32 @@ else
 fi
 
 echo
+echo "== the health check cites this harness's count, and that citation cannot drift =="
+# `host/zl1-health-check.sh` is the first thing a human reads, and it names each harness WITH A CHECK
+# COUNT. Those counts are typed by hand, so every time a harness gains an assertion its citation goes
+# stale -- and a stale count in the first thing a reader sees is the same defect family as every other
+# one in this project: an instrument whose report does not match its subject. It happened (the GPS
+# citation still said 99 long after that harness had grown past 120) and nothing would ever have
+# noticed, so every harness the health check cites now checks its own citation.
+#
+# No device needed: at this point PASS and FAIL are final, so this harness knows its own total.
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -r "$HEALTH" ]; then
+  cited=$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' |
+            sed -n 's/.*zl1-loc-fp-selftest.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')
+  total=$((PASS + FAIL + 1))
+  if [ -z "$cited" ]; then
+    bad "the health check no longer cites this harness's count -- either the citation is gone or its wording changed"
+  elif [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has exactly that many"
+  else
+    bad "the health check cites $cited checks, but this harness has $total -- fix host/zl1-health-check.sh"
+  fi
+else
+  bad "cannot read $HEALTH -- its citations are unchecked"
+fi
+
+echo
 echo "pass=$PASS fail=$FAIL$([ "$SKIP" != 0 ] && echo " skip=$SKIP (a check that could NOT run here)")"
 [ "$KEEP" = 1 ] || rm -rf "$W"
 # A SKIP is a statement about THIS host, not a defect (the rule host/zl1-installers-selftest.sh uses) --

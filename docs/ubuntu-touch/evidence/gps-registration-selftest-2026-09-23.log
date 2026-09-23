@@ -191,9 +191,12 @@ PASS  and the no-gnss-listing verdict refuses to blame the container for that
 PASS  with registration unknown, not no
 PASS  so an absent instrument never becomes a missing service
 
-== 12. what this harness does NOT test, and says so ==
+== 12. the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 129 checks, and this run has exactly that many
+
+== 13. what this harness does NOT test, and says so ==
 SKIP  the device facts behind the verdict: whether the netwatch-style log really holds those lines,
       whether the container's lshal lists gnss, and whether lomiri's own gate is open. Those need
       the boot itself -- and the verdict's job is to say which of them to look at.
 
-pass=128 fail=0 skip=1 (a check that could NOT run here)
+pass=129 fail=0 skip=1 (a check that could NOT run here)
