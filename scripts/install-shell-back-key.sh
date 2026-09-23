@@ -24,8 +24,37 @@
 #
 # -- and that is how power and volume reach `PhysicalKeysMapper` while an app has focus. So the Back
 # key gets its handler there, and the actions are the two things a back key means on this shell:
-# close the spread if it is open, otherwise minimize the focused app (the same call the window's
-# minimize button makes: `Stage.onMinimizeClicked()` -> `requestMinimize()`).
+# close the spread if it is open, otherwise minimize the focused app.
+#
+# **What Back does, in three attempts** (all three measured, 2026-09-23).
+#
+# 1. `stage.onMinimizeClicked()` -> one journal line per press and then a real error:
+#
+#        qml: zl1-back: key=16777313 nvk=undefined spread=false app=morph-browser
+#        file:///usr/share/lomiri//Shell.qml:306: TypeError: Type error
+#
+#    So the key *did* reach the handler (16777313 is `Qt.Key_Back`, 0x01000061) and the action was
+#    what failed. `onMinimizeClicked` is not a public function of `Stage`; it is a signal handler
+#    inside `Stage/Stage.qml`:
+#
+#        Connections {
+#            target: panelState                       // PanelState { id: panelState } -- Shell.qml
+#            function onMinimizeClicked() { if (priv.focusedAppDelegate) { priv.focusedAppDelegate.requestMinimize(); } }
+#        }
+#
+# 2. `panelState.minimizeClicked()` -- emitting that signal is the shell's own minimize path, so this
+#    was the obvious repair. It runs **clean: no error at all, and nothing happens on screen.** The
+#    reason is in the same file: `PanelState.decorationsVisible` is bound to `mode == "windowed"`, so
+#    in phone mode (`staged`) there are no window decorations and therefore no minimize button -- a
+#    minimized window is simply not a state this shell has on a phone. `priv` (where
+#    `minimizeAllWindows()` lives) is not reachable from Shell.qml either.
+#
+# 3. What the HOMEPAGE key does, which the user has watched work, is
+#    `launcher.toggleDrawer(false, false, true)` (`WindowInputMonitor.onHomeKeyActivated`). So Back
+#    now makes that same call: it toggles, so it closes the launcher drawer/panel when one is open
+#    and otherwise brings the launcher forward -- i.e. it leaves the app. `greeter.active` is the
+#    Home key's own guard, kept so a pocket press does nothing on the lock screen. The spread, which
+#    is a distinct shell state, is still closed directly with `stage.closeSpread()`.
 #
 # How it is installed, and why like this: `/usr/share/lomiri/Shell.qml` is on the **read-only** root
 # image and `/usr/share` gets no rw bind mount, so the edited file cannot be written there. It is
@@ -52,7 +81,14 @@
 # unaffected (the container and every other service are independent of the shell). `--remove` unmounts
 # the overlay and restarts the greeter, and a reboot does the same thing without any command.
 #
-# Usage: install-shell-back-key.sh [--install] [--remove] [--status]
+# Usage: install-shell-back-key.sh [--install] [--remove] [--status] [--persist] [--unpersist]
+#
+#   --install    build the overlay, lint it, mount it, restart the greeter (runtime only)
+#   --remove     unmount it and go back to the stock shell (runtime only)
+#   --status     is it mounted, and has the shell logged any key presses
+#   --persist    make it survive a reboot: install the applier + a systemd unit. **The overlay has
+#                to work first, and the boot behaviour is not verified until a real reboot.**
+#   --unpersist  remove that unit and applier again (does not unmount the current overlay)
 
 set -u
 
@@ -61,6 +97,10 @@ SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev
 STOCK=/usr/share/lomiri/Shell.qml
 OVERLAY_DIR=/userdata/zl1-shell-overlay
 OVERLAY=$OVERLAY_DIR/Shell.qml
+UNIT=/etc/systemd/system/zl1-shell-back-key.service
+APPLIER=/etc/systemd/system/zl1-shell-back-key.sh
+APPLIER_SRC="$(cd "$(dirname "$0")" && pwd)/device/zl1-shell-back-key-apply.sh"
+SENTINEL=/userdata/zl1-shell-back-key.disabled
 ACTION=${1:---status}
 
 restart_greeter() {
@@ -82,18 +122,34 @@ repl = '''        Keys.onPressed: {
             // Nothing in this shell handles Qt.Key_Back (the only Key_Back* strings in the tree
             // are Key_Backtab and Key_Backspace) and the apps do not either, so on an app screen
             // the key arrives and dies. Bind it to what a back key means here: close the spread
-            // if it is open, otherwise minimize the focused app -- the same call the window
-            // minimize button makes (Stage.onMinimizeClicked -> requestMinimize).
+            // if it is open, otherwise minimize the focused app.
+            //
+            // Leaving the app is done with the SAME call the Home key makes, not with a minimize:
+            //   * calling Stage.onMinimizeClicked() throws "TypeError: Type error" -- it is only a
+            //     signal handler inside Stage.qml, not a public function (measured 2026-09-23);
+            //   * emitting panelState.minimizeClicked() runs clean (no error at all) and changes
+            //     nothing on screen: in phone mode the stage is "staged" and window decorations --
+            //     hence a minimize button -- only exist when mode == "windowed"
+            //     (PanelState.decorationsVisible is bound to exactly that), so a minimized window
+            //     is not a state this shell has on a phone;
+            //   * WindowInputMonitor.onHomeKeyActivated, i.e. what the HOMEPAGE key does and what
+            //     the user has seen work, is launcher.toggleDrawer(false, false, true);
+            //     Launcher.toggleDrawer toggles, so the same call closes an open drawer/panel and
+            //     otherwise brings the launcher forward. greeter.active is the same guard the
+            //     Home key uses, to keep pocket presses from doing anything on the lock screen.
+            //
             // The console.log lines land in the journal as qml: and are the measurement that the
-            // key reaches the shell at all.
+            // key reaches the shell at all: zl1-back: for Qt.Key_Back, zl1-key: for the keys
+            // that were already handled. They are cheap (a line per key press, not per frame).
             if (event.key === Qt.Key_Back || event.nativeVirtualKey === 166) {
                 console.log(\"zl1-back: key=\" + event.key + \" nvk=\" + event.nativeVirtualKey
                             + \" spread=\" + stage.spreadShown
+                            + \" drawer=\" + launcher.drawerShown
                             + \" app=\" + (stage.mainApp ? stage.mainApp.appId : \"none\"));
                 if (stage.spreadShown) {
                     stage.closeSpread();
-                } else if (stage.mainApp) {
-                    stage.onMinimizeClicked();
+                } else if (!greeter.active && (stage.mainApp || launcher.drawerShown)) {
+                    launcher.toggleDrawer(false, false, true);
                 }
                 event.accepted = true;
             } else {
@@ -109,6 +165,13 @@ PY"
 
 case "$ACTION" in
   --install)
+    echo "=== 0. drop any overlay that is already mounted ==="
+    # This has to come first, and it is not just tidiness: while an overlay is mounted, $STOCK reads
+    # the *patched* file, so step 1's exact-match anchor would not be found and a re-install would
+    # abort with "ANCHOR NOT FOUND EXACTLY ONCE (0)". The patch must always be built from the file
+    # the read-only image ships, and the only way to see that file is with nothing over it.
+    $SSH "mountpoint -q $STOCK && { umount $STOCK && echo 'unmounted the previous overlay'; } || echo 'nothing was mounted'"
+    echo
     echo "=== 1. build the overlay from the stock file ==="
     patch_remote || { echo "ABORTED: patch not applied"; exit 1; }
     echo
@@ -148,6 +211,52 @@ echo \"stock file back in place: \$(ls -l $STOCK)"
     echo "greeter restarted on the stock shell"
     ;;
 
+  --persist)
+    echo "=== 1. the overlay must exist and be the patched file (run --install first) ==="
+    $SSH "ls -l $OVERLAY && grep -c 'zl1: the physical Back key' $OVERLAY" || {
+      echo "ABORTED: no built overlay on the device -- run --install first"; exit 1; }
+    echo
+    echo "=== 2. install the boot-time applier to a writable path ==="
+    scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      "$APPLIER_SRC" "$HOST:$APPLIER" || { echo "ABORTED: scp failed"; exit 1; }
+    $SSH "chmod 755 $APPLIER && ls -l $APPLIER"
+    echo
+    echo "=== 3. install the unit ==="
+    $SSH "cat > $UNIT <<'EOF'
+[Unit]
+Description=Mount the patched Lomiri Shell.qml (physical Back key handler) over the read-only image
+Documentation=file:///userdata/zl1-shell-back-key.log
+After=local-fs.target
+RequiresMountsFor=/userdata
+Before=multi-user.target graphical.target
+ConditionPathExists=$OVERLAY
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$APPLIER
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable zl1-shell-back-key.service 2>&1 | tail -2"
+    echo
+    echo "=== 4. what systemd actually has (systemctl cat is the only honest check) ==="
+    $SSH "systemctl cat zl1-shell-back-key.service | head -30; echo; systemctl is-enabled zl1-shell-back-key.service"
+    echo
+    echo "NOTE: this changes what happens at boot and that has **not** been verified yet --"
+    echo "      verifying it needs a real reboot, which is a separate step to agree on."
+    echo "Escape hatch, usable over SSH even if the shell is black:"
+    echo "      touch $SENTINEL     # then a reboot brings the stock shell back"
+    echo "      systemctl disable zl1-shell-back-key.service"
+    ;;
+  --unpersist)
+    $SSH "systemctl disable zl1-shell-back-key.service 2>&1 | tail -1
+rm -f $UNIT $APPLIER && systemctl daemon-reload
+echo 'removed:'; ls -l $UNIT $APPLIER 2>&1 | tail -2"
+    echo "(the overlay that is mounted right now is untouched; use --remove for that)"
+    ;;
   --status)
     echo "=== is the overlay in place? ==="
     $SSH "findmnt -no SOURCE,TARGET $STOCK 2>/dev/null || echo 'stock file (no overlay mounted)'
