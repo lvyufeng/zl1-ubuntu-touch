@@ -30,13 +30,23 @@
 # Reading the result: window B >> window A (the measured band is ~1.2/s vs 20-50/s) means the
 # compositor is doing work for the app -- frames are reaching it. Window B ~= window A means the app's
 # window is not being composited, whatever the QML thinks it is doing. Neither number says the picture
-# is *correct*; that is what the grab is for, and the grab alone says nothing about liveness.
+# is *correct*; that is what the grab is for, and the grab alone says nothing about liveness. The unit
+# is jiffies per second from /proc/<pid>/stat (HZ=100, so 1 tick/s is 1% of one core) -- the first
+# version of this script printed 100x that, which put the `B >= 8` gate at 0.08/s and made it
+# unfalsifiable for anything but a stopped compositor.
+#
+# And the verdict now reads the app's own state FIRST: whether it launched, and whether it was still
+# running at the end of window B. Without that, a launcher failure came out as "the app is not being
+# composited" -- the instrument blaming the app for something it never got the chance to do.
 #
 # Usage: zl1-camera-app-test.sh [--seconds N] [--run-seconds N] [--no-shot] [--keep-display]
 #                               [--extra-args "..."] [--outdir DIR]
 #
 #   --seconds N      length of each ticks window (default 12)
-#   --run-seconds N  how long the app is left running (default 45; must exceed 2 x --seconds)
+#   --run-seconds N  how long the app is left running (default 45). It must be at least
+#                    --seconds + 6 + 2, because window B starts 6 s after the launch and lasts
+#                    --seconds: below that the app is killed mid-window and the verdict would
+#                    report "not composited" for a parameter mistake. Refused, not warned.
 #   --no-shot        skip the screenshot step
 #   --keep-display   do not TurnOff at the end (for a human to look at the phone)
 #   --extra-args     extra arguments for the app binary (e.g. "--mode=barcode-reader")
@@ -64,10 +74,24 @@ while [ $# -gt 0 ]; do
   --keep-display) KEEP_DISPLAY=1; shift ;;
   --extra-args) EXTRA="${2?--extra-args needs a value}"; shift 2 ;;
   --outdir) OUTDIR="${2?--outdir needs a directory}"; shift 2 ;;
-  --help|-h) sed -n '2,52p' "$0"; exit 0 ;;
+  --help|-h) sed -n '2,53p' "$0"; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# The app is launched with `timeout $RUN_SECS` and window B starts 6 s later and lasts $SECS, so the
+# app must still be alive at 6 + SECS. If it is not, the app is killed in the middle of window B and
+# the verdict reads "NO extra compositor work" -- i.e. it blames the app for a parameter, which is the
+# one thing this instrument must never do. The header used to say "must exceed 2 x --seconds", which
+# is not the arithmetic (window A runs BEFORE the launch and does not need the app at all).
+_min=$((SECS + 6 + 2))
+if [ "$RUN_SECS" -lt "$_min" ]; then
+  echo "error: --run-seconds $RUN_SECS is too small for --seconds $SECS" >&2
+  echo "       the app is launched with 'timeout $RUN_SECS', window B starts 6 s later and lasts ${SECS}s," >&2
+  echo "       so the app is killed mid-window and the verdict would blame it for a parameter." >&2
+  echo "       want --run-seconds >= $((SECS + 6)) (this run needs >= $_min), or a smaller --seconds" >&2
+  exit 2
+fi
 
 [ -n "$OUTDIR" ] || OUTDIR="/tmp/zl1-camera-app-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUTDIR"
@@ -116,12 +140,25 @@ read_state() {
 # fields 14+15 (HZ=100) -- never from top, whose instantaneous percentages cannot be added up. The comm
 # field is stripped with sub() first: it is parenthesised and may contain a space, which would shift the
 # utime/stime fields onto the wrong numbers (the same trap docs 81 records for the thermal instrument).
-ticks_window() {
-  local label="$1" secs="$2" pid="$3"
-  ssh_d "a=\$(awk '{ sub(/^[^)]*\) /, \"\"); print \$12+\$13 }' /proc/$pid/stat)
+#
+# **The rate is jiffies per second, and it is a DIVISION.** The first version printed
+# `(b-a) * 100 / secs`, which is 100x the unit the same header calls "ticks/s" and 100x the numbers the
+# band is quoted in (docs 68 section 5: 1.2 idle, 27.8 and 33-50 with a client, HZ=100, so 1 tick/s is
+# 1% of one core). The consequence was not cosmetic: the absolute gate below (`B >= 8`) was written to
+# mean "8 ticks/s, comfortably above the 1.2 baseline" and, as computed, meant 0.08 -- it could not
+# fail for anything but a perfectly idle compositor, so only the ratio test was doing any work. The
+# delta and the seconds now come back and the rate is computed here, in the documented unit.
+ticks_window() { # $1 label, $2 secs, $3 pid -> "LABEL <jiffies> <ticks/s>"
+  local label="$1" secs="$2" pid="$3" res d
+  res="$(ssh_d "a=\$(awk '{ sub(/^[^)]*\) /, \"\"); print \$12+\$13 }' /proc/$pid/stat)
     sleep $secs
     b=\$(awk '{ sub(/^[^)]*\) /, \"\"); print \$12+\$13 }' /proc/$pid/stat)
-    echo \"$label \$((b-a)) \$(( (b-a) * 100 / $secs ))\"" | tail -1
+    echo \"$label \$((b-a))\"" | tail -1)"
+  d="$(printf '%s' "$res" | awk '{print $2}')"
+  # An unreadable window stays unreadable: printing "0.0" here would make an ssh failure look exactly
+  # like a compositor doing nothing, and the verdict would then blame the app for it.
+  [ -n "$d" ] || return 0
+  printf '%s %s %s\n' "$label" "$d" "$(awk -v d="$d" -v s="$secs" 'BEGIN{printf "%.1f", d/s}')"
 }
 
 state="$(read_state)"
@@ -174,14 +211,14 @@ esac
 say ""
 say "== window A (${SECS}s): display ON, no camera app -- the baseline doc 68 section 5 measured at ~1.2/s"
 A_RES="$(ticks_window A "$SECS" "$COMP")"
-say "   $A_RES   (label ticks ticks_per_second)"
+say "   $A_RES   (label jiffies ticks_per_second; HZ=100, so 1 tick/s is 1% of one core)"
 A_TPS="$(printf '%s' "$A_RES" | awk '{print $3}')"
 
 # --- 3. launch the app ---------------------------------------------------------------------------
 
 say ""
 say "== launching $APP_ID (as uid 32011, container PID namespace, session environment)"
-ssh_d "rm -f /tmp/zl1-camapp.out /tmp/zl1-camapp.err
+LAUNCH="$(ssh_d "rm -f /tmp/zl1-camapp.out /tmp/zl1-camapp.err
   setsid nohup nsenter -t $A -p -- timeout $RUN_SECS env ZL1_AS_UID=32011 \
     ZL1_PRELOAD_EXTRA='/userdata/zl1-hybris/lib/libcfi-shadow-init.so /userdata/zl1-hybris/lib/crash-dump.so' \
     python3 /tmp/zl1-camapp-launch.py $APP_BIN $APP_ID $APP_DIR $SHELLPID $EXTRA \
@@ -192,7 +229,13 @@ ssh_d "rm -f /tmp/zl1-camapp.out /tmp/zl1-camapp.err
   for p in /proc/[0-9]*/cmdline; do
     case \"\$(tr '\0' ' ' < \"\$p\" 2>/dev/null)\" in \"$APP_BIN \"*) found=\${p%/cmdline}; break ;; esac
   done
-  [ -n \"\$found\" ] && echo \"launched pid \${found#/proc/}\" || echo 'NOT launched (the launcher exited immediately)'"
+  [ -n \"\$found\" ] && echo \"launched pid \${found#/proc/}\" || echo 'NOT launched (the launcher exited immediately)'")"
+# The step-3 answer is what decides whether the compositor numbers below are ABOUT THE APP at all.
+# It was printed and then never used, so a launcher failure came out as "the app is not being
+# composited" -- the instrument blaming the app for something it never got the chance to do.
+APP_STARTED=0
+case "$LAUNCH" in *"launched pid "*) APP_STARTED=1 ;; esac
+say "   $LAUNCH"
 
 # The app needs a few seconds to load QML and ask for EGL before it has anything to draw; sampling
 # immediately would measure the compositor doing nothing and look like a failure.
@@ -203,7 +246,7 @@ sleep 6
 say ""
 say "== window B (${SECS}s): while the camera app runs"
 B_RES="$(ticks_window B "$SECS" "$COMP")"
-say "   $B_RES   (label ticks ticks_per_second)"
+say "   $B_RES   (label jiffies ticks_per_second; HZ=100, so 1 tick/s is 1% of one core)"
 B_TPS="$(printf '%s' "$B_RES" | awk '{print $3}')"
 
 alive="$(ssh_d "found=; for p in /proc/[0-9]*/cmdline; do
@@ -216,6 +259,8 @@ alive="$(ssh_d "found=; for p in /proc/[0-9]*/cmdline; do
     echo 'NOT RUNNING (it exited before the window ended -- read app.err)'
   fi")"
 say "   app: $alive"
+APP_ALIVE=0
+case "$alive" in *"alive pid="*) APP_ALIVE=1 ;; esac
 
 # --- 5. the grab --------------------------------------------------------------------------------
 
@@ -251,31 +296,85 @@ scp -q -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/n
 # --- 7. the verdict ----------------------------------------------------------------------------
 
 say ""
-say "== the app's own evidence (from $OUTDIR/app.err):"
+# Exactly ONE number per count. `n=$(grep -c PAT F || echo 0)` looks harmless and is not: grep -c
+# prints "0" AND exits 1 when nothing matches, so the fallback appends a second "0" and the value
+# carries an embedded newline -- which the row below printed as a stray extra line, on exactly the
+# rows that matter most ('ASSERT' and 'caught signal' are SUPPOSED to be 0, and a reader who sees a
+# 0 on its own line cannot tell it from a row of the table).
+count_in() { # $1 file, $2 pattern -> one number, always
+  local n=
+  [ -r "$1" ] && n="$(grep -ac -- "$2" "$1" 2>/dev/null)"
+  printf '%s\n' "${n:-0}"
+}
+# **Both streams are counted, and the output says which one had it.** Which of stdout/stderr Qt and
+# QML write to is not something this script establishes, and the launcher execs the app in place so
+# the shell's redirections are what the app inherits (zl1-camapp-launch.py, os.execvpe). Counting one
+# stream and calling it "the app's own evidence" is the error docs 102/103 are about: a count read
+# from a source that may not contain the string, whose 0 then reads as "the app never got there".
+say "== the app's own evidence (both streams; the columns say which file each count came from):"
+say "   (which of the two a message lands in is not established here -- counts are per file on purpose)"
 for pat in 'Creating a QMirClientScreen' 'Added camera' 'Application is now active' \
            'ASSERT' 'caught signal' 'not found'; do
-  n=$(grep -ac "$pat" "$OUTDIR/app.err" 2>/dev/null || echo 0)
-  printf '   %-32s %s\n' "$pat" "$n"
+  printf '   %-32s %4s err  %4s out\n' "$pat" \
+    "$(count_in "$OUTDIR/app.err" "$pat")" "$(count_in "$OUTDIR/app.out" "$pat")"
 done
-grep -a 'Added camera' "$OUTDIR/app.err" 2>/dev/null | head -2 | sed 's/^/   | /'
+for f in "$OUTDIR/app.err" "$OUTDIR/app.out"; do
+  [ -s "$f" ] || continue
+  n=$(count_in "$f" 'Added camera')
+  [ "$n" = 0 ] && continue
+  say "   -- 'Added camera' in $(basename "$f"):"
+  grep -a 'Added camera' "$f" 2>/dev/null | head -2 | sed 's/^/   | /'
+done
 
 say ""
 say "== verdict"
 say "   compositor with no client:   ${A_TPS}/s   (${A_RES#A })"
 say "   compositor with the app:     ${B_TPS}/s   (${B_RES#B })"
-if [ -n "${A_TPS:-}" ] && [ -n "${B_TPS:-}" ]; then
-  if [ "$B_TPS" -ge $((A_TPS * 4)) ] && [ "$B_TPS" -ge 8 ]; then
+# The app's own state comes first, because the two compositor numbers mean different things depending
+# on it: if the app never started, or died before window B ended, then window B measured the display
+# and not the app, and no ratio between the two numbers is about the camera app. The three states are
+# mutually exclusive and are tested in that order -- "never started" is the strongest statement, and
+# printing the "it died" note under it would only be noise (the app that never started is certainly
+# not running either).
+if [ "$APP_STARTED" = 0 ]; then
+  say "   -> the app NEVER STARTED: the launcher exited immediately after the launch step, so there was"
+  say "      no app window to composite and the numbers above are not a measurement of the camera app."
+  say "      This is a launcher failure (uid, session bus, EGL, a missing binary), not a compositor one:"
+  say "      read the evidence table and the launcher's own lines above before concluding anything."
+elif [ "$APP_ALIVE" = 0 ]; then
+  say "   -> the app is NOT running at the end of window B ($alive), so the window B number above is"
+  say "      about the display, not about the app. Read the app's evidence above and the launcher output."
+elif [ -n "${A_TPS:-}" ] && [ -n "${B_TPS:-}" ]; then
+  # Same two conditions, now in the unit they were written for: B at least 4x the baseline AND B
+  # comfortably above idle (8 ticks/s = 8% of a core, against a 1.2/s baseline). awk because the rate
+  # carries a decimal; `[ -ge ]` would refuse it.
+  verdict_num="$(awk -v a="$A_TPS" -v b="$B_TPS" 'BEGIN{
+      if (b >= 4*a && b >= 8) print "composited";
+      else if (b <= a + 2)    print "none";
+      else                    print "inconclusive";
+    }')"
+  case "$verdict_num" in
+  composited)
     say "   -> the compositor is doing work for the app: the measured band for 'a client is rendering'"
     say "      is 20-50/s against a 1.2/s idle baseline (docs 68 section 5). Combined with the grab,"
     say "      that is 'the app's window is being composited'. It is what a human should then confirm"
     say "      by looking at the phone (--keep-display)."
-  elif [ "$B_TPS" -le $((A_TPS + 2)) ]; then
+    ;;
+  none)
     say "   -> NO extra compositor work: the app is not being composited, whatever it reports. Either"
     say "      it has no visible window yet, or its surface is not reaching the shell."
-  else
+    ;;
+  *)
     say "   -> inconclusive: more work than the baseline but well under the 20-50/s band. Read the app's"
-    say "      stderr above and the grab before concluding anything."
-  fi
+    say "      evidence above and the grab before concluding anything."
+    ;;
+  esac
+else
+  # Neither branch used to fire here, so a window that could not be read produced NO verdict line at
+  # all -- a silent non-answer, which reads like a verdict that happened to be empty.
+  say "   -> NO VERDICT: one of the two windows could not be read (A='${A_TPS:-}' B='${B_TPS:-}'), so"
+  say "      there is nothing to compare. Check that the compositor pid was found and that ssh returned:"
+  say "      a failed measurement is not a measurement of the app."
 fi
 
 say ""

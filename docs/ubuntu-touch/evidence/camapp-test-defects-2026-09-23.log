@@ -1,0 +1,99 @@
+# The camera-app instrument's four defects, the code before and after, and the harness that pins them.
+# Dated 2026-09-23. Both runs are OFFLINE and host-side; the device is in EDL (05c6:9008, port 3-3) and
+# was not touched. Written for docs/ubuntu-touch/104-*.md.
+#
+#   A = scripts/host/zl1-camera-app-test.sh at b909256   (before)
+#   B = scripts/host/zl1-camera-app-test.sh with the fixes
+#   runner = scripts/host/zl1-camera-app-test-selftest.sh (78 checks, transport stubs = the device)
+#
+# 1. THE UNIT. `(b-a) * 100 / secs` against a header that calls the column "ticks/s" and quotes the band
+#    as 1.2 / 20-50 (docs 68 section 5, HZ=100). The absolute gate `B >= 8` -- written to mean "8
+#    ticks/s" -- was therefore 0.08/s. And the fix cannot be just "drop the 100": the moment the rate is
+#    a decimal, the bash comparison below breaks, because `[ -ge ]` cannot take one
+#    (`bash: 1.0: syntax error: invalid arithmetic operator`), so the ratio test had to move to awk.
+#
+#    A:     echo \"$label \$((b-a)) \$(( (b-a) * 100 / $secs ))\" | tail -1
+#           if [ "$B_TPS" -ge $((A_TPS * 4)) ] && [ "$B_TPS" -ge 8 ]; then
+#    B:     printf '%s %s %s\n' "$label" "$d" "$(awk -v d="$d" -v s="$secs" \
+#             'BEGIN{printf "%.1f", d/s}')"
+#           verdict_num="$(awk -v a="$A_TPS" -v b="$B_TPS" 'BEGIN{
+#               if (b >= 4*a && b >= 8) print "composited";
+#               else if (b <= a + 2)    print "none";
+#               else                    print "inconclusive"; }')"
+#
+# 2. THE COUNT. `grep -c` prints "0" AND exits 1 when nothing matches, so the `|| echo 0` fallback
+#    appended a SECOND zero: the value carried an embedded newline and the row printed a stray line --
+#    on the rows that matter most ('ASSERT' and 'caught signal' are supposed to be 0).
+#
+#    A:     n=$(grep -ac "$pat" "$OUTDIR/app.err" 2>/dev/null || echo 0)
+#           printf '   %-32s %s\n' "$pat" "$n"
+#    B:     count_in() { local n=; [ -r "$1" ] && n="$(grep -ac -- "$2" "$1" 2>/dev/null)"
+#                        printf '%s\n' "${n:-0}"; }
+#           printf '   %-32s %4s err  %4s out\n' "$pat" \
+#             "$(count_in "$OUTDIR/app.err" "$pat")" "$(count_in "$OUTDIR/app.out" "$pat")"
+#
+# 3. THE VERDICT. Step 3 knew whether the launcher had produced an app and printed it; the verdict never
+#    read it, so a launcher failure came out as "the app is not being composited". The window-B "is it
+#    still running" answer was printed and equally unused, and an unreadable window produced no verdict
+#    line at all -- a silent non-answer that reads like an empty verdict.
+#
+#    A:     (no APP_STARTED, no APP_ALIVE; only `if [ -n "$A_TPS" ] && [ -n "$B_TPS" ]` ... `fi`)
+#    B:     if   [ "$APP_STARTED" = 0 ] ; then ... never started ...
+#           elif [ "$APP_ALIVE"   = 0 ] ; then ... not running at the end of window B ...
+#           elif [ -n "${A_TPS:-}" ] && [ -n "${B_TPS:-}" ] ; then ... the ratio ...
+#           else ... NO VERDICT: one of the two windows could not be read ...
+#
+# 4. THE PARAMETER GUARD. The header said "--run-seconds must exceed 2 x --seconds"; nothing checked it,
+#    and 2 x is not the arithmetic -- window A runs BEFORE the launch and does not need the app at all.
+#    The real requirement is --seconds + 6 + 2, because window B starts 6 s after the launch and lasts
+#    --seconds. Below it the app is killed mid-window and the verdict blames it for a parameter.
+#
+#    A:     (no guard; --run-seconds was only used for `timeout $RUN_SECS` and the ssh timeout)
+#    B:     _min=$((SECS + 6 + 2)); if [ "$RUN_SECS" -lt "$_min" ]; then ... exit 2; fi
+#
+# 5. THE --help RANGE. The old range (2,52p) landed inside the assignments and printed HOST=..., SECS=12,
+#    RUN_SECS=45 as if they were documentation. With the header grown, the SAME range then failed at the
+#    other end: it stopped before `#   --outdir DIR`, so the last documented option was not printed at
+#    all. Both ends fail, and only one of them is loud -- so the harness now asserts both (the last
+#    option IS printed, the assignments are NOT).
+#
+# 6. THE STREAM. The table counted only app.err and called it "the app's own evidence (from
+#    $OUTDIR/app.err)". Which stream Qt/QML write to is not established by that script -- and
+#    zl1-camapp-launch.py writes with file=sys.stderr -- so the table now counts both files and the
+#    columns say which is which (docs 102/103's ownership rule, one log up).
+
+## B -- the fixed instrument (a green run)
+pass=78 fail=0
+
+## A -- the same harness against b909256
+  FAIL  it exited 0 instead of refusing
+  FAIL  and names the flag and what it is too small for
+  FAIL  with the number it needs (--seconds + 6)
+  FAIL  it touched the device before refusing:
+  FAIL  the A window printed '100', want 1.0 -- the old code printed 100.0 here
+  FAIL  the B window printed '2000', want 20.0
+  FAIL  the verdict quotes the baseline in that unit
+  FAIL  and window B beside it
+  FAIL  A printed '8', want 0.1
+  FAIL  B printed '250', want 2.5
+  FAIL  so it is inconclusive: over 4x the baseline but under the 8/s bar
+  FAIL  and it does not claim the app is being composited
+  FAIL  B <= A + 2 -> the app's window is not being composited
+  FAIL  and the verdict says THAT
+  FAIL  and it points at the launcher and its own output instead
+  FAIL  and window B says the app is gone
+  FAIL  with what that means for the number above it
+  FAIL  a stray '0' line is in the table (the two-line count is back)
+  FAIL  a zero count is one number in each column
+  FAIL  a non-zero count is attributed to the file it came from
+  FAIL  and the second stream is read too: the row carries this file's own count, not the other's
+  FAIL  the matching lines are shown, with the file named
+  FAIL  stopping after the header, not inside the assignments below it
+  pass=55 fail=23
+
+## the four windows, in the unit they were written for (section 3 of the harness)
+  A=12 jiffies / B=240 jiffies over 12 s   -> 1.0 / 20.0 ticks/s   -> composited
+  A=1  jiffies / B=30  jiffies over 12 s   -> 0.1 /  2.5 ticks/s   -> inconclusive
+     (the OLD arithmetic reads those as 8 / 250 and 100 / 2000: both pass 'B>=4A && B>=8')
+  A=12 jiffies / B=18  jiffies over 12 s   -> 1.0 /  1.5 ticks/s   -> none
+  A=12 jiffies / B=720 jiffies over 12 s   -> 1.0 / 60.0 ticks/s   -> composited
