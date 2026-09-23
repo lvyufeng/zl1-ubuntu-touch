@@ -184,10 +184,53 @@ cpufreq_state() {
 
 mem_state() {
   awk '/^MemTotal|^MemAvailable|^SwapTotal|^SwapFree/ { printf "   %-14s %s kB\n", $1, $2 }' /proc/meminfo
-  # The container's own accounting, if this kernel exposes it the LXC way (doc 72 section 4b).
-  for f in /sys/fs/cgroup/memory/memory.usage_in_bytes /sys/fs/cgroup/memory/memory.limit_in_bytes; do
-    [ -r "$f" ] && printf '   %-14s %s\n' "${f##*/}" "$(cat "$f")"
+
+  # The container's memory, and the trap that has already been fallen into once here.
+  #
+  # Doc 72 section 8 recorded "container memory: 3867268k total, 3705148k used, 162120k free --
+  # 96% full" from `free`/`top` INSIDE the container, and doc 72 section 4b(d) called that "the
+  # container is about to be OOM'd". Both the number and the label are wrong: this kernel has no
+  # `memory` cgroup hierarchy mounted at all, so a container-side `free` is reading the host's own
+  # /proc/meminfo, and 3867268k is the device's MemTotal (4 GB minus the usual carveouts), not a
+  # quota. In other words that reading is "the whole phone is 96% full", which is a different and
+  # more serious statement: nothing isolates the two sides from the OOM killer.
+  #
+  # Two independent confirmations, both from records rather than from a live device:
+  #   * /proc/mounts in the 2026-09-18 and 2026-09-19 snapshots (docs/ubuntu-touch/evidence,
+  #     do-not-use-this-file-as-evidence aside: they are in /mnt/data/zl1-backups) lists the systemd,
+  #     freezer, devices, cpuset, perf_event, bfqio, cpu,cpuacct, debug and blkio hierarchies --
+  #     no `memory`.
+  #   * `lxc-info -n android -pH` prints "CPU use:" and, on a kernel that has it, "Memory use:" --
+  #     doc 22's capture has the former and not the latter, and the port's container config
+  #     (doc 16) has no lxc.cgroup.memory.* directive either.
+  #
+  # So: look for the real per-container path, and if there is no memory hierarchy, say that instead
+  # of printing the host's number under a container label.
+  cmem=""
+  for f in /sys/fs/cgroup/memory/lxc/*/memory.usage_in_bytes \
+           /sys/fs/cgroup/memory/lxc.payload.*/memory.usage_in_bytes; do
+    [ -r "$f" ] || continue
+    cmem="$f"
+    printf '   %-14s %s bytes  (%s)\n' "android cgroup" "$(cat "$f")" "$f"
+    lim="${f%usage_in_bytes}limit_in_bytes"
+    [ -r "$lim" ] && printf '   %-14s %s bytes\n' "android limit" "$(cat "$lim")"
+    break
   done
+  if [ -z "$cmem" ]; then
+    if [ -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]; then
+      # The hierarchy exists but has no lxc/<name> child: this is the ROOT of the hierarchy, i.e. the
+      # whole system. Printing it is fine as long as it is not called the container's number.
+      printf '   %-14s %s bytes  (ROOT of the hierarchy -- the whole system, NOT the container)\n' \
+        "cgroup usage" "$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)"
+      echo "                    -> no lxc/<name> child under it: no per-container accounting here"
+    else
+      echo "   cgroup memory  : NO memory cgroup mounted on this kernel"
+    fi
+    echo "                    -> a container-side \`free\` reports THIS device's MemTotal, not a"
+    echo "                       container quota (doc 87). Read MemAvailable above as the phone's"
+    echo "                       headroom, and remember nothing isolates UT's processes from"
+    echo "                       Android's when the OOM killer chooses."
+  fi
 }
 
 dstate_count() {

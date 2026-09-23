@@ -88,6 +88,11 @@ reloads in the last 5 min: 0
      on the wall time of a reload, and is labelled as an inference for that reason.
 
 ===== 8. the other half: kernel time, and the container's memory =====
+### CORRECTION (docs 87): the "container memory" line below was taken with `top` INSIDE the
+### container, and this kernel has no memory cgroup (`CONFIG_MEMCG is not set`) and the rootfs
+### ships no lxcfs -- so a container-side `free` reads the HOST's /proc/meminfo. 3867268k is
+### this device's MemTotal, not a container quota, and nothing is isolated from the OOM killer.
+### The raw line is kept verbatim; the reading is the phone's, not the container's.
 20 s /proc/stat delta on the host: user 16.9%  idle 24.1%  sys+irq+softirq+iowait 59%
    => ~3.0 of 4 cores busy, ~2.4 of them in the kernel
 container top:  400%cpu  19-27%user  108-215%sys  96-269%idle

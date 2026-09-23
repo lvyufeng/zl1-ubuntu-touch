@@ -5,7 +5,7 @@
 
 1. **CPU 频率策略**：4 个核全部是 `performance`，`scaling_cur_freq == scaling_max_freq` —— 永远跑在最高频，空闲也不降。改成 `interactive`（这台内核没有 `schedutil`）后，空闲核从 1132800/1363200 MHz 掉到 **307200/460800 MHz**，负载下照样能升上去。已由 `scripts/install-cpufreq-governor.sh --install` 装成 `zl1-cpufreq-governor.service`（oneshot，`WantedBy=multi-user.target`，`Result=success`）。**这是这次的正式成果。**
 2. **v63 的调试网络守护脚本**（`/usr/local/sbin/zl1-debug-net.sh`，孤立进程 pid 817，它的 unit 因为脚本自己 daemonize 而在 67 ms 后就"退出"了）是第二个热源，而且它是**自己造的**：它的 1 Hz 主循环里第 112-113 行每秒执行 `systemctl mask --runtime usb-moded.service` 和 `systemctl stop usb-moded.service` —— 这会让 **systemd 每 ~6 秒做一次 daemon-reload，每次要 ~2 秒**（日志原文 `Reloading finished in 2044 ms`）。它自己还烧掉 **6.6% 的一个核**（实测 20 秒 132 ticks），循环里还每次遍历一遍 `/proc/[0-9]*`。
-3. ~~**剩下的一半 CPU 是内核态**：20 秒 `/proc/stat` 差分是 user 16.9% / idle 24.1% / 其它 59%，也就是 4 个核里约 **3.0 个在忙、其中 2.4 个在内核**~~ → **【§4b 已推翻：那 2.4 个核是 `iowait` 记账假象，真实忙碌约 0.87 个核】**，而且 §3 那个 keeper 的实际代价是 **整整一个核**（不是这里写的 6.6%）。另外容器内存 **3.70 GB / 3.87 GB**（只剩 162 MB）仍然成立。
+3. ~~**剩下的一半 CPU 是内核态**：20 秒 `/proc/stat` 差分是 user 16.9% / idle 24.1% / 其它 59%，也就是 4 个核里约 **3.0 个在忙、其中 2.4 个在内核**~~ → **【§4b 已推翻：那 2.4 个核是 `iowait` 记账假象，真实忙碌约 0.87 个核】**，而且 §3 那个 keeper 的实际代价是 **整整一个核**（不是这里写的 6.6%）。~~另外容器内存 **3.70 GB / 3.87 GB**（只剩 162 MB）仍然成立。~~ → **【[`87`](87-the-container-memory-reading-was-the-whole-phone.md) 已更正：这个内核没开 `CONFIG_MEMCG`、rootfs 上也没有 lxcfs，所以那个从容器里跑出来的 `free` 读的是宿主机的 `/proc/meminfo` —— 3.70/3.87 GB 是**整台手机**的，不是容器的配额，也没有配额可调。96% 满仍然成立，但要按「UT 与 Android 之间没有内存隔离」来读。】**
 
 **接续**: [`71`](71-the-sensors-stream-the-restart-kills-the-hal.md)（同一批测量里发现的：`sensorfwd` + HAL 的持续 CPU 与 HAL 自杀循环是同一件事）、[`69`](69-repowerd-died-on-a-startup-race-with-sensorfwd.md)
 
@@ -110,7 +110,7 @@ $ systemctl status zl1-debug-net.service
 容器自己的 top 一致：400%cpu  19-27%user  108-215%sys  96-269%idle
 ```
 
-按进程能算到的只有 ~0.5 核：`sensorfwd` + `android.hardware.sensors@1.0-service` 合计约一个核的 18%（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) 里那个 HAL 自杀/重连循环是同一件事），`android.hardware.graphics.composer@2.1-service` 约 4%。`ksoftirqd/*` 四个核累计约 6.5 分钟、`rcu_preempt`+`rcu_sched` 约 6.7 分钟（2.6 小时里），这是大量系统调用/IPC 的形状，而不是某一个热循环。容器内存 3.70/3.87 GB **几乎满了**，回收压力会是其中一部分，但 `kswapd0` 只有 14 秒 CPU，所以不是主因。
+按进程能算到的只有 ~0.5 核：`sensorfwd` + `android.hardware.sensors@1.0-service` 合计约一个核的 18%（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) 里那个 HAL 自杀/重连循环是同一件事），`android.hardware.graphics.composer@2.1-service` 约 4%。`ksoftirqd/*` 四个核累计约 6.5 分钟、`rcu_preempt`+`rcu_sched` 约 6.7 分钟（2.6 小时里），这是大量系统调用/IPC 的形状，而不是某一个热循环。~~容器内存 3.70/3.87 GB **几乎满了**~~ → **【更正见 [`87`](87-the-container-memory-reading-was-the-whole-phone.md)：那是整机的数，容器没有内存配额（本内核 `CONFIG_MEMCG` 未开）】**，回收压力会是其中一部分，但 `kswapd0` 只有 14 秒 CPU，所以不是主因。
 
 **一个必须写下来的自省**：这一节里的读数会被**我自己**污染 —— 全量 `journalctl | grep` 在这台设备上就是一次典型的 CPU 尖峰，而这次测量期间我跑过几次（其中两次还把 SSH 命令跑到超时）。所以"停掉 keeper 之后温度反而从 49.0 升到 55.8 °C"这种读数不能当作 keeper 有害的证据：那 5 分钟里烧得多的是我的 grep、`systemctl daemon-reload`（装 unit 时）、以及充电。要分离它，只能用 §5 那个"安静 5 分钟"的测法。
 
@@ -184,7 +184,7 @@ systemd-journald 695 | android.hardware.sensors@1.0-service 440（78 个线程�
 ## 6. 下一步
 
 1. **把 keeper 换掉，然后重启验证**（§3）。做法上有一条比"遮蔽 unit"更好的路：它的 unit 文件在 `/etc/systemd/system/zl1-debug-net.service` —— **是可写的**，所以不用去碰只读镜像里的脚本，改 unit 的 `ExecStart` 指向一个我们自己写的、开机只跑一次的 bring-up（持久地 `systemctl mask usb-moded.service` + 强制 gadget + 配地址 + ARP 宣告），再让 netwatch 的 45 秒 stall 自愈兜底。验证必须包含**一次真正的重启**，而且要用户在（万一 RNDIS 没起来，需要人手；主机侧有 udev 规则会自动 bind `rndis_host`，但设备侧的地址只有设备自己能配）。**这一步要用户点头再做。**（2026-09-22 用户的选择：**先不重启**，就维持"运行时停着"这个状态，所以本次到这里为止；`scripts/device/zl1-quiet-debug-keeper.sh` 是它的开关。）
-2. ~~**那 2.4 个核的内核态**（§4）~~ → **§4b 已结案：没有那 2.4 个核。** 真实忙碌 0.87 个核、内核态 0.60 个、`iowait` 0%，负载均值是睡着的驱动线程。**剩下要处理的只有 §4b(d) 里那两个真实的用户态大户**（`sensorfwd` + sensors HAL，§71 那条线）和容器内存 3.70/3.87 GB —— 后者已经不是"发热嫌疑"而是"容器随时会被 OOM"（`kswapd0` 只有 14 秒 CPU，所以它也不是热源）。
+2. ~~**那 2.4 个核的内核态**（§4）~~ → **§4b 已结案：没有那 2.4 个核。** 真实忙碌 0.87 个核、内核态 0.60 个、`iowait` 0%，负载均值是睡着的驱动线程。**剩下要处理的只有 §4b(d) 里那两个真实的用户态大户**（`sensorfwd` + sensors HAL，§71 那条线）和内存 3.70/3.87 GB —— 后者已经不是"发热嫌疑"而是**稳定性问题**：那不是容器的配额，而是**整机**的占用（[`87`](87-the-container-memory-reading-was-the-whole-phone.md)：本内核没开 `CONFIG_MEMCG`，rootfs 上也没有 lxcfs），所以 OOM killer 在 UT 与 Android 之间**没有隔离**；`kswapd0` 只有 14 秒 CPU，所以它也不是热源。
 3. `orientationsensor` 那条（[`71`](71-the-sensors-stream-the-restart-kills-the-hal.md) §7）：`sensorfwd -c=<path>` 这个杠杆还没用；`orientationsensor=False` = 稳定竖屏、没有自动旋转，是取舍，等用户决定。
 
 ## 7. 文件与复现
