@@ -55,14 +55,50 @@ ACT="$W/actions"
 rm -rf "$W"
 mkdir -p "$FR/sys/bus/usb/devices/3-3" "$FR/tmp" "$STUB" "$CAL/host" "$W/out" "$W/misc" \
          "$W/fake-repo/scripts/host" || exit 2
-# The copy under test lives in a fake repo whose scripts/device is a SYMLINK to the real one: the chain
-# resolves the proof as $HERE/../device/zl1-address-owner-proof.sh, so a copy in /tmp would refuse for a
-# reason that has nothing to do with the chain -- and a symlink keeps "it pushed the REAL proof" true
-# rather than replacing it with a stand-in (the harness's own cross-check below depends on that).
-# ABSOLUTE, because $HERE is whatever path the harness was invoked with and a relative symlink target is
-# resolved against the LINK's directory, not the harness's cwd -- which is how the first version pointed
-# at $W/fake-repo/scripts/../device and refused with "cannot read .../host/../device/...".
-ln -s "$(cd "$HERE/../device" && pwd)" "$W/fake-repo/scripts/device"
+# The copy under test lives in a fake repo whose scripts/device holds a PER-FILE symlink to every real
+# device script -- not a copy, and NOT a symlink to the whole directory.
+#
+# Why the proof is a symlink to the real file: the chain resolves it as $HERE/../device/<name>, so a
+# copy in /tmp would refuse for a reason that has nothing to do with the chain, and replacing it with a
+# stand-in would make "it pushed the REAL proof" (checked below) a statement about a fixture.
+#
+# Why the directory itself must NOT be a symlink -- this is a defect this harness had, found 2026-09-24
+# by `git diff`: a directory symlink cannot tell "the file the chain really pushes" from "the file this
+# harness owns a stand-in for". The A/B instrument is scp-ed from the same directory, and the line that
+# plants its stand-in ran `mkdir -p` through that symlink (succeeds, silently) and then `>` . . .
+# which wrote INTO THE REPOSITORY. `scripts/device/zl1-thermal.sh` was replaced by the one-line stub --
+# 409 lines of the only heat instrument this project has, destroyed by its own offline test, with the
+# harness's comment two lines above it still claiming the opposite. Per-file symlinks make the two
+# cases distinguishable: the stub is a file this harness created, in its own tree.
+# ABSOLUTE targets, because a relative symlink target resolves against the LINK's directory, not the
+# harness's cwd -- which is how the first version pointed at $W/fake-repo/scripts/../device.
+DEV_FAKE="$W/fake-repo/scripts/device"
+mkdir -p "$DEV_FAKE" || exit 2
+REAL_DEV=$(cd "$HERE/../device" && pwd)
+REAL_THERMAL="$REAL_DEV/zl1-thermal.sh"
+for f in "$REAL_DEV"/*; do
+  b=$(basename "$f")
+  [ "$b" = zl1-thermal.sh ] && continue   # its stand-in is written below, by this harness
+  ln -s "$f" "$DEV_FAKE/$b"
+done
+
+# Every file this harness writes under its own fake repo goes through this, and it is a REFUSAL rather
+# than a convention: `> path` through a symlink silently edits whatever it points at, and the only
+# reason that is not happening above is that the loop skipped the one name -- a guard that would have
+# to be re-read on every edit. This one cannot be forgotten: it is on the write.
+wrote() { # path, content on stdin
+  if [ -L "$1" ]; then
+    echo "REFUSING to write through the symlink $1 -- this harness would be editing the tree it tests" >&2
+    exit 2
+  fi
+  cat > "$1"
+}
+
+# The one thing this harness must not do to the repository, measured rather than intended: the real
+# instrument is read once here and re-read at the end (section 9). The defect above passed every check
+# in this file while destroying a 409-line script, so "no check could see it" is the point.
+[ -r "$REAL_THERMAL" ] || { echo "cannot read $REAL_THERMAL" >&2; exit 2; }
+REAL_THERMAL_BEFORE=$(sha256sum "$REAL_THERMAL" | awk '{print $1}')
 
 # --- the fake device ------------------------------------------------------------------------------
 # The serial directory IS the check (a real directory with a `serial` file), and the match is a PREFIX:
@@ -107,6 +143,33 @@ printf 'Bus 003 Device 042: ID %s device\n' "\$have_id"
 exit 0
 EOF
 
+# The A/B instrument. The chain scp's the script it finds at $HERE/../device/zl1-thermal.sh and runs it
+# over ssh; the ssh stub answers it from the fixture below, which was captured by running the instrument
+# ITSELF (on this host: --ab --hold 3), so the SHAPE the chain parses is the shape the instrument really
+# prints rather than the shape that was assumed.
+#
+# The stand-in is a REGULAR FILE IN THIS HARNESS'S TREE, and the write goes through `wrote()` so it
+# cannot become a write into the repository -- see the note at DEV_FAKE. What the chain must find there
+# is a file that exists and can be pushed; the instrument's BEHAVIOUR is the ssh stub's job, because
+# nothing in this harness can run a device script.
+AB_FIX="$W/ab.txt"
+wrote "$DEV_FAKE/zl1-thermal.sh" <<'EOF'
+# the real instrument is scp-ed; this only has to exist and be readable
+EOF
+cat > "$AB_FIX" <<'ABEOF'
+== window A done. Change ONE thing now; window B starts in 120s :: Thu Feb 11 18:00:00 EST 1970
+== window B (after the change):
+  busy 0.87 of 4 cores (22%), of which iowait 0.00 cores
+== B minus A per process (ticks in the same 30s window; + = hotter, sorted by size):
+      -182 v63-debug-init 817
+        +4  lomiri 4211
+   (processes in either top-10 list)
+== B minus A per thermal zone (sorted by the size of the change, either direction):
+   tsens_tz_sensor8 tsens_tz_sensor8          -5.5 C   (58.0 -> 52.5)
+   tsens_tz_sensor1 tsens_tz_sensor1          -6.1 C   (55.8 -> 49.7)
+   battery          battery                   -2.7 C   (42.5 -> 39.8)
+ABEOF
+
 cat > "$STUB/sleep" <<EOF
 #!/bin/sh
 printf 'sleep %s\n' "\$*" >> "$ACT"
@@ -131,6 +194,7 @@ true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;;
 *random/boot_id*) printf 'deadbeef-1111-2222-3333-444444444444\n'; exit 0 ;;
 *netwatch*) cat "$W/state.txt"; exit 0 ;;
 *zl1-address-owner-proof.sh*) cat "$W/proof.txt"; exit "\${FP_RC_PROOF:-0}" ;;
+*zl1-thermal.sh*) cat "$AB_FIX"; exit "\${FP_RC_AB:-0}" ;;
 esac
 exit 0
 EOF
@@ -168,6 +232,9 @@ callee() { # path-name, TAG
 printf 'CALLEE $1 args=%s\n' "\$*" | tee -a "$ACT"
 rc=\$(printf '%s' "\${FP_RC_$2:-0}")
 [ -n "\$rc" ] || rc=0
+# A hook so a step can be made to take real time: the alignment check is about whether the WORK outlasts
+# the HOLD, and an instant stand-in cannot make that happen.
+sl=\$(printf '%s' "\${FP_SLEEP_$2:-0}"); [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl"
 echo "CALLEE $1: done rc=\$rc"
 printf 'CALLEE $1 rc=%s\n' "\$rc" >> "$ACT"
 exit "\$rc"
@@ -237,6 +304,7 @@ run() { # outdir, args...
   OUT=$(PATH="$STUB:$PATH" FP_STATE="$FP_STATE" FP_SSH="$FP_SSH" FP_RC_PROOF="$FP_RC_PROOF" \
         FP_RC_NW="$FP_RC_NW" FP_RC_RETIRE="$FP_RC_RETIRE" FP_RC_CPUFREQ="$FP_RC_CPUFREQ" \
         ZL1_MISC_OUT="$MISC_OUT" FP_REAL_SLEEP="$FP_REAL_SLEEP" \
+        FP_RC_AB="$FP_RC_AB" FP_SLEEP_RETIRE="$FP_SLEEP_RETIRE" FP_SLEEP_CPUFREQ="$FP_SLEEP_CPUFREQ" \
         timeout 120 bash "$CHAIN" --outdir "$o" "$@" 2>&1); RC=$?
 }
 run_bg_start() { # outdir, args... -- for the interrupt scenario
@@ -257,6 +325,7 @@ FP_REAL_SLEEP=""
 scen() { # name -- a fresh archive dir, and the default device state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
   FP_STATE=present; FP_SSH=yes; FP_RC_PROOF=0; MISC_OUT="$MISC"; FP_REAL_SLEEP=""
+  FP_RC_AB=0; FP_SLEEP_RETIRE=0; FP_SLEEP_CPUFREQ=0
   FP_RC_NW=""; FP_RC_RETIRE=""; FP_RC_CPUFREQ=""
   proof_obtained
 }
@@ -377,6 +446,14 @@ want 'install-cpufreq-governor args=--install$' "$(callees)" "step 6 is the gove
 [ "$(slept)" = 90 ] && ok "and it waited the default 90 s before the proof" || bad "the settle was '$(slept)', not 90"
 want 'sh /tmp/zl1-address-owner-proof.sh --yes' "$(sshs)" "the proof was run ON the device, with --yes (it stops a process)"
 want 'scp .*zl1-address-owner-proof.sh' "$(cat "$ACT")" "and the REAL proof was pushed, not a stand-in"
+# And that claim AS A MEASUREMENT: the scp stub copies into the fake device's /tmp, so the bytes the
+# device would run can be compared with the file in this repository. The assertion above is about the
+# NAME, which a stand-in called the same thing would satisfy just as well.
+if cmp -s "$FR/tmp/zl1-address-owner-proof.sh" "$PROOF_REAL"; then
+  ok "and what landed there is byte-identical to scripts/device/zl1-address-owner-proof.sh"
+else
+  bad "the pushed proof is not the repository's file (cmp differs, or nothing was copied)"
+fi
 # The archive: an index that names each step with its rc, and checksums that verify.
 want '^01-netwatch-deploy *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index lists step 01 with its rc"
 want '^06-cpufreq-governor *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and step 06"
@@ -387,6 +464,103 @@ want 'keeper: gone' "$OUT" "and the final read-back is printed"
 scen settle
 run "$S" --yes --settle 5
 [ "$(slept)" = 5 ] && ok "--settle 5 waits 5 s" || bad "--settle 5 waited '$(slept)'"
+
+# ==================================================================================================
+echo
+echo "== 5b. the A/B: the chain measures the two fixes, and says when it could not =="
+# ==================================================================================================
+# Why this section exists: the chain changes the two things that make this phone hot. Its evidence used
+# to be that the installers returned 0, which is the rule this whole sequence is built on applied to
+# everything EXCEPT the thing the sequence is for. The A/B is wired in now, and what has to be true is
+# that it RUNS, that its output is READ, and -- the part a naive version gets wrong -- that a
+# measurement which did not happen is reported as not having happened.
+scen ab
+run "$S" --yes
+[ "$RC" = 0 ] && ok "the chain with the A/B exits 0" || bad "it exited $RC"
+want 'scp .*device/zl1-thermal.sh /tmp/zl1-thermal.sh|scp .*zl1-thermal.sh' "$(cat "$ACT")" \
+  "the REAL instrument was pushed to the device"
+want 'sh /tmp/zl1-thermal.sh --ab --seconds 30 --hold 120' "$(sshs)" \
+  "and it was run with the two windows and the hold, as its own header prescribes"
+want '^06b-heat-ab *0 *06b-heat-ab.txt' "$(cat "$S/INDEX.txt" 2>/dev/null)" \
+  "the measurement is a row in the index, like every other step"
+[ -f "$S/06b-heat-ab.txt" ] && ok "and its output is in the archive" || bad "no 06b-heat-ab.txt"
+want '^== B minus A per process' "$(cat "$S/06b-heat-ab.txt")" "which holds the instrument's own output"
+want 'ALIGNED: the work finished' "$(cat "$S/06b-heat-ab.txt")" \
+  "and the bookkeeping says the windows straddle the work"
+want 'tsens_tz_sensor8.*-5.5 C' "$OUT" "the per-zone difference is printed to the operator, not just archived"
+want 'ALIGNED: window A is before either fix, window B after both' "$OUT" "with the alignment stated"
+want 'Read it as a READING' "$OUT" "and the caveats printed beside the numbers"
+want 'this chain prints no verdict on the heat itself' "$OUT" \
+  "and it says out loud that it prints no verdict on the heat itself"
+notwant 'verdict: heat-fixed' "$OUT" "because a temperature difference here licenses no such word"
+# the A/B must straddle the FIXES, not the whole chain: it starts after the proof is decided and after
+# the netwatch swap, which is the baseline the two named causes need.
+A_ORDER=$(grep -n '^CALLEE ' "$ACT" | head -20 | tr '\n' ' ')
+case "$A_ORDER" in
+*"CALLEE install-retire-debug-keeper"*) ok "the fixes ran inside the hold (the retire step is there)" ;;
+*) bad "the retire step is missing from the recording" ;;
+esac
+
+echo
+echo "   -- --no-ab: the operator asked for no measurement, and it is printed as a CHOICE:"
+scen ab-off
+run "$S" --yes --no-ab
+[ "$RC" = 0 ] && ok "the chain still runs and exits 0" || bad "it exited $RC"
+want '^06b-heat-ab *skip' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index records 'skip', not a measurement"
+want 'NOT MEASURED: --no-ab' "$OUT" "and the operator is told in words"
+want 'This is a CHOICE, not a reading' "$(cat "$S/06b-heat-ab.txt")" "the archive says the same thing"
+notwant 'zl1-thermal.sh' "$(cat "$ACT")" "and nothing was pushed or run"
+
+echo
+echo "   -- the instrument is not on this host: UNMEASURED, and named:"
+scen ab-noinstrument
+mv "$DEV_FAKE/zl1-thermal.sh" "$DEV_FAKE/zl1-thermal.sh.hidden"
+run "$S" --yes
+mv "$DEV_FAKE/zl1-thermal.sh.hidden" "$DEV_FAKE/zl1-thermal.sh"
+[ "$RC" = 0 ] && ok "the chain still runs (a missing instrument is not a reason to skip the heat fixes)" \
+  || bad "it exited $RC"
+want '^06b-heat-ab *unusable' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index records 'unusable'"
+want 'NOT MEASURED: the instrument could not be put on the device' "$OUT" "and says so"
+want 'the effect of these two fixes is UNMEASURED on this boot' "$(cat "$S/06b-heat-ab.txt")" \
+  "naming what is therefore unknown"
+notwant 'zl1-thermal.sh --ab' "$(sshs)" "and the instrument was never run"
+
+echo
+echo "   -- the instrument ran, returned 0, and printed nothing: NOT a measurement:"
+scen ab-empty
+cp "$AB_FIX" "$W/ab.keep"; : > "$AB_FIX"
+run "$S" --yes
+cp "$W/ab.keep" "$AB_FIX"
+[ "$RC" = 0 ] && ok "the chain still runs" || bad "it exited $RC"
+want '^06b-heat-ab *empty' "$(cat "$S/INDEX.txt" 2>/dev/null)" \
+  "the index does not record a 0 that would read as 'fine'"
+want 'printed no difference section' "$OUT" "and the reason is the emptiness, not the exit code"
+want 'Return 0 is not a measurement' "$OUT" "which is the rule this whole tree keeps recording"
+
+echo
+echo "   -- the instrument failed: the chain says which code, and still finishes:"
+scen ab-failed
+FP_RC_AB=7
+run "$S" --yes
+FP_RC_AB=0
+[ "$RC" = 0 ] && ok "a failed measurement does not abort the chain" || bad "it exited $RC"
+want '^06b-heat-ab *7' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index carries the instrument's own rc"
+want 'the instrument ran and returned 7' "$OUT" "and the operator is told"
+
+echo
+echo "   -- the work outlasted the hold: the deltas are declared CONTAMINATED, not published:"
+# An instant stand-in cannot make the work outlast the hold, so this scenario shortens BOTH knobs and
+# makes one step really take time. Without the alignment check the chain would print a temperature
+# difference as the result of the fixes when window B still contained part of them.
+scen ab-misaligned
+FP_REAL_SLEEP=1
+FP_SLEEP_RETIRE=2
+run "$S" --yes --settle 0 --ab-window 0 --ab-hold 0
+FP_REAL_SLEEP=""; FP_SLEEP_RETIRE=0
+[ "$RC" = 0 ] && ok "the chain still runs" || bad "it exited $RC"
+want 'NOT ALIGNED: window B began [0-9]*s BEFORE the work finished' "$(cat "$S/06b-heat-ab.txt")" \
+  "the archive says the windows do not straddle the work"
+want 'NOT ALIGNED: window B still contains part of the work' "$OUT" "and so does the operator's read-out"
 
 # ==================================================================================================
 echo
@@ -603,6 +777,117 @@ if mutate killanyway 's#^if \[ "\$PROOF_RC" != 0 \] || \[ "\$VERDICT" != "proof-
   want 'install-retire-debug-keeper args=--install --now --after-proof' "$(callees)" \
     "mutation 'kill anyway': the keeper is retired on a verdict that did not license it (the check is live)"
   proof_obtained
+fi
+
+# (8) the empty-output check removed: "the ssh returned 0" read as "a measurement was taken"
+# This is the defect the A/B section exists for, one level down: an instrument that lands, runs, and
+# prints nothing would be reported as a measurement. The sed deletes the whole elif branch, leaving the
+# rc test -- which is what the first draft of this code did.
+if mutate abnocontent '/^  elif ! grep -q .\^== B minus A per thermal zone/{N
+s#.*#  : #}'; then
+  scen mut-abnocontent
+  cp "$AB_FIX" "$W/ab.keep"; : > "$AB_FIX"
+  mutant_run "$CHAIN_DIR/abnocontent.sh" "$S"
+  cp "$W/ab.keep" "$AB_FIX"
+  [ -n "$(callees)" ] && ok "and the mutant reached the steps" || bad "the mutant never ran (rc=$RC)"
+  # Positive, not merely absent: the corrupted state is that the empty run is recorded as a SUCCESS.
+  want '^06b-heat-ab *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" \
+    "mutation 'no content check': an empty measurement is recorded as a success (the check is live)"
+  notwant 'printed no difference section' "$OUT" "and nothing tells the operator it was empty"
+fi
+# (9) the alignment check removed: a contaminated window published as a result
+if mutate abnoalign 's#^    if \[ "\$margin" -ge 0 \]; then#    if true; then #'; then
+  scen mut-abnoalign
+  FP_REAL_SLEEP=1; FP_SLEEP_RETIRE=2
+  : > "$ACT"
+  OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_RC_PROOF=0 ZL1_MISC_OUT="$MISC_OUT" \
+        FP_REAL_SLEEP=1 FP_SLEEP_RETIRE=2 timeout 120 bash "$CHAIN_DIR/abnoalign.sh" \
+        --outdir "$S" --yes --settle 0 --ab-window 0 --ab-hold 0 2>&1); RC=$?
+  FP_REAL_SLEEP=""; FP_SLEEP_RETIRE=0
+  [ -n "$(callees)" ] && ok "and the mutant reached the steps" || bad "the mutant never ran (rc=$RC)"
+  want 'ALIGNED' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" \
+    "mutation 'no alignment check': a window that still contained the work is reported as ALIGNED"
+  notwant 'NOT ALIGNED' "$OUT" "and the operator is not warned"
+fi
+# (10) the caveat line removed: the numbers printed as if they were a verdict
+if mutate abnoverdict '/^    say "   Read it as a READING/{N
+s#.*#    : #}'; then
+  scen mut-abnoverdict
+  mutant_run "$CHAIN_DIR/abnoverdict.sh" "$S"
+  [ -n "$(callees)" ] && ok "and the mutant reached the steps" || bad "the mutant never ran (rc=$RC)"
+  notwant 'Read it as a READING' "$OUT" \
+    "mutation 'no caveat': the deltas are printed with nothing saying what they are not (the check is live)"
+  want 'tsens_tz_sensor8' "$OUT" "and the numbers ARE printed -- the caveat is the only thing missing"
+fi
+
+# ==================================================================================================
+echo
+echo "== 9c. this harness did not edit the tree it tests =="
+# ==================================================================================================
+# This section exists because it really happened, in this file, and NOTHING ELSE HERE COULD SEE IT: the
+# stand-ins were planted through a directory symlink, so `>` wrote into the repository and replaced
+# scripts/device/zl1-thermal.sh -- the only heat instrument this project has -- with a one-line comment.
+# The run stayed green. Six sections of careful assertions cannot notice that the subject's own
+# instrument was deleted by the fixture.
+#
+# So the claim is a hash, taken before the fixtures were built and re-taken here: asserts go red for a
+# behaviour, this one goes red for the TREE. It hashes the one file rather than the directory, because
+# the rest of the tree is edited by people between runs and a whole-directory comparison would fail for
+# reasons that have nothing to do with this harness.
+REAL_THERMAL_AFTER=$(sha256sum "$REAL_THERMAL" | awk '{print $1}')
+if [ "$REAL_THERMAL_BEFORE" = "$REAL_THERMAL_AFTER" ]; then
+  ok "scripts/device/zl1-thermal.sh is byte-identical to what it was before this run"
+else
+  bad "THIS RUN CHANGED $REAL_THERMAL -- a fixture write is landing in the repository, not in \$W"
+fi
+if [ -L "$DEV_FAKE/zl1-thermal.sh" ]; then
+  bad "the instrument stand-in is a SYMLINK, so writing it edits whatever it points at"
+else
+  ok "the instrument stand-in is a regular file inside \$W, not a link into the tree"
+fi
+if [ -L "$DEV_FAKE/zl1-address-owner-proof.sh" ]; then
+  ok "and the proof in the same directory is a link to the real one, so the push is the real thing"
+else
+  bad "the proof is not a link to the repository's file -- 'it pushed the REAL proof' is now about a fixture"
+fi
+
+# The guard is a mechanism, so exercise it: `wrote()` is handed a path that IS a symlink and must
+# refuse. In a SUBSHELL, because the way it refuses is `exit 2` -- a guard that has stopped refusing
+# must be recorded as a failed check, not allowed to end this harness where the defect would have.
+#
+# And NOT on a path into the repository. The first version of this check pointed `wrote()` at the proof
+# link -- i.e. at scripts/device/ -- so a guard that had stopped refusing would have truncated a real
+# device script: the check that exists to protect the tree damaging the tree, which is the defect one
+# level down. The link is inside $W, and the file it points at is checked too, because "it refused" is
+# the message and "nothing was written" is the property.
+printf 'scratch\n' > "$W/guard-target"
+ln -s "$W/guard-target" "$W/guard-link"
+_g=$( (wrote "$W/guard-link" <<'X'
+X
+) 2>&1 ); _grc=$?
+if [ "$_grc" = 2 ] && printf '%s' "$_g" | grep -q 'REFUSING to write through the symlink'; then
+  ok "the write helper refuses a symlinked target, which is the mechanism that makes it unrepeatable"
+else
+  bad "wrote() did not refuse a symlink (rc=$_grc, said '$_g') -- the next fixture write could land in the tree"
+fi
+[ "$(cat "$W/guard-target")" = scratch ] && ok "and it wrote nothing -- the refusal is not just a message" \
+  || bad "the guarded write went through anyway: \$W/guard-target now holds '$(cat "$W/guard-target")'"
+
+# And can the hash check above fail at all? The only way to show a check like that is live is to let a
+# write reach a tree it measures -- and doing that to the REAL file is the defect itself. So the
+# demonstration runs on a scratch tree: a scratch repository, a directory symlink into it, and the same
+# two lines this file used to have. What is shown is that the comparison DISCRIMINATES that write; that
+# it is pointed at the right file is the check three lines up, against the repository's own bytes.
+SCRATCH="$W/scratch"; mkdir -p "$SCRATCH/device" "$SCRATCH/fake"
+printf 'the real instrument\n' > "$SCRATCH/device/zl1-thermal.sh"
+_s_before=$(sha256sum "$SCRATCH/device/zl1-thermal.sh" | awk '{print $1}')
+ln -s "$SCRATCH/device" "$SCRATCH/fake/device"
+printf 'a stand-in\n' > "$SCRATCH/fake/device/zl1-thermal.sh"
+_s_after=$(sha256sum "$SCRATCH/device/zl1-thermal.sh" | awk '{print $1}')
+if [ "$_s_before" != "$_s_after" ]; then
+  ok "a write through a directory symlink DOES change the measured file -- so the check above can fail"
+else
+  bad "the scratch write did not reach the symlinked file, so this demonstration proves nothing"
 fi
 
 # ==================================================================================================

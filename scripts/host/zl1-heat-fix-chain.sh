@@ -40,6 +40,7 @@
 #   chain either finishes or reports exactly where it stopped and what state that leaves.
 #
 # Usage: zl1-heat-fix-chain.sh --yes [--settle SECS] [--outdir DIR] [--status] [--quiet]
+#                              [--ab-hold SECS] [--ab-window SECS] [--no-ab]
 #   --yes            REQUIRED to run the chain. Without it: print the plan, write nothing, exit 2.
 #   --settle SECS    seconds to wait after --activate before the proof (default 90: the netwatch
 #                    needs SETTLE_SECONDS before its heal stage may re-enumerate the gadget, and this
@@ -47,11 +48,32 @@
 #   --outdir DIR     where to archive (default: repo tmp-heat-fix-<utc timestamp>/)
 #   --status         read-only: where is the chain on this boot? (no --yes needed, writes nothing)
 #   --quiet          print only the verdicts
+#   --ab-hold SECS   how long the measurement's hold lasts (default 120). The chain changes two things
+#                    inside that hold and then reads the before/after differences -- see "the A/B".
+#   --ab-window SECS each sampling window (default 30). The instrument takes two of them.
+#   --no-ab          do not measure at all. Printed, never silent: an unmeasured run says so.
 #
 # Exit codes: 0 the chain ran to the end; 1 the chain stopped short -- a step failed, or the proof did
 #             not license step 5 -- and the archive says which, and whether the governor half went in;
 #             2 refused -- no --yes, or the device is not reachable; 3 interrupted (its own code, and an
 #             interrupt still archives what ran).
+#
+# THE A/B, and why it is here now. The chain changes the two things that make this phone hot and, until
+# 2026-09-24, never measured the change: its evidence was that the installers' own read-backs succeeded.
+# **An installer that exits 0 and a knob that moved are two different facts** -- the rule the whole
+# post-EDL sequence is built on (docs 124) -- and it was being applied to everything EXCEPT the thing
+# the sequence exists for. The instrument was already written and never called from here:
+# `device/zl1-thermal.sh --ab --hold N` samples a window, holds, samples a second window and prints the
+# per-process and per-zone DIFFERENCES (the doc 72 shape), and its own header says it is meant to be
+# driven from the host exactly like this. So this is WIRING, not a new instrument.
+#
+# What it shows and what it does not, because a temperature line must not be left standing as a verdict:
+#   * the MECHANISM is settled by the installers -- keeper gone, governor on, the cores idling at their
+#     lowest step instead of pinned at their highest. Those are STATES, not effects.
+#   * the EFFECT is what the A/B reads, and a temperature delta on this device is confounded by ambient,
+#     by a charging battery and by the phone's own history this boot. It is a READING, printed as one.
+#   * the ALIGNMENT is checkable, so it is checked: if the two fix steps outlast the hold, window B began
+#     while the work was still running and the chain says so instead of printing a number as a result.
 #
 # What it never does, in any mode: reboot the device, flash anything, run a QDL/firehose tool, write a
 # partition, or touch the forbidden partition set. Step 1's own installer requires a VERIFIED misc
@@ -73,6 +95,7 @@ NW="$HERE/../install-netwatch-service.sh"
 RETIRE="$HERE/../install-retire-debug-keeper.sh"
 CPUFREQ="$HERE/../install-cpufreq-governor.sh"
 PROOF="$HERE/../device/zl1-address-owner-proof.sh"
+THERMAL="$HERE/../device/zl1-thermal.sh"
 # The verified misc backup. This is the INSTALLER's path and the installer's rule (lines 181-188 of
 # scripts/install-netwatch-service.sh): non-empty, a SHA256SUMS beside it, and it passes that file.
 # It is duplicated here and not re-invented -- the point is to spend no boot discovering it half-way
@@ -86,6 +109,9 @@ STATUS=0
 QUIET=0
 SETTLE=90
 OUT=""
+NO_AB=0
+AB_HOLD=${ZL1_AB_HOLD:-120}
+AB_WINDOW=${ZL1_AB_WINDOW:-30}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -93,6 +119,9 @@ while [ $# -gt 0 ]; do
   --status) STATUS=1; shift ;;
   --quiet) QUIET=1; shift ;;
   --settle) SETTLE="${2?--settle needs SECONDS}"; shift 2 ;;
+  --ab-hold) AB_HOLD="${2?--ab-hold needs SECONDS}"; shift 2 ;;
+  --ab-window) AB_WINDOW="${2?--ab-window needs SECONDS}"; shift 2 ;;
+  --no-ab) NO_AB=1; shift ;;
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
@@ -297,6 +326,121 @@ read_state() {
   printf '%s\n' "$FINAL_STATE" | sed 's/^/     | /'
 }
 
+# --- the A/B, launched in the background and waited for -------------------------------------------
+#
+# Same `&` + `wait` the settle uses, and for the same measured reason (a foreground command defers a
+# trap: an interrupt would be honoured minutes later). The ssh is the DEVICE-side instrument running,
+# so it survives nothing on the host and does not need to: `wait` is the synchronisation, and the
+# output goes into THIS run's archive rather than a file on the device, which is what stops a stale
+# reading from a previous boot being read back as this one's.
+#
+# The alignment check uses HOST clocks on both sides (window A begins when ssh is launched, the work
+# ends when the last fix step returns), because the device's own clock is wrong and its timestamps are
+# not orderable (docs 87).
+AB_STATE=none        # none | started | skipped | unusable | failed | empty | done
+AB_PID=""; AB_T0=0
+AB_WORK_T=0; AB_ALIGNED=""
+AB_RC=""
+AB_OUT=""
+ab_start() {
+  AB_OUT="$OUT/06b-heat-ab.txt"
+  : > "$AB_OUT"
+  AB_T0=$(date +%s)
+  if [ "$NO_AB" = 1 ]; then
+    AB_STATE=skipped; AB_RC=skip
+    printf 'The operator asked for no A/B (--no-ab).\n\nThis is a CHOICE, not a reading: the two fixes run on this boot without anything\nmeasuring their effect, so "the installers returned 0" is all this boot can say.\n' >> "$AB_OUT"
+    return 0
+  fi
+  if [ ! -r "$THERMAL" ]; then
+    AB_STATE=unusable; AB_RC=unusable
+    printf 'The measuring instrument is missing ON THIS HOST: %s\n\nSo no A/B was taken and the effect of these two fixes is UNMEASURED on this boot.\n' "$THERMAL" >> "$AB_OUT"
+    return 0
+  fi
+  if ! "${SCP[@]}" "$THERMAL" "$HOST:/tmp/zl1-thermal.sh" > "$AB_OUT" 2>&1; then
+    AB_STATE=unusable; AB_RC=unusable
+    printf 'scp of the instrument FAILED (the transport is above), so no A/B was taken and the effect\nof these two fixes is UNMEASURED on this boot.\n' >> "$AB_OUT"
+    return 0
+  fi
+  # The device-side process is what holds the windows; the host only holds the ssh open.
+  "${SSH[@]}" "sh /tmp/zl1-thermal.sh --ab --seconds $AB_WINDOW --hold $AB_HOLD" >> "$AB_OUT" 2>&1 &
+  AB_PID=$!
+  AB_STATE=started; AB_RC=0
+  note "A/B started: window A ${AB_WINDOW}s, then a ${AB_HOLD}s hold (the two fixes run inside it), then window B"
+}
+ab_finish() {
+  [ "$AB_STATE" = none ] && return 0
+  if [ "$AB_STATE" != started ]; then
+    # skipped / unusable: nothing to wait for, but the archive still has to carry the row. The first
+    # version returned here, so 06b-heat-ab was absent from INDEX.txt on exactly the runs where the
+    # reader most needs to know why there is no reading.
+    STEP_NAMES+=("06b-heat-ab"); STEP_RC+=("$AB_RC"); STEP_FILES+=("06b-heat-ab.txt")
+    return 0
+  fi
+  AB_STATE=done
+  AB_WORK_T=$(date +%s)
+  wait "$AB_PID"; AB_RC=$?
+  # **"The ssh returned 0" is not "a measurement was taken."** An instrument that lands, runs and prints
+  # nothing is the failure this whole tree keeps recording, and here it would be worst of all: a chain
+  # that reports a measurement it did not get. So the diff section has to be IN the output, and its
+  # absence is a state of its own.
+  if [ "$AB_RC" != 0 ]; then
+    AB_STATE=failed
+  elif ! grep -q '^== B minus A per thermal zone' "$AB_OUT" 2>/dev/null; then
+    AB_STATE=empty; AB_RC=empty
+  fi
+  # Window B begins at T0 + window A + the hold. Both sides of this comparison are HOST clocks.
+  local b_starts=$((AB_T0 + AB_WINDOW + AB_HOLD))
+  local margin=$((b_starts - AB_WORK_T))
+  {
+    printf '\n-- chain bookkeeping (host clocks; the device clock is not orderable)\n'
+    printf '   window A began at       : %s\n' "$AB_T0"
+    printf '   the two fix steps ended : %s\n' "$AB_WORK_T"
+    printf '   window B begins at      : %s\n' "$b_starts"
+    if [ "$margin" -ge 0 ]; then
+      printf '   ALIGNED: the work finished %ss before window B began, so window B is the state AFTER both\n' "$margin"
+      printf '   fixes and window A is the state before either.\n'
+      AB_ALIGNED=1
+    else
+      printf '   NOT ALIGNED: window B began %ss BEFORE the work finished, so its window still contains\n' "$((-margin))"
+      printf '   part of the work rather than only its result. Treat the deltas as contaminated and say so\n'
+      printf '   if you quote them.\n'
+      AB_ALIGNED=0
+    fi
+    printf '   (the instrument own ssh returned %s)\n' "$AB_RC"
+  } >> "$AB_OUT" 2>&1
+  STEP_NAMES+=("06b-heat-ab"); STEP_RC+=("$AB_RC"); STEP_FILES+=("06b-heat-ab.txt")
+}
+# What the A/B can be read for, printed with it and not left to the reader to infer.
+ab_report() {
+  case "$AB_STATE" in
+  failed)
+    say "   NOT MEASURED: the instrument ran and returned $AB_RC -- the effect is UNMEASURED on this boot."
+    say "   Its output, such as it is, is 06b-heat-ab.txt." ;;
+  empty)
+    say "   NOT MEASURED: the instrument returned 0 and printed no difference section, so there is no"
+    say "   reading here to read. (Return 0 is not a measurement -- see the note in ab_finish.)" ;;
+  skipped)
+    say "   NOT MEASURED: --no-ab. This boot says the installers returned 0 and nothing about the effect." ;;
+  unusable)
+    say "   NOT MEASURED: the instrument could not be put on the device -- the effect is UNMEASURED."
+    say "   The reason is the first lines of 06b-heat-ab.txt." ;;
+  done)
+    say "   the two differences the instrument printed:"
+    sed -n '/^== B minus A per process/,/^$/p' "$AB_OUT" | head -14 | sed 's/^/     | /'
+    sed -n '/^== B minus A per thermal zone/,$p' "$AB_OUT" | grep -v '^==' | head -10 | sed 's/^/     | /'
+    case "$AB_ALIGNED" in
+    1) say "   ALIGNED: window A is before either fix, window B after both." ;;
+    0) say "   NOT ALIGNED: window B still contains part of the work -- see the bookkeeping in 06b-heat-ab.txt." ;;
+    *) say "   alignment was not recorded -- read 06b-heat-ab.txt before quoting any of these numbers." ;;
+    esac
+    say "   Read it as a READING. A temperature delta here is confounded by ambient, by a charging battery"
+    say "   and by the phone's own history this boot; the settled evidence is the mechanism (keeper gone,"
+    say "   governor on, cores idling low), and that is what the two installers read back." ;;
+  *)
+    say "   no A/B was started -- this run cannot say anything about the effect." ;;
+  esac
+}
+
 # --- the step runner ------------------------------------------------------------------------------
 # Unlike the capture script, a failing step here DOES stop the chain: these steps are not independent
 # readings, they are a licence chain -- running step 5 after a failed step 4 is the exact thing the
@@ -400,6 +544,13 @@ STEP_RC+=("$PROOF_RC"); STEP_FILES+=("04-proof.txt")
 VERDICT=$(grep -ax '== verdict: [a-z-]*' "$OUT/04-proof.txt" 2>/dev/null | tail -1 | sed 's/^== verdict: //')
 say "   verdict: ${VERDICT:-<none: no verdict line in the output>}"
 say ""
+# The measurement starts HERE: after the proof has decided whether the keeper may be retired, before
+# the first of the two fix steps, and before the refusal branch -- because that branch still installs
+# the governor, so both branches have something to measure. Window A is therefore the state AFTER the
+# netwatch swap and BEFORE either heat fix, which is the baseline the two named causes need.
+say "== 4b/6  the measurement around the two fixes (window A now)"
+ab_start
+say ""
 if [ "$PROOF_RC" != 0 ] || [ "$VERDICT" != "proof-obtained" ]; then
   # `proof-obtained` is the whole licence, and it is compared as a WHOLE LINE (docs 114: a substring
   # gate accepted a sentence that merely contained the word). Everything else -- proof-unclear, a
@@ -425,6 +576,10 @@ if [ "$PROOF_RC" != 0 ] || [ "$VERDICT" != "proof-obtained" ]; then
   step 06-cpufreq-governor "install the governor unit and apply it (independent of the address proof)" \
     "$CPUFREQ" --install
   say ""
+  say "== the measurement: window B, and the differences"
+  ab_finish
+  ab_report
+  say ""
   say "  State of the device now:"
   read_state
   archive
@@ -448,6 +603,13 @@ step 06-cpufreq-governor "install the governor unit and apply it" \
   "$CPUFREQ" --install
 
 # ==================================================================================================
+say "== the measurement: window B, and the differences"
+# ==================================================================================================
+ab_finish
+ab_report
+say ""
+
+# ==================================================================================================
 say "== the chain finished -- what the device says now"
 # ==================================================================================================
 read_state
@@ -457,4 +619,8 @@ say ""
 say "  Read the governors line: four identical names means the applier read its writes back (docs 99 --"
 say "  the first version printed 'on 0 cores' and exited 0). And 'keeper: gone' with both addresses"
 say "  still 1 is the end state this chain exists to reach."
+say ""
+say "  That end state is the MECHANISM, and it is what this chain can settle. Whether the phone runs"
+say "  cooler is what 06b-heat-ab.txt is for, and it is a reading with the caveats printed beside it:"
+say "  this chain prints no verdict on the heat itself, in either direction."
 exit 0
