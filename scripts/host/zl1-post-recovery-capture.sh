@@ -33,9 +33,11 @@
 #
 #   --outdir DIR        where to archive (default: repo tmp-post-recovery-<utc timestamp>/)
 #   --with-capture      ALSO run install-no-edl-on-panic.sh --capture-only (a device write; opt-in)
-#   --skip-probes       skip the GPS and fingerprint probes (they are the slowest steps, and neither
-#                       has ever produced a fix, so on a boot where the evidence above matters more
-#                       they are the ones to drop)
+#   --with-probes       RUN the GPS and fingerprint probes. They are SKIPPED BY DEFAULT: neither has
+#                       ever produced a fix, they are the slowest steps, and the last two boots that
+#                       ended in EDL both had the fingerprint probe as the last thing running (a
+#                       correlation of two, not a cause -- see the note at the steps below)
+#   --skip-probes       the old name for the default, kept because four documents spell it out
 #   --no-orientation    skip the orientation-axes probe (it needs a person holding the phone still)
 #   --step-limit SECS   kill a DEVICE-side step that runs longer than this (default 240). See the note
 #                       in the step runner: a device-side script that runs away is not a hypothetical,
@@ -61,7 +63,14 @@ REPO=$(cd "$HERE/../.." && pwd)
 
 OUT=""
 WITH_CAPTURE=0
-SKIP_PROBES=0
+# THE DEFAULT IS TO SKIP THEM (docs 116). They have never produced a fix -- neither GPS nor the
+# fingerprint has ever returned anything -- and the last two boots that ended in Qualcomm EDL both had
+# step 06 (the fingerprint probe) as the last thing running. That is a correlation of two, not a
+# cause, and this file says so rather than claiming one; but the default of the command that runs on
+# the boot you paid a finger for should be the part that only exists on that boot. `--with-probes` is
+# how you ask for them, `--skip-probes` is kept as a no-op so the four documents that spell it out
+# still work.
+SKIP_PROBES=1
 NO_ORIENTATION=0
 STEP_LIMIT=240
 
@@ -70,6 +79,7 @@ while [ $# -gt 0 ]; do
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --with-capture) WITH_CAPTURE=1; shift ;;
   --skip-probes) SKIP_PROBES=1; shift ;;
+  --with-probes) SKIP_PROBES=0; shift ;;
   --no-orientation) NO_ORIENTATION=1; shift ;;
   --step-limit) STEP_LIMIT="${2?--step-limit needs SECONDS}"; shift 2 ;;
   --help|-h)
@@ -351,8 +361,10 @@ if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
   step 06-fingerprint      device "$HERE/../device/zl1-fingerprint-probe.sh"
 else
-  say "-- 05/06 probes: SKIPPED by --skip-probes (they have never produced a fix; the evidence above"
-  say "   is the part that only exists on this boot)"
+  say "-- 05/06 probes: SKIPPED (the default; --with-probes runs them). Neither has ever produced a"
+  say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
+  say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
+  say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say
 fi
 

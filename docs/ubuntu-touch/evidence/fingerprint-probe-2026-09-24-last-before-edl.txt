@@ -1,0 +1,42 @@
+zl1 fingerprint probe :: Wed Feb 11 06:45:36 PM EST 1970 :: read-only
+== HAL: pid 42327  uid=1000 gid=1000  ns/pid pid:[4026533532]  ns/mnt mnt:[4026533529]
+   cmdline: /vendor/bin/hw/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1 
+   container pid 36038 ns/mnt mnt:[4026533529]
+   -> same mount namespace as the container (so /data means the container's /data)
+== the store paths, resolved through the HAL's own mount namespace (/proc/42327/root/...)
+   MISSING  /data/system/users/0/fpdata
+   MISSING  /data/vendor_de/0/fpdata
+   MISSING  /data/vendor/biometrics
+   (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+    EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+   the parent, for reference:
+   /proc/42327/root/data/system/users/0 mode=drwx------  uid=1000 gid=1000
+   open fds that look like the fingerprint device:
+   writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+   only reports the mode bits and the owner):
+   | drwx------ 2 1000 1000 4096 Feb 11 18:44 /proc/42327/root/data/system/users/0
+== which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+   biometryd execs /usr/bin/getprop -- a shell script (the v63 stub's shape), and it DOES answer (so the level below is a real read)
+     ro.product.first_api_level -> <unset>
+     ro.build.version.sdk      -> 28
+   -> level 28 > 27: biometryd passes /data/vendor_de/0/fpdata/  (check THAT one above)
+   the Android side, for cross-check only (biometryd never reads this):
+     ro.product.first_api_level -> 23     [2026-06-07 vendor.img build.prop: 23]
+     ro.build.version.sdk      -> 28
+   -> DISAGREES with the reading above: biometryd will pass /data/vendor_de/0/fpdata, the device reports <=27.
+== which module hw_get_module('fingerprint') picks for THIS container
+   ro.hardware          = qcom
+   ro.product.board     = msm8996
+   ro.board.platform    = msm8996
+   ro.arch              = <unset>
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+nsenter: failed to execute test: No such file or directory
+   -> no variant match; AOSP would fall back to fingerprint.default.so
+   the modules present, as the container sees them:

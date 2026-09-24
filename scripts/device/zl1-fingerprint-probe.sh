@@ -93,6 +93,29 @@ hal_pid() {
 }
 
 H=$(hal_pid)
+
+# --- the one honest way to read a path through the HAL's mount namespace -------------------------
+#
+# `nsenter -t PID -m` switches the mount namespace and THEN execs, so a bare command name is resolved
+# through the CONTAINER's mount table -- where the UT rootfs's /usr/bin does not exist. The device said
+# so out loud on 2026-09-24: `nsenter: failed to execute test: No such file or directory`, nine times,
+# once per (variant x directory) in section 2. exec failure is exit 127, which the shell reads as
+# FALSE -- so an existence test that COULD NOT RUN was reported as "does not exist", and section 2
+# concluded "no variant match; AOSP would fall back to fingerprint.default.so" without having looked
+# at anything. That is the defect this file already hunts for one level up (docs 103, 109): an
+# instrument that cannot report, printing a definite answer. (lshal and logcat keep working for the
+# reverse reason: /bin in the container's table IS Android's /bin, which has them -- and they need
+# `-p`/`-m` for binder, so they stay as they are.)
+#
+# `/proc/<pid>/root/<abs path>` needs none of that: the KERNEL resolves the path through the target's
+# mount namespace and root, and the tool doing the reading (`ls`, `[ -e ]`) is the HOST's own. It is
+# the same mechanism section 1 has always used for the store paths, and the only one whose answer
+# means what it says. `$H` and `$A` are the same mount namespace (section 1 prints both), and the HAL
+# is the process whose own access() decides the question, so the pid used here is the HAL's.
+halpath() { # $1 = a path as the CONTAINER sees it; prints the path to read it from HERE
+  if [ -n "$H" ]; then printf '/proc/%s/root%s' "$H" "$1"; else printf '%s' "$1"; fi
+}
+
 if [ -z "$H" ]; then
   echo "== HAL: not running (no cmdline matching biometrics.fingerprint*service)"
   echo "   check the container's init for it:"
@@ -279,14 +302,15 @@ else
     [ -n "$v" ] && variants="$variants $v"
   done
   # /vendor here is the CONTAINER's tree, not the host's: this script runs on the UT side, where
-  # /vendor is a different (or absent) tree. Every path below is therefore resolved with `nsenter -m`,
-  # exactly like the second store further down -- `test -f /vendor/...` on the host would report every
-  # module MISSING and read as "the HAL is not installed", which is the failure this section exists to
-  # rule out. (The first draft of this section made precisely that mistake.)
+  # /vendor is a different (or absent) tree. Every path below is therefore read through halpath(),
+  # i.e. /proc/<hal-pid>/root/... -- `test -f /vendor/...` on the HOST would report every module
+  # MISSING and read as "the HAL is not installed", which is the failure this section exists to rule
+  # out. (The first draft of this section made precisely that mistake, and the SECOND draft moved it
+  # from `test -f` on the host to `nsenter -m -- test`, which failed the other way: see halpath().)
   pick=""
   for v in $variants; do
     for d in /vendor/lib64/hw /system/lib64/hw /odm/lib64/hw; do
-      if [ -z "$pick" ] && nsenter -t "$A" -m -- test -f "$d/fingerprint.$v.so"; then
+      if [ -z "$pick" ] && [ -f "$(halpath "$d/fingerprint.$v.so")" ]; then
         pick="$d/fingerprint.$v.so"
       fi
     done
@@ -309,10 +333,10 @@ else
   # they were measured (scripts/host/zl1-vendor-link-audit.sh, offline against the images).
   echo "   the modules present, as the container sees them:"
   for d in /vendor/lib64/hw /system/lib64/hw; do
-    nsenter -t "$A" -m -- ls -l "$d" 2>/dev/null |
+    ls -l "$(halpath "$d")" 2>/dev/null |
       awk -v d="$d" '/finger|gxfinger/ { printf "   %s/%s  %s bytes\n", d, $NF, $5 }'
   done
-  nsenter -t "$A" -m -- test -e /vendor/lib64/hw/fingerprint.default.so ||
+  [ -e "$(halpath /vendor/lib64/hw/fingerprint.default.so)" ] ||
     echo "   (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)"
 fi
 
@@ -343,8 +367,8 @@ fi
 echo "== the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)"
 if [ -n "$A" ]; then
   for p in /data/gf_data /data/gf_data/enroll /data/system/users/0/fpdata; do
-    if nsenter -t "$A" -m -- test -e "$p"; then
-      printf '   EXISTS   %-32s %s\n' "$p" "$(nsenter -t "$A" -m -- ls -ldn "$p" 2>/dev/null | awk '{printf "mode=%s uid=%s gid=%s", $1,$3,$4}')"
+    if [ -e "$(halpath "$p")" ]; then
+      printf '   EXISTS   %-32s %s\n' "$p" "$(ls -ldn "$(halpath "$p")" 2>/dev/null | awk '{printf "mode=%s uid=%s gid=%s", $1,$3,$4}')"
     else
       echo "   MISSING  $p"
     fi
@@ -498,22 +522,25 @@ if [ "$CREATE" = 1 ]; then
   /data/system/users/0/fpdata) OTHER=/data/vendor_de/0/fpdata ;;
   *)                           OTHER=/data/system/users/0/fpdata ;;
   esac
-  # Through the container's namespace: nsenter -m makes /data mean the container's /data.
-  if nsenter -t "$A" -m -- test -e "$TARGET"; then
+  # Through the HAL's own root: /proc/<pid>/root makes /data mean the container's /data, and unlike
+  # `nsenter -m` it does not need to exec something inside a mount table that has no /usr/bin.
+  if [ -e "$(halpath "$TARGET")" ]; then
     echo "   exists already: $TARGET"
-    nsenter -t "$A" -m -- ls -ldn "$TARGET" 2>/dev/null | sed 's/^/   /'
+    ls -ldn "$(halpath "$TARGET")" 2>/dev/null | sed 's/^/   /'
   else
-    nsenter -t "$A" -m -- mkdir -p "$TARGET" && echo "   created $TARGET"
+    mkdir -p "$(halpath "$TARGET")" && echo "   created $TARGET"
     # chown only if the HAL is not root: root can write anything, so the mode is then irrelevant.
     if [ -n "$uid" ] && [ "$uid" != 0 ]; then
-      nsenter -t "$A" -m -- chown "$uid:$gid" "$TARGET" 2>/dev/null && echo "   chown $uid:$gid $TARGET"
-      nsenter -t "$A" -m -- chmod 0700 "$TARGET" 2>/dev/null && echo "   chmod 0700 $TARGET"
+      chown "$uid:$gid" "$(halpath "$TARGET")" 2>/dev/null && echo "   chown $uid:$gid $TARGET"
+      chmod 0700 "$(halpath "$TARGET")" 2>/dev/null && echo "   chmod 0700 $TARGET"
     fi
-    nsenter -t "$A" -m -- ls -ldn "$TARGET" 2>/dev/null | sed 's/^/   now: /'
+    ls -ldn "$(halpath "$TARGET")" 2>/dev/null | sed 's/^/   now: /'
   fi
   echo "   NOT created: $OTHER (section 2 says biometryd passes $TARGET, so nothing would ever read the"
-  echo "   other one; if the evidence later contradicts section 2, make it by hand:"
-  echo "     nsenter -t $A -m -- mkdir -p $OTHER"
-  echo "   UNDO: nsenter -t $A -m -- rmdir $TARGET   (only if it is still empty)"
+  echo "   other one; if the evidence later contradicts section 2, make it by hand. The pid in these"
+  echo "   lines is the HAL's ON THIS BOOT -- find the current one with:"
+  echo "     ps -eo pid,args | grep -i [b]iometrics.fingerprint"
+  echo "     mkdir -p /proc/<that-pid>/root$OTHER"
+  echo "   UNDO: rmdir /proc/<that-pid>/root$TARGET   (only if it is still empty)"
   echo "   then restart whatever reports the failure and re-read the logcat counts above."
 fi

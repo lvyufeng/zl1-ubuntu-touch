@@ -51,7 +51,7 @@ ACT="$W/actions"
 rm -rf "$W"
 mkdir -p "$FR/proc/device-tree" "$FR/etc/systemd/system" "$FR/usr/bin" "$FR/usr/lib/qt5/bin" \
          "$FR/dev" "$FR/sys/fs/selinux" "$FR/proc/4242" "$FR/proc/4242/root/data/system/users/0" \
-         "$FR/proc/4242/fd" "$W/tmp" "$STUB" "$W/exists" "$W/files" "$W/ls" "$W/props" \
+         "$FR/proc/4242/fd" "$W/tmp" "$STUB" "$W/props" \
          "$FR/proc/1/ns" || exit 2
 printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
 
@@ -129,17 +129,22 @@ exit 0
 EOF
 
 # nsenter: records, and answers every question the scripts ask through the container -- the six
-# properties, "does this path exist" (`test -e`) / "is it a regular file" (`test -f`), the `ls`
-# listings, and the binder service list. A scenario sets up an answer by creating a file, never by
-# teaching the stub a fact:
+# properties, the logcat and lshal dumps, and the binder service list. A scenario sets up an answer by
+# creating a file, never by teaching the stub a fact:
 #   $W/props/<key>                        the value of `getprop <key>`
-#   $W/exists/<path, / -> _>              `test -e <path>` succeeds
-#   $W/files/<path, / -> _>               `test -f <path>` succeeds
-#   $W/ls/<path, / -> _>                  the output of `ls -... <path>`
 #   $W/services.txt                       the output of `/system/bin/service list`
-# This is why the path key is the whole path and not its basename: the fingerprint section asks about
-# /data/gf_data and /data/system/users/0/fpdata in the same run, and a basename key would make one
-# answer stand for the other.
+#
+# **It USED to answer `test -e`/`test -f`/`ls` too, from $W/exists, $W/files and $W/ls. Those arms are
+# gone, and their removal is the point of docs 116.** The probe asked those questions with
+# `nsenter -t "$A" -m -- test ...`, which cannot work on the device -- `nsenter -m` swaps the mount
+# namespace and THEN execs, so `test` is looked up in the CONTAINER's mount table, which has no
+# /usr/bin. The device said so itself: `nsenter: failed to execute test: No such file or directory`,
+# nine times. Exit 127 reads as FALSE, so every existence test answered "does not exist" -- and this
+# harness's stub was answering correctly for a script that, on the device, never got an answer at all.
+# A fixture that agrees with the code for no reason (docs 114 section 6), one level down. The probe
+# now reads /proc/<hal-pid>/root/<path>, which needs no exec in a foreign namespace; the fixtures are
+# therefore REAL FILES under $FR/proc/$H/root, and an arm of this stub that can no longer be reached
+# is deleted rather than left as decoration.
 cat > "$STUB/nsenter" <<EOF
 #!/bin/sh
 printf 'nsenter %s\n' "\$*" >> "$ACT"
@@ -160,14 +165,6 @@ case "\$*" in
 *"lshal"*)
   # `nsenter ... -- lshal`: the same, for the HIDL service list.
   cat "$W/lshal.txt" 2>/dev/null ;;
-*"test -e "*|*"test -f "*)
-  t="\${*##*test -}"; p="\${t#? }"; p="\${p%% *}"
-  case "\$t" in f*) d=files ;; *) d=exists ;; esac
-  [ -n "\$p" ] && [ -e "$W/\$d/\$(printf '%s' "\$p" | tr / _)" ] && exit 0
-  exit 1 ;;
-*" ls "*|*"ls -"*)
-  p="\${*##* }"
-  cat "$W/ls/\$(printf '%s' "\$p" | tr / _)" 2>/dev/null ;;
 esac
 exit 0
 EOF
@@ -217,6 +214,20 @@ chmod +x "$STUB"/*
 # Only the destinations of the writes and the paths the guards read are moved. `sh -n` plus a landed
 # check per rewrite, because a rewrite that silently misses is an untested copy -- the failure mode
 # doc 95 records for the post-mortem harness.
+# The `printf '/proc/%s/root%s'` rule below is how halpath() builds a path resolved through ANOTHER
+# process's mount namespace. It has no literal `$var` for the rules above to catch -- the pid travels
+# as a printf ARGUMENT -- so without that rule the whole probe would read the HOST's /proc and every
+# store path would come back MISSING for a reason that is not the device's.
+#
+# **A COMMENT MAY NOT GO INSIDE THIS CHAIN.** The first version of that rule put its explanation
+# between two `-e` arguments, i.e. after a line-continuation backslash. A backslash-newline is removed
+# BEFORE comments are recognised, so the comment swallowed the rest of the joined logical line --
+# including `-e "s#/proc/%s/..."` AND the `"$1" > "$2"` at the end. sed then had no file argument, fell
+# back to reading STDIN (this harness's stdin is a socket), and BLOCKED FOREVER: no output, no error,
+# 0 % CPU, for six minutes. `sh -n` had already said the file parses, and it was right -- this is not
+# a syntax error, it is a command that lost its arguments, which is a class a parse check cannot see.
+# Hence the `< /dev/null` on the sed: with it, a lost `"$1"` produces an empty file, which the landed
+# checks below turn into a loud setup failure instead of a harness that never speaks again.
 rewrite() { # $1 src, $2 dst
   sed -e "s#/proc/device-tree/compatible#$FR/proc/device-tree/compatible#g" \
       -e "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g" \
@@ -225,13 +236,14 @@ rewrite() { # $1 src, $2 dst
       -e "s#/proc/\$gxp#$FR/proc/\$gxp#g" \
       -e "s#/proc/\$_pid#$FR/proc/\$_pid#g" \
       -e "s#/proc/\$A#$FR/proc/\$A#g" \
+      -e "s#/proc/%s/root%s#$FR/proc/%s/root%s#g" \
       -e "s#/etc/systemd/system#$FR/etc/systemd/system#g" \
       -e "s#^QML=/tmp/#QML=$W/tmp/#" \
       -e "s#/usr/bin/getprop#$FR/usr/bin/getprop#g" \
       -e "s#/usr/lib/qt5/bin/qmlscene#$FR/usr/lib/qt5/bin/qmlscene#g" \
       -e "s#/dev/goodix_fp#$FR/dev/goodix_fp#g" \
       -e "s#/sys/fs/selinux#$FR/sys/fs/selinux#g" \
-      "$1" > "$2" || return 1
+      "$1" > "$2" < /dev/null || return 1
   sh -n "$2" || return 1
   return 0
 }
@@ -249,14 +261,24 @@ grep -qF "$FR/proc/[0-9]*" "$W/fp.sh" || { echo "the process-walk rewrite did no
 # does not know about stays pointed at THIS machine, so the branch that reads it silently reads
 # nothing and the scenario passes vacuously. Count every `/proc/<var>` and every moved one; they must
 # be equal, or a path was left behind.
+#
+# It counts BOTH shapes a pid can travel in: a literal `/proc/$var` and the `printf` form
+# `/proc/%s/...`, whose pid is an argument and which no `$`-shaped rule can see. The second shape was
+# added with halpath(); the first version of this guard knew only the first, which is exactly the
+# "a rewrite that silently misses" failure mode it exists to catch, one level up.
 for s in "$W/loc.sh" "$W/fp.sh"; do
-  all=$(grep -o '/proc/\$' "$s" | wc -l)
-  moved=$(grep -oF "$FR/proc/\$" "$s" | wc -l)
-  if [ "$all" != "$moved" ]; then
-    echo "$(basename "$s"): $((all - moved)) /proc/<var> path(s) were NOT moved into the fake root:" >&2
-    grep -n '/proc/\$' "$s" | grep -vF "$FR/proc/\$" | sed 's/^/  /' >&2
-    exit 2
-  fi
+  for shape in '/proc/\$' '/proc/%s'; do
+    all=$(grep -oF "$shape" "$s" | wc -l)
+    # `$FR` + the WHOLE shape: /proc stays in the pattern. (Strip it and the rule looks for
+    # `.../fake/$` and `.../fake/%s`, which are in no file -- a guard that fails on the correct
+    # rewrite is as useless as one that passes on a missing one.)
+    moved=$(grep -oF "$FR${shape}" "$s" | wc -l)
+    if [ "$all" != "$moved" ]; then
+      echo "$(basename "$s"): $((all - moved)) ${shape} path(s) were NOT moved into the fake root:" >&2
+      grep -nF "$shape" "$s" | grep -vF "$FR${shape}" | sed 's/^/  /' >&2
+      exit 2
+    fi
+  done
 done
 
 DROPIN="$FR/etc/systemd/system/lomiri-location-service.service.d"
@@ -281,13 +303,27 @@ countf() { grep -c -F -- "$1" "$2" 2>/dev/null || true; }
 # What the probe printed for one pattern, as a number. The table is "   <pattern> <count>".
 pcount() { printf '%s\n' "$OUT" | awk -v p="$1" 'index($0, p) && $NF ~ /^[0-9]+$/ { print $NF; exit }'; }
 sysacts() { grep -E '^systemctl ' "$ACT" 2>/dev/null; }
+# The container's filesystem as this harness presents it: $FR/proc/<pid>/root IS the container's root,
+# so an answer to "does this path exist, as the HAL sees it" is a real file there and not a line in a
+# stub. `created` is therefore a statement about the filesystem, which is what this harness's design
+# note argues for -- stronger than "a stub was called".
+storepath() { printf '%s/proc/4242/root%s' "$FR" "$1"; }
+created()   { [ -d "$(storepath "$1")" ]; }
 syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|enable|disable|reload)' "$ACT" 2>/dev/null; }
 
 # $1 = script, rest = args. stdout+stderr in $OUT, exit code in $RC (124 = it hung). The three
 # FAKE_* values are what the device would have answered through lxc-info/nsenter, so a scenario that
 # wants a different device state sets them and calls env_reset afterwards.
 RUN_FAL=27; RUN_SDK=27; RUN_PID=4242
-env_reset() { RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; ut_getprop; }
+env_reset() {
+  RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; ut_getprop
+  # The container's tree is SHARED state now that the probe really writes into it: a store directory
+  # left behind by one scenario turns the next scenario's --create-store-dir into "already there",
+  # which is a different branch asserting the opposite thing. (Measured: that is exactly how the >27
+  # scenario below failed before this reset existed.)
+  rm -rf "$(storepath /data/system/users/0/fpdata)" "$(storepath /data/vendor_de/0/fpdata)" \
+         "$(storepath /data/gf_data)"
+}
 run() {
   s="$1"; shift
   : > "$ACT"
@@ -617,10 +653,12 @@ echo "== 8. --create-store-dir: ONE path, decided by section 2, with its own und
 # ==================================================================================================
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create"
-want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "level 27 -> it creates /data/system/users/0/fpdata"
-notwant 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "and NOT the other candidate (the defect this round fixed)"
+created /data/system/users/0/fpdata && ok "level 27 -> it creates /data/system/users/0/fpdata (as a real directory in the fake root)" \
+  || bad "it did not create the <=27 store directory"
+created /data/vendor_de/0/fpdata && bad "it created the other candidate too (the defect docs 97 fixed)" \
+  || ok "and NOT the other candidate"
 want 'created /data/system/users/0/fpdata' "$OUT" "it reports what it created"
-want 'UNDO: nsenter -t 4242 -m -- rmdir /data/system/users/0/fpdata' "$OUT" "the undo names the path it created"
+want 'UNDO: rmdir /proc/<that-pid>/root/data/system/users/0/fpdata' "$OUT" "the undo names the path it created, through the pid the operator has to look up"
 want 'NOT created: /data/vendor_de/0/fpdata' "$OUT" "and it says which path it deliberately did not create"
 notwant 'UNDO:.*vendor_de' "$OUT" "the undo does not name a path that was never created"
 
@@ -634,21 +672,29 @@ RUN_FAL=29; RUN_SDK=29
 ut_getprop_stub
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create29.containeronly"
-want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created"
-notwant 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "NOT the path the container's value would suggest (the old probe's answer)"
+created /data/system/users/0/fpdata && ok "container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created" \
+  || bad "it did not create the <=27 store directory"
+created /data/vendor_de/0/fpdata && bad "it created the path the container's value would suggest (the old probe's answer)" \
+  || ok "NOT the path the container's value would suggest"
 want 'DISAGREES with the reading above' "$OUT" "and it says the two readings disagree instead of silently picking one"
 
 echo
 echo "   -- and when biometryd's own getprop answers >27, the other path is taken:"
+# env_reset FIRST: the previous scenario created the <=27 store for real, and the assertion below is
+# that THIS run does not create it. Without the reset that check fails on the last run's directory --
+# which is the same "shared state makes the next scenario measure the wrong thing" defect the reset
+# exists for, caught here by the check itself.
+env_reset
 RUN_FAL=29; RUN_SDK=29
 ut_getprop 29 29
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create29"
 want 'it DOES answer' "$OUT" "it reports that the UT getprop answers (so the level is a real read, not a default)"
 want 'level 29 > 27' "$OUT" "and reads the level from biometryd's own source"
-want 'mkdir -p /data/vendor_de/0/fpdata' "$(cat "$ACT")" "level 29 -> it creates /data/vendor_de/0/fpdata"
-notwant 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and not the <=27 path"
-want 'UNDO: nsenter -t 4242 -m -- rmdir /data/vendor_de/0/fpdata' "$OUT" "with the matching undo"
+created /data/vendor_de/0/fpdata && ok "level 29 -> it creates /data/vendor_de/0/fpdata" \
+  || bad "it did not create the >27 store directory"
+created /data/system/users/0/fpdata && bad "it created the <=27 path as well" || ok "and not the <=27 path"
+want 'UNDO: rmdir /proc/<that-pid>/root/data/vendor_de/0/fpdata' "$OUT" "with the matching undo"
 want 'AGREES with the reading above' "$OUT" "and both readings agree here"
 
 echo
@@ -659,28 +705,38 @@ run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.truth"
 want 'ro.product.first_api_level -> 23' "$OUT" "the container reports the value the real vendor.img build.prop carries"
 want 'AGREES with the reading above' "$OUT" "and it says so explicitly"
-want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "so the path is certain from two independent readings"
+created /data/system/users/0/fpdata && ok "so the path is certain from two independent readings" \
+  || bad "it did not create the <=27 store directory"
 
 echo
 echo "   -- an unreadable property lands on the SAME path a correct Android 8 would use:"
 RUN_FAL=; RUN_SDK=
 run "$W/fp.sh" --create-store-dir
 want 'atoi\(""\)=0' "$OUT" "it explains that atoi(\"\")=0"
-want 'mkdir -p /data/system/users/0/fpdata' "$(cat "$ACT")" "and creates the <=27 path, as biometryd would"
+created /data/system/users/0/fpdata && ok "and creates the <=27 path, as biometryd would" \
+  || bad "it did not create the <=27 store directory"
 
 echo
 echo "   -- already there: no mkdir, no chown, no chmod -- and it does not pretend otherwise:"
-: > "$W/exists/_data_system_users_0_fpdata"
 env_reset
+# A real directory IN THE FAKE ROOT, with a mode a chmod would visibly change. mkdir/chown/chmod are
+# NOT stubbed here (the design note: the write really happens, into a fake root), so "it changed no
+# ownership and no mode" has to be a statement about this directory -- an assertion about $ACT for a
+# command that is never stubbed is a check that cannot fail.
+mkdir -p "$(storepath /data/system/users/0/fpdata)"
+chmod 0755 "$(storepath /data/system/users/0/fpdata)"
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.exists"
-notwant 'mkdir ' "$(cat "$ACT")" "with the directory present it creates nothing"
-notwant 'chown |chmod ' "$(cat "$ACT")" "and changes no ownership or mode"
+[ -d "$(storepath /data/system/users/0/fpdata)" ] \
+  && ok "with the directory present it creates nothing (and it is still there)" \
+  || bad "the directory is gone"
+[ "$(stat -c %a "$(storepath /data/system/users/0/fpdata)" 2>/dev/null)" = 755 ] \
+  && ok "and changes no ownership or mode" || bad "the mode was changed"
 want 'exists already' "$OUT" "it says the directory was already there"
 
 echo
 echo "   -- the uid it would chown to comes from the HAL, so no HAL means no write:"
-rm -f "$W/exists/_data_system_users_0_fpdata"
+rm -rf "$(storepath /data/system/users/0/fpdata)"
 RUN_PID=none
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.nohal"
@@ -702,20 +758,20 @@ echo "== 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, tw
 #
 env_reset   # section 8 left RUN_PID=none behind, and every check below needs a container
 # The fixtures below are the container's answers: the four variant properties, the two module files in
-# the container's /vendor, and the listing. Nothing is taught to the stub as a fact -- each answer is
-# a file, so a scenario says what the device would say.
+# the container's /vendor. Nothing is taught to the stub as a fact -- each answer is a REAL FILE in
+# the container's tree, and the `ls` the probe runs is the host's real ls over those files, so the
+# sizes below are the sizes it prints rather than a canned listing that could drift from them.
 printf 'msm8996' > "$W/props/ro.hardware"
 printf 'msm8996' > "$W/props/ro.product.board"
 printf 'msm8996' > "$W/props/ro.board.platform"
 # ro.arch deliberately has no answer: an unset variant property must be reported, not dropped.
-: > "$W/files/_vendor_lib64_hw_fingerprint.msm8996.so"
-: > "$W/files/_vendor_lib64_hw_gxfingerprint5118m.default.so"
-cat > "$W/ls/_vendor_lib64_hw" <<'LS'
-total 812
--rw-r--r-- 1 root root  41232 2020-01-01 00:00 fingerprint.msm8996.so
--rw-r--r-- 1 root root 845944 2020-01-01 00:00 gxfingerprint5118m.default.so
--rw-r--r-- 1 root root   9216 2020-01-01 00:00 sensors.msm8996.so
-LS
+mkdir -p "$FR/proc/4242/root/vendor/lib64/hw"
+mkfile() { # $1 path under the container's root, $2 size in bytes
+  head -c "$2" /dev/zero > "$(storepath "$1")"
+}
+mkfile /vendor/lib64/hw/fingerprint.msm8996.so        41232
+mkfile /vendor/lib64/hw/gxfingerprint5118m.default.so 845944
+mkfile /vendor/lib64/hw/sensors.msm8996.so             9216
 
 echo
 echo "   -- nothing else on the device yet: the two silences are both reported as present:"
@@ -735,12 +791,17 @@ want 'gx_fpd: NOT RUNNING' "$OUT" "it checks the daemon the picked module needs 
 want 'not registered' "$OUT" "and whether FingerPrintService is on the container's binder"
 want 'MISSING  /data/gf_data' "$OUT" "and the Goodix HAL's own store, which is not the path biometryd passes"
 want 'MISSING .*dev/goodix_fp' "$OUT" "and the device node that store is reached through"
-want 'nsenter -t 4242 -m -- test -e /data/gf_data' "$(cat "$ACT")" "the store questions go through the CONTAINER's mount namespace"
+want 'MISSING  /data/system/users/0/fpdata' "$OUT" "and a path that is not in the container's tree is reported missing, not assumed"
+# The mechanism that makes the line above mean "as the CONTAINER sees it": every store question is
+# resolved through /proc/<hal-pid>/root, and a path that does not exist on THIS HOST at all is the one
+# that proves it. (`nsenter -t 4242 -m -- test -e ...` used to be asserted here; it cannot work on the
+# device -- see the nsenter stub's note -- and an assertion about a command that never answers is a
+# check that cannot fail. The mutant at the end of this section is the version with teeth.)
 
 echo
 echo "   -- and with the daemon up and the second store present, both change:"
-: > "$W/exists/_data_gf_data"
-printf -- '-rwx------ 2 system system 4096 2020-01-01 00:00 /data/gf_data\n' > "$W/ls/_data_gf_data"
+mkdir -p "$(storepath /data/gf_data)"
+chmod 0700 "$(storepath /data/gf_data)"
 printf 'FingerPrintService: []\n' > "$W/services.txt"
 mkdir -p "$FR/proc/7777"
 printf 'gx_fpd\0' > "$FR/proc/7777/cmdline"
@@ -756,19 +817,25 @@ rm -rf "$FR/proc/7777"
 
 echo
 echo "   -- the check with teeth: does the resolution really have to go through the container?"
-# The point of the whole section. /vendor is the CONTAINER's tree; this script runs on the UT side,
-# where that path is a different tree (or absent). So the mutant below -- the same rewritten script
-# with `nsenter -t "$A" -m -- test -f` replaced by the host's own `test -f`, which is exactly what the
-# first draft of this section did -- reports "no variant match" for a container that plainly has the
-# module. If the mutant still found it, the checks above would be measuring nothing.
-sed 's#nsenter -t "$A" -m -- test -f#test -f#' "$W/fp.sh" > "$W/fp.hostpath.sh"
-if grep -qF 'test -f "$d/fingerprint.$v.so"' "$W/fp.hostpath.sh" && \
-   ! grep -qF 'nsenter -t "$A" -m -- test -f' "$W/fp.hostpath.sh"; then
-  ok "the mutation landed (the mutant tests the HOST's /vendor, not the container's)"
+# The point of the whole section. /vendor and /data are the CONTAINER's trees; this script runs on the
+# UT side, where those paths are different trees (or absent). So the mutant below -- the same rewritten
+# script with halpath() short-circuited to return its argument, i.e. every read aimed at THIS MACHINE
+# instead of the container's root -- must find nothing. If it still found the module, every check above
+# would be measuring the host and not the device.
+#
+# It is the same defect, twice removed: the FIRST draft aimed `test -f` straight at the host's
+# /vendor; the second aimed `nsenter -m -- test` at a mount table with no /usr/bin, so the answer was
+# "missing" for a reason that had nothing to do with what is installed. This mutant is the honest
+# version of both: it asks the host, on purpose, and the checks above have to notice.
+sed 's#printf .*/proc/%s/root%s. "$H" "$1"#printf "%s" "$1"#' "$W/fp.sh" > "$W/fp.hostpath.sh"
+if grep -qF 'printf "%s" "$1"' "$W/fp.hostpath.sh" && \
+   ! grep -qF "/proc/%s/root%s' \"\$H\"" "$W/fp.hostpath.sh"; then
+  ok "the mutation landed (the mutant reads the HOST's paths, not the container's root)"
   run "$W/fp.hostpath.sh"
   printf '%s\n' "$OUT" > "$W/out.fp.hostpath"
   notwant '-> variant match' "$OUT" "on the host's /vendor the very same script finds NO module"
   want 'no variant match' "$OUT" "and says so, which is the false 'the HAL is not installed' verdict"
+  notwant 'EXISTS   /data/gf_data' "$OUT" "and the second store, which IS in the container's tree, is reported absent"
 else
   bad "the mutation did not land, so the check above proves nothing"
 fi

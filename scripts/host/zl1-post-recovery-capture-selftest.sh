@@ -430,11 +430,13 @@ want '^CALLEE EDLPM$' "$(printf '%s\n' "$O" | sed -n '1p')" "step 0 (the post-mo
 want '^CALLEE BOOTADDR$' "$(printf '%s\n' "$O" | sed -n '2p')" "then the boot-address verdict"
 want '^CALLEE KEEPER$' "$(printf '%s\n' "$O" | sed -n '3p')" "then the keeper's status (read-only)"
 want '^CALLEE HEALTH$' "$(printf '%s\n' "$O" | sed -n '4p')" "then the health check"
-want '^CALLEE GPS$' "$(printf '%s\n' "$O" | sed -n '5p')" "then the GPS probe"
-want '^CALLEE FP$' "$(printf '%s\n' "$O" | sed -n '6p')" "then the fingerprint probe"
-want '^CALLEE ORIENT$' "$(printf '%s\n' "$O" | sed -n '7p')" "and the orientation survey last"
-[ "$(order | wc -l)" = 7 ] && ok "exactly seven steps: nothing extra is run by default" \
+want '^CALLEE ORIENT$' "$(printf '%s\n' "$O" | sed -n '5p')" "then the orientation survey"
+[ "$(order | wc -l)" = 5 ] && ok "exactly five steps -- and the two probes are NOT among them" \
   || { bad "it ran $(order | wc -l) steps:"; order | sed 's/^/        | /'; }
+# docs 116: the probes are skipped by default. This is the assertion that makes the default a fact
+# rather than a comment, and it is on the ORDER list rather than on stdout, so a default that flipped
+# back without anyone noticing cannot pass on a printed line that still says "skipped".
+notwant '^CALLEE (GPS|FP)$' "$(order)" "neither probe runs by default (docs 116)"
 notwant '^CALLEE NOEDL' "$(order)" "and NOT the one step that writes"
 
 echo
@@ -452,7 +454,7 @@ want "scp .*$CAL/device/zl1-edl-postmortem\.sh root@10\.15\.19\.82:/tmp/zl1-edl-
   "the post-mortem is pushed to /tmp by name, and the source is the path the script resolved"
 want 'zl1-boot-address-check\.sh' "$(scpacts)" "and the boot-address check"
 want 'sh /tmp/zl1-edl-postmortem\.sh' "$(sshacts)" "and run from /tmp, which is where the health check sends them too"
-[ "$(scpacts | wc -l)" = 5 ] && ok "five pushes: the five DEVICE steps, and no more" \
+[ "$(scpacts | wc -l)" = 3 ] && ok "three pushes: the three DEVICE steps, and no more" \
   || { bad "it pushed $(scpacts | wc -l) files:"; scpacts | sed 's/^/        | /'; }
 
 # ==================================================================================================
@@ -462,9 +464,12 @@ echo "== 4. the archive: everything survives as a file, with an index and a chec
 [ -f "$OD/INDEX.txt" ] && ok "the index exists" || bad "no INDEX.txt"
 [ -f "$OD/SHA256SUMS" ] && ok "and the checksums" || bad "no SHA256SUMS"
 [ -f "$OD/00-identity.txt" ] && ok "the identity block is archived" || bad "no 00-identity.txt"
-for f in 01-edl-postmortem 02-boot-address 03-keeper-status 04-health-check 05-gps-probe \
-         06-fingerprint 07-orientation; do
+for f in 01-edl-postmortem 02-boot-address 03-keeper-status 04-health-check 07-orientation; do
   [ -s "$OD/$f.txt" ] && ok "step output archived: $f.txt" || bad "missing or empty $f.txt"
+done
+for f in 05-gps-probe 06-fingerprint; do
+  [ ! -e "$OD/$f.txt" ] && ok "and no file pretends a skipped probe ran: $f.txt" \
+    || bad "$f.txt exists although the probe did not run"
 done
 want '^boot_id: deadbeef-1111-2222-3333-444444444444$' "$(cat "$OD/INDEX.txt")" "the index names the boot it describes"
 want '^with_capture: 0' "$(cat "$OD/INDEX.txt")" "and whether the writing step was included"
@@ -478,7 +483,7 @@ echo
 echo "   -- and a second capture of the SAME boot lands in the same directory:"
 run "$OD"
 [ -f "$OD/INDEX.txt" ] && ok "the index is rewritten in place" || bad "the second run lost the index"
-[ "$(find "$OD" -name '*-*.txt' | wc -l)" = 8 ] && ok "and the file set does not grow (8 archived outputs, not 16)" \
+[ "$(find "$OD" -name '*-*.txt' | wc -l)" = 6 ] && ok "and the file set does not grow (6 archived outputs, not 12)" \
   || { bad "the second run added files:"; find "$OD" -name '*-*.txt' | sed 's/^/        | /'; }
 
 # ==================================================================================================
@@ -486,13 +491,36 @@ echo
 echo "== 5. the flags that change the SET, and what they must not change =="
 # ==================================================================================================
 OD2="$W/out/skip"
-run "$OD2" --skip-probes
+# The DEFAULT is the skipped set (docs 116), so this scenario runs with NO FLAG AT ALL -- that is the
+# assertion: the probes have never produced a fix, and the last two boots that ended in EDL both had
+# the fingerprint probe as the last thing running. A default that has to be remembered is not a
+# default, so the check is that a bare invocation leaves them out.
+run "$OD2"
 printf '%s\n' "$OUT" > "$W/out.skip"
-[ "$RC" = 0 ] && ok "--skip-probes exits 0" || bad "it exited $RC"
-notwant '^CALLEE (GPS|FP)' "$(order)" "the two probes are not run"
+[ "$RC" = 0 ] && ok "a plain run exits 0" || bad "it exited $RC"
+notwant '^CALLEE (GPS|FP)' "$(order)" "the two probes are not run BY DEFAULT"
 [ "$(order | wc -l)" = 5 ] && ok "leaving five steps" || bad "$(order | wc -l) steps ran"
-want 'SKIPPED by --skip-probes' "$OUT" "and the skip is SAID, not silent"
+want 'SKIPPED \(the default; --with-probes runs them\)' "$OUT" "and the skip is SAID, not silent"
 [ ! -e "$OD2/05-gps-probe.txt" ] && ok "and no file pretends the probe ran" || bad "an empty probe file was written"
+
+echo
+echo "   -- --skip-probes is kept as the old name for that default, and still works:"
+OD2b="$W/out/skip2"
+run "$OD2b" --skip-probes
+printf '%s\n' "$OUT" > "$W/out.skip2"
+[ "$RC" = 0 ] && ok "--skip-probes exits 0" || bad "it exited $RC"
+notwant '^CALLEE (GPS|FP)' "$(order)" "and also skips them (the four documents that spell it out still work)"
+[ "$(order | wc -l)" = 5 ] && ok "leaving the same five steps" || bad "$(order | wc -l) steps ran"
+
+echo
+echo "   -- --with-probes is how the two probes ARE run, and it says so:"
+OD2c="$W/out/withprobes"
+run "$OD2c" --with-probes --no-orientation
+printf '%s\n' "$OUT" > "$W/out.withprobes"
+[ "$RC" = 0 ] && ok "--with-probes exits 0" || bad "it exited $RC"
+want '^CALLEE GPS' "$(order)" "the GPS probe runs"
+want '^CALLEE FP' "$(order)" "and the fingerprint probe"
+[ -f "$OD2c/05-gps-probe.txt" ] && ok "with a file per probe" || bad "no probe output was archived"
 
 echo
 echo "   -- --no-orientation, and --with-capture, and both together:"
@@ -506,7 +534,7 @@ run "$OD4" --with-capture
 printf '%s\n' "$OUT" > "$W/out.withcapture"
 [ "$RC" = 0 ] && ok "--with-capture exits 0" || bad "it exited $RC"
 want '^CALLEE NOEDL args=--capture-only$' "$(order)" "the writing step runs, in its read-only-looking mode"
-[ "$(order | wc -l)" = 8 ] && ok "eight steps" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 6 ] && ok "six steps -- the five of the default plus the one that writes" || bad "$(order | wc -l) steps ran"
 want '^08-no-edl-capture +0' "$(cat "$OD4/INDEX.txt")" "and it is listed in the index"
 want '^with_capture: 1' "$(cat "$OD4/INDEX.txt")" "with the index recording that the archive is not read-only-only"
 
@@ -535,10 +563,10 @@ want '^02-boot-address +1' "$(cat "$OD5/INDEX.txt")" "and the index carries the 
 [ -s "$OD5/02-boot-address.txt" ] && ok "its output is still archived" || bad "a failed step's output was dropped"
 want 'CALLEE BOOTADDR: done rc=1' "$(cat "$OD5/02-boot-address.txt")" "and it is the step's own output"
 want '^CALLEE HEALTH' "$(order)" "the steps AFTER it still ran -- the evidence is not thrown away"
-[ "$(order | wc -l)" = 7 ] && ok "all seven ran" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 5 ] && ok "all five ran (the default set; no probe is in it)" || bad "$(order | wc -l) steps ran"
 want 'FAILED \(their output is archived' "$OUT" "and the summary says the archive is still worth reading"
 want 'netwatch-configured' "$OUT" "while the next-move text still explains what 02 decides"
-notwant 'capture complete: 7 steps ran, 0 failed' "$OUT" "and it does not claim a clean capture"
+notwant 'capture complete: 5 steps ran, 0 failed' "$OUT" "and it does not claim a clean capture"
 
 echo
 echo "   -- and a step that fails only in its PUSH (scp) is reported as such, not as a silence:"
