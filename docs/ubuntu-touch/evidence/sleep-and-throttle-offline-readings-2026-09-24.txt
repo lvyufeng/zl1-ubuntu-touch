@@ -1,0 +1,137 @@
+zl1 heat, the supply side -- offline readings, 2026-09-24
+READ-ONLY, HOST-SIDE, NO DEVICE: every command below reads a file (a boot image, or a local image) or
+decompresses one in memory. Nothing is mounted, nothing is written, the device was not touched (it is in
+EDL). The two small parsers used are quoted in full at the end because they are the only non-obvious part.
+
+images: /mnt/data/zl1-backups/2026-06-07-adb-root-staged/boot.img
+        docs/ubuntu-touch/20-stage2-runbook.md  (the STOCK cmdline, recorded in docs 20)
+
+==============================================================================
+1. the boot image carries FIVE device trees, and every one of them has the ladder
+==============================================================================
+$ python3 - <<'EOF'
+import struct
+d = open('/mnt/data/zl1-backups/2026-06-07-adb-root-staged/boot.img','rb').read()
+i = d.find(b'\xd0\x0d\xfe\xed'); hits = []
+while i >= 0:
+    tot, = struct.unpack_from('>I', d, i+4); hits.append((i, tot)); i = d.find(b'\xd0\x0d\xfe\xed', i+4)
+print([(o, hex(t)) for o, t in hits])
+EOF
+[(11554920, '0x63d56'), (11963838, '0x64ef1'), (12377263, '0x63d52'), (12786177, '0x64bd2'), (13198803, '0x63d56')]
+
+$ python3 <fdtwalk> /tmp/dtb-11554920.dtb | grep -i lpm | head
+//soc/qcom,lpm-levels  compatible = "qcom,lpm-levels"
+//soc/qcom,lpm-levels  qcom,use-psci = <empty>
+   # (all five DTBs carry it; the ones below are read from the first)
+
+==============================================================================
+2. the ladder itself: whole-SoC, two L2 clusters, and per-CPU
+==============================================================================
+$ python3 <fdtwalk> /tmp/dtb-11554920.dtb | grep -E 'pm-cluster-level|pm-cpu-level' | grep -E 'label|latency-us'
+qcom,pm-cluster@0/qcom,pm-cluster-level@0                                label = system-wfi
+qcom,pm-cluster@0/qcom,pm-cluster-level@0                                qcom,latency-us = <0x00 0x00 0x00 0x64>
+qcom,pm-cluster@0/qcom,pm-cluster-level@1                                label = system-ret
+qcom,pm-cluster@0/qcom,pm-cluster-level@1                                qcom,latency-us = <0x00 0x00 0x01 0x5e>
+qcom,pm-cluster@0/qcom,pm-cluster-level@2                                label = system-fpc
+qcom,pm-cluster@0/qcom,pm-cluster-level@2                                qcom,latency-us = <0x00 0x00 0x2a 0xf8>
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cluster-level@0              label = pwr-l2-wfi
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cluster-level@1              label = pwr-l2-gdhs
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cluster-level@2              label = pwr-l2-fpc
+qcom,pm-cluster@0/qcom,pm-cluster@1/qcom,pm-cluster-level@0              label = perf-l2-wfi
+qcom,pm-cluster@0/qcom,pm-cluster@1/qcom,pm-cluster-level@1              label = perf-l2-gdhs
+qcom,pm-cluster@0/qcom,pm-cluster@1/qcom,pm-cluster-level@2              label = perf-l2-fpc
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cpu/qcom,pm-cpu-level@0      qcom,latency-us = <0x00 0x00 0x00 0x14>
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cpu/qcom,pm-cpu-level@1      qcom,latency-us = <0x00 0x00 0x00 0x28>
+qcom,pm-cluster@0/qcom,pm-cluster@0/qcom,pm-cpu/qcom,pm-cpu-level@2      qcom,latency-us = <0x00 0x00 0x00 0x50>
+   # decoder: latency-us is a big-endian u32, so 0x64 = 100 us (system-wfi), 0x15e = 350 us (system-ret),
+   # 0x2af8 = 11000 us (system-fpc = FULL POWER COLLAPSE of the whole SoC), and the per-CPU ones are
+   # 20 / 40 / 80 us. The deeper the state, the larger the exit latency -- which is exactly why a device
+   # that may not use them stays warm while idle.
+   #
+   # NOTE the THREE shapes, because it cost the probe a defect: the whole-SoC levels are at depth 2
+   # under the lpm node, the L2 ones at depth 3, and the per-CPU ones at depth 4 under a `qcom,pm-cpu`
+   # node. A fixed-depth glob silently loses the whole-SoC ones -- the ones that matter.
+
+==============================================================================
+3. and the boot turns them off
+==============================================================================
+$ sed -n '33p' docs/ubuntu-touch/20-stage2-runbook.md      # the STOCK boot image, recorded in docs 20
+firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7
+$ grep -n 'androidboot.hardware' docs/ubuntu-touch/20-stage2-runbook.md
+32:cmdline: androidboot.hardware=qcom ehci-hcd.park=3 lpm_levels.sleep_disabled=1 cma=32M@0-0xffffffff \
+   androidboot.configfs=true apparmor=1 security=apparmor firmware_class.path=/vendor/firmware_mnt/image \
+   loop.max_part=7
+$ grep -n 'V63_CMDLINE=' scripts/make-v63-boot-image.sh
+67:V63_CMDLINE="androidboot.hardware=qcom ehci-hcd.park=3 lpm_levels.sleep_disabled=1 cma=32M@0-0xffffffff
+   androidboot.configfs=true apparmor=1 security=apparmor firmware_class.path=/vendor/firmware_mnt/image
+   loop.max_part=7 init=/tmp/zl1-debug-init zl1_init_delay=30 zl1_usb_fakebind=v63 zl1_v63_monitor=1
+   zl1_v63_usbd_disabled=1 zl1_packaging=v63"
+   # So this is NOT something the port added or forgot: the STOCK image carries it and the v63 images
+   # inherit it verbatim. It came in with the third-party ROM (docs 120 section 3.5: this /boot is MIUI).
+
+==============================================================================
+4. the kernel accepts the knob, and has both drivers
+==============================================================================
+$ python3 - <<'EOF'
+import zlib
+raw = open('/tmp/kernel.bin','rb').read()       # the kernel section split out of boot.img
+z = zlib.decompressobj(31); d = z.decompress(raw)
+print('kernel:', len(d), 'bytes; unused tail (the appended DTBs):', len(z.unused_data))
+EOF
+kernel: 27529728 bytes; unused tail (the appended DTBs): 2052801
+   # zlib.decompressobj(31) and NOT gzip.decompress(): the kernel stream is followed by the DTBs, so a
+   # plain gunzip ends in BadGzipFile(b'\xd0\r') -- the FDT magic of the first appended tree.
+
+$ python3 - <<'EOF'
+d = open('/tmp/vmlinux.bin','rb').read()
+i = d.find(b'lpm_levels.sleep_disabled')
+print([t.decode() for t in d[i-60:i+260].split(b'\x00') if 3 < len(t) < 60])
+EOF
+['cpuidle.off', 'lpm_get_latency', 'lpm_probe', 'set_l2_mode', 'lpm_levels.sleep_disabled',
+ 'lpm_levels.print_parsed_dt', 'lpm_levels.sleep_time_override', 'lpm_levels.menu_select',
+ 'lpm_levels.tmr_add', 'lpm_levels.ref_stddev', 'lpm_levels.lpm_prediction', ...]
+   # one __setup table: the knob is a KERNEL COMMAND-LINE parameter, not a sysfs module parameter --
+   # which is why the device-side reading of it is /proc/cmdline and not
+   # /sys/module/lpm_levels/parameters/ (that directory has the other names, not this one).
+
+$ python3 - <<'EOF'
+d = open('/tmp/vmlinux.bin','rb').read()
+for p in [b'msm_thermal', b'qcom,lpm-levels', b'cooling_device', b'thermal_zone', b'tsens']:
+    print(p.decode(), d.count(p))
+EOF
+msm_thermal 33 / qcom,lpm-levels 2 / cooling_device 8 / thermal_zone 20 / tsens 97
+
+$ python3 <fdtnode> /tmp/dtb-11554920.dtb 'qcom,msm-thermal'
+    compatible = "qcom,msm-thermal"
+    qcom,sensor-id = <11>
+    qcom,poll-ms = <100>            (rendered as "   d": 0x64)
+    qcom,limit-temp = <70>          (0x46)   qcom,core-limit-temp = <90>   (0x5a)
+    qcom,therm-reset-temp = <105>   (0x69)   qcom,freq-mitigation-temp = <90>
+    qcom,freq-mitigation-value = <768000>
+    qcom,hotplug-temp = <100>
+   # the kernel-side thermal driver IS configured with real trips -- and `install-cpufreq-governor.sh`
+   # records that `ls /sys/class/thermal/cooling_device*` is EMPTY on this device, i.e. the
+   # cooling-device half of the framework has nothing to throttle. Both facts are printed by the probe;
+   # how they coexist is a device reading.
+
+==============================================================================
+5. the two parsers (both read-only, both open the file O_RDONLY)
+==============================================================================
+fdtwalk.py -- walks an FDT blob and prints "path  prop = value" for nodes matching an optional argument:
+  header is 10 big-endian u32 at offset 0: magic, totalsize, off_struct, off_strings, off_rsvmap, ...
+  then a token stream: 1=BEGIN_NODE (NUL-terminated name, 4-byte aligned), 2=END_NODE, 3=PROP
+  (u32 len, u32 nameoff into the strings block, then len bytes padded to 4), 4=NOP, 9=END.
+  `size_struct` is at offset 36 and NOT the same field as `size_strings` at offset 32 -- mixing those
+  two up makes the walk terminate immediately and print nothing, which is how the first version of the
+  node dumper "found no match" in a tree full of matches.
+
+TWO RENDERING TRAPS in the value printer, both hit here (the raw hex is in the lines above):
+  * a u32 value of 0x00000064 is four bytes of which three are NUL, so a naive "is it printable text?"
+    test says YES and you get `"   d"` instead of 100. That is why section 4's numbers are shown with
+    their hex in a comment.
+  * a device-tree string property is NUL-terminated and can hold SEVERAL strings separated by NUL, so
+    splitting on NUL and printing the pieces is the honest rendering.
+
+END OF READINGS. Nothing in this file was measured on a device. The whole point of the probe is that
+these readings are a HYPOTHESIS (the ladder exists, the boot turns it off, the kernel accepts the knob)
+and the device is where the CONSEQUENCE gets measured (the cpuidle counters).

@@ -1,0 +1,116 @@
+scripts/host/zl1-sleep-and-throttle-selftest.sh: line 155: $1: unbound variable
+scripts/host/zl1-sleep-and-throttle-selftest.sh: line 155: $1: unbound variable
+mkdir: cannot create directory ‘’: No such file or directory
+zl1 sleep and throttle -- offline self-test
+  script under test: /mnt/data/zl1-bb10/scripts/host/../device/zl1-sleep-and-throttle.sh
+  fake device:       /tmp/zl1-sleep-and-throttle-selftest/root
+
+== 0. it writes NOTHING -- statically, and then by measuring the device it ran on ==
+PASS  the shipped probe contains no write to /sys, /proc, a block device, a module or a unit
+PASS  the zone-mode mutation really differs from the shipped file
+PASS  the guard CATCHES a write to a thermal zone's mode
+PASS  and names the line it found
+PASS  the guard CATCHES a write to a cpuidle state's disable flag
+PASS  an arrow before a path is prose, not a write
+PASS  and a real redirect is still caught, spaced and unspaced
+PASS  a full run left the fake device BYTE-FOR-BYTE identical (252 lines of manifest)
+PASS  and the manifest notices a one-byte change to a file the probe reads
+
+== 1. the guard: not the zl1 ==
+PASS  a different SoC exits 2
+PASS  and says what it is refusing
+PASS  and reads nothing beyond the guard
+
+== 2. --explain reads nothing and says what each reading decides ==
+PASS  --explain exits 0
+PASS  it explains that the counters are the evidence
+PASS  and why the temperatures are NOT re-printed here
+PASS  and names the files it deliberately does not write
+PASS  --explain reads no device file
+
+== 3. the baseline: the real device's shape, read end to end ==
+PASS  the baseline run exits 0
+PASS  the boot's sleep_disabled value is printed as a value
+PASS  and read as what it says
+PASS  the live ladder node is reported present
+PASS  a system level is read with its label and its declared latency
+PASS  AND the per-CPU shape is walked too (the tree has two different level shapes)
+PASS  and the count is stated
+PASS  the cpuidle driver is named
+PASS  the deepest state's share is computed as a ratio
+PASS  cpu0's missing online file is named, not printed as a blank
+PASS  and an offline core is printed as offline
+PASS  the msm_thermal parameters are listed GENERICALLY with their values
+PASS  including one the script could not have known the name of
+PASS  no cooling devices is reported as the state it is
+PASS  the zones are listed by type
+PASS  with their policy
+PASS  and the script says why it prints no temperature
+PASS  so no raw zone temperature is printed at all
+PASS  the governor is read per core
+PASS  and the verdict states the pinned-core cause as PRESENT
+
+== 4. the ladder: a node that exists with no levels is not 'the hardware has none' ==
+PASS  a missing node says so
+PASS  and says what that costs the counters
+PASS  and does not claim a ladder it did not read
+PASS  a node with no levels reports the WALK, not the hardware
+PASS  and names which side of the reading that is
+
+== 5. UNREADABLE IS NOT ZERO -- the three shapes, and what each must NOT say ==
+PASS  no cpuidle at all is reported as no cpuidle
+PASS  and it says which of the two that is
+PASS  the verdict refuses to conclude from a parameter alone
+PASS  in those words
+PASS  and it exits 1 (an answer about the instrument, not the phone)
+PASS  and it never prints 'the counters are 0' about counters it did not read
+PASS  an empty cpuidle dir says exactly that
+PASS  and is not rounded to 'the counters are 0'
+PASS  a non-numeric counter is reported as such
+PASS  and the share is explicitly not computed
+PASS  with the reason
+PASS  no share is printed for a CPU whose counter was unreadable
+PASS  readable-and-zero is reported as a real reading
+PASS  and no share is invented for a CPU whose counters are all zero
+PASS  and it is not confused with an unreadable counter
+PASS  a fully-read run exits 0 even when the news is bad
+
+== 6. the cmdline: three readings that must stay three ==
+PASS  the key absent is reported as absent
+PASS  while the OTHER power parameters are still printed
+PASS  and the cause is ABSENT, not UNKNOWN
+PASS  and it does not print a value it did not read
+PASS  a cmdline without the key: ABSENT
+PASS  the other lpm parameters are still shown
+PASS  an unreadable cmdline says so
+PASS  and is not read as 'no parameter was set'
+PASS  the verdict carries the same distinction
+PASS  an unreadable cmdline exits 1
+
+== 7. the kernel's own side: cooling devices, disabled zones, and the governor direction ==
+PASS  registered cooling devices are counted
+PASS  and listed with their state
+PASS  and not reported as none
+PASS  a zone in mode 'disabled' is called out in the verdict -- its trips cannot fire
+PASS  and the enabled default is not reported as disabled
+PASS  a scaling governor reads as the cause ABSENT
+PASS  and the governor's name is still printed
+PASS  no cpufreq at all is UNKNOWN, not ABSENT
+PASS  and that exits 1
+
+== 8. --quiet keeps the headings, the boot identity and the verdict -- and the SAME decision ==
+PASS  --quiet keeps the boot identity
+PASS  and the section headings
+PASS  --quiet drops the per-state counter lines
+PASS  and the ladder listing
+PASS  and the driver parameter listing
+PASS  --quiet still prints the verdict
+PASS  and the verdict is the one the readings support -- not UNKNOWN
+PASS  --quiet and a loud run exit the same code on the same device
+PASS  --quiet still prints the UNANSWERED verdict
+PASS  with its exit code
+
+== 9. the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 88 checks, and this run has exactly that many
+
+pass=88 fail=0

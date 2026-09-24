@@ -369,6 +369,17 @@ step 04-health-check     host   "$HERE/zl1-health-check.sh"
 # a finger for a boot, and telephony is the one subsystem whose device reading has never been taken. Its
 # own bound comes from the step runner's timeout(1), like every other device step.
 step 04b-modem          device "$HERE/../device/zl1-modem-probe.sh"
+# 04c, and it is in the same class as 04b for the same reasons: read-only, never opens a block device, no
+# person needed. It is the SUPPLY side of the heat question (docs 121) -- whether the SoC is allowed to
+# use its low-power ladder -- and it exists because the offline images say every zl1 cmdline carries
+# `lpm_levels.sleep_disabled=1` while every zl1 DTB describes the full ladder it turns off. That makes the
+# phone warm while it is doing NOTHING, which neither of the two heat fixes in this repository touches.
+#
+# It has one property no other step here has, and the header of the probe says it too: it READS files that
+# ARE writable on the device (cpuidle/state*/disable, thermal_zone*/mode and policy). It writes none of
+# them, its offline harness proves that byte-for-byte against a fake device, and its verdict prints what
+# it read rather than acting on it. Running it cannot change the device.
+step 04c-sleep-throttle device "$HERE/../device/zl1-sleep-and-throttle.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"

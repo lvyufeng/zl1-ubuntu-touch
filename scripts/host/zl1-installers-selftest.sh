@@ -22,9 +22,10 @@
 #     a measurement made seconds earlier rather than a memory of having run the boot-address check. A
 #     refusal gate that does not actually refuse is indistinguishable from no gate at all until the day
 #     the network does not come back, which is why sections 2b and 2c exist and why they have teeth
-#     against the pre-fix build (66 failures, and 375 checks now). It also has a matching function that deliberately is NOT
+#     against the pre-fix build (66 failures, and 377 checks now). It also has a matching function that deliberately is NOT
 #     a substring test, because "killing the wrong process" is the one failure mode worth being
-#     pedantic about.
+#     pedantic about -- and the checks that prove it read the applier's DECISION (`matched=`) and not the
+#     whole output, which carries a number no scenario controls (docs 121 section 5.4).
 #   * `install-no-edl-on-panic.sh` decides whether a kernel panic puts the phone in EDL. It is the one
 #     installer whose *absence of effect* is the safety property, and its comment records that an
 #     earlier draft's `--capture-only` disabled and deleted the policy unit -- i.e. re-running a
@@ -561,6 +562,11 @@ kills()    { grep -E '^kill ' "$ACT" 2>/dev/null; }
 # complete copy, and it is what an operator would read on the device. Assertions about what the applier
 # said therefore read the logger records; assertions about what the operator saw stay on $OUT.
 applier_log() { grep -E '^logger -t zl1-retire-keeper ' "$ACT" 2>/dev/null | sed 's/^logger -t zl1-retire-keeper //'; }
+# The pids the applier DECIDED to signal: the `matched=` field of the retirement line, and nothing else.
+# "Not matched" has to be asserted against the decision, not against the whole output -- the same line
+# carries `uptime=Ns` (a number no scenario controls) and a pid is three digits, so a substring test over
+# the output says "no" or "yes" depending on what the clock read. That is the check this helper replaced.
+matched_pids() { applier_log | sed -n 's/.*matched= //p' | grep -o '\[[0-9]*:' | tr -d '[:' | tr '\n' ' ' | sed 's/ $//'; }
 # Everything the fake device holds, so "wrote nothing" is checkable rather than asserted from a log.
 snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
 
@@ -748,11 +754,22 @@ sed -e "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g" \
     -e "s#/sys/class/net#$FR/sys/class/net#g" \
     -e "s#/usr/local/sbin/zl1-debug-net.sh#$FR/usr/local/sbin/zl1-debug-net.sh#g" \
     -e "s#/etc/systemd/system/zl1-netwatch.sh#$FR/etc/systemd/system/zl1-netwatch.sh#g" \
+    -e "s#/proc/uptime#$FR/proc/uptime#g" \
     -e "s#kill -#$STUB/kill -#g" \
     "$RKS" > "$W/applier/zl1-retire-debug-keeper.sh"
 APPLIER=$W/applier/zl1-retire-debug-keeper.sh
 sh -n "$APPLIER" || { echo "the rewritten applier does not parse" >&2; exit 2; }
+# /proc/uptime was missing from this list, and it is the one that bit: the applier's retirement line
+# prints `uptime=$(cut -d. -f1 /proc/uptime)s`, so it was printing the HOST's uptime -- 26 days on this
+# machine -- into a log the assertions read. Nothing in the applier branches on it (it is a log field,
+# not a gate), so no scenario was judged on a wrong clock; what it broke was an ASSERTION. `notwant
+# '904' "$OUT"` searched the whole output for three digits, and a host uptime that happens to contain
+# them fails it: at 22904xx the string is there and the check is red for 100 s out of every 1000, with
+# nothing wrong on the device. (It was green in every earlier family run and red on this one.) Both
+# halves are fixed: the copy now reads the fake device's uptime, and the pid assertions read the
+# `matched=` field instead of the whole output.
 grep -qF "$FR/proc/[0-9]*" "$APPLIER" && grep -qF "$FR/proc/\$p/" "$APPLIER" \
+  && grep -qF "$FR/proc/uptime" "$APPLIER" \
   || { echo "the applier rewrite did not land" >&2; exit 2; }
 # The replacement's path is a gate condition now, so an unmapped one would point the check at the
 # HOST's /etc/systemd/system -- where there is no netwatch, making every kill scenario a refusal for a
@@ -1024,8 +1041,14 @@ printf '/bin/sh\000%s\000' "$KEEPER_F"                        > "$FR/proc/900/cm
 run "$RK" --install --now --after-proof
 printf '%s\n' "$OUT" > "$W/out.rk.now.pedantic"
 want 'retiring keeper pids=\[900 905\]' "$(applier_log)" "only the two whose ARGV IS the keeper are matched"
-notwant '903' "$OUT" "the shell that merely mentions the path is NOT matched"
-notwant '904' "$OUT" "and neither is the grep"
+# The helper's own emptiness guard FIRST: `notwant` on an empty string passes for the wrong reason, so
+# "the decision was exactly these two pids" is asserted before anything is asserted to be absent from it.
+want '^900 905$' "$(matched_pids)" "the decision names exactly two pids -- and it is read, not assumed"
+notwant '903' "$(matched_pids)" "the shell that merely mentions the path is NOT matched"
+notwant '904' "$(matched_pids)" "and neither is the grep"
+# and the retirement line's uptime is the FAKE device's, which is the rewrite that was missing: read as
+# the host's it printed whatever this laptop's uptime was (docs 121 §5.4).
+want 'uptime=100s' "$(applier_log)" "the applier reads the fake device's uptime, not this host's"
 notwant 'kill -(TERM|KILL) 1( |$)' "$(kills)" "and pid 1 is never a candidate for a signal"
 notwant 'retiring keeper pids=\[1' "$OUT" "and pid 1 is never even matched"
 [ -d "$FR/proc/903" ] && ok "the bystander survived" || bad "the bystander was killed"
