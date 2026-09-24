@@ -82,6 +82,12 @@ private void updateActiveGroup(int userId, String clientPackage) {
 
 > **`/data/system/users/0/fpdata` 在 HAL 进程自己看到的那套 mount namespace 里存在吗？存在的话，HAL 的 uid 写得进去吗？**
 
+> **2026-09-24 更正（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)）：这个问句里的路径写错了，而本篇的"两个候选路径都要看"正是让它没变成错误结论的那一句。**
+> 设备上 biometryd 传的是 **`/data/vendor_de/0/fpdata`**（v63 那个 stub 答 `ro.build.version.sdk`=28、
+> 不认 `ro.product.first_api_level`，于是走 `> 27`），不是本篇写的那一个。本篇的诊断（"`SYS_EINVAL` 是
+> 一个缺失的目录"）**不受影响**——因为 §2 第 3 条要求两个候选都看，而设备上两个都 MISSING；
+> 受影响的只是"要建哪一个"。见 [`126`](126-the-path-was-decided-by-what-the-stub-omits.md)。
+
 三个细节决定了这句必须这么问：
 
 1. **`access()` 用的是 HAL 自己的 real uid，和它自己的 mount namespace。** 容器里 `/data` 不是主机的 `/data`（主机上是 `/android/data` = `/dev/sda10[/android-data]`，rw ext4）。所以唯一诚实的查法是 **`/proc/<hal-pid>/root/data/...`** —— 那个路径是经由目标进程的 namespace 解析的，不需要猜 `nsenter` 该带哪些 flag；
@@ -90,7 +96,7 @@ private void updateActiveGroup(int userId, String clientPackage) {
 
 ## 3. 修法（一行，而且可逆）
 
-`scripts/device/zl1-fingerprint-probe.sh --create-store-dir` 做**真 Android 的 `FingerprintService` 做的同一件事**：在容器的 mount namespace 里 `mkdir -p /data/system/users/0/fpdata`，按 HAL 实测的 uid 决定要不要 `chown`（HAL 是 root 就不用），并打印 undo（`nsenter -t <container> -m -- rmdir ...`）。
+`scripts/device/zl1-fingerprint-probe.sh --create-store-dir` 做**真 Android 的 `FingerprintService` 做的同一件事**：在容器的 mount namespace 里 `mkdir -p` **那条规则选中的路径**（写这篇时以为是 `/data/system/users/0/fpdata`，设备上是 `/data/vendor_de/0/fpdata`，见 `126`；探针从来不写死，它按 biometryd 的规则现算），按 HAL 实测的 uid 决定要不要 `chown`（HAL 是 root 就不用），并打印 undo（`nsenter -t <container> -m -- rmdir ...`）。
 
 把它归类清楚，因为这是这一轮唯一会写东西的地方：
 
@@ -105,7 +111,7 @@ private void updateActiveGroup(int userId, String clientPackage) {
 
 | 观察到 | 结论 | 下一步 |
 |---|---|---|
-| `MISSING /data/system/users/0/fpdata` + logcat 里 `Bad path length` = 0 | §1 的诊断成立，就是没人建目录 | `--create-store-dir`，然后重启报错的那个服务，看 logcat 的 `setActiveGroup failed` 是否归零 |
+| `MISSING /data/system/users/0/fpdata` + logcat 里 `Bad path length` = 0 | §1 的诊断成立，就是没人建目录（**2026-09-24：设备上两条路径都是 MISSING，而 biometryd 传的是 `vendor_de` 那条，见 `126`**） | `--create-store-dir`，然后重启报错的那个服务，看 logcat 的 `setActiveGroup failed` 是否归零 |
 | `EXISTS` 但 uid 不匹配且无写位 | 目录在，权限错 | `chown` 到 HAL 的 uid（探针的同一个开关会做） |
 | `EXISTS` 且可写，仍然 `SYS_EINVAL` | **§1 的诊断被推翻** | 那就只剩 `mDevice->set_active_group()` 里那个 Goodix HAL 自己返回的错误了 —— 那时才轮到 `/dev/goodix_fp`、`gx_fpd`、QSEECom 那一层 |
 

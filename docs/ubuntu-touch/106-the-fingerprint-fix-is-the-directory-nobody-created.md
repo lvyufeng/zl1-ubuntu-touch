@@ -13,21 +13,36 @@
 [`101`](101-which-directory-the-fingerprint-hal-is-handed.md)（biometryd 读的是**UT 侧**的 getprop）、
 [`103`](103-the-fingerprint-probe-counted-the-callers-own-line-in-logcat.md)（那条日志属于谁）。
 
+> **2026-09-24 更正（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)）：本篇选的那条路径是错的，安装脚本已经改成另一条。**
+> 本篇从头到尾写的是 `/data/system/users/0/fpdata`，理由是"`api_level` 读回来是空的，`atoi("")=0`，
+> 所以走 `<= 27` 分支"。**设备自己的回答不是这样**：v63 那个 stub 答 `ro.build.version.sdk`（硬编码 28）
+> 而**根本不认** `ro.product.first_api_level`，于是兜底被答了、`api_level` 是 `"28"`，
+> `atoi("28")=28 > 27`，biometryd 传的是 **`/data/vendor_de/0/fpdata/`**
+> （读数：`tmp-post-recovery-20260924T013059Z/06-fingerprint.txt:19-22`）。所以修复要创建的目录是
+> **`/data/vendor_de/0/fpdata`**，不是本篇说的那一个。
+> 值得看清楚的是**错法**：本篇 §5 第 1 点自己写着"两个答案在本机**恰好重合**"——那是一个推理
+> （"stub 什么都不答"是从"stub 是 shell 脚本"推出来的），而它读起来和读数一样，于是被写进了结论表、
+> 写进了 applier 的注释、也写进了安装脚本里那个 `REL=/system/users/0/fpdata` **常量**。
+> 修法见 126：那个常量被删了，换成 `read_rel()`——**每次问设备**同一条规则（`--install` 的候选列表和
+> `--remove` 的 undo 都用它，这两处原来都指着错的那个路径），探针侧只剩一处说明性注释也跟着改了。
+> 本篇下面**没有改掉的旧句子都留着**，因为"一条推理被写成读数"这件事本身要看得见。
+> §8 的检查数从 130 变成 **137**，其中一条是新的：安装后打印的 undo 必须是**设备路径**。
+
 ---
 
 ## 1. 一句话结论
 
 | 问题 | 答案 |
 |---|---|
-| 缺的是哪个目录？ | `/data/system/users/0/fpdata`，`0770`，owner = 指纹 HAL 跑的那个 uid |
+| 缺的是哪个目录？ | ~~`/data/system/users/0/fpdata`~~ → **`/data/vendor_de/0/fpdata`**（2026-09-24 更正，见上），`0770`，owner = 指纹 HAL 跑的那个 uid |
 | 谁本该创建它？ | **`system_server`**。`FingerprintService.updateActiveGroup()`：`fpDir.mkdir()` + `restorecon`，**mkdir 失败就直接 return，连 `setActiveGroup` 都不调**（`frameworks/base/.../FingerprintService.java:1585-1622`） |
 | 这台移植上有谁？ | **没有人**。Halium 没有 `system_server`；biometryd 里除了那两个路径常量没有任何 mkdir；`device/leeco/zl1/biometrics/*.rc` 里也没有（只有 sysfs/`/dev` 的 chown/chmod） |
 | 所以修复是什么？ | 补上那一步——而且只补那一步 |
 | 从哪里写？ | **host 侧**：Android 的 `/data` 就是 `/dev/sda10[/android-data]` 这个普通 rw ext4，host 上是 `/var/lib/android-data`，容器里由 `mount-android-partitions` bind 成 `/data`。同一个文件系统，所以不需要 `nsenter`，容器没起来也能写，也不会被容器的 mount namespace 搞混 |
-| 两个候选路径选哪个？ | `/data/system/users/0/fpdata`（`<= 27` 分支）。**但不由脚本硬编码**：applier 每次开机重新跑一遍 biometryd 自己的规则（§5） |
+| 两个候选路径选哪个？ | ~~`/data/system/users/0/fpdata`（`<= 27` 分支）~~ → **`/data/vendor_de/0/fpdata`（`> 27` 分支）**。**而且不由脚本硬编码**：applier 每次开机重新跑一遍 biometryd 自己的规则（§5）——这一条本篇写对了，而它也是这次改动能只改注释和一个常量的原因 |
 | 会碰别的分区 / 会刷机吗？ | 不会。两个文件写在 `/etc/systemd/system`（可写 bind mount），一个目录写在 Android 的数据分区上 |
 | 会重启什么吗？ | 不会。目录本身就是修复，biometryd 是 `Restart=always`，它自己会再试一次 |
-| 离线验证？ | `scripts/host/zl1-fp-store-dir-selftest.sh`，**130 检查，0 失败**（§8），并且**四次变异每次都让它失败** |
+| 离线验证？ | `scripts/host/zl1-fp-store-dir-selftest.sh`，**137 检查，0 失败 / 2 SKIP**（§8），并且**四次变异每次都让它失败**（路径写死那次现在是 7 条红） |
 | 在设备上跑过吗？ | **没有。** 设备在 EDL，恢复只能物理长按电源 10–20 秒 |
 
 ---
@@ -83,10 +98,14 @@ if (access(storePath.c_str(), W_OK)) { return SYS_EINVAL; }               // 完
 **立即写一次**（这一次开机也生效）：
 
 ```
-/var/lib/android-data/system/users/0/fpdata        即 Android 的 /data/system/users/0/fpdata
+/var/lib/android-data/vendor_de/0/fpdata            即 Android 的 /data/vendor_de/0/fpdata
                                                     mode 0770
                                                     owner = HAL 真在跑的 uid，否则 1000（user system）
 ```
+
+> **2026-09-24 更正（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)）：这一段原来是
+> `/var/lib/android-data/system/users/0/fpdata`。** 那条路径是 `<= 27` 分支的，而设备在 `> 27` 分支上。
+> **刻意不做**那张表里的第一行也随之反转：现在**不创建**的是 `/data/system/users/0/fpdata`。
 
 **持久化**（两个文件，都在 `/etc/systemd/system`，那是可写 bind mount；`/etc` 本身是只读镜像）：
 
@@ -99,7 +118,7 @@ if (access(storePath.c_str(), W_OK)) { return SYS_EINVAL; }               // 完
 
 | 不做 | 为什么 |
 |---|---|
-| 不创建另一个候选 `/data/vendor_de/0/fpdata` | 两个都建，就会留下一个**永远不会被读**的目录，以及一条只提到其中一个的 undo（`97`） |
+| 不创建另一个候选 `/data/system/users/0/fpdata` | 两个都建，就会留下一个**永远不会被读**的目录，以及一条只提到其中一个的 undo（`97`）。**（2026-09-24：这一行的两个路径原本是反的，见上。）** |
 | 不 `restorecon` | 它得在容器里跑；`--status` 会打出容器的 `getenforce`，所以这个"不需要"是被检查过的假设，而不是默认 |
 | 不 chown 到写死的 uid | applier 从 `HAL` 的 `/proc` 里读真实 uid，读不到才退回 1000 |
 | **不把"写成功"当成"修好了"** | `chown` 到一个不存在的 uid 在数值上照样成功；被内核拒绝的 chown 在 `2>/dev/null` 后面静默失败；`access(W_OK)` 看的是**目录自己说什么**，不是你要了什么。所以 applier 会 stat 回来，不一致就 `exit 1`（这就是 cpufreq applier 那一课的复刻，`95`） |
@@ -110,11 +129,22 @@ if (access(storePath.c_str(), W_OK)) { return SYS_EINVAL; }               // 完
 ## 5. applier 的逻辑，以及它为什么每次开机重新推导路径
 
 1. **路径 = biometryd 自己的规则**，每次开机重跑：读 UT 侧 `/usr/bin/getprop` 的同两个 key，同样
-   `atoi()`。`atoi("") = 0` 落进 `<= 27`——在本机上这个分支**恰恰是因为那次读是坏的**才被选中
+   `atoi()`。
+   ~~`atoi("") = 0` 落进 `<= 27`——在本机上这个分支**恰恰是因为那次读是坏的**才被选中
    （`101`：biometryd exec 的是 UT 侧的 `getprop`，而 v63 的 boot hook 把那个文件换成了一个没有
    `custom.*` 分支、对 `ro.*` 也不回答的 shell stub）。
    两个答案在本机**恰好重合**，这正是"写死也不会错"的错觉来源，也正是**不该写死**的理由：getprop 哪天
-   开始回答 > 27，applier 跟着 biometryd 走，而 `--status` 会在装上的是另一个目录时说 DISAGREE。
+   开始回答 > 27，applier 跟着 biometryd 走，而 `--status` 会在装上的是另一个目录时说 DISAGREE。~~
+
+   > **2026-09-24 更正（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)）：划掉的这一段是错的，
+   > 而它错的**方式**正好是"不该写死"这个结论的最强论据。**
+   > v63 那个 stub 不是"对 `ro.*` 也不回答"：它回答 `ro.build.version.sdk`（硬编码 28）、不认
+   > `ro.product.first_api_level`，所以 `api_level` 是 `"28"`，走 `> 27`。两个答案在本机**不重合，而且相反**：
+   > biometryd 的读是 28，容器的（`vendor.img` build.prop，也是活体容器的）是 23。
+   > 于是"写死也不会错"的错觉不只是错觉——它是**真的错了**，而且错成了另一个候选路径。
+   > 这一条推理的形状（"读回来是空的"）从来没有人在设备上读过，它是从"那个文件是个 shell 脚本"推出来的。
+   > 保留"每次开机重新推导"这个设计是对的，**这次改动只删了一个常量、改了几段注释**，能这么小正是因为
+   > 这一条设计是对的。
 2. **分区检查**：`/proc/mounts` 里没有 `/var/lib/android-data` 就**拒绝创建**并 `exit 1`。否则目录会落到
    只读 rootfs 上，之后每一个检查都会变成关于一个挂载点的谎话。
 3. **owner**：扫 `/proc/[0-9]*/cmdline` 找 `biometrics.fingerprint*service`，从它的 `status` 取 `Uid:`；
@@ -143,7 +173,8 @@ applier 是幂等的，所以"起晚了"是一次修复，不是错过窗口。
 
 1. 单元在不在——用 `systemctl cat`，不是 `is-enabled`（`63`：十七个 drop-in 存在过但从未被加载）。
 2. 规则现在选哪条路——把两个 getprop 的**原始回答**连引号一起打出来，所以"为什么是 0"是可见的。
-3. **磁盘上的目录是不是这条规则选的那一个**（AGREE / DISAGREE / NEITHER）。
+3. **磁盘上的目录是不是这条规则选的那一个**（AGREE / DISAGREE / NEITHER）。（2026-09-24：本机现在选
+   `> 27`，即 `/data/vendor_de/0/fpdata`——见 §1 的更正。）
    注：只会 grep applier 文本是**没用的**——applier 是运行时推导路径的，两个字面量永远都在文件里。
 4. HAL 那一侧：`/proc/<pid>/root/data/...` 存不存在、owner 和 HAL 的 uid 一不一致、
    `/var/lib/android-data` 挂没挂、biometryd 的 `NRestarts` 与 `setActiveGroup failed` 计数、
@@ -151,7 +182,7 @@ applier 是幂等的，所以"起晚了"是一次修复，不是错过窗口。
 
 ---
 
-## 8. 离线验证：130 检查，和四次"必须失败"
+## 8. 离线验证：130 → 137 检查，和四次"必须失败"
 
 `scripts/host/zl1-fp-store-dir-selftest.sh`（证据：`evidence/fp-store-dir-selftest-2026-09-23.log`）。
 它没有并进 `zl1-installers-selftest.sh`，因为**它的假设备是另一台机器**：那四个安装脚本都活在 UT rootfs
@@ -180,6 +211,13 @@ applier 是幂等的，所以"起晚了"是一次修复，不是错过窗口。
 
 四个都失败，原版 `130 pass / 0 fail / 2 skip`（两个 skip 是明确的"这是设备事实，本机测不了"：
 biometryd 真的传了这条路径、以及 `access(W_OK)` 真会通过）。
+
+> **2026-09-24 更正（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)）：这一节现在是
+> `137 pass / 0 fail / 2 skip`，上表那四行是 130 项那一版跑出来的数。**
+> 路径写死那一条**重跑过**：现在仍然是 **7 条红**（少了读回和拒绝门那两行没重跑，不写没跑过的数）。
+> 新增的检查覆盖这次改正的两件事：默认夹具就是**设备那个 stub** 的形状（答 `sdk`=28、不认
+> `first_api_level`），以及安装后打印的 **undo 必须是设备路径**——把 `read_rel()` 换回写死的
+> `/system/users/0/fpdata` 会**精确地**让 `printing the exact undo, as a DEVICE path` 这一条变红。
 
 ---
 

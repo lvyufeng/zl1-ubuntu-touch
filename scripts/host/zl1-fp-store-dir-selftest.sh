@@ -99,17 +99,29 @@ printf 'Name:\tandroid.hardware.biometrics.fingerprint@2.1-service\nUid:\t%s\t%s
 mkdir -p "$FR/proc/$HALPID/root"
 ln -sfn "$FR/var/lib/android-data" "$FR/proc/$HALPID/root/data"
 
-# The UT-side getprop. It answers nothing when its values file is absent, which IS the v63 stub shape
-# (docs 101) -- so "the stub" and "the repaired one" are the same script with and without one file,
-# instead of two scripts where only one is the real shape.
+# The UT-side getprop. THE DEFAULT IS THE DEVICE, and that is a correction (docs 126): this fixture used
+# to answer NOTHING when its values file was absent, and the comment here called that "the v63 stub
+# shape". It is not. The stub the boot hook installs ANSWERS `ro.build.version.sdk` (hardcoded 28) and
+# has NO arm for `ro.product.first_api_level` -- so the fallback is answered and the first choice is not,
+# which is what puts biometryd on the `> 27` branch. The device said so twice
+# (tmp-post-recovery-*/06-fingerprint.txt). A fixture whose default is a device that does not exist is
+# how four documents came to name the wrong store directory, so the values file is now the way to model
+# a DIFFERENT getprop (a repaired one, or Android's own) and the absent file means the real stub.
 cat > "$FR/usr/bin/getprop" <<'EOF'
 #!/bin/sh
 V="$(dirname "$0")/getprop.values"
-[ -f "$V" ] || exit 0          # the v63 stub: no custom.* arm, and nothing for ro.* either
+if [ -f "$V" ]; then
+  case "$1" in
+  ro.product.first_api_level) sed -n 's/^first_api_level=//p' "$V" ;;
+  ro.build.version.sdk)       sed -n 's/^sdk=//p' "$V" ;;
+  *) exit 0 ;;
+  esac
+  exit 0
+fi
 case "$1" in
-ro.product.first_api_level) sed -n 's/^first_api_level=//p' "$V" ;;
-ro.build.version.sdk)       sed -n 's/^sdk=//p' "$V" ;;
-*) exit 0 ;;
+ro.build.version.sdk)       printf '%s\n' 28 ;;
+ro.product.first_api_level) : ;;    # the stub's OMISSION, and the reason the branch flips
+*) [ -n "${2:-}" ] && printf '%s\n' "$2" ;;
 esac
 exit 0
 EOF
@@ -312,8 +324,12 @@ want()    { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3
 notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
 
 SYSD="$FR/etc/systemd/system"
-TARGET="$FR/var/lib/android-data/system/users/0/fpdata"
-OTHER="$FR/var/lib/android-data/vendor_de/0/fpdata"
+# WHICH path is the DEVICE's answer, on the device's own fixture (docs 126): the UT-side stub answers
+# ro.build.version.sdk = 28 and omits ro.product.first_api_level, so biometryd takes the `> 27` branch.
+# `TARGET` is therefore /data/vendor_de/0/fpdata -- the one the HAL is handed and the one the fix
+# creates. The other candidate is a scenario (section 7), never the default.
+TARGET="$FR/var/lib/android-data/vendor_de/0/fpdata"
+OTHER="$FR/var/lib/android-data/system/users/0/fpdata"
 sysacts()  { grep -E '^systemctl ' "$ACT" 2>/dev/null; }
 syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|unmask|enable|disable)' "$ACT" 2>/dev/null; }
 snap()     { find "$FR" -printf '%p %s\n' 2>/dev/null | sort; }
@@ -364,8 +380,11 @@ echo "== 1. the fake device is the shape the script expects =="
 fresh
 [ -x "$FR/usr/bin/getprop" ] && ok "the fake UT-side getprop is executable" || bad "no fake getprop"
 [ -z "$("$FR/usr/bin/getprop" ro.product.first_api_level)" ] \
-  && ok "and with no values file it answers nothing, which IS the v63 stub shape (docs 101)" \
-  || bad "the v63 stub shape answers something"
+  && ok "and it OMITS ro.product.first_api_level -- the stub's omission, which is what flips the branch" \
+  || bad "the device's stub does not answer that key, but the fixture does"
+[ "$("$FR/usr/bin/getprop" ro.build.version.sdk)" = 28 ] \
+  && ok "while it ANSWERS ro.build.version.sdk = 28, which is why the branch is > 27 and not empty (docs 126)" \
+  || bad "the fixture's sdk answer is not the device's"
 [ -d "$FR/proc/$HALPID/root/data" ] && ok "the HAL's namespace resolves /data to the Android partition" \
   || bad "the HAL's root/data symlink is missing"
 grep -q "biometrics.fingerprint" "$FR/proc/$HALPID/cmdline" && ok "and its cmdline is the one the script matches" \
@@ -407,12 +426,14 @@ printf '%s\n' "$OUT" > "$W/out.status.before"
 [ "$RC" = 0 ] && ok "--status exits 0" || bad "--status exited $RC"
 [ "$(snap)" = "$BEFORE" ] && ok "--status writes nothing to the fake device" || bad "--status changed the fake device"
 [ -z "$(syswrite)" ] && ok "and makes no systemd call that changes anything" || { bad "--status would change the device:"; syswrite | sed 's/^/        | /'; }
-want "root/data/system/users/0/fpdata MISSING - this is the directory access\(\) fails on" "$OUT" \
+want "root/data/vendor_de/0/fpdata MISSING - this is the directory access\(\) fails on" "$OUT" \
   "it reports the missing directory by asking through the HAL's OWN namespace"
 want 'HAL: pid 1234 uid=' "$OUT" "and names the HAL process and the uid it runs as"
-want '-> level \(0\) <= 27' "$OUT" "it resolves the path the way biometryd does, and shows the level it read"
-want "ro.product.first_api_level = ''" "$OUT" "printing the empty answer the v63 stub gives, so 'why 0' is visible"
-want 'the other candidate .*vendor_de/0/fpdata : not created, by design' "$OUT" \
+want '-> level \(28\) > 27' "$OUT" "it resolves the path the way biometryd does, and shows the level it read"
+want "ro.product.first_api_level = ''" "$OUT" \
+  "printing the UNANSWERED first choice, which is the omission that flips the branch (docs 126)"
+want "ro.build.version.sdk + = '28'" "$OUT" "and the fallback the stub DOES answer, which is where the 28 comes from"
+want 'the other candidate .*system/users/0/fpdata : not created, by design' "$OUT" \
   "and the path it deliberately does NOT create is stated, not omitted (docs 97)"
 want '/var/lib/android-data is mounted' "$OUT" "and the partition question is answered from /proc/mounts"
 want 'lines matching .setActiveGroup failed. in this boot journal: 2' "$OUT" \
@@ -471,19 +492,18 @@ want '^systemctl cat zl1-fp-store-dir\.service$' "$(sysacts)" "and verifies with
 [ -d "$TARGET" ] && ok "THE DIRECTORY EXISTS: this is the fix" || bad "the directory was not created"
 [ ! -e "$OTHER" ] && ok "and the other candidate was NOT created (docs 97)" || bad "it created both paths"
 want 'The directory is in place' "$OUT" "and it reports the applier's own run as a success"
-want 'created  /system/users/0/fpdata' "$OUT" "the applier says 'created', not 'checked'"
-want 'api_level 0 <= 27' "$OUT" "naming the rule it followed, so the reason the path is this one is on screen"
+want 'created  /vendor_de/0/fpdata' "$OUT" "the applier says 'created', not 'checked'"
+want 'api_level 28 > 27' "$OUT" "naming the rule it followed, so the reason the path is this one is on screen"
 want 'from the HAL process 1234' "$OUT" "and taking the owner from the HAL's own /proc entry"
 want 'read back: uid=' "$OUT" "and prints the read-back, so the fix is measured and not asserted"
 notwant 'MISMATCH' "$OUT" "with no mismatch on a healthy device"
-want "$FR/var/lib/android-data/system/users/0/fpdata: " "$OUT" "and lists both candidates, from the host path"
+want "$FR/var/lib/android-data/vendor_de/0/fpdata: " "$OUT" "and lists both candidates, from the host path"
 want 'absent \(and must stay absent' "$OUT" "naming the second one as absent rather than leaving it blank"
-[ "$(find "$FR/var/lib/android-data" -mindepth 1 | sort)" = "$(printf '%s\n%s\n%s\n%s\n' \
-    "$FR/var/lib/android-data/system" \
-    "$FR/var/lib/android-data/system/users" \
-    "$FR/var/lib/android-data/system/users/0" \
+[ "$(find "$FR/var/lib/android-data" -mindepth 1 | sort)" = "$(printf '%s\n%s\n%s\n' \
+    "$FR/var/lib/android-data/vendor_de" \
+    "$FR/var/lib/android-data/vendor_de/0" \
     "$TARGET" | sort)" ] \
-  && ok "and it created exactly the four directories that one path needs, nothing else in the partition" \
+  && ok "and it created exactly the three directories that one path needs, nothing else in the partition" \
   || { bad "the partition does not hold exactly the selected path:"; find "$FR/var/lib/android-data" | sed 's/^/        | /'; }
 
 echo
@@ -503,7 +523,7 @@ want 'systemctl cat zl1-fp-store-dir\.service: found' "$OUT" "and that systemd c
 want 'is-enabled: enabled' "$OUT" "and that it is enabled"
 want 'AGREE: the directory the rule selects is the one on disk' "$OUT" \
   "and that the installed directory is the one biometryd's rule selects -- the cross-check"
-want 'root/data/system/users/0/fpdata EXISTS' "$OUT" "the directory now exists as the HAL sees it"
+want 'root/data/vendor_de/0/fpdata EXISTS' "$OUT" "the directory now exists as the HAL sees it"
 want 'AGREE: owned by the uids of the HAL itself' "$OUT" "and its owner matches the HAL's uid (the access(W_OK) test)"
 want 'host view: ' "$OUT" "with the host-side view of the same directory"
 want 'the other candidate .*: not created, by design' "$OUT" "and the second candidate is still absent, and said to be"
@@ -542,18 +562,35 @@ want '/var/lib/android-data is NOT mounted: the applier would refuse to create a
 echo
 echo "== 7. WHICH path: the applier follows biometryd's rule, re-read every boot =="
 # ==================================================================================================
-# Three getprop answers. This is the check a hardcoded path cannot pass, and the reason the rule is
-# re-read rather than resolved once: the `<= 27` branch is taken TODAY because the read is broken.
+# The getprop answers, in order of how much they are about THIS device. The first is the device itself
+# and needs no values file at all -- it is the fixture's default. The rest model getprops this device does
+# not have (a repaired one, Android's own, a garbage one), which is the point of re-reading the rule: a
+# hardcoded path is right on exactly one of these and the shipped applier has to be right on all of them.
+# The header used to say "the `<= 27` branch is taken TODAY because the read is broken"; the device
+# answers 28 and takes the `> 27` branch, and docs 126 has the two readings.
 say_getprop() { printf 'first_api_level=%s\nsdk=%s\n' "$1" "$2" > "$FR/usr/bin/getprop.values"; }
 
+echo
+echo "   -- THE DEVICE'S OWN SHAPE: no values file, which is the stub the boot hook installs:"
+fresh
+runapplier
+printf '%s\n' "$OUT" > "$W/out.device"
+want 'api_level 28 > 27' "$OUT" \
+  "the stub's own answers (first_api_level omitted, sdk 28) put the applier on the > 27 branch"
+want 'created  /vendor_de/0/fpdata' "$OUT" "and it creates /data/vendor_de/0/fpdata -- the directory the HAL is handed"
+[ -d "$TARGET" ] && ok "which is the directory biometryd passes on this device" || bad "it did not create the device's path"
+[ ! -e "$OTHER" ] && ok "and it did NOT create the <= 27 one, which nothing would read here" || bad "it created both paths"
+
+echo
+echo "   -- a getprop answering 29 (a repaired one, or a newer device):"
 fresh
 say_getprop 29 29
 runapplier
 printf '%s\n' "$OUT" > "$W/out.api29"
 want 'api_level 29 > 27' "$OUT" "a getprop answering 29 makes the applier take the > 27 branch"
 want 'created  /vendor_de/0/fpdata' "$OUT" "and it works on /data/vendor_de/0/fpdata"
-[ -d "$OTHER" ] && ok "the vendor_de directory is the one it created" || bad "it did not create the vendor_de one"
-[ ! -e "$TARGET" ] && ok "and it did NOT create the system/users/0 one" || bad "it created both paths"
+[ -d "$TARGET" ] && ok "the vendor_de directory is the one it created" || bad "it did not create the vendor_de one"
+[ ! -e "$OTHER" ] && ok "and it did NOT create the system/users/0 one" || bad "it created both paths"
 
 echo
 echo "   -- and --status says DISAGREE when the directory on disk is not the one the rule selects:"
@@ -584,7 +621,7 @@ fresh
 say_getprop 'garbage' ''
 runapplier
 want 'api_level 0 <= 27' "$OUT" "atoi() of garbage is 0, exactly like atoi(\"\") -- both take <= 27"
-[ -d "$TARGET" ] && ok "and the system/users/0 directory is the one created" || bad "it created the wrong path"
+[ -d "$OTHER" ] && ok "and the system/users/0 directory is the one created" || bad "it created the wrong path"
 
 echo
 echo "   -- and a getprop that is not executable is the same as one that answers nothing:"
@@ -592,7 +629,7 @@ fresh
 chmod -x "$FR/usr/bin/getprop"
 runapplier
 want 'api_level 0 <= 27' "$OUT" "an unusable getprop still lands on the <= 27 branch, as biometryd would"
-[ -d "$TARGET" ] && ok "and the directory is still the right one" || bad "it picked the wrong path"
+[ -d "$OTHER" ] && ok "and the directory is still the right one" || bad "it picked the wrong path"
 chmod +x "$FR/usr/bin/getprop"
 
 echo
@@ -610,9 +647,9 @@ OUT=$(PATH="$STUB:$PATH" timeout 120 sh "$W/applier/hardcoded.sh" 2>&1); RC=$?
 printf '%s\n' "$OUT" > "$W/out.hardcoded"
 want 'api_level 29 <= 27' "$OUT" "the constant build prints a reason that contradicts itself, which is the tell"
 want 'created  /system/users/0/fpdata' "$OUT" "and works on the path level 29 does not select"
-[ -d "$TARGET" ] && ok "so on the SAME fixture it creates a directory biometryd will never pass" \
+[ -d "$OTHER" ] && ok "so on the SAME fixture it creates a directory biometryd will never pass" \
   || bad "the fixture did not behave"
-[ ! -e "$OTHER" ] && ok "and not the one the shipped applier made, which is the whole difference" \
+[ ! -e "$TARGET" ] && ok "and not the one the shipped applier made, which is the whole difference" \
   || bad "the fixture leaked between the two runs"
 
 # ==================================================================================================
@@ -631,7 +668,7 @@ printf '%s\n' "$OUT" > "$W/out.mismatch"
   || bad "it exited $RC -- 'the directory exists' was reported as a fix"
 want "MISMATCH: .*is uid=$HALUID mode=770, not 0/770" "$OUT" "naming what it got and what access(W_OK) needs"
 want 'the directory EXISTS but this is NOT the fix' "$OUT" "and saying the one thing an operator must not conclude"
-want 'checked  /system/users/0/fpdata' "$OUT" "it took the 'checked' branch, because the directory was already there"
+want 'checked  /vendor_de/0/fpdata' "$OUT" "it took the 'checked' branch, because the directory was already there"
 
 echo
 echo "   -- and a chown the kernel refuses is caught by the same read-back:"
@@ -653,7 +690,7 @@ mkdir -p "$TARGET"; chmod 0770 "$TARGET"
 runapplier
 printf '%s\n' "$OUT" > "$W/out.idempotent"
 [ "$RC" = 0 ] && ok "the second run exits 0" || bad "it exited $RC"
-want 'checked  /system/users/0/fpdata' "$OUT" "it takes the 'checked' branch, not 'created'"
+want 'checked  /vendor_de/0/fpdata' "$OUT" "it takes the 'checked' branch, not 'created'"
 notwant 'REPAIRED' "$OUT" "and does not claim a repair it did not make"
 
 # ==================================================================================================
@@ -703,7 +740,7 @@ want 'removed /etc/systemd/system/zl1-fp-store-dir\.service' "$OUT" "it names ea
 [ -d "$TARGET" ] && ok "THE DIRECTORY SURVIVES: removing it would break the fingerprint again" \
   || bad "it deleted the directory"
 want 'the directory was NOT removed' "$OUT" "and it says so rather than leaving the reader to guess"
-want 'rmdir /var/lib/android-data/system/users/0/fpdata' "$OUT" "printing the exact undo, as a DEVICE path"
+want 'rmdir /var/lib/android-data/vendor_de/0/fpdata' "$OUT" "printing the exact undo, as a DEVICE path"
 want 'ls -A' "$OUT" "with the emptiness check that has to come first"
 # The other file must not be touched by a second remove either: --remove is idempotent and does not
 # own anything else.

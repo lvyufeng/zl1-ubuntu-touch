@@ -46,15 +46,32 @@
 # they do.) This is not a partition image, not a flash, and not one of the forbidden partitions: it is
 # a directory on the partition Android writes to all day long.
 #
-# WHICH of the two paths: /data/system/users/0/fpdata, the `<= 27` branch -- because biometryd's read
-# of the API level is broken on this port in a way that lands on that branch anyway (docs 101): it does
-# not query the Android property area, it execs the UT-side /usr/bin/getprop
-# (halium/biometryd/src/biometry/util/property_store.cpp:26), and the v63 boot hook overwrites that
-# file with a shell stub that has no `custom.*` arm and answers nothing for `ro.*` either. `atoi("")`
-# is 0, so the `<= 27` branch is taken *because its read is broken*. Both answers coincide on this
-# device, which is why the shipped rule is right by coincidence and why the applier RE-READS it at
-# every boot instead of hardcoding the result: if the UT-side getprop ever starts answering > 27, the
-# applier follows biometryd, and --status says DISAGREE if the installed directory is the other one.
+# WHICH of the two paths: /data/vendor_de/0/fpdata, the `> 27` branch -- and the reason is not what
+# this file used to say. The old text here claimed biometryd's read "answers nothing for `ro.*` either",
+# so `atoi("")` = 0 and the `<= 27` branch was taken *because the read is broken*. **That is false, and
+# the device said so twice.** biometryd execs the UT-side /usr/bin/getprop, the v63 boot hook does
+# replace that file with a shell stub -- but the stub has a `ro.build.version.sdk) printf 28` arm, and
+# NO arm for `ro.product.first_api_level`. Its own fallback is therefore the only one answered:
+#
+#   ro.product.first_api_level -> <unset>       (the stub omits it)
+#   ro.build.version.sdk       -> 28            (the stub answers it)
+#   -> atoi("28") = 28 > 27, so biometryd passes /data/vendor_de/0/fpdata/
+#
+# Both readings are on this device, from the probe, twice: tmp-post-recovery-20260923T145530Z/
+# 06-fingerprint.txt:20-23 and tmp-post-recovery-20260924T013059Z/06-fingerprint.txt:19-22 (docs 126).
+# The branch is flipped by an OMISSION, not by a wrong answer: the stub answers the fallback and not
+# the first choice, and the first choice is what decides.
+#
+# So the shipped rule is right for the right reason -- the applier RE-READS biometryd's rule at every
+# boot instead of hardcoding a path, so it follows biometryd wherever the read goes, and on this device
+# that is /data/vendor_de/0/fpdata (docs 97's rule: write the ONE path the rule selects). The Android
+# side disagrees (vendor.img build.prop says ro.product.first_api_level=23, i.e. the `<= 27` branch),
+# and the probe prints that disagreement on purpose -- biometryd never reads Android's property area,
+# so Android's answer is a cross-check and not the rule. What must exist is the directory biometryd
+# HANDS OVER, which is the one above. If the UT-side getprop is ever repaired to answer
+# `ro.product.first_api_level` the way Android does, biometryd flips to the other path, the applier
+# follows on the next boot, and --status says DISAGREE about the directory already installed -- which
+# is exactly why the rule is re-read and the second directory is never created "just in case".
 #
 # The OTHER candidate is deliberately NOT created (docs 97): creating both leaves one directory that
 # nothing will ever read and an undo line that names only one of the two. --status prints it as
@@ -95,11 +112,31 @@ D=/etc/systemd/system
 UNIT=$D/zl1-fp-store-dir.service
 APPLIER=$D/zl1-fp-store-dir.sh
 MNT=/var/lib/android-data
-REL=/system/users/0/fpdata
+# There is deliberately NO `REL=` constant here any more. There was one -- `/system/users/0/fpdata` --
+# and it was used in exactly one place, the `--remove` undo message, where it named a directory this
+# device does not have: the applier DERIVES the path from biometryd's rule while the undo ASSUMED one,
+# so the one instruction an operator gets for undoing the fix pointed at the other candidate. That is
+# the same defect as the prose, one level worse because it is an instruction rather than a description
+# (docs 126). The undo now asks the device the same question the applier does.
 
 guard() {
   "${SSH[@]}" 'grep -qa msm8996 /proc/device-tree/compatible' 2>/dev/null ||
     { echo "not the zl1 (no msm8996 in /proc/device-tree/compatible) - refusing" >&2; exit 1; }
+}
+
+# THE RULE, ASKED OF THE DEVICE. Used everywhere this script has to NAME the path: the --install
+# read-out, and the --remove undo. It is a function and not a constant because the constant was WRONG
+# here -- `/system/users/0/fpdata` -- and both of those places used it. The applier derives the path
+# from biometryd's rule while the host side assumed one, so on this device the operator was told to
+# look at the directory nothing reads and to rmdir it (docs 126). Prints "<selected> <other>"; prints
+# an empty string when the device did not answer, and callers say so rather than guessing.
+read_rel() {
+  "${SSH[@]}" 'G=/usr/bin/getprop
+    api=$("$G" ro.product.first_api_level 2>/dev/null)
+    [ -n "$api" ] || api=$("$G" ro.build.version.sdk 2>/dev/null)
+    case "${api:-}" in ""|*[!0-9]*) api=0 ;; esac
+    if [ "$api" -le 27 ]; then printf "/system/users/0/fpdata /vendor_de/0/fpdata"
+    else printf "/vendor_de/0/fpdata /system/users/0/fpdata"; fi' 2>/dev/null | tr -d '\r\n'
 }
 
 # The read-only report. It is a remote script rather than a local summary because every number in it
@@ -269,7 +306,12 @@ case "${1:-}" in
 #
 #   * the path follows the biometryd OWN rule, re-read every boot (its rule, not a guess -- docs 101):
 #     the UT-side getprop, atoi() of ro.product.first_api_level or ro.build.version.sdk, and <= 27
-#     means /data/system/users/0/fpdata. Nothing else is ever created (docs 97).
+#     means /data/system/users/0/fpdata, else /data/vendor_de/0/fpdata. Nothing else is ever created
+#     (docs 97). WHICH branch is not a property of the port but of what that stub answers TODAY, and
+#     on this device the answer is 28 (it omits the first choice and answers the fallback), so the
+#     path is the '> 27' one -- docs 126. That is why this is computed and printed rather than
+#     written down here: a comment cannot follow the device, and a hardcoded path would silently stop
+#     being the directory the HAL is handed.
 #   * the owner follows the HAL real uid when the HAL is running, else 1000 (user system, which is both
 #     what the Android FingerprintService runs as and what the device rc asks for).
 #   * it is idempotent, and it repairs a WRONG owner as well as a missing directory: "it exists, so do
@@ -395,10 +437,16 @@ UNIT_EOF
   arc=0
   applier_out=$("${SSH[@]}" "/bin/sh '$APPLIER'" 2>&1) || arc=$?
   printf '%s\n' "$applier_out" | sed 's/^/  /'
-  "${SSH[@]}" "for p in $MNT$REL $MNT/vendor_de/0/fpdata; do
+  _rel=$(read_rel); REL=${_rel%% *}; OTHER=${_rel#* }
+  if [ -n "$REL" ] && [ -n "$OTHER" ]; then
+    "${SSH[@]}" "for p in $MNT$REL $MNT$OTHER; do
       printf \"    %s: \" \"\$p\"
       ls -ld \"\$p\" 2>/dev/null || echo \"absent (and must stay absent unless it is the selected path)\"
     done"
+  else
+    echo "    (the device did not answer the path rule, so neither candidate can be named here;" >&2
+    echo "     read scripts/device/zl1-fingerprint-probe.sh section 2 rather than guessing)" >&2
+  fi
   echo
   if [ "$arc" != 0 ]; then
     {
@@ -439,8 +487,17 @@ UNIT_EOF
   # fingerprint again while looking like a clean revert. The exact undo is printed instead, with the
   # emptiness check that has to come first.
   echo "  the directory was NOT removed. To undo that too:"
-  echo "      ssh $DEV 'ls -A $MNT$REL'    # must print nothing first: an empty directory is the only"
-  echo "      ssh $DEV 'rmdir $MNT$REL'    # thing this installer can be said to have created"
+  # READ the path, do not assume it: the same rule the applier runs, asked of the same device, so the
+  # undo cannot name the other candidate. (It did, until 2026-09-24 -- docs 126.)
+  _rel=$(read_rel); REL=${_rel%% *}; OTHER=${_rel#* }
+  case "$REL" in
+  /system/users/0/fpdata|/vendor_de/0/fpdata)
+    echo "      ssh $DEV 'ls -A $MNT$REL'    # must print nothing first: an empty directory is the only"
+    echo "      ssh $DEV 'rmdir $MNT$REL'    # thing this installer can be said to have created" ;;
+  *)
+    echo "      (the device did not answer the path rule, so this cannot name the directory: read it"
+    echo "       with scripts/device/zl1-fingerprint-probe.sh section 2 rather than guessing)" ;;
+  esac
   ;;
 --status)
   guard
@@ -457,9 +514,15 @@ What this fixes
   device rc files have none: nobody makes it. docs 83.
 
 What it writes
-  ONCE, IMMEDIATELY:  /var/lib/android-data/system/users/0/fpdata -- which IS the Android
-                      /data/system/users/0/fpdata (see below), mode 0770, owner the HAL's real uid if
-                      the HAL is running, else 1000 (`user system`).
+  ONCE, IMMEDIATELY:  the directory biometryd's OWN rule selects -- on this device that is
+                      /var/lib/android-data/vendor_de/0/fpdata, which IS the Android
+                      /data/vendor_de/0/fpdata (see below), mode 0770, owner the HAL's real uid if
+                      the HAL is running, else 1000 (`user system`). It is NOT hardcoded: the applier
+                      re-reads the rule every boot, and --status prints the level and the path it
+                      chose. (This text said /data/system/users/0/fpdata until 2026-09-24. The device
+                      says the UT getprop answers ro.build.version.sdk = 28 and omits
+                      ro.product.first_api_level, so biometryd takes the `> 27` branch; see the header
+                      and docs 126.)
   PERSISTENTLY:       /etc/systemd/system/zl1-fp-store-dir.sh      the applier
                       /etc/systemd/system/zl1-fp-store-dir.service the oneshot unit: enabled, ordered
                                                                      after the Android data mount and
@@ -473,11 +536,13 @@ Why the host path is the right one
   partition image, not a flash, and not one of the forbidden partitions.
 
 What it deliberately does NOT do
-  * the OTHER candidate, /data/vendor_de/0/fpdata: creating both leaves a directory nothing reads and
-    an undo that names only one of them (docs 97). The applier follows biometryd's rule, which on this
-    port resolves to /data/system/users/0 -- because biometryd's getprop read is the UT-side v63 STUB,
-    so it answers nothing and atoi("") = 0 lands on `<= 27` (docs 101). --status re-reads that rule
-    every time and says DISAGREE if the installed directory is the other one.
+  * the OTHER candidate -- /data/system/users/0/fpdata here, and the answer flips with the rule:
+    creating both leaves a directory nothing reads and an undo that names only one of them (docs 97).
+    The applier follows biometryd's rule, and on this port that rule resolves with the UT-side v63
+    STUB's answers: it omits `ro.product.first_api_level` and answers `ro.build.version.sdk` = 28, so
+    atoi("28") = 28 > 27 and the path is /data/vendor_de/0/fpdata (docs 126; the stub does NOT answer
+    nothing -- the fallback is answered even though the first choice is not). --status re-reads that
+    rule every time and says DISAGREE if the installed directory is the other one.
   * restorecon (Android calls it). It would have to run inside the container; --status prints the
     container's getenforce so the assumption is checked rather than assumed.
   * report success from the write alone. The applier stats the directory afterwards and exits 1 on a

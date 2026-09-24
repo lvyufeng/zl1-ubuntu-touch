@@ -22,7 +22,7 @@
 | 它比手打多做什么？ | **每一步做完之后，从设备上重读下一步的前置条件**：02 之后读 `download_mode`，03 之后读 keeper 是否还在。在 05 才发现 A 或 C 根本没动，是在**唯一那个 boot 的末尾**才发现的 |
 | `--apply-trial` 是什么？ | **一个单独的开关。**它把第 05 步从 `--status` 升级成那次**写入**（写 SoC 的电源参数）。`--yes` **不**蕴含它，而且**除非 02 在同一次调用里真的跑了，它会被拒绝** |
 | 离线验证？ | `zl1-one-boot-runbook-selftest.sh` **95 检查 / 0 失败**；四个 callee 是**会记录调用的替身**（各自有自己的 harness），另外它自己的被测对象还断言"声明的步骤表和实际执行顺序一致" |
-| 家族全量跑呢？ | **18 个 harness / 1979 检查 / 全绿**（本页写完时是 1967；[`125`](125-the-device-read-those-four-things-already.md) 之后 runbook harness 90 → 95） |
+| 家族全量跑呢？ | **18 个 harness / 1979 检查 / 全绿**（本页写完时是 1967；[`125`](125-the-device-read-those-four-things-already.md) 之后 runbook harness 90 → 95；[`126`](126-the-path-was-decided-by-what-the-stub-omits.md) 之后 loc-fp 195 → 200、fp-store-dir 131 → 137，即 **1990**） |
 | 动设备了吗？ | **没有。**这条命令**从来没有在设备上跑过**；设备仍在 EDL |
 
 ---

@@ -19,12 +19,19 @@
 #
 #   **And `get` is `core::posix::exec("/usr/bin/getprop", {key}, ...)`**
 #   (halium/biometryd/src/biometry/util/property_store.cpp:26) -- an ABSOLUTE path to the *UT-side*
-#   binary, which the v63 boot hook replaces with a /bin/sh stub on every boot (docs 50, 93). So
-#   biometryd's api_level is always "", atoi("")=0, and it takes the <=27 branch because its property
-#   read is broken -- not because of what the device reports. Section 2 reads biometryd's own path
-#   and then cross-checks it against the container's properties, because the two can disagree:
-#   the vendor.img build.prop in the 2026-06-07 backup set says ro.product.first_api_level=23, which
-#   happens to be the same branch. Two independent readings agreeing is what makes the write safe.
+#   binary, which the v63 boot hook replaces with a /bin/sh stub on every boot (docs 50, 93). That stub
+#   is **not silent**, and this is a correction (docs 126): it has an arm for `ro.build.version.sdk`
+#   (a hardcoded 28, the doc-50 sabotage) and **no arm at all** for `ro.product.first_api_level`. So the
+#   first choice is unanswered, the *fallback* answers, and `api_level` is "28" -- not "". atoi("28") is
+#   28 > 27, so biometryd passes /data/vendor_de/0/fpdata/, and the branch flips by OMISSION rather than
+#   by a wrong answer. Read on the device 2026-09-24 (tmp-post-recovery-*/06-fingerprint.txt: `first_api_level
+#   -> <unset>`, `sdk -> 28`, "level 28 > 27").
+#
+#   The container's own properties land on the OTHER side: the vendor.img build.prop in the 2026-06-07
+#   backup set says ro.product.first_api_level=23, and the live container said 23 too, which is the <=27
+#   branch. So the two readings DISAGREE on this device, and section 2 prints the disagreement instead of
+#   picking one -- biometryd's own read is the one that decides, because biometryd never reads the
+#   container's getprop. A cross-check that agrees is a coincidence here, not the reason the write is safe.
 #
 #   And the HAL checks it before doing anything else
 #   (device/leeco/zl1/biometrics/BiometricsFingerprint.cpp:215-228):
@@ -229,18 +236,20 @@ echo "== which of the two paths biometryd passes (its own rule: api_level <= 27 
 #
 #     core::posix::exec("/usr/bin/getprop", {key}, {}, core::posix::StandardStream::stdout)
 #
-# and on this port /usr/bin/getprop is the v63 boot hook's /bin/sh stub (docs 50/93). So both
-# properties come back empty, api_level stays "", atoi("") is 0, and the <=27 branch is taken -- for
-# a reason that has nothing to do with what the device reports.
+# and on this port /usr/bin/getprop is the v63 boot hook's /bin/sh stub (docs 50/93). That stub answers
+# `ro.build.version.sdk` with a hardcoded 28 and has NO arm for `ro.product.first_api_level`, so the
+# fallback answers, api_level is "28", and the >27 branch is taken -- **by what the stub omits, not by
+# what it gets wrong** (docs 126, and the device's own reading: first_api_level <unset>, sdk 28).
 #
 # That matters here because this section decides the ONE path section 5 is allowed to create. The
 # earlier version read the *container's* /system/bin/getprop, which is NOT what biometryd reads: on a
 # device whose first_api_level were >27 and whose UT getprop worked, biometryd would take the >27
 # branch while that version still answered from the container's value -- the wrong path, stated with
 # full confidence. So: read biometryd's own source of truth, then cross-check it against the device's
-# Android properties, and print the disagreement when there is one, because on this port the
-# disagreement is the whole content of the decision (both land on <=27, so the target is certain --
-# but "certain because two independent readings agree" is a different statement from "certain").
+# Android properties, and print the disagreement when there is one. On this device they really do
+# disagree -- biometryd's 28 against the container's 23 -- so the cross-check is load-bearing for
+# reading the result, not decoration: the target is certain because it is what biometryd will pass,
+# which is a different statement from "certain because two readings happened to agree".
 GP=/usr/bin/getprop
 gp_is_stub=0
 if [ -f "$GP" ]; then
@@ -373,8 +382,10 @@ else
     *fingerprint.msm8996.so)
       echo "      that module carries the Goodix sensor glue for the msm8996 variant and is a binder"
       echo "      CLIENT (via libfp_client5118m.so) of the service 'FingerPrintService'. It also"
-      echo "      hardcodes /data/system/users/0/fpdata/ -- the same path biometryd passes and the"
-      echo "      wrapper access()es, so that path is not only a gate: it is the outer store too." ;;
+      echo "      hardcodes /data/system/users/0/fpdata/ as its store -- and NOTE: that is NOT"
+      echo "      necessarily the path biometryd hands the wrapper. It is the same path only when the"
+      echo "      level above lands on <= 27; on this device it lands on 28, so biometryd passes"
+      echo "      /data/vendor_de/0/fpdata/ and the module's own store is the OTHER directory (docs 126)." ;;
     *) echo "      (an unexpected variant: the offline read is docs 98 section 2; do not trust it here)" ;;
     esac
   else

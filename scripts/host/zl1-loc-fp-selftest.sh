@@ -23,6 +23,15 @@
 #   * `--create-store-dir` created BOTH candidate paths while section 2 had already decided which one
 #     biometryd passes, and its undo line named only one of them.
 #
+# And one defect was in THIS FILE, found in 2026-09-24 (docs 126): the default fixture was a getprop
+# that answers nothing and a default level of 27, so every scenario here ran on the <=27 branch and the
+# assertions named `/data/system/users/0/fpdata` as "the path biometryd actually passes". The device
+# says otherwise -- the v63 stub answers `ro.build.version.sdk` = 28 and omits `ro.product.first_api_level`,
+# so biometryd's own read is 28 and its path is `/data/vendor_de/0/fpdata`. A harness whose default
+# fixture is a device that does not exist passes by measuring the wrong thing, which is the same defect
+# family as a check that cannot fail. The default is now the device's shape and the answering-nothing
+# getprop is `ut_getprop_silent`, asked for by name.
+#
 # Usage: zl1-loc-fp-selftest.sh [--keep]
 #   --keep   leave the fake root, the rewritten scripts and the stub bin in place for inspection
 #
@@ -55,15 +64,25 @@ mkdir -p "$FR/proc/device-tree" "$FR/etc/systemd/system" "$FR/usr/bin" "$FR/usr/
          "$FR/proc/1/ns" || exit 2
 printf 'qcom,msm8996\n' > "$FR/proc/device-tree/compatible"
 
-# The v63 stub over /usr/bin/getprop, which is what the real port has: a shell script with no custom.*
-# case. The probe's own detector looks for the shebang -- this is the branch that must fire.
-#
 # **This binary is on biometryd's decision path.** biometryd does not read the Android property area;
 # it runs `core::posix::exec("/usr/bin/getprop", {key}, ...)` (property_store.cpp:26) -- an absolute
-# path to this exact file. So a scenario that wants biometryd to take the >27 branch has to give the
-# UT-side getprop an answer, and `ut_getprop` is how. Leaving it as the stub is the real port.
-ut_getprop_stub() { printf '#!/bin/sh\n# no-attach diagnostic stub\nexit 0\n' > "$FR/usr/bin/getprop"; chmod +x "$FR/usr/bin/getprop"; }
-ut_getprop() { # $1 = first_api_level answer ('' = the stub's behaviour: no output)
+# path to this exact file. So the UT-side getprop is what decides which store directory the HAL is
+# handed, and the fixtures below are three different getprops.
+#
+# `ut_getprop_stub` is THE DEVICE, and this is a correction (docs 126). It used to be written as a
+# script that answers nothing at all, and called "the stubbed getprop's behaviour". The real v63 stub is
+# not silent: it has an arm for `ro.build.version.sdk` (hardcoded 28) and NO arm for
+# `ro.product.first_api_level`, so the fallback is answered and the first choice is not -- which is what
+# puts biometryd on the `> 27` branch. The device said so twice
+# (tmp-post-recovery-*/06-fingerprint.txt: first_api_level <unset>, sdk 28, "level 28 > 27").
+# `ut_getprop_silent` is the OTHER shape, a hypothetical getprop that answers nothing, which is a
+# different device and now has to be asked for by name.
+#
+# Both are needed: the "empty answer" branch in the code is real and has to be driven, but it stopped
+# being "what the port has" the moment the device was read.
+ut_getprop_stub() { printf '#!/bin/sh\ncase "$1" in ro.build.version.sdk) printf "%%s\\n" 28 ;; esac\nexit 0\n' > "$FR/usr/bin/getprop"; chmod +x "$FR/usr/bin/getprop"; }
+ut_getprop_silent() { printf '#!/bin/sh\n# a getprop that answers nothing -- NOT the shape the v63 hook installs\nexit 0\n' > "$FR/usr/bin/getprop"; chmod +x "$FR/usr/bin/getprop"; }
+ut_getprop() { # $1 = first_api_level answer ('' = no arm for it, exactly like the real stub)
   if [ -z "${1:-}" ]; then
     ut_getprop_stub
   else
@@ -327,9 +346,13 @@ syswrite() { grep -E '^systemctl (daemon-reload|restart|start|stop|mask|enable|d
 # $1 = script, rest = args. stdout+stderr in $OUT, exit code in $RC (124 = it hung). The three
 # FAKE_* values are what the device would have answered through lxc-info/nsenter, so a scenario that
 # wants a different device state sets them and calls env_reset afterwards.
-RUN_FAL=27; RUN_SDK=27; RUN_PID=4242
+# The container-side answers are the device's MEASURED ones (docs 126, and the probe prints them in its
+# section 2 cross-check): first_api_level 23, sdk 28. They are a cross-check only -- the decision is made
+# from the UT-side getprop -- but a default that disagrees is the truth on this device, and the probe
+# says DISAGREES out loud.
+RUN_FAL=23; RUN_SDK=28; RUN_PID=4242
 env_reset() {
-  RUN_FAL=27; RUN_SDK=27; RUN_PID=4242; ut_getprop
+  RUN_FAL=23; RUN_SDK=28; RUN_PID=4242; ut_getprop
   # The container's tree is SHARED state now that the probe really writes into it: a store directory
   # left behind by one scenario turns the next scenario's --create-store-dir into "already there",
   # which is a different branch asserting the opposite thing. (Measured: that is exactly how the >27
@@ -533,21 +556,33 @@ run "$W/fp.sh"
 printf '%s\n' "$OUT" > "$W/out.fp"
 [ "$RC" = 0 ] && ok "the default run exits 0" || bad "the default run exited $RC"
 [ -z "$(syswrite)" ] && ok "the default run makes no systemd call that changes anything" || bad "the default run would change the device"
-[ ! -d "$FR/data/system/users/0/fpdata" ] && ok "and it created no store directory" || bad "it created one"
+[ ! -d "$FR/data/system/users/0/fpdata" ] && [ ! -d "$FR/data/vendor_de/0/fpdata" ] \
+  && ok "and it created neither candidate store directory" || bad "it created one"
 want 'read-only' "$OUT" "it announces that it is read-only when --create-store-dir is not given"
 want 'access\(W_OK\) with uid=1000' "$OUT" "it states the real question: access() with the HAL's own uid"
 want 'same mount namespace as the container' "$OUT" "it compares the HAL's mount namespace against the container's for real"
-want '/data/system/users/0/fpdata' "$OUT" "and lists the path biometryd actually passes"
-want 'MISSING  /data/system/users/0/fpdata' "$OUT" "whose absence is the finding"
+# The path NAMED as the one biometryd passes is the answer of this section, and on this device it is
+# /data/vendor_de/0/fpdata (docs 126). The assertion has to be on the decision line and not merely on
+# the store list, which names BOTH candidates -- a check satisfied by "somewhere in the output this
+# path appears" would pass on either answer, which is the shape that cannot fail.
+want 'biometryd passes /data/vendor_de/0/fpdata' "$OUT" "and names the path biometryd actually passes: the >27 one"
+want 'MISSING  /data/vendor_de/0/fpdata' "$OUT" "whose absence is the finding"
+notwant 'MISSING  /data/vendor_de/0/fpdata  *[a-z]' "$OUT" "and reports it as absent, not as something else"
 want 'setActiveGroup failed' "$OUT" "it counts the caller's line"
 want 'Bad path length' "$OUT" "and the HAL's own line, whose being zero is the evidence"
 want 'Start biometrics' "$OUT" "and the line that puts the failure after openHal()"
-want 'both empty/garbage, so atoi\(""\)=0 and biometryd takes the <=27 branch' "$OUT" "it says WHY biometryd lands on <=27 (its own read answers nothing), not why the device would"
+want 'level 28 > 27' "$OUT" "it reads the level from biometryd's own source, and the level is 28 -- the device's value"
 want 'biometryd execs .*usr/bin/getprop -- a shell script' "$OUT" "and states that biometryd's OWN read comes from the UT-side getprop, which is the v63 stub's shape"
-want "biometryd's ACTUAL reason on this port" "$OUT" "so the reason it gives for the <=27 branch is biometryd's, not the device's"
+want 'it DOES answer \(so the level below is a real read\)' "$OUT" "so the reason it gives is biometryd's own read, and that read is not silent"
+want 'ro.product.first_api_level -> <unset>' "$OUT" "with the property the stub has NO arm for reported as unset -- the omission that flips the branch"
+want 'ro.build.version.sdk      -> 28' "$OUT" "and the fallback the stub DOES answer, which is what carries the level"
 want 'the Android side, for cross-check only \(biometryd never reads this\)' "$OUT" "and it labels the container read as a cross-check, because biometryd does not read it"
 want 'vendor.img build.prop: 23' "$OUT" "with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared"
-want 'AGREES with the reading above' "$OUT" "and it says when the two independent readings agree, which is what makes the write safe"
+# The device's real shape: biometryd's 28 against the container's 23. A cross-check that agreed would
+# be the wrong fixture -- the archived device reading (tmp-post-recovery-*/06-fingerprint.txt:21-25)
+# says DISAGREES, and the whole reason this section reads biometryd's own source first is that the two
+# answers differ on this port.
+want 'DISAGREES with the reading above' "$OUT" "and it prints the disagreement instead of silently picking one"
 
 # ==================================================================================================
 echo
@@ -762,26 +797,31 @@ echo "== 8. --create-store-dir: ONE path, decided by section 2, with its own und
 # ==================================================================================================
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create"
-created /data/system/users/0/fpdata && ok "level 27 -> it creates /data/system/users/0/fpdata (as a real directory in the fake root)" \
-  || bad "it did not create the <=27 store directory"
-created /data/vendor_de/0/fpdata && bad "it created the other candidate too (the defect docs 97 fixed)" \
+created /data/vendor_de/0/fpdata && ok "level 28 -> it creates /data/vendor_de/0/fpdata (as a real directory in the fake root)" \
+  || bad "it did not create the >27 store directory"
+created /data/system/users/0/fpdata && bad "it created the other candidate too (the defect docs 97 fixed)" \
   || ok "and NOT the other candidate"
-want 'created /data/system/users/0/fpdata' "$OUT" "it reports what it created"
-want 'UNDO: rmdir /proc/<that-pid>/root/data/system/users/0/fpdata' "$OUT" "the undo names the path it created, through the pid the operator has to look up"
-want 'NOT created: /data/vendor_de/0/fpdata' "$OUT" "and it says which path it deliberately did not create"
-notwant 'UNDO:.*vendor_de' "$OUT" "the undo does not name a path that was never created"
+want 'created /data/vendor_de/0/fpdata' "$OUT" "it reports what it created"
+want 'UNDO: rmdir /proc/<that-pid>/root/data/vendor_de/0/fpdata' "$OUT" "the undo names the path it created, through the pid the operator has to look up"
+want 'NOT created: /data/system/users/0/fpdata' "$OUT" "and it says which path it deliberately did not create"
+notwant 'UNDO:.*system/users' "$OUT" "the undo does not name a path that was never created"
 
 echo
-echo "   -- the >27 branch is reached only when biometryd's OWN read says so:"
+echo "   -- the branch is taken from biometryd's OWN read, not the container's, when they disagree:"
 # This is the defect this round fixed in the probe. The old section 2 read the CONTAINER's
 # /system/bin/getprop and decided from that; biometryd reads the UT-side /usr/bin/getprop. Set the two
-# to disagree and the difference is visible: the container says 29 here, and with the real port's stub
-# in place the probe must still create the <=27 path, because that is what biometryd will pass.
+# to land on DIFFERENT branches and the difference is visible: the container says 29 here, biometryd's
+# own reading says 23, and the path created must be the one biometryd will pass.
+#
+# The UT answer has to be a value the stub cannot produce (`ut_getprop 23 23`, a hypothetical repaired
+# getprop): with the real stub the two readings both land on >27 and the scenario would pass whichever
+# side the probe read -- the "a fixture that cannot make two behaviours differ tests neither" shape.
+env_reset   # the scenario above really created the >27 store, and the check below asserts it is absent
 RUN_FAL=29; RUN_SDK=29
-ut_getprop_stub
+ut_getprop 23 23
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create29.containeronly"
-created /data/system/users/0/fpdata && ok "container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created" \
+created /data/system/users/0/fpdata && ok "container says 29 but biometryd's own read says 23 -> the <=27 path is created" \
   || bad "it did not create the <=27 store directory"
 created /data/vendor_de/0/fpdata && bad "it created the path the container's value would suggest (the old probe's answer)" \
   || ok "NOT the path the container's value would suggest"
@@ -807,21 +847,31 @@ want 'UNDO: rmdir /proc/<that-pid>/root/data/vendor_de/0/fpdata' "$OUT" "with th
 want 'AGREES with the reading above' "$OUT" "and both readings agree here"
 
 echo
-echo "   -- the real 2026-09-23 shape: the stub says nothing, the device says 23, both <=27:"
+echo "   -- THE DEVICE'S OWN SHAPE: the stub omits first_api_level and answers sdk=28, the container says 23:"
+# Both halves of this are readings, not choices (docs 126): the UT-side stub's answers and the
+# container's vendor.img build.prop value, which the archived probe output carries side by side
+# (tmp-post-recovery-*/06-fingerprint.txt:19-25). The two readings land on OPPOSITE branches here, so
+# this scenario is also the one that would catch a probe that quietly preferred the container's answer.
 RUN_FAL=23; RUN_SDK=28
 ut_getprop_stub
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.truth"
 want 'ro.product.first_api_level -> 23' "$OUT" "the container reports the value the real vendor.img build.prop carries"
-want 'AGREES with the reading above' "$OUT" "and it says so explicitly"
-created /data/system/users/0/fpdata && ok "so the path is certain from two independent readings" \
-  || bad "it did not create the <=27 store directory"
+want 'DISAGREES with the reading above' "$OUT" "and it says so explicitly, rather than reporting agreement that is not there"
+created /data/vendor_de/0/fpdata && ok "and the path created is biometryd's own answer (28 > 27), not the container's" \
+  || bad "it did not create the >27 store directory"
+created /data/system/users/0/fpdata && bad "it created the branch the container's value would suggest" \
+  || ok "and not the path the container's reading would suggest"
 
 echo
-echo "   -- an unreadable property lands on the SAME path a correct Android 8 would use:"
+echo "   -- a getprop that answers NOTHING lands on the SAME path a correct Android 8 would use:"
+# This is the OTHER getprop shape, and it has to be asked for by name: the v63 stub does answer, so
+# "the property read comes back empty" is a hypothetical device, not this one (docs 126).
 RUN_FAL=; RUN_SDK=
+ut_getprop_silent
 run "$W/fp.sh" --create-store-dir
 want 'atoi\(""\)=0' "$OUT" "it explains that atoi(\"\")=0"
+want 'that is what makes the <=27 branch automatic' "$OUT" "and says the branch is automatic for the reason it is"
 created /data/system/users/0/fpdata && ok "and creates the <=27 path, as biometryd would" \
   || bad "it did not create the <=27 store directory"
 
@@ -832,20 +882,20 @@ env_reset
 # NOT stubbed here (the design note: the write really happens, into a fake root), so "it changed no
 # ownership and no mode" has to be a statement about this directory -- an assertion about $ACT for a
 # command that is never stubbed is a check that cannot fail.
-mkdir -p "$(storepath /data/system/users/0/fpdata)"
-chmod 0755 "$(storepath /data/system/users/0/fpdata)"
+mkdir -p "$(storepath /data/vendor_de/0/fpdata)"
+chmod 0755 "$(storepath /data/vendor_de/0/fpdata)"
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.exists"
-[ -d "$(storepath /data/system/users/0/fpdata)" ] \
+[ -d "$(storepath /data/vendor_de/0/fpdata)" ] \
   && ok "with the directory present it creates nothing (and it is still there)" \
   || bad "the directory is gone"
-[ "$(stat -c %a "$(storepath /data/system/users/0/fpdata)" 2>/dev/null)" = 755 ] \
+[ "$(stat -c %a "$(storepath /data/vendor_de/0/fpdata)" 2>/dev/null)" = 755 ] \
   && ok "and changes no ownership or mode" || bad "the mode was changed"
 want 'exists already' "$OUT" "it says the directory was already there"
 
 echo
 echo "   -- the uid it would chown to comes from the HAL, so no HAL means no write:"
-rm -rf "$(storepath /data/system/users/0/fpdata)"
+rm -rf "$(storepath /data/vendor_de/0/fpdata)" "$(storepath /data/system/users/0/fpdata)"
 RUN_PID=none
 run "$W/fp.sh" --create-store-dir
 printf '%s\n' "$OUT" > "$W/out.fp.create.nohal"
@@ -865,7 +915,8 @@ echo "== 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, tw
 # necessary and not sufficient, and "is the daemon up" and "which module got picked" are two further
 # ways for this to be silently dead.
 #
-env_reset   # section 8 left RUN_PID=none behind, and every check below needs a container
+env_reset   # section 8 left RUN_PID=none and ut_getprop_silent behind, and every check below needs
+            # a container and the device's own getprop
 # The fixtures below are the container's answers: the four variant properties, the two module files in
 # the container's /vendor. Nothing is taught to the stub as a fact -- each answer is a REAL FILE in
 # the container's tree, and the `ls` the probe runs is the host's real ls over those files, so the
