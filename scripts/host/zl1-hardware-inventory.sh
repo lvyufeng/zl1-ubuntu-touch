@@ -131,7 +131,7 @@ bluetooth	qca,qca6174|bt_qca	bluetooth|bluetoothd|bt_qca|hciattach|bluez	HW	scri
 modem	qcom,mhi|qcom,ipa|glink-smem-native-xprt-modem|ipc_router_modem	mhi|rmnet|ipa|modem|ofono|ril_|telephony	HW	scripts/device/zl1-modem-probe.sh
 sensors	qcom,msm-ssc-sensors|qcom,sensor-information|qcom,ssc@|glink-ssr-dsps	sensorfwd|sensor|accelerometer|proximity|als_	HW	scripts/device/zl1-sensorfw-probe.sh
 thermal-tsens	qcom,msm8996-tsens|tsens@	tsens|thermal_zone|/sys/class/thermal	HW	scripts/device/zl1-thermal.sh
-thermal-lmh	qcom,lmh	lmh	HW	-
+thermal-lmh	qcom,lmh	lmh	HW	scripts/device/zl1-lmh-probe.sh
 thermal-policy	qcom,msm-thermal|qcom,msm-thermal-simple|qpnp-temp-alarm|adc-tm	qcom,thermal|thermal|cpufreq|scaling_governor|throttle	HW	scripts/install-cpufreq-governor.sh
 battery	qcom,smb1351-charger|qpnp-smbcharger|qpnp-vadc|qpnp-rtc|coincell	charger|battery|voltage_now|capacity|power_supply	HW	scripts/device-readonly-inventory.sh
 usb	qcom,dwc-usb3-msm|snps,dwc3|qcom,qusb2phy|qcom,android-usb|qcom,usb-bam|qcom,usb-dbm	rndis|dwc3|/sys/class/power_supply/usb	HW	scripts/host/zl1-rndis-recover.sh

@@ -380,6 +380,20 @@ step 04b-modem          device "$HERE/../device/zl1-modem-probe.sh"
 # them, its offline harness proves that byte-for-byte against a fake device, and its verdict prints what
 # it read rather than acting on it. Running it cannot change the device.
 step 04c-sleep-throttle device "$HERE/../device/zl1-sleep-and-throttle.sh"
+# 04d, and it is in the same class again: read-only, WRITES NOTHING AT ALL -- not even a scratch file --
+# and needs no person. It is the HARDWARE side of the heat question (docs 138), where 04c is the supply
+# side and install-cpufreq-governor.sh is the policy side. It exists because docs 137 enumerated this
+# board's hardware from its own device trees and found that the SoC's hardware thermal limiter
+# (/soc/qcom,lmh) had never been read by anything in this tree, on a machine whose user asks for the
+# overheating to be fixed. LMH registers no thermal zone and is not a cooling device, which is WHY every
+# thermal reader here missed it, so this step is the only way the thermals section of the archive can
+# ever say whether the limiter came up.
+#
+# Its knobs ARE root-writable (`level` is 0600) and its block sits next to the secure world, so the
+# no-write property is the one thing its harness spends most of its checks on: the stub directory is the
+# device, one scenario per rung of lmh_probe()'s asymmetric failure paths, and a static guard whose teeth
+# are a mutation that writes the level knob.
+step 04d-lmh           device "$HERE/../device/zl1-lmh-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -389,7 +403,8 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
-  say "   (04b-modem DID run: it is read-only and opens no block device, so it is not in this group.)"
+  say "   (04b-modem DID run, and so did 04c-sleep-throttle and 04d-lmh: all three are read-only and"
+  say "   open no block device, so they are not in this group.)"
   say
 fi
 

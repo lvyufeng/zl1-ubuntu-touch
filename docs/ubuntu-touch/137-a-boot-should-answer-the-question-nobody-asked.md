@@ -8,6 +8,11 @@
 新增提交的派生数据 `docs/ubuntu-touch/hardware-compatibles.txt`（725 条 path/compatible，附每个源 DTB 的 sha256）。
 家族 **21 个 harness / 2438 检查 / 全绿**（本页之前是 2360；差额 78 = 新增 harness 74 + cli-usage 136 → 140）。
 
+> **后续**：本页列出的 12 个缺口里，第一个已经在同一天被关掉——`thermal-lmh`，也就是与"发烫"最
+> 直接相关的那一个，见 [`138`](138-the-hardware-limiter-had-never-been-read.md)。所以那份清单现在是
+> **11 个**，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 18 / 11（这两个数字是**手改**的：
+> 关掉一个缺口必须有人看见，这正是那份清单存在的理由）。本页正文不变，它是当天的读数。
+
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、
 [`136`](136-the-two-early-exiting-readers-are-not-the-same-defect.md)（同一天：harness 之外的形状普查）、
 [`129`](129-the-family-total-was-typed-and-no-harness-can-see-the-tree.md)（一个没人能看见的数字就是缺陷本身）、
