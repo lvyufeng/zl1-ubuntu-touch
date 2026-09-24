@@ -8,11 +8,12 @@
 新增提交的派生数据 `docs/ubuntu-touch/hardware-compatibles.txt`（725 条 path/compatible，附每个源 DTB 的 sha256）。
 家族 **21 个 harness / 2438 检查 / 全绿**（本页之前是 2360；差额 78 = 新增 harness 74 + cli-usage 136 → 140）。
 
-> **后续**：本页列出的 12 个缺口，已有三个被关掉：`thermal-lmh`（与"发烫"最直接相关的那个）见
+> **后续**：本页列出的 12 个缺口，已有四个被关掉：`thermal-lmh`（与"发烫"最直接相关的那个）见
 > [`138`](138-the-hardware-limiter-had-never-been-read.md)，通知灯与手电筒（手指最先碰到的两个）见
 > [`139`](139-the-two-blocks-a-finger-touches-first.md)，`vibrator` 见 [`140`](140-the-block-that-was-another-phones.md)
-（那一行原本点名的仪器属于另一台手机）。所以那份清单现在是 **8 个**，而
-> `zl1-hardware-inventory.sh` 的汇总行也已经改成 20 / 9（这两个数字是**手改**的：关掉一个缺口必须有人看见，
+（那一行原本点名的仪器属于另一台手机），剩下最大的那个 `video-codec`（十二个节点）见
+> [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)。所以那份清单现在是 **7 个**，而
+> `zl1-hardware-inventory.sh` 的汇总行也已经改成 22 / 7（这两个数字是**手改**的：关掉一个缺口必须有人看见，
 > 这正是那份清单存在的理由）。本页正文不变，它是当天的读数。
 
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、

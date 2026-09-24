@@ -415,6 +415,23 @@ step 04e-leds          device "$HERE/../device/zl1-leds-probe.sh"
 # WRITABLE, and writing a millisecond count makes the phone buzz. So the probe writes nothing at all,
 # and its verdict says the buzzing test is a separate step rather than a side effect of a reading.
 step 04f-vibrator      device "$HERE/../device/zl1-vibrator-probe.sh"
+# 04g, same class a sixth time: read-only, write-free, no person. docs 141 closed the LARGEST gap left in
+# docs 137's list -- `video-codec`, twelve device-tree nodes -- with a probe that reads BOTH halves of the
+# video core: the V4L2 half (msm_vidc_v4l2 registers a decoder and an encoder at /dev/video32 and
+# /dev/video33) and the firmware half (venus's PIL node, whose firmware the peripheral loader has to have
+# the secure world authenticate before anything can decode).
+#
+# It is worth a slot for one reading in particular, and it is the reading a naive probe gets wrong: NOTHING
+# LOADS THAT FIRMWARE AT BOOT. The load happens when a client opens a video instance, so an idle boot
+# shows the subsystem OFFLINE and that is the healthy state -- the probe separates "not loaded" from "load
+# FAILED", and prints every subsystem's state, because the same loader serves the GPU's zap shader, the
+# audio DSP and the sensor DSP on this board and one line cannot tell "venus is offline" from "the boot's
+# firmware is offline".
+#
+# Its dangerous surface is a session: opening either video node is what loads the firmware, and the vidc
+# platform device's `thermal_level`/`pwr_collapse_delay` are writable. So the probe writes nothing, and its
+# offline harness spends its first mutation on exactly that write.
+step 04g-video         device "$HERE/../device/zl1-video-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -424,8 +441,8 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
-  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds and 04f-vibrator: all five are"
-  say "   read-only and write nothing, so they are not in this group.)"
+  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator and"
+  say "   04g-video: all six are read-only and write nothing, so they are not in this group.)"
   say
 fi
 

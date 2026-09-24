@@ -402,8 +402,8 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  want '^blocks: 29 hardware -- 21 with a named instrument, \*\*8 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \\
-    "29 hardware blocks, 21 read by something, **8 read by nothing**"
+  want '^blocks: 29 hardware -- 22 with a named instrument, \*\*7 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \\
+    "29 hardware blocks, 22 read by something, **7 read by nothing**"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -416,10 +416,16 @@ else
   # noticing is the defect the whole inventory exists to catch.
   want '^thermal-lmh +[0-9]+ +zl1-lmh-probe\.sh' "$R" \
     "and the gap that was closed is reported as covered, by name -- not silently dropped from both lists"
+  # The largest one left, closed on 2026-09-24 (docs 141): video-codec, twelve nodes, by
+  # scripts/device/zl1-video-probe.sh. Asserted the same way as the two above -- by name and by count --
+  # because the number in the summary is typed by hand and a count that can change without a reader
+  # noticing is the defect the whole inventory exists to catch.
+  want '^video-codec +12 +zl1-video-probe\.sh' "$R" \
+    "video-codec -- the largest gap -- is reported as covered, by name, with its twelve nodes"
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
-  # The gaps, by name. These twelve are the answer to "which hardware has no probe"; if one of them gains
-  # a probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in nfc fm-radio video-codec usb-pd sdcard wfd hdmi eeprom; do
+  # The gaps, by name. These are the answer to "which hardware has no probe"; if one of them gains a
+  # probe this goes red, and it should: the coverage number must not change without someone looking.
+  for b in nfc fm-radio usb-pd sdcard wfd hdmi eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came

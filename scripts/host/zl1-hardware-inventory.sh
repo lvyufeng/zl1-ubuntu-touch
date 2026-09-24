@@ -149,7 +149,7 @@ backlight	qpnp-wled	backlight|wled|brightness	HW	scripts/hybris-shims/free-conta
 notification-led	qcom,leds-qpnp	leds-qpnp|led_classdev|/sys/class/leds	HW	scripts/device/zl1-leds-probe.sh
 audio-codec	msm-dai|wcd9|max98927|tfa9890|audio-codec|msm-cpe|msm-audio-ion|audio-ref-clk	max98927|tasha|smartpa|mixer_paths|pulseaudio|tinymix|snd_device|TERT_MI2S	HW	scripts/device/zl1-audio-test.sh
 camera	cci@|csiphy|csid|vfe|jpeg@|cpp@|actuator|eeprom|ois|ispif|camera@	camera|ICameraProvider|cameraserver|camapp	HW	scripts/host/zl1-camera-app-test.sh
-video-codec	msm-vidc|vidc@|venus@	vidc|venus|v4l2|mediacodec	HW	-
+video-codec	msm-vidc|vidc@|venus@	vidc|venus|v4l2|mediacodec	HW	scripts/device/zl1-video-probe.sh
 wifi	qcom,cnss|qcom,pci-msm|qca6174|wlan_en	cnss|qca6174|wlan|fwpath|wifi|icnss	HW	scripts/hybris-shims/install-wlan-bringup.sh
 bluetooth	qca,qca6174|bt_qca	bluetooth|bluetoothd|bt_qca|hciattach|bluez	HW	scripts/hybris-shims/install-container-ns-services.sh
 modem	qcom,mhi|qcom,ipa|glink-smem-native-xprt-modem|ipc_router_modem	mhi|rmnet|ipa|modem|ofono|ril_|telephony	HW	scripts/device/zl1-modem-probe.sh
