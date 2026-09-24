@@ -120,9 +120,9 @@ fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/de
 nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	-
 fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	-
 vibrator	ti,drv2604	drv2604|vibrat|timed_output|haptic	HW	-
-torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	-
+torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	scripts/device/zl1-leds-probe.sh
 backlight	qpnp-wled	backlight|wled|brightness	HW	scripts/hybris-shims/free-container-display.sh
-notification-led	qcom,leds-qpnp	leds-qpnp|led_classdev|/sys/class/leds	HW	-
+notification-led	qcom,leds-qpnp	leds-qpnp|led_classdev|/sys/class/leds	HW	scripts/device/zl1-leds-probe.sh
 audio-codec	msm-dai|wcd9|max98927|tfa9890|audio-codec|msm-cpe|msm-audio-ion|audio-ref-clk	max98927|tasha|smartpa|mixer_paths|pulseaudio|tinymix|snd_device|TERT_MI2S	HW	scripts/device/zl1-audio-test.sh
 camera	cci@|csiphy|csid|vfe|jpeg@|cpp@|actuator|eeprom|ois|ispif|camera@	camera|ICameraProvider|cameraserver|camapp	HW	scripts/host/zl1-camera-app-test.sh
 video-codec	msm-vidc|vidc@|venus@	vidc|venus|v4l2|mediacodec	HW	-

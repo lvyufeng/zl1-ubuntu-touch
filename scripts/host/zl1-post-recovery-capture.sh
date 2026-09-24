@@ -394,6 +394,16 @@ step 04c-sleep-throttle device "$HERE/../device/zl1-sleep-and-throttle.sh"
 # device, one scenario per rung of lmh_probe()'s asymmetric failure paths, and a static guard whose teeth
 # are a mutation that writes the level knob.
 step 04d-lmh           device "$HERE/../device/zl1-lmh-probe.sh"
+# 04e, same class a fourth time: read-only, write-free, no person. docs 137 found the notification LED and
+# the camera torch had never been read by anything here, and docs 139 closed both with one probe -- a
+# comparison of what the device tree DECLARES against what the LED core REGISTERED, which is the only
+# reading on this board that can say a driver failed to register without guessing.
+#
+# It is worth a slot on the boot that cost a finger because the two blocks it reads are the two a person
+# uses without thinking: the charging/notification LED and the torch. Its dangerous surface is small but
+# real -- every LED is drivable by writing `brightness` -- so the probe writes nothing at all and its
+# offline harness spends a mutation on exactly that write.
+step 04e-leds          device "$HERE/../device/zl1-leds-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -403,8 +413,8 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
-  say "   (04b-modem DID run, and so did 04c-sleep-throttle and 04d-lmh: all three are read-only and"
-  say "   open no block device, so they are not in this group.)"
+  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh and 04e-leds: all four are read-only"
+  say "   and write nothing, so they are not in this group.)"
   say
 fi
 

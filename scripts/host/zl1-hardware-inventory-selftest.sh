@@ -295,8 +295,14 @@ else
   nonempty "the report has content" "$R"
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$R" \
     "the device's own enumeration, counted (the two numbers differ: a node can carry several compatibles, and a path can appear twice in one DTB)"
-  want '^blocks: 29 hardware -- 18 with a named instrument, \*\*11 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 18 read by something, **11 read by nothing**"
+  want '^blocks: 29 hardware -- 20 with a named instrument, \*\*9 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "29 hardware blocks, 20 read by something, **9 read by nothing**"
+  # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
+  # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
+  # gap -- that is the whole point of asserting it.
+  for b in torch notification-led; do
+    want "^ *$b +[0-9]+ +zl1-leds-probe\\.sh" "$R" "  $b is reported as covered, by name"
+  done
   # The count moved on 2026-09-24 and that is the point of asserting it: docs 138 gave the FIRST of the
   # twelve a probe (thermal-lmh, the hardware thermal limiter), so the number below had to be edited by
   # hand, in this file, by whoever closed the gap. A coverage number that can change without a reader
@@ -306,7 +312,7 @@ else
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
   # The gaps, by name. These twelve are the answer to "which hardware has no probe"; if one of them gains
   # a probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in nfc fm-radio vibrator torch notification-led video-codec usb-pd sdcard wfd hdmi eeprom; do
+  for b in nfc fm-radio vibrator video-codec usb-pd sdcard wfd hdmi eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came
