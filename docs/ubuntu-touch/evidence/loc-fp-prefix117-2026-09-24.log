@@ -1,0 +1,756 @@
+# Against scripts/device/zl1-fingerprint-probe.sh as committed at 1ea5185 (the docs-116 halpath fix,
+# before the docs-117 ns_run work), copied over the tree: 187 pass / 8 fail.
+# Seven are section 7c (the three exec-failure scenarios and the verdicts they must not print) and
+# the eighth is the STATIC guard firing on that probe's two bare 'nsenter -p -m -- lshal' lines --
+# i.e. the guard, written in docs 117, found a second instance of the same class that docs 116 left.
+
+nsenter: failed to parse pid: 'A'
+nsenter: failed to execute ...: No such file or directory
+zl1 location-request + fingerprint-probe -- offline self-test
+  scripts under test: /tmp/prefix2/scripts/host/../device/zl1-location-request.sh
+                      /tmp/prefix2/scripts/host/../device/zl1-fingerprint-probe.sh
+  fake root:          /tmp/zl1-loc-fp-selftest/fake
+
+== 1. --status: read-only, and it says the true thing about the two levers ==
+PASS  --status exits 0
+PASS  --status makes no systemd call that changes anything
+PASS  --status created nothing on disk
+PASS  --status asks the bus who owns the service
+PASS  --status detects the v63 getprop stub (which is what makes both doc 82 levers dead)
+PASS  --status names the property the wrapper reads
+PASS  --status looks for the bridge library in the daemon
+PASS  --status answers that question rather than skipping it
+
+== 2. --explain: prints the two drop-ins, installs neither ==
+PASS  --explain exits 0
+PASS  --explain wrote nothing (the drop-in directory still does not exist)
+PASS  --explain makes no systemd call that changes anything
+PASS  --explain prints gate 1's drop-in
+PASS  --explain spells the directory with the FULL unit name
+PASS  --explain says out loud what A is
+PASS  --explain keeps the fake-coordinate drop-in behind gate 1 (the second reason it never worked)
+PASS  --explain shows the bare ExecStart= that resets the list
+
+== 3. --enable-testing: one file, that content, that restart -- and a notice nobody can silence ==
+PASS  --enable-testing exits 0
+PASS  it created the drop-in directory
+PASS  it wrote /tmp/zl1-loc-fp-selftest/fake/etc/systemd/system/lomiri-location-service.service.d/zl1-testing.conf
+PASS  the drop-in holds exactly that one Environment= line under [Service] and nothing else
+PASS  that is the only file it added
+PASS  and it asks for a daemon-reload
+PASS  and restarts exactly that one unit
+PASS  and it is the only unit it restarts
+PASS  it says what it is doing
+
+   -- the notice under --quiet, which is the defect this round found:
+PASS  --quiet --enable-testing STILL says it is installing a permission bypass
+PASS  and still says what that means
+PASS  and still names the way back
+PASS  --quiet did suppress the read-only analysis, so this is not just 'quiet is broken'
+PASS  and the bypass really was installed, so the notice was needed
+
+== 4. --disable-testing: removes that one file, and only when it is there ==
+PASS  it removed the testing drop-in
+PASS  it left the fake-coordinate drop-in alone
+PASS  it restarts the unit, so gate 1 closes now
+PASS  it reports the removal
+
+   -- and with nothing installed: nothing removed, and no false claim:
+PASS  with nothing installed it created nothing
+PASS  it does not claim to have removed anything
+PASS  it says there was nothing to remove
+PASS  and still restarts the unit (unambiguous state, no write involved)
+
+== 5. --request: writes the client and nothing else ==
+PASS  --request exits 0
+PASS  it wrote the client to its own /tmp path
+PASS  the client asks for the lomiri plugin (the key from the .so's own metadata)
+PASS  --seconds 5 reached the client's own deadline
+PASS  it is a PositionSource, so the marshalling is the library's, not a guess
+PASS  --request installed no drop-in (it only measures)
+PASS  --request makes no systemd call that changes anything
+PASS  it prints the client's own lines unaltered
+PASS  including the one that means 'plugin loaded, no backend'
+PASS  and it states which gate state the result is to be read against
+
+== 6. the zl1 guard and the flag surface (see the device these must refuse on) ==
+PASS  not-the-zl1 exits 1 rather than proceeding
+PASS  and on the wrong device it wrote nothing
+PASS  the fingerprint probe refuses too
+PASS  loc.sh: an unknown argument exits 2
+PASS  loc.sh: --help prints a usage block
+PASS  loc.sh: and stops at the header, not in the assignments after it
+PASS  fp.sh: an unknown argument exits 2
+PASS  fp.sh: --help prints a usage block
+PASS  fp.sh: and stops at the header, not in the assignments after it
+PASS  '--seconds' with no value does not abort the shell (this script defaults it)
+
+== 7. fingerprint: the default run writes nothing at all ==
+PASS  the default run exits 0
+PASS  the default run makes no systemd call that changes anything
+PASS  and it created no store directory
+PASS  it announces that it is read-only when --create-store-dir is not given
+PASS  it states the real question: access() with the HAL's own uid
+PASS  it compares the HAL's mount namespace against the container's for real
+PASS  and lists the path biometryd actually passes
+PASS  whose absence is the finding
+PASS  it counts the caller's line
+PASS  and the HAL's own line, whose being zero is the evidence
+PASS  and the line that puts the failure after openHal()
+PASS  it says WHY biometryd lands on <=27 (its own read answers nothing), not why the device would
+PASS  and states that biometryd's OWN read comes from the UT-side getprop, which is the v63 stub's shape
+PASS  so the reason it gives for the <=27 branch is biometryd's, not the device's
+PASS  and it labels the container read as a cross-check, because biometryd does not read it
+PASS  with the offline-known value (2026-06-07 vendor.img) next to it, so the two readings can be compared
+PASS  and it says when the two independent readings agree, which is what makes the write safe
+
+== 7b. the log, split by which process could have written it (docs 103) ==
+PASS  the section says it is split by owner
+PASS  and names the journal it reads the UT side from
+PASS  the journal query is boot-scoped (-b), the only kind that survives a wrong clock
+PASS  and paged output is turned off
+PASS  logcat is read as a dump, not a follow
+PASS  both blocks are in the output, so each count can be attributed
+     -- the caller's line, which is the whole reason this section exists:
+PASS  setActiveGroup failed is NOT counted in logcat (it is biometryd's, and it is in no Android binary)
+PASS  and its count is the JOURNAL fixture's (2)
+     -- the rest of the journal block, each read from the journal:
+PASS  Failed to instantiate device: the journal fixture's count (1)
+PASS  Cannot construct Forwarding device: the journal fixture's count (1)
+PASS  Clearing template store: the journal fixture's count (1)
+PASS  and none of the journal strings is reported as 0 (the shape the old version produced)
+     -- and the logcat block, each read from logcat:
+PASS  Bad path length: the logcat fixture's count (2)
+PASS  Start biometrics: the logcat fixture's count (1)
+PASS  Opening fingerprint hal library: the logcat fixture's count (1)
+PASS  Can't open fingerprint HW Module: the logcat fixture's count (1)
+PASS  Can't create instance of BiometricsFingerprint: the logcat fixture's count (1)
+PASS  Fp::connect failed: the logcat fixture's count (1)
+PASS  getService failed: the logcat fixture's count (1)
+PASS  fps_hal: the logcat fixture's count (2)
+PASS  gx_fpd: the logcat fixture's count (1)
+PASS  it states the inference the caller's line is evidence for
+     -- the strings that are in no binary in any image are gone, with the reason:
+PASS  'Unable to get FP service' is no longer counted (it is in no binary in any image)
+PASS  'Connected to IBiometricsFingerprint' is no longer counted (it is in no binary in any image)
+PASS  'Unable to get IBiometricsFingerprint' is no longer counted (it is in no binary in any image)
+PASS  'Can not open fingerprint HW Module' is gone (the binary says Can't)
+PASS  'Can not create instance of BiometricsFingerprint' is gone (the binary says Can't)
+PASS  and the script keeps the reason (the binary says Can't, not Can not) where the next person reads it
+     -- the fixtures themselves, so a count read from the wrong log cannot pass:
+PASS  the logcat pattern list was extracted from the shipped script
+PASS  and the journal list
+PASS  logcat: all 9 quoted entries were extracted (none dropped silently)
+PASS  journal: all 5 quoted entries were extracted (none dropped silently)
+     logcat:  Bad path length Start biometrics Opening fingerprint hal library Can't open fingerprint HW Module Can't create instance of BiometricsFingerprint Fp::connect failed getService failed fps_hal gx_fpd
+     journal: setActiveGroup failed Failed to instantiate device Cannot construct Forwarding device Clearing template store Failed to enroll template
+PASS  no pattern is counted in both logs
+PASS  the journal-only string 'setActiveGroup failed' is absent from the logcat fixture
+PASS  the journal-only string 'Failed to instantiate device' is absent from the logcat fixture
+PASS  the journal-only string 'Cannot construct Forwarding device' is absent from the logcat fixture
+PASS  and the logcat-only string 'Bad path length' is absent from the journal fixture
+PASS  and the logcat-only string 'Start biometrics' is absent from the journal fixture
+PASS  and the logcat-only string 'Fp::connect failed' is absent from the journal fixture
+
+== 7c. a command that could not run is not a count of zero (docs 117) ==
+PASS  with everything running, the probe says nothing about failing to run
+PASS  and it does report the binder question
+FAIL  a service list that could not run is printed as exactly that, with the tool named
+        | zl1 fingerprint probe :: Thu Sep 24 02:23:12 AM UTC 2026 :: read-only
+        | == HAL: pid 4242  uid=1000 gid=1005  ns/pid pid:[4026532001]  ns/mnt mnt:[4026532000]
+        |    cmdline: android.hardware.biometrics.fingerprint@2.1-service\x00
+        |    container pid 4242 ns/mnt mnt:[4026532000]
+        |    -> same mount namespace as the container (so /data means the container's /data)
+        | == the store paths, resolved through the HAL's own mount namespace (/tmp/zl1-loc-fp-selftest/fake/proc/4242/root/...)
+        |    MISSING  /data/system/users/0/fpdata
+        |    MISSING  /data/vendor_de/0/fpdata
+        |    MISSING  /data/vendor/biometrics
+        |    (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+        |     EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+        |    the parent, for reference:
+        |    /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0 mode=drwxrwxr-x  uid=1001 gid=1001
+        |    open fds that look like the fingerprint device:
+        |    writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+        |    only reports the mode bits and the owner):
+        |    | drwxrwxr-x 2 1001 1001 4096 Sep 24 02:23 /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0
+        | == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+        |    biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        |      -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        |      ro.product.first_api_level -> <unset>
+        |      ro.build.version.sdk      -> <unset>
+        |    -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+        |       /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+        |    the Android side, for cross-check only (biometryd never reads this):
+        |      ro.product.first_api_level -> 27     [2026-06-07 vendor.img build.prop: 23]
+        |      ro.build.version.sdk      -> 27
+        |    -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+        | == which module hw_get_module('fingerprint') picks for THIS container
+        |    ro.hardware          = <unset>
+        |    ro.product.board     = <unset>
+        |    ro.board.platform    = <unset>
+        |    ro.arch              = <unset>
+        |    -> no variant match; AOSP would fall back to fingerprint.default.so
+        |    the modules present, as the container sees them:
+        |    (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+        | == the daemon the loaded module needs: gx_fpd, and its binder service
+        |    gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it
+        |    provides, so its absence is a second, independent reason setActiveGroup cannot work --
+        |    and it is silent in the wrapper: Fp::connect just fails, one layer down.
+        |    FingerPrintService on the container binder: 
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+        | == the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)
+        |    MISSING  /data/gf_data
+        |    MISSING  /data/gf_data/enroll
+        |    MISSING  /data/system/users/0/fpdata
+        |    (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd
+        |     passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)
+        | == the device nodes the innermost HAL opens
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /dev/ion
+        |    (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp to system --
+        |     if that section did not run in the container, the perms here are the ones the HAL sees)
+        | == the log, split by which process could have written it (the HAL's silent branch is the point --
+        |    a missing line is evidence, and WHICH log it is missing from is the other half)
+        |    --- logcat (the container's vendor service and the modules it loads) ---
+        |    Bad path length                                      2
+        |    Start biometrics                                     1
+        |    Opening fingerprint hal library                      1
+        |    Can't open fingerprint HW Module                     1
+        |    Can't create instance of BiometricsFingerprint       1
+        |    Fp::connect failed                                   1
+        |    getService failed                                    1
+        |    fps_hal                                              2
+        |    gx_fpd                                               1
+        |    -- the last 10 lines mentioning finger/biometric:
+        |    | D/fingerprint.msm8996( 612): Fp::connect failed
+        |    | E/BiometricsFingerprint( 612): Bad path length
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Bad path length
+        |    | I/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Start biometrics
+        |    | I/fps_hal ( 612): Opening fingerprint hal library
+        |    | E/BiometricsFingerprint( 612): Can't open fingerprint HW Module, error: -1
+        |    | E/BiometricsFingerprint( 612): Can't create instance of BiometricsFingerprint, nullptr
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): getService failed
+        |    --- journal of biometryd (the caller biometryd, and the library it loads) ---
+        |    setActiveGroup failed                                2
+        |    Failed to instantiate device                         1
+        |    Cannot construct Forwarding device                   1
+        |    Clearing template store                              1
+        |    Failed to enroll template                            0
+        |    -- the pair that decides it, now readable because both halves are in the same place:
+        |       'Bad path length' > 0                  -> the path never reached access() (too long/empty)
+        |       'Bad path length' = 0 AND the caller's
+        |       'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING
+        |                                                 (BiometricsFingerprint.cpp:221-223), so the HAL
+        |                                                 has no line of its own on that path -- which is
+        |                                                 exactly why the caller's line is the evidence
+        |    -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means
+        |       openHal() got as far as registering the HIDL service, which puts the failure after open.
+        | == HIDL registration (lshal needs nsenter -p -m)
+        |    android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default
+        | == the fingerprint device node(s)
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /sys/devices/soc/soc:fpc_fpc1020
+        | == SELinux (if it is enforcing, a newly created directory needs the right label)
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/enforce unreadable/absent
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/mls unreadable/absent
+FAIL  and the 'not registered' verdict is NOT printed: that verdict would be about this, not the container
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+FAIL  a logcat that could not run is printed as exactly that
+        | zl1 fingerprint probe :: Thu Sep 24 02:23:12 AM UTC 2026 :: read-only
+        | == HAL: pid 4242  uid=1000 gid=1005  ns/pid pid:[4026532001]  ns/mnt mnt:[4026532000]
+        |    cmdline: android.hardware.biometrics.fingerprint@2.1-service\x00
+        |    container pid 4242 ns/mnt mnt:[4026532000]
+        |    -> same mount namespace as the container (so /data means the container's /data)
+        | == the store paths, resolved through the HAL's own mount namespace (/tmp/zl1-loc-fp-selftest/fake/proc/4242/root/...)
+        |    MISSING  /data/system/users/0/fpdata
+        |    MISSING  /data/vendor_de/0/fpdata
+        |    MISSING  /data/vendor/biometrics
+        |    (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+        |     EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+        |    the parent, for reference:
+        |    /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0 mode=drwxrwxr-x  uid=1001 gid=1001
+        |    open fds that look like the fingerprint device:
+        |    writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+        |    only reports the mode bits and the owner):
+        |    | drwxrwxr-x 2 1001 1001 4096 Sep 24 02:23 /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0
+        | == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+        |    biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        |      -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        |      ro.product.first_api_level -> <unset>
+        |      ro.build.version.sdk      -> <unset>
+        |    -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+        |       /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+        |    the Android side, for cross-check only (biometryd never reads this):
+        |      ro.product.first_api_level -> 27     [2026-06-07 vendor.img build.prop: 23]
+        |      ro.build.version.sdk      -> 27
+        |    -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+        | == which module hw_get_module('fingerprint') picks for THIS container
+        |    ro.hardware          = <unset>
+        |    ro.product.board     = <unset>
+        |    ro.board.platform    = <unset>
+        |    ro.arch              = <unset>
+        |    -> no variant match; AOSP would fall back to fingerprint.default.so
+        |    the modules present, as the container sees them:
+        |    (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+        | == the daemon the loaded module needs: gx_fpd, and its binder service
+        |    gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it
+        |    provides, so its absence is a second, independent reason setActiveGroup cannot work --
+        |    and it is silent in the wrapper: Fp::connect just fails, one layer down.
+        |    FingerPrintService on the container binder: 
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+        | == the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)
+        |    MISSING  /data/gf_data
+        |    MISSING  /data/gf_data/enroll
+        |    MISSING  /data/system/users/0/fpdata
+        |    (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd
+        |     passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)
+        | == the device nodes the innermost HAL opens
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /dev/ion
+        |    (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp to system --
+        |     if that section did not run in the container, the perms here are the ones the HAL sees)
+        | == the log, split by which process could have written it (the HAL's silent branch is the point --
+        |    a missing line is evidence, and WHICH log it is missing from is the other half)
+        |    --- logcat (the container's vendor service and the modules it loads) ---
+        |    Bad path length                                      0
+        |    Start biometrics                                     0
+        |    Opening fingerprint hal library                      0
+        |    Can't open fingerprint HW Module                     0
+        |    Can't create instance of BiometricsFingerprint       0
+        |    Fp::connect failed                                   0
+        |    getService failed                                    0
+        |    fps_hal                                              0
+        |    gx_fpd                                               0
+        |    -- the last 10 lines mentioning finger/biometric:
+        |    --- journal of biometryd (the caller biometryd, and the library it loads) ---
+        |    setActiveGroup failed                                2
+        |    Failed to instantiate device                         1
+        |    Cannot construct Forwarding device                   1
+        |    Clearing template store                              1
+        |    Failed to enroll template                            0
+        |    -- the pair that decides it, now readable because both halves are in the same place:
+        |       'Bad path length' > 0                  -> the path never reached access() (too long/empty)
+        |       'Bad path length' = 0 AND the caller's
+        |       'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING
+        |                                                 (BiometricsFingerprint.cpp:221-223), so the HAL
+        |                                                 has no line of its own on that path -- which is
+        |                                                 exactly why the caller's line is the evidence
+        |    -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means
+        |       openHal() got as far as registering the HIDL service, which puts the failure after open.
+        | == HIDL registration (lshal needs nsenter -p -m)
+        |    android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default
+        | == the fingerprint device node(s)
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /sys/devices/soc/soc:fpc_fpc1020
+        | == SELinux (if it is enforcing, a newly created directory needs the right label)
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/enforce unreadable/absent
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/mls unreadable/absent
+FAIL  and it says the zeros below are this and not the HAL's silent branch
+        | zl1 fingerprint probe :: Thu Sep 24 02:23:12 AM UTC 2026 :: read-only
+        | == HAL: pid 4242  uid=1000 gid=1005  ns/pid pid:[4026532001]  ns/mnt mnt:[4026532000]
+        |    cmdline: android.hardware.biometrics.fingerprint@2.1-service\x00
+        |    container pid 4242 ns/mnt mnt:[4026532000]
+        |    -> same mount namespace as the container (so /data means the container's /data)
+        | == the store paths, resolved through the HAL's own mount namespace (/tmp/zl1-loc-fp-selftest/fake/proc/4242/root/...)
+        |    MISSING  /data/system/users/0/fpdata
+        |    MISSING  /data/vendor_de/0/fpdata
+        |    MISSING  /data/vendor/biometrics
+        |    (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+        |     EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+        |    the parent, for reference:
+        |    /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0 mode=drwxrwxr-x  uid=1001 gid=1001
+        |    open fds that look like the fingerprint device:
+        |    writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+        |    only reports the mode bits and the owner):
+        |    | drwxrwxr-x 2 1001 1001 4096 Sep 24 02:23 /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0
+        | == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+        |    biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        |      -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        |      ro.product.first_api_level -> <unset>
+        |      ro.build.version.sdk      -> <unset>
+        |    -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+        |       /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+        |    the Android side, for cross-check only (biometryd never reads this):
+        |      ro.product.first_api_level -> 27     [2026-06-07 vendor.img build.prop: 23]
+        |      ro.build.version.sdk      -> 27
+        |    -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+        | == which module hw_get_module('fingerprint') picks for THIS container
+        |    ro.hardware          = <unset>
+        |    ro.product.board     = <unset>
+        |    ro.board.platform    = <unset>
+        |    ro.arch              = <unset>
+        |    -> no variant match; AOSP would fall back to fingerprint.default.so
+        |    the modules present, as the container sees them:
+        |    (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+        | == the daemon the loaded module needs: gx_fpd, and its binder service
+        |    gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it
+        |    provides, so its absence is a second, independent reason setActiveGroup cannot work --
+        |    and it is silent in the wrapper: Fp::connect just fails, one layer down.
+        |    FingerPrintService on the container binder: 
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+        | == the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)
+        |    MISSING  /data/gf_data
+        |    MISSING  /data/gf_data/enroll
+        |    MISSING  /data/system/users/0/fpdata
+        |    (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd
+        |     passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)
+        | == the device nodes the innermost HAL opens
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /dev/ion
+        |    (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp to system --
+        |     if that section did not run in the container, the perms here are the ones the HAL sees)
+        | == the log, split by which process could have written it (the HAL's silent branch is the point --
+        |    a missing line is evidence, and WHICH log it is missing from is the other half)
+        |    --- logcat (the container's vendor service and the modules it loads) ---
+        |    Bad path length                                      0
+        |    Start biometrics                                     0
+        |    Opening fingerprint hal library                      0
+        |    Can't open fingerprint HW Module                     0
+        |    Can't create instance of BiometricsFingerprint       0
+        |    Fp::connect failed                                   0
+        |    getService failed                                    0
+        |    fps_hal                                              0
+        |    gx_fpd                                               0
+        |    -- the last 10 lines mentioning finger/biometric:
+        |    --- journal of biometryd (the caller biometryd, and the library it loads) ---
+        |    setActiveGroup failed                                2
+        |    Failed to instantiate device                         1
+        |    Cannot construct Forwarding device                   1
+        |    Clearing template store                              1
+        |    Failed to enroll template                            0
+        |    -- the pair that decides it, now readable because both halves are in the same place:
+        |       'Bad path length' > 0                  -> the path never reached access() (too long/empty)
+        |       'Bad path length' = 0 AND the caller's
+        |       'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING
+        |                                                 (BiometricsFingerprint.cpp:221-223), so the HAL
+        |                                                 has no line of its own on that path -- which is
+        |                                                 exactly why the caller's line is the evidence
+        |    -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means
+        |       openHal() got as far as registering the HIDL service, which puts the failure after open.
+        | == HIDL registration (lshal needs nsenter -p -m)
+        |    android.hardware.biometrics.fingerprint@2.1::IBiometricsFingerprint/default
+        | == the fingerprint device node(s)
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /sys/devices/soc/soc:fpc_fpc1020
+        | == SELinux (if it is enforcing, a newly created directory needs the right label)
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/enforce unreadable/absent
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/mls unreadable/absent
+PASS  the table still prints (so the reader sees what was not read, rather than a missing section)
+FAIL  an lshal that could not run is printed as exactly that
+        | zl1 fingerprint probe :: Thu Sep 24 02:23:12 AM UTC 2026 :: read-only
+        | == HAL: pid 4242  uid=1000 gid=1005  ns/pid pid:[4026532001]  ns/mnt mnt:[4026532000]
+        |    cmdline: android.hardware.biometrics.fingerprint@2.1-service\x00
+        |    container pid 4242 ns/mnt mnt:[4026532000]
+        |    -> same mount namespace as the container (so /data means the container's /data)
+        | == the store paths, resolved through the HAL's own mount namespace (/tmp/zl1-loc-fp-selftest/fake/proc/4242/root/...)
+        |    MISSING  /data/system/users/0/fpdata
+        |    MISSING  /data/vendor_de/0/fpdata
+        |    MISSING  /data/vendor/biometrics
+        |    (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+        |     EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+        |    the parent, for reference:
+        |    /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0 mode=drwxrwxr-x  uid=1001 gid=1001
+        |    open fds that look like the fingerprint device:
+        |    writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+        |    only reports the mode bits and the owner):
+        |    | drwxrwxr-x 2 1001 1001 4096 Sep 24 02:23 /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0
+        | == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+        |    biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        |      -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        |      ro.product.first_api_level -> <unset>
+        |      ro.build.version.sdk      -> <unset>
+        |    -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+        |       /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+        |    the Android side, for cross-check only (biometryd never reads this):
+        |      ro.product.first_api_level -> 27     [2026-06-07 vendor.img build.prop: 23]
+        |      ro.build.version.sdk      -> 27
+        |    -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+        | == which module hw_get_module('fingerprint') picks for THIS container
+        |    ro.hardware          = <unset>
+        |    ro.product.board     = <unset>
+        |    ro.board.platform    = <unset>
+        |    ro.arch              = <unset>
+        |    -> no variant match; AOSP would fall back to fingerprint.default.so
+        |    the modules present, as the container sees them:
+        |    (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+        | == the daemon the loaded module needs: gx_fpd, and its binder service
+        |    gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it
+        |    provides, so its absence is a second, independent reason setActiveGroup cannot work --
+        |    and it is silent in the wrapper: Fp::connect just fails, one layer down.
+        |    FingerPrintService on the container binder: 
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+        | == the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)
+        |    MISSING  /data/gf_data
+        |    MISSING  /data/gf_data/enroll
+        |    MISSING  /data/system/users/0/fpdata
+        |    (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd
+        |     passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)
+        | == the device nodes the innermost HAL opens
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /dev/ion
+        |    (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp to system --
+        |     if that section did not run in the container, the perms here are the ones the HAL sees)
+        | == the log, split by which process could have written it (the HAL's silent branch is the point --
+        |    a missing line is evidence, and WHICH log it is missing from is the other half)
+        |    --- logcat (the container's vendor service and the modules it loads) ---
+        |    Bad path length                                      2
+        |    Start biometrics                                     1
+        |    Opening fingerprint hal library                      1
+        |    Can't open fingerprint HW Module                     1
+        |    Can't create instance of BiometricsFingerprint       1
+        |    Fp::connect failed                                   1
+        |    getService failed                                    1
+        |    fps_hal                                              2
+        |    gx_fpd                                               1
+        |    -- the last 10 lines mentioning finger/biometric:
+        |    | D/fingerprint.msm8996( 612): Fp::connect failed
+        |    | E/BiometricsFingerprint( 612): Bad path length
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Bad path length
+        |    | I/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Start biometrics
+        |    | I/fps_hal ( 612): Opening fingerprint hal library
+        |    | E/BiometricsFingerprint( 612): Can't open fingerprint HW Module, error: -1
+        |    | E/BiometricsFingerprint( 612): Can't create instance of BiometricsFingerprint, nullptr
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): getService failed
+        |    --- journal of biometryd (the caller biometryd, and the library it loads) ---
+        |    setActiveGroup failed                                2
+        |    Failed to instantiate device                         1
+        |    Cannot construct Forwarding device                   1
+        |    Clearing template store                              1
+        |    Failed to enroll template                            0
+        |    -- the pair that decides it, now readable because both halves are in the same place:
+        |       'Bad path length' > 0                  -> the path never reached access() (too long/empty)
+        |       'Bad path length' = 0 AND the caller's
+        |       'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING
+        |                                                 (BiometricsFingerprint.cpp:221-223), so the HAL
+        |                                                 has no line of its own on that path -- which is
+        |                                                 exactly why the caller's line is the evidence
+        |    -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means
+        |       openHal() got as far as registering the HIDL service, which puts the failure after open.
+        | == HIDL registration (lshal needs nsenter -p -m)
+        |    (no fingerprint service registered)
+        | == the fingerprint device node(s)
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /sys/devices/soc/soc:fpc_fpc1020
+        | == SELinux (if it is enforcing, a newly created directory needs the right label)
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/enforce unreadable/absent
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/mls unreadable/absent
+FAIL  and the registration question is left UNANSWERED rather than answered 'no'
+        |    (no fingerprint service registered)
+FAIL  with the reason spelled out
+        | zl1 fingerprint probe :: Thu Sep 24 02:23:12 AM UTC 2026 :: read-only
+        | == HAL: pid 4242  uid=1000 gid=1005  ns/pid pid:[4026532001]  ns/mnt mnt:[4026532000]
+        |    cmdline: android.hardware.biometrics.fingerprint@2.1-service\x00
+        |    container pid 4242 ns/mnt mnt:[4026532000]
+        |    -> same mount namespace as the container (so /data means the container's /data)
+        | == the store paths, resolved through the HAL's own mount namespace (/tmp/zl1-loc-fp-selftest/fake/proc/4242/root/...)
+        |    MISSING  /data/system/users/0/fpdata
+        |    MISSING  /data/vendor_de/0/fpdata
+        |    MISSING  /data/vendor/biometrics
+        |    (access(W_OK) with uid=1000 decides: MISSING -> ENOENT -> SYS_EINVAL;
+        |     EXISTS but not writable by 1000 -> EACCES -> SYS_EINVAL. Both are silent in the HAL.)
+        |    the parent, for reference:
+        |    /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0 mode=drwxrwxr-x  uid=1001 gid=1001
+        |    open fds that look like the fingerprint device:
+        |    writable-by-that-uid test on the parent (uses a bind-free probe: touch would write, so this
+        |    only reports the mode bits and the owner):
+        |    | drwxrwxr-x 2 1001 1001 4096 Sep 24 02:23 /tmp/zl1-loc-fp-selftest/fake/proc/4242/root/data/system/users/0
+        | == which of the two paths biometryd passes (its own rule: api_level <= 27 -> /data/system/users/0)
+        |    biometryd execs /tmp/zl1-loc-fp-selftest/fake/usr/bin/getprop -- a shell script (the v63 stub's shape), and it answers NOTHING
+        |      -> that is what makes the <=27 branch automatic: not the device, its own broken read
+        |      ro.product.first_api_level -> <unset>
+        |      ro.build.version.sdk      -> <unset>
+        |    -> both empty/garbage, so atoi("")=0 and biometryd takes the <=27 branch:
+        |       /data/system/users/0/fpdata/    (biometryd's ACTUAL reason on this port)
+        |    the Android side, for cross-check only (biometryd never reads this):
+        |      ro.product.first_api_level -> 27     [2026-06-07 vendor.img build.prop: 23]
+        |      ro.build.version.sdk      -> 27
+        |    -> AGREES with the reading above (both <=27): /data/system/users/0/fpdata/ is certain
+        | == which module hw_get_module('fingerprint') picks for THIS container
+        |    ro.hardware          = <unset>
+        |    ro.product.board     = <unset>
+        |    ro.board.platform    = <unset>
+        |    ro.arch              = <unset>
+        |    -> no variant match; AOSP would fall back to fingerprint.default.so
+        |    the modules present, as the container sees them:
+        |    (no fingerprint.default.so: AOSP's fallback would fail outright, not silently)
+        | == the daemon the loaded module needs: gx_fpd, and its binder service
+        |    gx_fpd: NOT RUNNING. The module that gets loaded is a client of the binder service it
+        |    provides, so its absence is a second, independent reason setActiveGroup cannot work --
+        |    and it is silent in the wrapper: Fp::connect just fails, one layer down.
+        |    FingerPrintService on the container binder: 
+        |       -> not registered: the loaded module's Fp::connect has nothing to talk to
+        | == the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)
+        |    MISSING  /data/gf_data
+        |    MISSING  /data/gf_data/enroll
+        |    MISSING  /data/system/users/0/fpdata
+        |    (the HAL creates /data/gf_data itself with fs_mkdirs; it never reads the path biometryd
+        |     passes, so a missing /data/gf_data is a DIFFERENT failure from the access() gate above)
+        | == the device nodes the innermost HAL opens
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /dev/ion
+        |    (the vendor rc's 'on boot' chmods /dev/qseecom 0666 and chowns /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp to system --
+        |     if that section did not run in the container, the perms here are the ones the HAL sees)
+        | == the log, split by which process could have written it (the HAL's silent branch is the point --
+        |    a missing line is evidence, and WHICH log it is missing from is the other half)
+        |    --- logcat (the container's vendor service and the modules it loads) ---
+        |    Bad path length                                      2
+        |    Start biometrics                                     1
+        |    Opening fingerprint hal library                      1
+        |    Can't open fingerprint HW Module                     1
+        |    Can't create instance of BiometricsFingerprint       1
+        |    Fp::connect failed                                   1
+        |    getService failed                                    1
+        |    fps_hal                                              2
+        |    gx_fpd                                               1
+        |    -- the last 10 lines mentioning finger/biometric:
+        |    | D/fingerprint.msm8996( 612): Fp::connect failed
+        |    | E/BiometricsFingerprint( 612): Bad path length
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Bad path length
+        |    | I/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): Start biometrics
+        |    | I/fps_hal ( 612): Opening fingerprint hal library
+        |    | E/BiometricsFingerprint( 612): Can't open fingerprint HW Module, error: -1
+        |    | E/BiometricsFingerprint( 612): Can't create instance of BiometricsFingerprint, nullptr
+        |    | E/android.hardware.biometrics.fingerprint@2.0-service.leeco_zl1( 612): getService failed
+        |    --- journal of biometryd (the caller biometryd, and the library it loads) ---
+        |    setActiveGroup failed                                2
+        |    Failed to instantiate device                         1
+        |    Cannot construct Forwarding device                   1
+        |    Clearing template store                              1
+        |    Failed to enroll template                            0
+        |    -- the pair that decides it, now readable because both halves are in the same place:
+        |       'Bad path length' > 0                  -> the path never reached access() (too long/empty)
+        |       'Bad path length' = 0 AND the caller's
+        |       'setActiveGroup failed' > 0            -> the access(W_OK) branch, which logs NOTHING
+        |                                                 (BiometricsFingerprint.cpp:221-223), so the HAL
+        |                                                 has no line of its own on that path -- which is
+        |                                                 exactly why the caller's line is the evidence
+        |    -- 'Start biometrics' is an ALOGE in service.cpp, so it always lands in logcat: it means
+        |       openHal() got as far as registering the HIDL service, which puts the failure after open.
+        | == HIDL registration (lshal needs nsenter -p -m)
+        |    (no fingerprint service registered)
+        | == the fingerprint device node(s)
+        |    MISSING /tmp/zl1-loc-fp-selftest/fake/dev/goodix_fp
+        |    MISSING /dev/qseecom
+        |    MISSING /sys/devices/soc/soc:fpc_fpc1020
+        | == SELinux (if it is enforcing, a newly created directory needs the right label)
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/enforce unreadable/absent
+        |    /tmp/zl1-loc-fp-selftest/fake/sys/fs/selinux/mls unreadable/absent
+PASS  with lshal running, the registration row is printed
+PASS  and the unanswered case is not claimed
+FAIL  a command that is not an absolute path is given to nsenter with -m again (docs 117):
+        | 489:  nsenter -t "$A" -p -m -- lshal 2>/dev/null | grep -ai 'fingerprint' | sed 's/^/   /'
+        | 490:  n=$(nsenter -t "$A" -p -m -- lshal 2>/dev/null | grep -aci 'fingerprint')
+PASS  and the guard catches the defect when it is put back (the shipped line, mutated)
+
+== 8. --create-store-dir: ONE path, decided by section 2, with its own undo ==
+PASS  level 27 -> it creates /data/system/users/0/fpdata (as a real directory in the fake root)
+PASS  and NOT the other candidate
+PASS  it reports what it created
+PASS  the undo names the path it created, through the pid the operator has to look up
+PASS  and it says which path it deliberately did not create
+PASS  the undo does not name a path that was never created
+
+   -- the >27 branch is reached only when biometryd's OWN read says so:
+PASS  container says 29 but the UT getprop is the stub -> biometryd passes <=27, and that is the path created
+PASS  NOT the path the container's value would suggest
+PASS  and it says the two readings disagree instead of silently picking one
+
+   -- and when biometryd's own getprop answers >27, the other path is taken:
+PASS  it reports that the UT getprop answers (so the level is a real read, not a default)
+PASS  and reads the level from biometryd's own source
+PASS  level 29 -> it creates /data/vendor_de/0/fpdata
+PASS  and not the <=27 path
+PASS  with the matching undo
+PASS  and both readings agree here
+
+   -- the real 2026-09-23 shape: the stub says nothing, the device says 23, both <=27:
+PASS  the container reports the value the real vendor.img build.prop carries
+PASS  and it says so explicitly
+PASS  so the path is certain from two independent readings
+
+   -- an unreadable property lands on the SAME path a correct Android 8 would use:
+PASS  it explains that atoi("")=0
+PASS  and creates the <=27 path, as biometryd would
+
+   -- already there: no mkdir, no chown, no chmod -- and it does not pretend otherwise:
+PASS  with the directory present it creates nothing (and it is still there)
+PASS  and changes no ownership or mode
+PASS  it says the directory was already there
+
+   -- the uid it would chown to comes from the HAL, so no HAL means no write:
+PASS  with no container it exits 1
+PASS  and writes nothing at all
+PASS  it says it aborted rather than reporting a success
+
+
+== 9. fingerprint: the chain UNDER the wrapper (docs 98) -- two stores, two silences ==
+
+   -- nothing else on the device yet: the two silences are both reported as present:
+PASS  it reads the variant properties inside the container, not the host's getprop stub
+PASS  and reports an unset one as unset rather than omitting it
+PASS  it picks the module AOSP's variant order picks
+PASS  and says what that module is, including that its binder client is one library down
+PASS  and names the service that client looks up
+PASS  it lists what is really in the container's /vendor, so 'which module' is an observation
+PASS  with the size of the module it picked
+PASS  and of the Goodix HAL underneath it
+PASS  the listing is filtered to the fingerprint modules, so it stays readable
+PASS  it notes the absent AOSP fallback
+PASS  it checks the daemon the picked module needs -- silence #2
+PASS  and whether FingerPrintService is on the container's binder
+PASS  and the Goodix HAL's own store, which is not the path biometryd passes
+PASS  and the device node that store is reached through
+PASS  and a path that is not in the container's tree is reported missing, not assumed
+
+   -- and with the daemon up and the second store present, both change:
+PASS  gx_fpd is found by its cmdline, with its uid
+PASS  and the 'not running' verdict is gone
+PASS  the binder service list is read through the container's pid namespace
+grep: invalid option -- '>'
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Try 'grep --help' for more information.
+PASS  so the registered case is not reported as absent
+PASS  and the second store is now reported present
+
+   -- the check with teeth: does the resolution really have to go through the container?
+PASS  the mutation landed (the mutant reads the HOST's paths, not the container's root)
+grep: invalid option -- '>'
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Try 'grep --help' for more information.
+PASS  on the host's /vendor the very same script finds NO module
+PASS  and says so, which is the false 'the HAL is not installed' verdict
+PASS  and the second store, which IS in the container's tree, is reported absent
+
+   -- and the one namespace answer that changes what every path above MEANS:
+PASS  a differing mount namespace is called out, not glossed over
+PASS  and it does not say 'same' when it is not
+
+== 10. every counted pattern is still a real string in some image (SKIPPED if they are not here) ==
+PASS  logcat-side: 'Bad path length' exists in the Android images
+PASS  logcat-side: 'Start biometrics' exists in the Android images
+PASS  logcat-side: 'Opening fingerprint hal library' exists in the Android images
+PASS  logcat-side: 'Can't open fingerprint HW Module' exists in the Android images
+PASS  logcat-side: 'Can't create instance of BiometricsFingerprint' exists in the Android images
+PASS  logcat-side: 'Fp::connect failed' exists in the Android images
+PASS  logcat-side: 'getService failed' exists in the Android images
+PASS  logcat-side: 'fps_hal' exists in the Android images
+PASS  logcat-side: 'gx_fpd' exists in the Android images
+PASS  journal-side: 'setActiveGroup failed' exists in the UT rootfs
+PASS  journal-side: 'Failed to instantiate device' exists in the UT rootfs
+PASS  journal-side: 'Cannot construct Forwarding device' exists in the UT rootfs
+PASS  journal-side: 'Clearing template store' exists in the UT rootfs
+PASS  journal-side: 'Failed to enroll template' exists in the UT rootfs
+
+== the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 195 checks, and this run has exactly that many
+
+pass=187 fail=8

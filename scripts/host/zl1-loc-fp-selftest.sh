@@ -148,6 +148,19 @@ EOF
 cat > "$STUB/nsenter" <<EOF
 #!/bin/sh
 printf 'nsenter %s\n' "\$*" >> "$ACT"
+# docs 117: a command that cannot run and a command that found nothing are the same empty string.
+# \$W/cannot-run holds a substring; when the command line matches it, this stub behaves like the real
+# nsenter on the device -- it says so ON STDERR and exits 127 -- instead of delivering a fixture. The
+# default is EMPTY, and section 7c asserts both directions, so the passing case has to be earned by
+# the probe actually printing the count.
+CR=\$(cat "$W/cannot-run" 2>/dev/null)
+if [ -n "\$CR" ]; then
+  case "\$*" in
+  *"\$CR"*)
+    printf 'nsenter: failed to execute %s: No such file or directory\n' "\$CR" >&2
+    exit 127 ;;
+  esac
+fi
 case "\$*" in
 *"getprop ro.product.first_api_level"*) printf '%s' "\$FAKE_FAL" ;;
 *"getprop ro.build.version.sdk"*)       printf '%s' "\$FAKE_SDK" ;;
@@ -323,6 +336,10 @@ env_reset() {
   # scenario below failed before this reset existed.)
   rm -rf "$(storepath /data/system/users/0/fpdata)" "$(storepath /data/vendor_de/0/fpdata)" \
          "$(storepath /data/gf_data)"
+  # docs 117: the exec-failure fixture. Cleared here for the same reason as the directories above --
+  # a scenario that left it set would make the NEXT scenario's "it ran" checks fail for a reason that
+  # has nothing to do with the probe.
+  rm -f "$W/cannot-run"
 }
 run() {
   s="$1"; shift
@@ -646,6 +663,98 @@ for p in 'Bad path length' 'Start biometrics' 'Fp::connect failed'; do
     && ok "and the logcat-only string '$p' is absent from the journal fixture" \
     || bad "'$p' is in BOTH fixtures in the other direction"
 done
+
+# ==================================================================================================
+echo
+echo "== 7c. a command that could not run is not a count of zero (docs 117) =="
+# ==================================================================================================
+# Three of the probe's calls still go through nsenter, and for each of them an EMPTY answer is read as
+# a finding: the binder service list ("not registered"), logcat (every pattern 0) and lshal ("no
+# fingerprint service registered"). On this device an empty answer and a failure to run are both
+# reachable and indistinguishable at the shell level -- the nine `failed to execute test` lines are the
+# proof -- so the probe must print the failure rather than the finding. This is the same rule as the
+# logcat section above and the same rule as the whole of docs 103/109: an instrument that cannot
+# report, printing a definite answer.
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.ran"
+notwant 'COULD NOT RUN' "$OUT" "with everything running, the probe says nothing about failing to run"
+want 'FingerPrintService on the container binder' "$OUT" "and it does report the binder question"
+
+# (1) `service list` -- the string could be one of the applets the container does not have
+printf 'service list' > "$W/cannot-run"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.noservice"
+want 'COULD NOT RUN: nsenter: failed to execute service list' "$OUT" \
+  "a service list that could not run is printed as exactly that, with the tool named"
+notwant "Fp::connect has nothing to talk to" "$OUT" \
+  "and the 'not registered' verdict is NOT printed: that verdict would be about this, not the container"
+rm -f "$W/cannot-run"; env_reset
+
+# (2) logcat -- where a 0 is a legitimate and important answer (the HAL's silent access() branch)
+printf '/system/bin/logcat' > "$W/cannot-run"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.nologcat"
+want 'COULD NOT RUN: nsenter: failed to execute /system/bin/logcat' "$OUT" \
+  "a logcat that could not run is printed as exactly that"
+want 'every count below is 0 for THAT reason' "$OUT" \
+  "and it says the zeros below are this and not the HAL's silent branch"
+want 'Start biometrics +[0-9]' "$OUT" \
+  "the table still prints (so the reader sees what was not read, rather than a missing section)"
+rm -f "$W/cannot-run"; env_reset
+
+# (3) lshal -- the one call that is still resolved through the container's PATH, which is the
+# mechanism that failed for `test`. It is also the call whose emptiness becomes a registration verdict.
+printf 'lshal' > "$W/cannot-run"
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.nolshal"
+want 'COULD NOT RUN: nsenter: failed to execute lshal' "$OUT" \
+  "an lshal that could not run is printed as exactly that"
+notwant 'no fingerprint service registered' "$OUT" \
+  "and the registration question is left UNANSWERED rather than answered 'no'"
+want 'UNANSWERED, not answered' "$OUT" "with the reason spelled out"
+rm -f "$W/cannot-run"; env_reset
+
+# and the same call, working: the listing IS read, and the fingerprint row comes out of it
+run "$W/fp.sh"
+printf '%s\n' "$OUT" > "$W/out.fp.lshalok"
+want 'IBiometricsFingerprint/default' "$OUT" "with lshal running, the registration row is printed"
+notwant 'UNANSWERED' "$OUT" "and the unanswered case is not claimed"
+
+# ---- the class cannot come back: a STATIC guard over the shipped file ---------------------------
+# The nine failures were ONE applet (`test`, absent from the container's applet set while ls/mkdir/
+# chown/chmod/ps/rmdir/grep/awk/sed/tr/lshal/logcat/service/getprop are present -- docs 117). The
+# dynamic checks above cover the three calls that remain; this one covers the shape itself, so that a
+# future edit cannot reintroduce it silently. The rule, mechanically: a command handed to nsenter
+# together with `-m` must be an ABSOLUTE path, so
+# that nothing is looked up in the container's PATH at all. That is the property the nine failures
+# lacked, and it is one grep. (ns_run passes its flags as a quoted argument, so it does not match --
+# which is right: it is the route for the calls that must use the container's PATH, and it prints the
+# failure when the lookup fails.)
+BARE_CMD='(nsenter|ns_run)[^|]*-m[^|]*--[[:space:]]+[^/[:space:]]'
+BARE=$(grep -nE "$BARE_CMD" "$FP" | grep -vE "^[0-9]+:[[:space:]]*#")
+if [ -z "$BARE" ]; then
+  ok "no command is resolved through the container's PATH in the shipped probe (every one is absolute)"
+else
+  bad "a command that is not an absolute path is given to nsenter with -m again (docs 117) -- the
+      rule is: with -m it must be an ABSOLUTE path, or a call routed through ns_run, which prints its
+      failure instead of delivering an empty answer:"
+  printf '%s\n' "$BARE" | sed 's/^/        | /'
+fi
+# and the guard has teeth: put the original defect back into a copy and it must go red. sed on the
+# SHIPPED probe, so what is checked is the line as written -- not a paraphrase of it.
+sed 's#\( \+\)if \[ -z "\$pick" \] && \[ -f "\$(halpath "\(\$d/fingerprint\.\$v\.so\)")" \]; then#\1if [ -z "$pick" ] \&\& nsenter -t "$A" -m -- test -f "\2"; then#' \
+  "$FP" > "$W/fp.hostcmd.sh"
+if grep -q 'nsenter -t "\$A" -m -- test -f' "$W/fp.hostcmd.sh"; then
+  # Specifically the REINTRODUCED line, not "something else in that copy matched": an assertion that
+  # only counts non-empty output is satisfied by any unrelated offender, which is the same
+  # passed-for-the-wrong-reason shape this harness keeps finding in itself.
+  BARE2=$(grep -nE "$BARE_CMD" "$W/fp.hostcmd.sh" | grep -vE "^[0-9]+:[[:space:]]*#" | grep -c 'test -f')
+  [ "$BARE2" -gt 0 ] && ok "and the guard catches the defect when it is put back (the shipped line, mutated)" \
+                     || bad "the guard did NOT catch the defect put back, so it is checking nothing"
+else
+  bad "the mutation did not land, so the guard above proves nothing"
+fi
+env_reset
 
 # ==================================================================================================
 echo

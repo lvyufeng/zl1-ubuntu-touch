@@ -46,12 +46,21 @@
 # the reader to compare impossible to satisfy. The evidence for every owner is in
 # docs/ubuntu-touch/evidence/fp-log-owners-2026-09-23.log.
 #
-# Nothing here writes. `--create-store-dir` is off by default and is the only thing that would: it
+# Nothing here writes unless asked. `--create-store-dir` is off by default and is the only thing that
+# would: it
 # creates exactly the directory Android's own FingerprintService creates -- the ONE path section 2
 # determined biometryd passes, not both candidates, and it prints the rmdir undo for that path. It is a
 # directory in Android's own /data (= /android/data, /dev/sda10[/android-data], a rw ext4 that Android
 # writes to normally) -- it is not a partition image, not one of the forbidden partitions, and not a
 # flash. (Before docs 97 it created both candidates and printed an undo for one of them.)
+#
+# The write mode's guard used to be unanswerable, and this is the one place where those nine `nsenter`
+# failures had a WRITE behind them (docs 117): `[ -e ]` was `nsenter -m -- test -e`, `test` is not in
+# the container's /bin, so it answered "missing" every time and the create branch was always taken --
+# and `mkdir`/`chown`/`chmod` ARE in that /bin, so on a device the mode would have created the
+# directory and chowned it, and printed "now: <the right mode>". It would have looked correct while
+# its "exists already" branch was dead code. Everything is read through /proc/<pid>/root now, so the
+# guard answers, and it says "exists already" instead of re-creating.
 #
 # Usage (on the device, as root): zl1-fingerprint-probe.sh [--create-store-dir] [--quiet]
 
@@ -104,8 +113,10 @@ H=$(hal_pid)
 # concluded "no variant match; AOSP would fall back to fingerprint.default.so" without having looked
 # at anything. That is the defect this file already hunts for one level up (docs 103, 109): an
 # instrument that cannot report, printing a definite answer. (lshal and logcat keep working for the
-# reverse reason: /bin in the container's table IS Android's /bin, which has them -- and they need
-# `-p`/`-m` for binder, so they stay as they are.)
+# reverse reason: the container's applet set is Android's own, which has both -- but logcat is reached
+# by ABSOLUTE path (/system/bin/logcat, and its counts are on the record from a live run on
+# 2026-09-23) while `lshal` is not, so `lshal` is the one that could fail this way. Both need `-p`/`-m`
+# for binder, so they stay as they are, and `ns_run` below is what makes their failure visible.)
 #
 # `/proc/<pid>/root/<abs path>` needs none of that: the KERNEL resolves the path through the target's
 # mount namespace and root, and the tool doing the reading (`ls`, `[ -e ]`) is the HOST's own. It is
@@ -114,6 +125,47 @@ H=$(hal_pid)
 # is the process whose own access() decides the question, so the pid used here is the HAL's.
 halpath() { # $1 = a path as the CONTAINER sees it; prints the path to read it from HERE
   if [ -n "$H" ]; then printf '/proc/%s/root%s' "$H" "$1"; else printf '%s' "$1"; fi
+}
+#
+# Why the nine failures were the `test` ones and not, say, the `ls` ones (docs 117): the search uses
+# the caller's PATH -- /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin (the UT rootfs's
+# /etc/environment) -- and with `-m` those names are looked up in the CONTAINER's tree. The answer is
+# per-APPLET, and it is a fact about the image, not about namespaces: measured against the system
+# partition this device runs (the 2026-06-07 staged system.img; the halium candidate image agrees),
+# the applet directory has ls, mkdir, chown, chmod, ps, rmdir, grep, awk, sed, tr, lshal, logcat,
+# service, getprop -- and **no `test` and no `[`**, because mksh provides `test` as a shell BUILTIN and
+# toybox's applet is not installed. That is the whole difference: `test -e` could not run, `ls -l`
+# could. (Which directory the container's PATH search lands in -- /bin, or /system/bin if the container
+# root spells it that way -- does not change this: both are the same image, and that image has no
+# `test` in either.) It also means the ONE write mode's guard was the only broken part:
+# `nsenter -m -- mkdir -p` WOULD have run, so that `[ -e ]` never protected anything and always took
+# the "it is missing, create it" branch (see the note above Usage).
+#
+# --- and the rule that replaces it, for the calls that must still use nsenter --------------------
+#
+# A command that cannot run and a command that found nothing produce the SAME empty string, and on
+# this device both are reachable. Where the emptiness is read as a finding -- `service list`, logcat,
+# lshal -- it must therefore be split. `nsenter` prints `nsenter: failed to execute <cmd>: No such
+# file or directory` and exits 127 in that case, so:
+ns_run() { # $1 = nsenter flags (e.g. '-p -m'); $2... = the command, as the CONTAINER resolves it
+           # Prints its output, and -- when nsenter could not exec the command -- a line
+           #     NSENTER-EXEC-FAIL: nsenter: failed to execute <cmd>: No such file or directory
+           # INSTEAD of whatever empty output that would otherwise be read as a finding.
+           #
+           # The marker is printed into the OUTPUT rather than set in a variable, and that is not a
+           # style choice: every one of these calls is `x=$(ns_run ...)`, a command substitution is a
+           # SUBSHELL, and a variable ns_run sets is lost the moment the substitution ends. (Measured:
+           # the first version set NS_FAIL and the probe died three sections later on `NS_FAIL:
+           # parameter not set`, which is at least a loud way to find out.) The caller tests the
+           # captured text:
+           #     case "$out" in *NSENTER-EXEC-FAIL:*) ... ;; esac
+  ns_flags=$1; shift
+  ns_body=$(nsenter -t "$A" $ns_flags -- "$@" 2>&1)
+  case "$ns_body" in
+  *"nsenter: failed to execute "*)
+    printf 'NSENTER-EXEC-FAIL: %s\n' "$(printf '%s\n' "$ns_body" | grep -a 'failed to execute' | head -1)" ;;
+  esac
+  printf '%s\n' "$ns_body" | grep -av '^nsenter: failed to execute'
 }
 
 if [ -z "$H" ]; then
@@ -357,11 +409,17 @@ fi
 if [ -n "$A" ]; then
   # The binder namespace is the container's, which is why this needs nsenter -p and why the host's
   # own `service list` would answer "nothing" (docs 51's rule).
-  sl=$(nsenter -t "$A" -p -- /system/bin/service list 2>/dev/null)
-  n=$(printf '%s\n' "$sl" | grep -aic 'finger')
-  printf '   FingerPrintService on the container binder: %s\n' \
-    "$(printf '%s\n' "$sl" | grep -ai 'finger' | head -3 | tr '\n' ' ')"
-  [ "$n" -gt 0 ] || echo "      -> not registered: the loaded module's Fp::connect has nothing to talk to"
+  sl=$(ns_run '-p' /system/bin/service list)
+  case "$sl" in
+  *NSENTER-EXEC-FAIL:*)
+    echo "   COULD NOT RUN: ${sl#*NSENTER-EXEC-FAIL: }"
+    echo "   -> the 'not registered' verdict is NOT printed: it would be about this, not the container"
+    n=0 ;;
+  *) n=$(printf '%s\n' "$sl" | grep -aic 'finger')
+     printf '   FingerPrintService on the container binder: %s\n' \
+       "$(printf '%s\n' "$sl" | grep -ai 'finger' | head -3 | tr '\n' ' ')"
+     [ "$n" -gt 0 ] || echo "      -> not registered: the loaded module's Fp::connect has nothing to talk to" ;;
+  esac
 fi
 
 echo "== the second store: /data/gf_data (the innermost Goodix HAL's own, NOT in /proc/<hal>/root only)"
@@ -438,7 +496,15 @@ echo "    if that section did not run in the container, the perms here are the o
 echo "== the log, split by which process could have written it (the HAL's silent branch is the point --"
 echo "   a missing line is evidence, and WHICH log it is missing from is the other half)"
 if [ -n "$A" ]; then
-  dump=$(nsenter -t "$A" -p -m -- /system/bin/logcat -d -v brief 2>/dev/null)
+  dump=$(ns_run '-p -m' /system/bin/logcat -d -v brief)
+  case "$dump" in
+  *NSENTER-EXEC-FAIL:*)
+    echo "   COULD NOT RUN: ${dump#*NSENTER-EXEC-FAIL: }"
+    echo "   -> every count below is 0 for THAT reason, and 0 is a FINDING here: read nothing into"
+    echo "      these numbers. An instrument that cannot report is worse than none (docs 99/109), and"
+    echo "      this is exactly the shape that made the self-test's logcat section pass on an empty"
+    echo "      dump for months (docs 103 section 5)." ;;
+  esac
   echo "   --- logcat (the container's vendor service and the modules it loads) ---"
   for pat in 'Bad path length' \
              'Start biometrics' \
@@ -484,11 +550,23 @@ echo "      openHal() got as far as registering the HIDL service, which puts the
 
 # --- 5. the HIDL service and the device node ---------------------------------------------------
 
-echo "== HIDL registration (lshal needs nsenter -p -m)"
+echo "== HIDL registration (lshal needs nsenter -p -m; and it is resolved through the container's PATH,"
+echo "   which is the mechanism that failed for the module test above -- so its failure is now printed)"
 if [ -n "$A" ]; then
-  nsenter -t "$A" -p -m -- lshal 2>/dev/null | grep -ai 'fingerprint' | sed 's/^/   /'
-  n=$(nsenter -t "$A" -p -m -- lshal 2>/dev/null | grep -aci 'fingerprint')
-  [ "$n" -gt 0 ] || echo "   (no fingerprint service registered)"
+  # ONE call, read twice. It used to run lshal twice, which is two chances to differ, and grep's exit
+  # status on an empty listing is what decides the verdict below -- so an exec failure would have read
+  # as "no fingerprint service registered", the finding this section exists to make.
+  sl=$(ns_run '-p -m' lshal)
+  case "$sl" in
+  *NSENTER-EXEC-FAIL:*)
+    echo "   COULD NOT RUN: ${sl#*NSENTER-EXEC-FAIL: }"
+    echo "   -> the registration question is UNANSWERED, not answered 'no' (docs 110: a row in"
+    echo "      lshal's first table means hwservicemanager lists it, so an absent listing is not a row)" ;;
+  *)
+    printf '%s\n' "$sl" | grep -ai 'fingerprint' | sed 's/^/   /'
+    n=$(printf '%s\n' "$sl" | grep -aci 'fingerprint')
+    [ "$n" -gt 0 ] || echo "   (no fingerprint service registered)" ;;
+  esac
 fi
 
 echo "== the fingerprint device node(s)"
