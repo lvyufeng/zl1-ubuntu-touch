@@ -46,6 +46,7 @@
 #
 # Usage: zl1-one-boot-runbook.sh [--status] [--yes] [--apply-trial] [--only STEP] [--skip STEP]
 #                                [--outdir DIR] [--settle SECS] [--step-limit SECS]
+#                                [--state-limit SECS]
 #   --status       (default) READ-ONLY: which steps are already done on this boot, and which of the
 #                  trial's three prerequisites currently hold. Writes nothing, installs nothing.
 #   --yes          run the sequence. Without it: print the plan for this boot and exit 2.
@@ -63,6 +64,11 @@
 #                  this phone the next move is a physical power hold and nothing else. It has to be
 #                  looser than the heat chain's own total (that chain bounds each of its steps itself);
 #                  if you widen --settle or the chain's --ab-window/--ab-hold, widen this with it.
+#   --state-limit SECS  wall-clock bound on the ssh calls that are NOT steps (default 60): the
+#                  reachability probe, the boot-id read, and the two readings that decide A and C. A
+#                  bound on the steps is defeated by an unbounded call between them -- and a timeout that
+#                  arrived as an empty string would be printed as a verdict ABOUT THE PHONE. So each of
+#                  them reports "NOT READ ... the host gave up" as its own state.
 #
 # Exit codes:
 #   0  the sequence ran to the end and every step's own verdict was acceptable
@@ -105,6 +111,12 @@ APPLY_TRIAL=0
 # backstop has to be looser than the chain's own total, or it would truncate a run that was working. If
 # you widen --settle (passed through) or the chain's --ab-window/--ab-hold, widen this with it.
 STEP_LIMIT=${ZL1_RB_STEP_LIMIT:-900}
+# And the ssh calls that are NOT steps get one too, with the same name the heat chain uses for the same
+# job: this runbook makes four of them outside `run_bg` -- the reachability probe, the boot-id read, and
+# the two device readings that decide A and C. They are the same defect one level down again: a bound on
+# the STEPS is defeated by an unbounded call between them, and a stalled link there means no archive, no
+# verdict, and an empty string flowing into a `case` that turns it into a claim ABOUT THE PHONE.
+STATE_LIMIT=${ZL1_RB_STATE_LIMIT:-60}
 
 
 while [ $# -gt 0 ]; do
@@ -117,6 +129,7 @@ while [ $# -gt 0 ]; do
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --settle) SETTLE="${2?--settle needs SECONDS}"; shift 2 ;;
   --step-limit) STEP_LIMIT="${2?--step-limit needs SECONDS}"; shift 2 ;;
+  --state-limit) STATE_LIMIT="${2?--state-limit needs SECONDS}"; shift 2 ;;
   --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
   *) echo "unknown argument ${1:-} (try --help)" >&2; exit 2 ;;
   esac
@@ -124,6 +137,36 @@ done
 
 say()  { printf '%s\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
+
+# Is timeout(1) here at all? Asked ONCE, at the top, because both bounded paths below need the answer and
+# the first of them (the reachability probe) runs before the steps do.
+HAVE_TIMEOUT=0
+command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
+
+# The one way this script talks to the device OUTSIDE a step. Every direct ssh goes through here, so
+# "is it bounded?" is answered by reading one function rather than by re-checking each call site -- and
+# the harness asserts it behaviourally: a device stub that never answers makes the run COME BACK, and a
+# mutant without this bound does not. On a timeout it returns timeout(1)'s own 124/137, and the callers
+# below turn that into a state of its own rather than into an empty string.
+#
+# `bound` is the same helper the heat chain uses, and it is deliberately separate from `run_bg`'s inline
+# `timeout`: a backgrounded `bound` would make the BACKGROUND PID the subshell's, not timeout's, and the
+# signal handler kills that pid -- so an interrupt would report "stopped" while the step kept running.
+bound() { # SECS, command...
+  local secs="$1"; shift
+  if [ "$HAVE_TIMEOUT" = 1 ]; then
+    timeout -k 5 "$secs" "$@"
+  else
+    printf 'NOTE: no timeout(1) on this host -- THIS CALL IS NOT TIME-BOUNDED (limit was %ss)\n' "$secs" >&2
+    "$@"
+  fi
+}
+devssh() { bound "$STATE_LIMIT" "${SSH[@]}" "$@"; }
+# 124 is timeout(1)'s code and 137 is its -k SIGKILL: both mean THE HOST GAVE UP, which is a fact about
+# this machine and NOT a reading of the phone.
+gave_up() { # rc
+  case "$1" in 124|137) return 0 ;; *) return 1 ;; esac
+}
 
 # The five steps, in the one order. Kept as one list so `--skip`, `--only` and the archive cannot
 # disagree about what the sequence IS: a step added to the plan and not to this list would be invisible
@@ -189,9 +232,20 @@ if [ "$STATE" != present ]; then
   exit 2
 fi
 
-if ! "${SSH[@]}" true 2>/dev/null; then
+devssh true >/dev/null 2>&1; PROBE_RC=$?
+if [ "$PROBE_RC" != 0 ]; then
   say "zl1 one-boot runbook"
   say "  the device is on the bus (serial $DEV) but SSH does not answer yet -- it may still be booting."
+  # AND "DOES NOT ANSWER" IS NOT ONE THING. A refused connection, a timeout in the TCP handshake and a
+  # HOST-SIDE bound killing a stalled session all land here, and the move to make is different for each:
+  # the last one means the link stopped carrying traffic, which is the host-side stall that has its own
+  # repair (docs 76) and does NOT need the phone touched.
+  if gave_up "$PROBE_RC"; then
+    say "  AND IT DID NOT ANSWER WITHIN ${STATE_LIMIT}s: the ssh was killed by this script's own bound"
+    say "  (timeout(1) rc=$PROBE_RC). That is a statement about THIS HOST, not about the phone -- the"
+    say "  device may be up and running with a link that stopped carrying traffic. That shape has a"
+    say "  repair that needs no key press and no reboot:  sudo scripts/host/zl1-rndis-recover.sh"
+  fi
   say "  Wait for RNDIS and for ssh, then run this again. NOTHING WAS RUN."
   say
   say "  If the link is up but carries no traffic, that is the OTHER known failure and it lives on the"
@@ -199,8 +253,13 @@ if ! "${SSH[@]}" true 2>/dev/null; then
   exit 2
 fi
 
-BOOT_ID=$("${SSH[@]}" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d '\r\n')
-[ -n "$BOOT_ID" ] || BOOT_ID="unknown-$(date -u +%Y%m%dT%H%M%SZ)"
+_bid=$(devssh 'cat /proc/sys/kernel/random/boot_id 2>/dev/null'); _brc=$?
+BOOT_ID=$(printf '%s' "$_bid" | tr -d '\r\n')
+# "The reading came back empty" and "the host gave up on the reading" are two different facts, and the
+# archive's `boot_id:` line is how a later reader ties this directory to a boot -- so neither may be
+# written as a blank. The old fallback printed `unknown-<timestamp>`, which reads as a boot id nobody
+# could match; this says which of the two happened.
+[ -n "$BOOT_ID" ] || { if gave_up "$_brc"; then BOOT_ID="UNREADABLE(host gave up at ${STATE_LIMIT}s)"; else BOOT_ID="UNREADABLE(empty answer)"; fi; }
 
 # ==================================================================================================
 # The device readings this runbook turns on. Each is a READING of the state a step is supposed to
@@ -226,8 +285,10 @@ BOOT_ID=$("${SSH[@]}" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d 
 #   all=0 (N parameter(s))                  every parameter reads 0 -> A is met
 #   ARMED <path>=<value>[ <path>=<value>]   at least one does not    -> A is NOT met, and which
 #   NOT-FOUND                               the driver's param is not exposed at all
+#   TIMEOUT                                 the HOST gave up (see below) -- not a reading at all
 read_download_mode() {
-  "${SSH[@]}" 'n=0; bad=""
+  local raw rc
+  raw=$(devssh 'n=0; bad=""
     for p in /sys/module/*/parameters/download_mode; do
       [ -e "$p" ] || continue
       v=$(cat "$p" 2>/dev/null); n=$((n + 1))
@@ -235,12 +296,20 @@ read_download_mode() {
     done
     if [ "$n" = 0 ]; then printf "NOT-FOUND"; exit 0; fi
     if [ -n "$bad" ]; then printf "ARMED %s" "$bad"; exit 0; fi
-    printf "all=0 (%s parameter(s))" "$n"' 2>/dev/null | tr -d '\r\n'
+    printf "all=0 (%s parameter(s))" "$n"' 2>/dev/null); rc=$?
+  # THE FOURTH TOKEN EXISTS BECAUSE THE OTHER THREE ARE ALL CLAIMS ABOUT THE PHONE. "Not 0" and "not
+  # found" are readings; "the host killed the ssh at 60 s" is not, and without this token it arrived at
+  # the verdict below as an EMPTY STRING -- which fell into the last branch and was printed as "A is
+  # treated as NOT met", i.e. a host-side timeout presented as a device verdict. (Same rule as the heat
+  # chain's read-back: an empty value must not read as "the device said nothing".)
+  gave_up "$rc" && { printf 'TIMEOUT'; return 0; }
+  printf '%s' "$raw" | tr -d '\r\n'
 }
 # The debug keeper -- the trial's prerequisite C. Matched by ARGV, the same rule every other script here
 # uses: a shell whose command line merely MENTIONS the keeper's path is not the keeper.
 read_keeper() {
-  "${SSH[@]}" 'n=0; for d in /proc/[0-9]*; do
+  local raw rc
+  raw=$(devssh 'n=0; for d in /proc/[0-9]*; do
       [ -d "$d" ] || continue
       p=${d#/proc/}; [ "$p" = "$$" ] && continue
       set -- $(tr "\000" "\n" < "$d/cmdline" 2>/dev/null)
@@ -253,7 +322,13 @@ read_keeper() {
         esac
       fi
       [ "$hit" = 1 ] && { n=$((n + 1)); printf "%s " "$p"; }
-    done; [ "$n" = 0 ] && printf "none"; printf "(%s)" "$n"' 2>/dev/null | tr -d '\r\n'
+    done; [ "$n" = 0 ] && printf "none"; printf "(%s)" "$n"' 2>/dev/null); rc=$?
+  # And the same fourth token, and here it matters more than anywhere else in this file: `none*` is the
+  # ONLY branch that says C is MET, so a host-side timeout arriving as an empty string fell into the last
+  # branch and was printed as "C is NOT met (step 03 retires it)" -- an instruction to re-run a step that
+  # may have already worked, on the strength of a reading that never happened.
+  gave_up "$rc" && { printf 'TIMEOUT'; return 0; }
+  printf '%s' "$raw" | tr -d '\r\n'
 }
 
 # ==================================================================================================
@@ -328,8 +403,6 @@ RB_RC=0
 # than inside `bound() &` because the background pid has to be `timeout`'s own: the signal handler kills
 # that pid, and a wrapper function's pid would leave the timeout and the device call orphaned -- the
 # interrupt path would report "stopped" while the step kept running.
-HAVE_TIMEOUT=0
-command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
 run_bg() {
   if [ "$HAVE_TIMEOUT" = 1 ]; then
     timeout -k 5 "$STEP_LIMIT" "$@" &
@@ -440,10 +513,15 @@ if [ "$MODE" = status ]; then
   all=0*) say "  A. download_mode: $DM   <- every parameter reads 0: a panic will NOT arm EDL (prerequisite A is MET)";;
   NOT-FOUND) say "  A. download_mode: NOT FOUND under /sys/module/*/parameters/ -- A cannot be checked, so it is NOT met";;
   ARMED*) say "  A. download_mode: $DM   <- a panic WOULD arm EDL (A is NOT met; step 02 is what fixes it)";;
+  TIMEOUT) say "  A. download_mode: NOT READ -- the host gave up on the ssh at ${STATE_LIMIT}s, so this says";
+    say "     NOTHING about the phone: the parameter may read 0 and it may not. Treat it as not met for";
+    say "     step 05 (which will refuse), but the thing to fix is the LINK, not the driver: docs 76.";;
   *) say "  A. download_mode: $DM   <- the reading is not a shape this script knows, so A is treated as NOT met";;
   esac
   case "$KP" in
   none*) say "  C. debug keeper: none -- C is MET";;
+  TIMEOUT) say "  C. debug keeper: NOT READ -- the host gave up on the ssh at ${STATE_LIMIT}s. This is not";
+    say "     'no keeper': nothing here says whether one is running, and step 03 may well have worked.";;
   *) say "  C. debug keeper: $KP   <- a CPU that is never idle does not enter a deep idle state, so C is NOT met (step 03 retires it)";;
   esac
   say "  B. cpuidle counters: not checked here -- the trial reads them itself, and UNREADABLE IS NOT ZERO."
@@ -621,12 +699,14 @@ say "   debug keeper  : $C_AFTER"
 case "$A_AFTER" in
 all=0*) note "prerequisite A is MET -- every download_mode parameter reads 0";;
 ARMED*) note "A is NOT met -- the parameter(s) named above do not read 0, so a panic would still arm EDL; the cause is 02 or the driver, not the trial";;
+TIMEOUT) note "A: NOT READ -- the host gave up on the ssh at ${STATE_LIMIT}s. That is a fact about this machine and NOT a reading, so it is not evidence about A in either direction; step 05 will refuse on it. The link is the thing to fix (docs 76), not 02.";;
 UNREADABLE) note "A: UNREADABLE -- the link or the driver did not answer. A is NOT met.";;
 NOT-FOUND) note "A is NOT met -- no /sys/module/*/parameters/download_mode on this device, so the policy unit could not arm itself either.";;
 *) note "A is NOT met -- step 05 will refuse on A, and the cause is 02 or the driver, not the trial";;
 esac
 case "$C_AFTER" in
 none*) note "prerequisite C is MET";;
+TIMEOUT) note "C: NOT READ -- the host gave up on the ssh at ${STATE_LIMIT}s, so nothing here says whether a keeper is running. Step 03 may have worked; do NOT re-run it on the strength of this line.";;
 UNREADABLE) note "C: UNREADABLE. C is NOT met.";;
 *) note "C is NOT met -- step 05 will refuse on C, and the cause is 03, not the trial";;
 esac

@@ -193,6 +193,13 @@ done
 host="\$1"; shift
 cmd="\$*"
 printf 'ssh %s\n' "\$cmd" >> "$ACT"
+# FP_SSH_HANG_ON: NEVER ANSWER. Not "fail" -- hang, which is the whole point: a stalled link does not
+# return a non-zero code, it holds the session open, and every bound this project has added exists for
+# that shape and no other. The stub sleeps far longer than any bound a scenario sets, so a call that is
+# bounded comes back and one that is not does not.
+if [ -n "\${FP_SSH_HANG_ON:-}" ]; then
+  case "\$cmd" in *"\$FP_SSH_HANG_ON"*) exec sleep 600 ;; esac
+fi
 case "\$cmd" in
 true) [ "\${FP_SSH_DOWN:-0}" = 1 ] && exit 255; exit 0 ;;
 esac
@@ -353,7 +360,17 @@ run()  { : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MI
 run_no_timeout() { # the same, on a host whose PATH has no timeout(1)
   : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN_NT" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?
 }
-reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; }
+reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; FP_SSH_HANG_ON=""; }
+# A run whose device NEVER ANSWERS, under the harness's OWN hard kill. This is how a bound is tested
+# behaviourally rather than by grepping for `timeout`: with the bound the subject returns, without it the
+# subject hangs and this `timeout` is what ends the experiment -- and the hang is the observable, because
+# a stalled ssh has no exit code to assert on.
+HANG_KILL=${HANG_KILL:-15}
+run_hang() { # args...
+  : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*
+  OUT=$(env PATH="$STUB:$MINBIN" FP_SSH_HANG_ON="${FP_SSH_HANG_ON:-true}" \
+        timeout -k 5 "$HANG_KILL" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?
+}
 
 echo "zl1 one-boot runbook -- offline self-test"
 echo "  subject: $SRC"
@@ -627,6 +644,102 @@ want 'the limit would have been 900s' "$(cat "$OD7b/02-panic-guard.txt" 2>/dev/n
 
 # ==================================================================================================
 echo
+echo "== 7c. the ssh calls that are NOT steps are bounded too, and they say so =="
+# ==================================================================================================
+# A bound on the STEPS is defeated by an unbounded call between them. This runbook makes four of those:
+# the reachability probe, the boot-id read, and the two readings that decide A and C. And they are worse
+# than the steps were, because their output does not go to a file -- it goes into a `case` that turns it
+# into a VERDICT ABOUT THE PHONE. A host-side timeout arriving there as an empty string was printed as
+# "A is treated as NOT met" and "C is NOT met (step 03 retires it)", i.e. an instruction to re-run a step
+# that may have already worked, on the strength of a reading that never happened.
+#
+# The scenarios therefore HANG the device rather than failing it (FP_SSH_HANG_ON in the ssh stub): a
+# stalled link does not return a non-zero code, it holds the session open, and a hang is the only shape
+# these bounds exist for. The harness's own `timeout` is what turns "did not come back" into a reading.
+echo
+echo "   -- a link that never answers, at the very first call:"
+reset; FP_SSH_HANG_ON=true
+run_hang --yes --state-limit 2
+FP_SSH_HANG_ON=""
+[ "$RC" = 2 ] && ok "the run COMES BACK (exit 2) instead of hanging -- the bound is doing the work" \
+               || bad "it exited $RC; 124 means it hung and the harness had to kill it"
+want 'IT DID NOT ANSWER WITHIN 2s' "$OUT" "and it says the host's own bound is what ended it"
+want 'a statement about THIS HOST, not about the phone' "$OUT" "explicitly not a claim about the device"
+want 'zl1-rndis-recover.sh' "$OUT" "and it names the repair that needs no key press -- a stalled link is not a dead phone"
+notwant 'CALLEE' "$(order)" "nothing was run, so nothing was written"
+
+echo
+echo "   -- the same hang later, at a reading whose answer becomes a verdict:"
+# The probe and the boot-id read answer; the download_mode read never does. `--status` is the read-only
+# mode, and it is the one a person runs first -- so the hang lands on the line that decides A.
+reset; FP_SSH_HANG_ON=download_mode
+run_hang --status --state-limit 2
+FP_SSH_HANG_ON=""
+[ "$RC" = 0 ] && ok "--status still answers (exit 0) rather than hanging" || bad "it exited $RC (124 = it hung)"
+want 'A. download_mode: NOT READ' "$OUT" "and A is reported as NOT READ, which is a fact about the host"
+want 'the host gave up on the ssh at 2s' "$OUT" "naming the bound that was hit"
+notwant 'A is treated as NOT met' "$OUT" "NOT as 'the reading is not a shape this script knows' -- the empty-string fall-through it used to land in"
+notwant 'a panic WOULD arm EDL' "$OUT" "and certainly not as an ARMED reading, which would be invented"
+
+echo
+echo "   -- and the keeper reading, where the wrong branch is the dangerous one:"
+# `none*` is the only branch that says C is MET, so anything else says C is NOT met -- including, before
+# this, a host-side timeout. That reads as "step 03 did not work", and the move it invites is re-running
+# step 03 on a boot where it may have worked perfectly.
+reset; FP_SSH_HANG_ON=cmdline
+run_hang --status --state-limit 2
+FP_SSH_HANG_ON=""
+[ "$RC" = 0 ] && ok "--status comes back" || bad "it exited $RC (124 = it hung)"
+want 'C. debug keeper: NOT READ' "$OUT" "C is reported as NOT READ"
+want 'may well have worked' "$OUT" "and it says so, instead of telling the operator to re-run step 03"
+notwant 'C is NOT met' "$OUT" "so the dangerous branch -- 'step 03 did not work' -- is not taken on a non-reading"
+
+echo
+echo "   -- with --yes, the reading after the steps says the same thing, in the archive:"
+reset; FP_SSH_HANG_ON=download_mode
+run_hang --yes --state-limit 2
+FP_SSH_HANG_ON=""
+[ "$RC" = 0 ] && ok "the sequence still completes" || bad "it exited $RC"
+want 'A: NOT READ' "$OUT" "the post-step note says NOT READ, not UNREADABLE-with-a-value-shaped-claim"
+want 'a fact about this machine and NOT a reading' "$OUT" "with the distinction said out loud"
+want 'boot_id: aaaaaaaa-1111' "$(cat "$(latest_archive)/INDEX.txt" 2>/dev/null)" "and the boot-id read (which answered) is in the archive as its real value"
+# The other side of that pair: when the FIRST call is what hangs, the archive still carries a boot id
+# line -- and it must say the read did not happen rather than print a plausible-looking substitute. The
+# old fallback was `unknown-<timestamp>`, which reads as an id nobody could ever match.
+reset; FP_SSH_HANG_ON=true
+run_hang --yes --state-limit 2
+FP_SSH_HANG_ON=""
+OD7c=$(latest_archive)
+[ -z "$OD7c" ] && ok "a run that never reached a step wrote no archive at all (there was nothing to record)" \
+              || bad "it left an archive at $OD7c"
+notwant 'unknown-20' "$OUT" "and nowhere does it print an 'unknown-<timestamp>' as if it were a boot id"
+
+echo
+echo "   -- and the invariant is pinned, so a new call site cannot appear unbounded:"
+# The scenarios above are BEHAVIOURAL -- they hang the device and see whether the run comes back. This is
+# the static half, and it is here because behaviour can only show a path that a scenario happens to take:
+# a fifth direct ssh call added next year would not be covered by anything above unless a scenario drove
+# it. So the ARRAY ITSELF is the thing constrained: `${SSH[@]}` may appear in exactly two places -- the
+# definition of `devssh`, which bounds it, and the one call that hands it to `run_bg`, which also bounds
+# it. The count is asserted rather than the list, so an added occurrence is a red and not a silent pass.
+# (This is doc 131 section 6's "the other harnesses were hand-scanned, and that is not a mechanism",
+# one file over: the scan is now a check that runs every time this harness does.)
+SSHSITES=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null)
+NSITES=$(printf '%s\n' "$SSHSITES" | grep -c . )
+[ "$NSITES" = 2 ] && ok "the subject uses \${SSH[@]} in exactly 2 places, both of them bounded" \
+                  || bad "\${SSH[@]} appears $NSITES times in the shipped runbook -- a new direct call site must be routed through devssh"
+want 'devssh() { bound "$STATE_LIMIT" "${SSH[@]}" "$@"; }' "$SSHSITES" "one is devssh, which bounds it"
+want 'run_bg "${SSH[@]}"' "$SSHSITES" "the other is handed to run_bg, which bounds it too"
+# And the same fact the other way round, which is the one that actually protects: REMOVE the two bounded
+# occurrences and NOTHING may be left. A count alone would pass on a file where the count is right and the
+# lines are different; here the survivor set has to be empty, and it is compared with grep -E rather than
+# with this harness's glob-matching `want` (an anchored or bracketed pattern there matches as a glob).
+LEFT=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null | grep -vE 'devssh\(\)|run_bg "\$\{SSH' || true)
+[ -z "$LEFT" ] && ok "and with those two removed, no \${SSH[@]} call site is left unbounded" \
+              || { bad "these \${SSH[@]} uses are neither devssh nor run_bg -- route them through devssh:"; printf '%s\n' "$LEFT" | sed 's/^/        | /'; }
+
+# ==================================================================================================
+echo
 echo "== 8. the archive: an index of what ran, and checksums that verify =="
 # ==================================================================================================
 reset; run --yes >/dev/null
@@ -825,6 +938,35 @@ if mutate notimeout 's#^    timeout -k 5 "\$STEP_LIMIT" "\$@" &$#    "$@" \&#'; 
 fi
 
 echo
+# The bound on the calls that are NOT steps. Removing it makes the subject HANG where the subject comes
+# back -- which is the only observable a stalled link has, since it produces no exit code and no output.
+# `muthang` therefore runs the mutant under the harness's own kill and asserts the KILL is what ended it.
+muthang() { # mutant, args... -- the mutant, against a device that never answers
+  MUT="$1"; shift
+  : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*
+  MOUT=$(env PATH="$STUB:$MINBIN" FP_SSH_HANG_ON="${FP_SSH_HANG_ON:-true}" \
+         timeout -k 5 "$HANG_KILL" "$BASH_BIN" "$MUT" "$@" 2>&1); MRC=$?
+}
+if mutate nodevbound 's#^devssh() { bound "\$STATE_LIMIT" #devssh() { #'; then
+  reset; FP_SSH_HANG_ON=true
+  muthang "$MUTDIR/nodevbound.sh" --yes --state-limit 2
+  FP_SSH_HANG_ON=""
+  [ "$MRC" = 124 ] && ok "mutation 'no bound on the non-step calls': the run HANGS, and only the harness's own kill ends it (the check is live)" \
+                    || bad "the mutant exited $MRC -- it did not hang, so the bound is not what the scenarios above are measuring"
+fi
+# And the guard that turns "the host gave up" into a token, rather than letting it reach the verdict as an
+# empty string. Without it the reading is empty, falls into the last branch, and is printed as a claim
+# about the phone -- the exact defect this section exists for.
+if mutate notimeouttoken 's#^  gave_up "\$rc" && { printf .TIMEOUT.; return 0; }$#  : #'; then
+  reset; FP_SSH_HANG_ON=download_mode
+  muthang "$MUTDIR/notimeouttoken.sh" --status --state-limit 2
+  FP_SSH_HANG_ON=""
+  [ "$MRC" != 124 ] && ok "mutation 'no timeout token': the run still comes back (the bound itself is untouched)" \
+                    || bad "the mutant hung -- the wrong thing was mutated"
+  want 'A is treated as NOT met' "$MOUT" "mutation 'no timeout token': a host-side timeout is printed as 'A is treated as NOT met' -- a verdict about the phone (the check is live)"
+  notwant 'NOT READ' "$MOUT" "with nothing anywhere saying the phone was never read"
+fi
+
 echo "== 11. the health check cites this harness's count, and that citation cannot drift =="
 # ==================================================================================================
 # The extractor is this family's (docs 110) and deliberately not the obvious one: `grep -oE '[0-9]+'`
