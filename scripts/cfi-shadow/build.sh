@@ -63,20 +63,25 @@ echo "== clang:  $CLANG"
 # and does nothing.
 echo "== shape"
 readelf -hW "$out" | awk '/Machine:/{print "   machine: " $2} /Type:/{print "   type:    " $2}'
-readelf -dW "$out" | grep -q 'SONAME.*libcfi-shadow-init.so' ||
+# Read once, then match the text: every gate below expects its pattern to BE there, and
+# `readelf ... | grep -q PAT` reports the WRITER's SIGPIPE death under this script's `set -o pipefail`
+# -- i.e. "no SONAME" for a library that has one (docs/ubuntu-touch/136).
+dyn="$(readelf -dW "$out")"
+dynsyms="$(readelf --dyn-syms -W "$out")"
+grep -q 'SONAME.*libcfi-shadow-init.so' <<< "$dyn" ||
   { echo "error: no SONAME" >&2; exit 1; }
 # Without DT_INIT_ARRAY the "loaded" constructor never runs and a silent log is ambiguous.
-readelf -dW "$out" | grep -q 'INIT_ARRAY' ||
+grep -q 'INIT_ARRAY' <<< "$dyn" ||
   { echo "error: no DT_INIT_ARRAY -- the constructor would not run" >&2; exit 1; }
 # The interposition is the entire point; if this symbol is not exported the shim does nothing.
-readelf --dyn-syms -W "$out" | grep -q 'GLOBAL .* android_dlopen' ||
+grep -q 'GLOBAL .* android_dlopen' <<< "$dynsyms" ||
   { echo "error: android_dlopen is not exported" >&2; exit 1; }
 # DT_NEEDED must stay empty -- anything listed here would have to exist on the device.
-needed="$(readelf -dW "$out" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')"
+needed="$(sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' <<< "$dyn")"
 [ -z "$needed" ] || { echo "error: unexpected DT_NEEDED: $needed" >&2; exit 1; }
 
 echo "== undefined (must all exist in the target's libc.so.6):"
-readelf --dyn-syms -W "$out" | awk '$7=="UND" && $8!="" {print "   " $8}'
+awk '$7=="UND" && $8!="" {print "   " $8}' <<< "$dynsyms"
 
 ls -l "$out"
 sha256sum "$out"

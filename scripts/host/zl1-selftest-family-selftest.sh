@@ -436,6 +436,150 @@ tr '@' '|' < "$W/scan/commented.raw" > "$W/scan/commented.sh"
   && ok "and a comment that quotes the shape is not the shape" \
   || bad "the scan flags a comment -- then every harness that explains this defect would fail this check"
 
+# --- 7c. the same shape OUTSIDE the harnesses: a CENSUS, not a verdict -----------------------------
+#
+# docs 134 section 7 named this as its boundary -- "the invariant only covers harnesses" -- and left a
+# paragraph saying so. This closes it with a number. It is deliberately a CENSUS and not a demand, and
+# the reason is a measurement (docs 136):
+#
+#   * the two early-exiting readers are NOT equally dangerous. `cmd | head` kills its writer at ANY input
+#     size above one pipe (measured: 19/20, 20/20, 50/50, 30/30 -- head leaves after ONE line, while the
+#     writer is still going). `cmd | grep -q PAT` does not: with a bash-`printf` writer the writer
+#     survives 30/30 runs at 318899 bytes and dies 30/30 at 348899 -- a threshold of about five pipe
+#     capacities, not one.
+#   * and a site only matters where the status is USED. `p=$(cmd | head -1)` is not a verdict: the
+#     substitution's value is what the caller reads, and an unused non-zero status is nothing. What can
+#     be corrupted is the CONDITION form -- `if cmd | grep -q P`, `cmd | grep -q P && ...`, `... || ...`.
+#
+# So this scans for exactly that form, in every non-harness script in the tree that sets pipefail, and
+# requires the per-file counts to be the ones recorded below. It cannot say "this one is dangerous" (the
+# pattern's presence is a property of the DATA, not of the text -- a gate that checks DT_NEEDED is EMPTY
+# is safe by construction, because a reader that finds nothing must read to the end), so it does not
+# pretend to: it says "no site here changed without somebody looking". A number that nothing can see is
+# the defect docs 129 records; a number that is read back and compared is the fix for that.
+VERDICT_RE='(\|[[:space:]]*(grep[[:space:]]+-[A-Za-z]*q|grep[[:space:]]+-[A-Za-z]*-[A-Za-z]*m|head([[:space:]]|$)))[^|]*(&&|\|\|)|(^|[^A-Za-z])(if|while|elif|!)[[:space:]].*\|[[:space:]]*(grep[[:space:]]+-[A-Za-z]*q|head([[:space:]]|$))'
+verdict_sites() { # file -> its matching lines, with prose and comments dropped
+  grep -nE "$VERDICT_RE" "$1" 2>/dev/null \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -vE '^[0-9]+:[[:space:]]*(always|say|echo|printf)[[:space:]]+["'\'']'
+}
+# The second filter is the same rule as section 7b's comment filter, one step over: a line that PRINTS
+# text is prose, and a manual that explains this defect has to quote the shape it forbids. It fired on
+# this change itself -- the paragraph above, added to the health check, was reported as two new sites.
+# Narrow on purpose: a real pipeline inside an \`echo "$(cmd | grep -q P)"\` is not verdict-bearing anyway
+# (the substitution's status is unused), which is the same reason the census only counts the
+# status-carrying form.
+# The census, per file, as measured on 2026-09-24 (docs 136). Every one of them is left alone on purpose
+# and the reason is one of three: the line is inside a string that is SENT TO THE DEVICE (where the
+# device's own sh does not set pipefail, so the shape is inert -- and it is not inert to EDIT them: the
+# first attempt to do that here put three comment lines inside `REMOTE_STATUS='...'`, and the apostrophe
+# in one of them CLOSED the device string and broke the file, which `bash -n` caught); the reader is
+# `head -1` whose writer is a few-hundred-byte listing; or the file is historical stage machinery that
+# no runbook drives any more. The lines this round DID fix are gone from this list, and section 7b
+# forbids them coming back in a harness.
+CENSUS=$(cat <<'CENSUS'
+android-fw-stubs/camera-stack-reset.sh 1
+android-fw-stubs/run-on-device.sh 1
+boot-experiments/retest-v64.sh 1
+boot-experiments/v65-watch-and-boot-production-keeper.sh 4
+boot-experiments/v66-watch-and-boot-guardian.sh 4
+fix-ssh-authorized-keys.sh 1
+flash-boot-image.sh 1
+host-watch-usb0.sh 2
+host/zl1-one-boot-runbook.sh 1
+hybris-shims/build-compat-layer.sh 2
+hybris-shims/build-platform-api-libs.sh 1
+install-netwatch-service.sh 1
+install-repowerd-ordering.sh 1
+make-halium-nonblocking-usb-debug-boot.sh 1
+make-halium-postswitch-debug-boot.sh 4
+measure-link-stability.sh 1
+stage2-rollback-drill.sh 2
+CENSUS
+)
+CENSUS_TOTAL=0
+CENSUS_N=0
+CENSUS_BAD=""
+CENSUS_SEEN=""
+# $HERE is scripts/host, so the tree root is its parent's parent's parent is wrong: go up two levels.
+SCAN_ROOT=$(cd "$HERE/../.." && pwd)
+for f in "$SCAN_ROOT"/scripts/*.sh "$SCAN_ROOT"/scripts/*/*.sh; do
+  [ -f "$f" ] || continue
+  case "$(basename "$f")" in *-selftest.sh) continue ;; esac
+  grep -qE '^set -[a-zA-Z]* *pipefail' "$f" || continue
+  rel="${f#"$SCAN_ROOT"/scripts/}"
+  n=$(verdict_sites "$f" | grep -c . )
+  CENSUS_SEEN="$CENSUS_SEEN$rel
+"
+  [ "${n:-0}" = 0 ] && continue
+  want_n=$(printf '%s\n' "$CENSUS" | awk -v k="$rel" '$1==k{print $2}')
+  CENSUS_TOTAL=$((CENSUS_TOTAL + n))
+  CENSUS_N=$((CENSUS_N + 1))
+  if [ -z "$want_n" ]; then
+    CENSUS_BAD="$CENSUS_BAD
+$rel: $n site(s), NOT in the census -- look at them (a site whose status decides something)"
+  elif [ "$want_n" != "$n" ]; then
+    CENSUS_BAD="$CENSUS_BAD
+$rel: $n site(s) now, $want_n in the census"
+  fi
+done
+# The other direction, and it is the one that rots: a file in the census that no longer has that many
+# sites (fixed, or renamed) is a line in this table that is now a lie.
+while read -r rel want_n; do
+  [ -n "${rel:-}" ] || continue
+  grep -qxF "$rel" <<< "$CENSUS_SEEN" || CENSUS_BAD="$CENSUS_BAD
+$rel: in the census but no longer a pipefail script"
+done <<EOF
+$CENSUS
+EOF
+NPF=$(printf '%s' "$CENSUS_SEEN" | grep -c . )
+[ "$NPF" -ge 20 ] \
+  && ok "the census was taken over $NPF non-harness scripts that set pipefail (a floor of 20, so an empty scan cannot pass)" \
+  || bad "only $NPF non-harness scripts were found to set pipefail -- the scan did not run"
+[ "$CENSUS_N" -ge 8 ] \
+  && ok "of those, $CENSUS_N files carry $CENSUS_TOTAL pipeline(s) whose STATUS decides something (the form that can be corrupted)" \
+  || bad "only $CENSUS_N files carry such a pipeline -- the census extractor matched almost nothing, so it is reporting agreement it cannot have"
+if [ -z "$CENSUS_BAD" ]; then
+  ok "and every one of them is the number the census records -- no site changed without a look"
+else
+  bad "the census and the tree disagree, which is what it exists to notice:"
+  printf '%s\n' "$CENSUS_BAD" | sed 's/^/        | /'
+fi
+# Fixtures. A census that cannot fail is the thing docs 129 is about, so: a file with a NEW site must be
+# reported, and a file with the fixed shape must not be.
+mkdir -p "$W/census"
+cat > "$W/census/new.raw" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+if lsmod @ grep -q '^rndis_host'; then :; fi
+FIX
+tr '@' '|' < "$W/census/new.raw" > "$W/census/new.sh"
+cat > "$W/census/fixed.sh" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+if grep -q '^rndis_host' <<< "$(lsmod)"; then :; fi
+FIX
+[ -n "$(verdict_sites "$W/census/new.sh")" ] \
+  && ok "the census's extractor CATCHES a condition that asks its question through a pipe" \
+  || bad "it did not flag a fixture that has one -- then its 'no site changed' reading means nothing"
+[ -z "$(verdict_sites "$W/census/fixed.sh")" ] \
+  && ok "and it does not flag the here-string form, so the fix is not punished" \
+  || bad "it flags the fixed shape too -- then it is not measuring the defect"
+# And it does not flag the shape where it appears in PROSE. This is not hypothetical: the paragraph this
+# round added to zl1-health-check.sh was reported as two new sites before this filter existed, and a
+# guard that reds on the page that explains it is a guard somebody deletes (section 7b's rule, one step
+# over). The fixture is assembled with `@` for the same reason as the others.
+cat > "$W/census/prose.raw" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+always "the form is: if cmd @ grep -q P then, or cmd @ grep -q P && fail"
+say "and the pipe is the whole defect"
+FIX
+tr '@' '|' < "$W/census/prose.raw" > "$W/census/prose.sh"
+[ -z "$(verdict_sites "$W/census/prose.sh")" ] \
+  && ok "nor does it flag the shape quoted in a PRINTED string (prose about the defect is not the defect)" \
+  || bad "it flagged prose -- then every page that explains this defect would fail the census"
+
 # ==================================================================================================
 echo
 echo "== 8. the citation in the health check is checked by the thing it cites =="

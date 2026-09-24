@@ -60,15 +60,25 @@ echo "== clang:  $CLANG"
 # Each check is a way this could produce a file that loads and does nothing, or worse, does not load.
 echo "== shape"
 readelf -hW "$out" | awk '/Machine:/{print "   machine: " $2} /Type:/{print "   type:    " $2} /Entry point/{print "   entry:   " $4}'
-readelf -dW "$out" 2>/dev/null | grep -q NEEDED &&
+# The output is captured ONCE and matched as text, and for the gates that expect the pattern to
+# BE there that is not a style choice: `readelf ... | grep -q PAT` is a false-verdict generator in
+# this script (it sets pipefail). grep leaves at the first match (that is what -q is for), readelf is
+# still writing, SIGPIPE kills it, and pipefail reports that as the gate's answer -- "no _start
+# symbol" on a binary that has one, i.e. a build that fails for a reason that is not the build.
+# Where the check is "this must NOT be there" the reader has to read to EOF, so the writer never
+# dies; those are safe BY CONSTRUCTION and are converted anyway, so that no reader has to do that
+# reasoning per line. docs/ubuntu-touch/136.
+dyn="$(readelf -dW "$out" 2>/dev/null)"
+sym="$(readelf -sW "$out")"
+grep -q NEEDED <<< "$dyn" &&
   { echo "error: DT_NEEDED is not empty -- this must not depend on a libc" >&2; exit 1; }
-readelf -dW "$out" 2>/dev/null | grep -q INTERP &&
+grep -q INTERP <<< "$dyn" &&
   { echo "error: PT_INTERP is set -- this must not need a dynamic linker" >&2; exit 1; }
-readelf -sW "$out" | grep -q ' _start$' ||
+grep -q ' _start$' <<< "$sym" ||
   { echo "error: no _start symbol" >&2; exit 1; }
-readelf -sW "$out" | grep -q ' service_stub_main$' ||
+grep -q ' service_stub_main$' <<< "$sym" ||
   { echo "error: no service_stub_main symbol" >&2; exit 1; }
-und="$(readelf -sW "$out" | awk '$7=="UND" && $8!="" {print $8}' | sort -u)"
+und="$(awk '$7=="UND" && $8!="" {print $8}' <<< "$sym" | sort -u)"
 [ -z "$und" ] || { echo "error: undefined symbols (there is no libc to resolve them):" >&2; echo "$und" >&2; exit 1; }
 
 echo "== no undefined symbols, no dynamic section: this is a freestanding static binary"
@@ -88,9 +98,10 @@ echo "== no-input-stack.so (LD_PRELOAD instrument for run-camera-test.sh)"
   -Wl,-soname,no-input-stack.so -Wl,--build-id=none \
   -o "$out_noinput" "$here/no-input-stack.c"
 
-readelf -dW "$out_noinput" | grep -q NEEDED &&
+dyn_noinput="$(readelf -dW "$out_noinput")"
+grep -q NEEDED <<< "$dyn_noinput" &&
   { echo "error: DT_NEEDED is not empty -- it must not depend on a libc" >&2; exit 1; }
-readelf -dW "$out_noinput" | grep -q 'SONAME.*\[no-input-stack.so\]' ||
+grep -q 'SONAME.*\[no-input-stack.so\]' <<< "$dyn_noinput" ||
   { echo "error: no SONAME" >&2; exit 1; }
 # Every entry point libis.so.1 would have forwarded, so the LD_PRELOAD really does cover the set.
 for s in android_input_stack_initialize android_input_stack_loop_once android_input_stack_start \

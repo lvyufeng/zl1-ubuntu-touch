@@ -25,15 +25,22 @@ clang --target=aarch64-linux-gnu -shared -fPIC -nostdlib -fno-stack-protector -O
 
 # The replacement must keep the shape the original has: a 128-byte TLS block and an
 # initialiser. Check that, so a silent toolchain change cannot make it useless.
-readelf -lW "$out/libtls-padding.so" | grep -q TLS || { echo "no PT_TLS segment" >&2; exit 1; }
-readelf -dW "$out/libtls-padding.so" | grep -q INIT_ARRAY || { echo "no DT_INIT_ARRAY" >&2; exit 1; }
-readelf -sW "$out/libtls-padding.so" | grep -q "TLS.*tls_padding" || { echo "no tls_padding symbol" >&2; exit 1; }
+# Every gate below expects its pattern to BE there, so `readelf ... | grep -q PAT` would report the
+# WRITER's SIGPIPE death instead of the reader's answer (this script sets pipefail): grep leaves at the
+# first match, readelf is still writing, and the gate says "no tls_padding symbol" for a library that
+# has one (docs/ubuntu-touch/136). Read each output once and match the text.
+prog="$(readelf -lW "$out/libtls-padding.so")"
+dyn="$(readelf -dW "$out/libtls-padding.so")"
+sym="$(readelf -sW "$out/libtls-padding.so")"
+grep -q TLS <<< "$prog" || { echo "no PT_TLS segment" >&2; exit 1; }
+grep -q INIT_ARRAY <<< "$dyn" || { echo "no DT_INIT_ARRAY" >&2; exit 1; }
+grep -q "TLS.*tls_padding" <<< "$sym" || { echo "no tls_padding symbol" >&2; exit 1; }
 # The constructor only reaches the main thread; every thread created later needs the
 # interposer, so a missing pthread_create means the fix silently covers one thread again.
-readelf -sW "$out/libtls-padding.so" | grep -q "FUNC.*pthread_create" || { echo "pthread_create not exported" >&2; exit 1; }
+grep -q "FUNC.*pthread_create" <<< "$sym" || { echo "pthread_create not exported" >&2; exit 1; }
 # ...and it must have no version definition, or a versioned reference from glibc
 # (pthread_create@GLIBC_2.34) would not bind to it and the interposer would never run.
-if readelf -VW "$out/libtls-padding.so" | grep -q "Version definition"; then
+if grep -q "Version definition" <<< "$(readelf -VW "$out/libtls-padding.so")"; then
   echo "the shim is versioned; the interposer would not bind" >&2; exit 1
 fi
 

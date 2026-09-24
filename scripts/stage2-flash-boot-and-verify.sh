@@ -108,7 +108,10 @@ done
 # not always auto-probe. Loading it needs root — a bare `modprobe` returns
 # "Operation not permitted" on this host, which would silently leave usb0
 # missing and make a successful flash look like a failure.
-if ! lsmod | grep -q '^rndis_host'; then
+# Here-strings from here on: this script sets pipefail, and `lsmod | grep -q` reports the writer's
+# death when the pattern IS there -- i.e. "rndis_host is not loaded" on a host that has it
+# (docs/ubuntu-touch/136).
+if ! grep -q '^rndis_host' <<< "$(lsmod)"; then
   sudo -n modprobe rndis_host || log "warning: could not load rndis_host"
 fi
 
@@ -134,7 +137,7 @@ ip link show usb0 >/dev/null 2>&1 || die "usb0 never appeared on the host"
 
 sudo -n ip link set usb0 up || die "cannot bring usb0 up (need passwordless sudo)"
 for a in "${HOST_IPS[@]}"; do
-  ip addr show dev usb0 | grep -q "${a%%/*}" || sudo -n ip addr add "$a" dev usb0
+  grep -q "${a%%/*}" <<< "$(ip addr show dev usb0)" || sudo -n ip addr add "$a" dev usb0
 done
 ip -br addr show usb0 | tee -a "$LOG"
 
@@ -168,7 +171,7 @@ if [[ -n "$http" ]]; then
   # container is really up — never `lxc-ls`, which reports STOPPED here even
   # while the container runs (see docs/ubuntu-touch/17-adaptation-plan.md 1.2).
   for pat in 'lxc-start' 'systemd' 'logd' 'servicemanager'; do
-    if printf '%s' "$http" | grep -q "$pat"; then log "status page mentions: $pat"
+    if grep -q "$pat" <<< "$http"; then log "status page mentions: $pat"
     else log "status page does NOT mention: $pat"; fi
   done
 else

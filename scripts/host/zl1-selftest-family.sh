@@ -91,7 +91,11 @@ for f in "$HARNESS_DIR"/zl1-*selftest.sh; do
     # grep, not [[ =~ ]]: the pattern is the operator's, and an ERE the shell cannot parse must be a
     # refusal, not a silent no-match (a filter that quietly selects nothing looks exactly like a suite
     # where everything is fine).
-    printf '%s\n' "$b" | grep -Eq "$ONLY" || continue
+    # A here-string, not a pipe: this file sets pipefail, and the pattern is EXPECTED to match -- so
+    # `printf ... | grep -q` would report the WRITER's SIGPIPE death, and a harness whose name matched
+    # would be SILENTLY SKIPPED. A skipped harness is a check that cannot fail, in the only guard this
+    # tree has (docs/ubuntu-touch/136, and docs 129 for the family total itself).
+    grep -Eq "$ONLY" <<< "$b" || continue
   fi
   HARNESSES+=("$f")
 done

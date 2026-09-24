@@ -50,12 +50,14 @@ echo "gadget: $gadget (after ${t_gadget}s)"
 
 net_ok="no"; http_ok="no"; container="unknown"; uptime=""
 if [[ "$gadget" == yes ]]; then
-  lsmod | grep -q '^rndis_host' || sudo -n modprobe rndis_host 2>/dev/null
+  # Here-strings from here on: this script sets pipefail, and `lsmod | grep -q` reports the writer's
+  # death when the pattern IS there (docs/ubuntu-touch/136).
+  grep -q '^rndis_host' <<< "$(lsmod)" || sudo -n modprobe rndis_host 2>/dev/null
   for _ in $(seq 1 40); do ip link show usb0 >/dev/null 2>&1 && break; sleep 1; done
   if ip link show usb0 >/dev/null 2>&1; then
     sudo -n ip link set usb0 up 2>/dev/null
     for a in "${HOST_IPS[@]}"; do
-      ip addr show dev usb0 | grep -q "${a%%/*}" || sudo -n ip addr add "$a" dev usb0 2>/dev/null
+      grep -q "${a%%/*}" <<< "$(ip addr show dev usb0)" || sudo -n ip addr add "$a" dev usb0 2>/dev/null
     done
     ok=0
     for ip in "${DEV_IPS[@]}"; do
@@ -77,7 +79,10 @@ if [[ "$gadget" == yes ]]; then
     http_ok="yes"
     printf '%s\n' "$body" > "$OUT_DIR/status-${STAMP}.txt"
     uptime="$(sed -n '/--- uptime ---/{n;p;}' "$OUT_DIR/status-${STAMP}.txt" | tr -d '\r' | awk '{print $1}')"
-    if printf '%s' "$body" | grep -q 'lxc-start' && printf '%s' "$body" | grep -q 'servicemanager'; then
+    # The body is the device's whole status page and this script sets pipefail: a pipeline here would
+    # read a writer's death as "the container is absent", which is the one verdict this trial exists to
+    # report (docs/ubuntu-touch/136).
+    if grep -q 'lxc-start' <<< "$body" && grep -q 'servicemanager' <<< "$body"; then
       container="running"
     else
       container="absent"

@@ -53,13 +53,17 @@ echo "== clang:  $CLANG"
 # Each check below is a way this can silently produce a file that loads and does nothing.
 echo "== shape"
 readelf -hW "$out" | awk '/Machine:/{print "   machine: " $2} /Type:/{print "   type:    " $2}'
-readelf -dW "$out" | grep -q 'SONAME.*crash-dump.so' ||
+# Read once, then match the text: both gates below expect their pattern to BE there, and
+# `readelf ... | grep -q PAT` reports the WRITER's SIGPIPE death under this script's `set -o pipefail`
+# -- i.e. "no SONAME" for a library that has one (docs/ubuntu-touch/136).
+dyn="$(readelf -dW "$out")"
+grep -q 'SONAME.*crash-dump.so' <<< "$dyn" ||
   { echo "error: no SONAME" >&2; exit 1; }
 # Without DT_INIT_ARRAY the handler is never installed and a run that crashes normally looks the
 # same as a run that crashes with this preloaded -- the exact ambiguity this exists to remove.
-readelf -dW "$out" | grep -q 'INIT_ARRAY' ||
+grep -q 'INIT_ARRAY' <<< "$dyn" ||
   { echo "error: no DT_INIT_ARRAY -- the constructor would not run" >&2; exit 1; }
-needed="$(readelf -dW "$out" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')"
+needed="$(sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' <<< "$dyn")"
 [ -z "$needed" ] || { echo "error: unexpected DT_NEEDED: $needed" >&2; exit 1; }
 
 # The undefined set is asserted exactly, not merely listed. Two of the three are the backtrace pair,

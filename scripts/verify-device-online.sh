@@ -45,7 +45,10 @@ if [[ -z "$found" ]]; then
 fi
 log "gadget $RNDIS_VIDPID present"
 
-if ! lsmod | grep -q '^rndis_host'; then
+# Here-strings from here on: this script sets pipefail, and `lsmod | grep -q` reports the writer's
+# death when the pattern IS there -- i.e. "rndis_host is not loaded" on a host that has it
+# (docs/ubuntu-touch/136).
+if ! grep -q '^rndis_host' <<< "$(lsmod)"; then
   sudo -n modprobe rndis_host || log "warning: could not load rndis_host"
 fi
 for _ in $(seq 1 30); do
@@ -66,7 +69,7 @@ ip link show usb0 >/dev/null 2>&1 || { log "FAIL: usb0 never appeared on the hos
 
 sudo -n ip link set usb0 up
 for a in "${HOST_IPS[@]}"; do
-  ip addr show dev usb0 | grep -q "${a%%/*}" || sudo -n ip addr add "$a" dev usb0
+  grep -q "${a%%/*}" <<< "$(ip addr show dev usb0)" || sudo -n ip addr add "$a" dev usb0
 done
 ip -br addr show usb0 | tee -a "$LOG"
 
@@ -96,7 +99,7 @@ fi
 # while the container runs (see docs/ubuntu-touch/17-adaptation-plan.md 1.2).
 if [[ -n "$http" ]]; then
   for pat in 'lxc-start' 'servicemanager' 'logd' 'systemd'; do
-    if printf '%s' "$http" | grep -q "$pat"; then
+    if grep -q "$pat" <<< "$http"; then
       log "status page mentions: $pat"
     else
       log "status page does NOT mention: $pat"
