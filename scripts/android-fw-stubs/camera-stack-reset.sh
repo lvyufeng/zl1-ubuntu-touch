@@ -54,7 +54,10 @@ DIR=/userdata/zl1-fw-stubs
 LOG=$DIR/service-stub.log
 quiet=0
 [ "${1:-}" = "--quiet" ] && quiet=1
-say() { [ "$quiet" = 1 ] || echo "$@"; }
+# `say` is the only thing that writes to stdout. The remote commands' own output goes through it too (the
+# echoes below are the operator's only feedback), which is what makes `--quiet` mean what its usage line
+# says -- and an empty remote output then prints nothing, instead of a blank line.
+say() { [ "$quiet" = 1 ] && return 0; [ -n "$1" ] || return 0; echo "$@"; }
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)
 on_device() { timeout 120 ssh "${SSH_OPTS[@]}" "root@$DEV_HOST" "$@"; }
@@ -66,31 +69,45 @@ case "$model" in
 esac
 
 say "== killing a stale test_camera"
-on_device '
+say "$(on_device '
   p=$(pgrep -x test_camera | head -1)
   [ -n "$p" ] && { kill -9 "$p"; echo "   killed test_camera host pid $p"; } || echo "   no stale test_camera"
-'
+')"
 
 # The provider goes first, so that the cameraserver started below finds it already registered.
 # Restarting it second does work -- cameraserver picks a fresh provider up through
 # CameraProviderManager's onDeviceStatusChanged -- but only after the enumeration below, and the
 # whole point of that wait is to have nothing left to happen afterwards.
 say "== restarting the camera provider (init brings mm-qcamera-daemon back with it)"
-on_device '
+say "$(on_device '
   A=$(lxc-info -n android -pH 2>/dev/null | head -1)
   nsenter -t $A -p -- /system/bin/setprop ctl.restart vendor.camera-provider-2-4
   sleep 3
   nsenter -t $A -p -- pgrep -a -f "camera" | grep -v pgrep | sed "s/^/   up: /"
-'
+')"
 # The provider is not ready when its process appears: it has to start mm-qcamera-daemon and then
 # bring up two cameras, which the HAL does about six seconds apiece (the getCamInfo lines that
 # straddle it). It says so itself, once, when its hwbinder interface is up -- that line is the gate
 # for everything after it.
+# The two waits below ask logcat the same question, thirty times each, and the answer is a whole log
+# buffer -- megabytes of it. So the dump is captured FIRST and matched afterwards, and that is not a
+# style choice: `on_device '<a whole logcat dump>' | grep -q '<the line we want>'` reports the death of
+# the WRITER, not the reader's answer. `grep -q` leaves at the first match (that is what -q is for),
+# which closes the pipe; the dump has not finished writing, so it dies of SIGPIPE; and `set -o pipefail`
+# at the top of this file turns that into "this check failed". The reading is then "the provider has not
+# registered after 90s" on a device whose own log has that line on its FIRST line -- which sends somebody
+# looking for a broken HAL. It is not the rare shape of a race, either: with a dump bigger than a pipe
+# (64 KB) it is every single run. docs/ubuntu-touch/135.
+LOGCAT_DUMP='nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -d -v brief 2>/dev/null'
+PROVIDER_REGISTERED='Registration complete for android.hardware.camera.provider@2.4::ICameraProvider'
+CAMERASERVER_READY='Camera provider legacy/0 ready with 2 camera devices'
+
 say "== waiting for the provider to register its HIDL interface"
 pready=0
+dump=""
 for i in $(seq 1 30); do
-  if on_device 'nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -d -v brief 2>/dev/null' |
-    grep -q 'Registration complete for android.hardware.camera.provider@2.4::ICameraProvider'; then
+  dump="$(on_device "$LOGCAT_DUMP")"
+  if grep -q "$PROVIDER_REGISTERED" <<< "$dump"; then
     pready=1
     break
   fi
@@ -99,11 +116,11 @@ done
 [ "$pready" = 1 ] && say "   provider registered" || say "   provider has not registered after 90s"
 
 say "== restarting cameraserver"
-on_device '
+say "$(on_device '
   A=$(lxc-info -n android -pH 2>/dev/null | head -1)
   nsenter -t $A -p -- /system/bin/setprop ctl.restart cameraserver
   echo "   ctl.restart cameraserver"
-'
+')"
 
 # The wait that this script exists for. A restarted cameraserver is *not* ready when it registers
 # "media.camera": it enumerates the provider afterwards, and the QCamera HAL takes about six seconds
@@ -116,8 +133,8 @@ on_device '
 say "== waiting for cameraserver to enumerate both cameras"
 ready=0
 for i in $(seq 1 30); do
-  if on_device 'nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -d -v brief 2>/dev/null' |
-    grep -q 'Camera provider legacy/0 ready with 2 camera devices'; then
+  dump="$(on_device "$LOGCAT_DUMP")"
+  if grep -q "$CAMERASERVER_READY" <<< "$dump"; then
     ready=1
     break
   fi
@@ -127,12 +144,13 @@ if [ "$ready" = 1 ]; then
   say "   both cameras enumerated"
 else
   say "   cameraserver has not enumerated both cameras after 90s -- a run now would fail to connect"
-  on_device 'nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -d -v brief 2>/dev/null' |
-    grep -aiE 'CameraProvider|camera devices|QCamera' | tail -6 | sed 's/^/   /'
+  # The dump that just failed is the one to read: a second `logcat -d` three seconds later would be a
+  # different question, and a second chance for the writer to be killed mid-answer.
+  grep -aiE 'CameraProvider|camera devices|QCamera' <<< "$dump" | tail -6 | sed 's/^/   /'
 fi
 
 say "== telling the stub the user switched (this also restarts it)"
-"$here/run-on-device.sh" --notify-user-switch 2>&1 | grep -aE 'resolves|refused|no such service' | tail -2 | sed 's/^/   /'
+say "$("$here/run-on-device.sh" --notify-user-switch 2>&1 | grep -aE 'resolves|refused|no such service' | tail -2 | sed 's/^/   /')"
 # Verify it, rather than trusting the message: the event is oneway, and a stub that could not
 # resolve "media.camera" (or that was answered with a local object, which is not something to
 # transact with) exits 1 without anything on the wire. Its own log is the only place that tells the
@@ -142,9 +160,9 @@ say "== telling the stub the user switched (this also restarts it)"
 tail="$(on_device "tail -14 $LOG 2>/dev/null")"
 last_notify="$(printf '%s\n' "$tail" |
   awk '/notifySystemEvent\(EVENT_USER_SWITCHED/{c=NR} {l[NR]=$0} END{for(i=c;i<=NR;i++) print l[i]}')"
-if printf '%s\n' "$last_notify" | grep -q 'sent (oneway)'; then
+if grep -q 'sent (oneway)' <<< "$last_notify"; then
   say "   the user switch was applied"
-elif printf '%s\n' "$last_notify" | grep -q 'no such service'; then
+elif grep -q 'no such service' <<< "$last_notify"; then
   say "   WARNING: cameraserver had not registered media.camera yet -- the event went nowhere,"
   say "            which means every connect() will be refused with 'not currently allowed'"
 else
@@ -152,4 +170,4 @@ else
 fi
 
 say "== clearing the main log buffer"
-on_device 'nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -c && echo "   cleared"'
+say "$(on_device 'nsenter -t $(lxc-info -n android -pH | head -1) -p -- /system/bin/logcat -b main -c && echo "   cleared"')"
