@@ -282,7 +282,7 @@ mkdir -p "$FR/proc/device-tree/soc/qcom,mss@2080000" "$FR/proc/sys/kernel/random
          "$FR/sys/class/net" "$FR/dev/block/bootdevice/by-name" "$FR/lib/firmware" \\
          "$FR/android/vendor" "$FR/android/firmware" "$FR/var/lib/lxc/android/rootfs" 2>/dev/null
 # The rootfs's SYMLINKS, in the shape the port's own rootfs image has them: /vendor -> /android/vendor and
-# /firmware -> /android/firmware (read out of the image with `debugfs stat`). The whole firmware question
+# /firmware -> /android/firmware (read out of the image with \`debugfs stat\`). The whole firmware question
 # on this port turns on that chain, so a fixture whose /vendor is a plain directory would be testing a
 # device that does not exist.
 ln -sfn "$FR/android/vendor" "$FR/vendor"
@@ -314,10 +314,10 @@ printf 'aaaa-bbbb-cccc\n' > "$FR/proc/sys/kernel/random/boot_id"
 printf 'modem\n' > "$FR/sys/bus/msm_subsys/devices/subsys0/name"
 printf 'OFFLINE\n' > "$FR/sys/bus/msm_subsys/devices/subsys0/state"
 : > "$FR/dev/block/bootdevice/by-name/modem"
-# Where the firmware is. `path` = only the KERNEL's built-in list; `cmdfw` = the directory the cmdline
+# Where the firmware is. \`path\` = only the KERNEL's built-in list; \`cmdfw\` = the directory the cmdline
 # names, reached THROUGH the /vendor symlink (the real device shape: the FAT keeps the file one level
-# down, in `image/`); `mnt` = at the mount point but not one level down where the cmdline points;
-# `both` = both places.
+# down, in \`image/\`); \`mnt\` = at the mount point but not one level down where the cmdline points;
+# \`both\` = both places.
 case "\${FAKE_FW:-}" in
 path|both)
   : > "$FR/lib/firmware/modem.mdt"; : > "$FR/lib/firmware/modem.b00"; : > "$FR/lib/firmware/mba.mbn" ;;

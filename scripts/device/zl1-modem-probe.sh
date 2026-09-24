@@ -355,7 +355,13 @@ if [ -n "$HALIUM_FSTAB" ]; then
     "(none: that fstab has no modem or firmware_mnt line -- halium would mount nothing for the modem)" 5
 else
   say "   /var/lib/lxc/android/rootfs/fstab*: NO SUCH FILE. This is the glob halium's mount loop reads,"
-  say "   and an unexpanded glob makes its `cat` fail silently, so THAT LOOP MOUNTED NOTHING THIS BOOT."
+  # The backticks around `cat` are ESCAPED, and it is not cosmetic: this `say` is a double-quoted
+  # string, so an unescaped backtick would COMMAND-SUBSTITUTE -- `cat` with no arguments reads STDIN,
+  # so on the device it would eat the ssh channel and print whatever it swallowed into this probe's
+  # output (measured on 2026-09-24: with a pipe carrying data the sentence came out with the pipe's
+  # contents in the middle of it, and the word `cat` gone). Found by sweeping the whole tree for the
+  # shape after the health check was caught executing its own prose (docs 122).
+  say "   and an unexpanded glob makes its \`cat\` fail silently, so THAT LOOP MOUNTED NOTHING THIS BOOT."
   say "   -> if section 2 says the boot was given a firmware path, that path is a directory nothing"
   say "      created, which is a complete explanation for a modem that never loads. It is a MOUNT, not"
   say "      hardware, and not the modem partition's contents -- which must never be written."

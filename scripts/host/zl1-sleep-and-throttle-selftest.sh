@@ -183,7 +183,7 @@ no-sleep-key)
 esac
 
 # --- section 1, the other half: what the DRIVER has now -------------------------------------------
-# `/sys/module/lpm_levels/parameters/sleep_disabled` -- the corrected reading (docs 121, and the
+# \`/sys/module/lpm_levels/parameters/sleep_disabled\` -- the corrected reading (docs 121, and the
 # calibration that establishes the file is mode 0664 is in
 # docs/ubuntu-touch/evidence/lpm-sleep-disabled-param-2026-09-24.txt). Real shape by default: the
 # directory exists and the parameter reads 1, which is what the cmdline asked for. The scenarios where
@@ -206,7 +206,7 @@ esac
 # The real shape, taken from the DTBs in the boot image: a nested tree with the system cluster at the
 # top, two L2 clusters under it, and the per-CPU levels under each L2 cluster.
 L="$FR/proc/device-tree/soc/qcom,lpm-levels"
-# `mkdir -p "$1"` and not `mkdir -p "$(dirname "$1")"`: this is a device-tree node, so the DIRECTORY is
+# \`mkdir -p "\$1"\` and not \`mkdir -p "\$(dirname "\$1")"\`: this is a device-tree node, so the DIRECTORY is
 # the level and the files go inside it. The first draft created the parent and then wrote into a
 # directory it had never made, which is the fixture failing in a way that would have made section 2
 # report a walk that found nothing -- i.e. a fake device that quietly tests the ABSENCE of the thing the

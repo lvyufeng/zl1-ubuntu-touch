@@ -331,6 +331,98 @@ else
   bad "these named harnesses cannot check their own citation:$n_missing"
 fi
 
+# --- 4e. the other way a script runs something it did not mean to run: PROSE -------------------------
+#
+# `zl1-health-check.sh` was found on 2026-09-24 executing fragments of its own manual, seven times: it
+# prints its prose with `always "..."`, and BACKTICKS INSIDE A DOUBLE-QUOTED STRING ARE COMMAND
+# SUBSTITUTION. The symptoms were all silent in stdout -- a phrase lost a character, a whole printed
+# line lost its tail, `nsenter -m -- test` and `systemctl --user status` ran as commands on the host, and
+# `` `: > file` `` left a file in the repository root. Sweeping the tree for the same shape then found a
+# REAL one on the DEVICE side, in `zl1-modem-probe.sh`: its `say` line about an unexpanded glob ran `cat`
+# with no arguments, which reads STDIN -- measured with a pipe carrying data, the sentence came out with
+# the pipe's contents in the middle of it and the word `cat` gone.
+#
+# The scanner is a small quoting state machine rather than a grep for a backtick, and that distinction
+# is the whole check: this tree contains FOUR legitimate forms that a naive grep reports as defects --
+# a QUOTED heredoc (`<<'EOF'`, which expands nothing), a quoted heredoc whose prose additionally carries
+# `$`-expansions, a backtick inside a SINGLE-quoted grep pattern nested in `$( )` inside a double-quoted
+# string, and an already-escaped `\``. Each of the six fixtures below is asserted, so the scanner's
+# answer on both kinds is a reading rather than a hope -- and the four silent ones are what stop the
+# check from being switched off by its own noise.
+PROSE_AWK="$W/prose.awk"
+cat > "$PROSE_AWK" <<'AWKEOF'
+function scan(line,   n,i,c,cur,hit,stack,rest,tok) {
+  n=length(line); i=1; hit=0; cur="N"
+  while (i <= n) {
+    c = substr(line, i, 1)
+    if (cur == "N") {
+      if (c == "\\") { i += 2; continue }
+      if (c == "\047") { cur="S"; i++; continue }
+      if (c == "\"") { cur="D"; i++; continue }
+      if (c == "#" && (i == 1 || substr(line, i-1, 1) ~ /[ \t;(|&]/)) return hit
+      if (c == "<" && substr(line, i+1, 1) == "<") {
+        rest = substr(line, i)
+        if (match(rest, /<<[-]?["\047]?[A-Za-z_][A-Za-z0-9_]*/)) {
+          tok = substr(rest, RSTART, RLENGTH)
+          HDQ = (tok ~ /["\047]/)
+          sub(/^<<[-]?["\047]?/, "", tok)
+          HSTART = tok
+          return hit
+        }
+      }
+      if (c == "$" && substr(line, i+1, 1) == "(") { stack=stack "N"; cur="N"; i += 2; continue }
+      if (c == ")" && length(stack) > 0) { cur=substr(stack, length(stack)); stack=substr(stack, 1, length(stack)-1) }
+    } else if (cur == "S") {
+      if (c == "\047") cur="N"
+    } else {
+      if (c == "\\") { i += 2; continue }
+      if (c == "\"") cur="N"
+      else if (c == "`") hit=1
+      else if (c == "$" && substr(line, i+1, 1) == "(") { stack=stack "D"; cur="N"; i += 2; continue }
+    }
+    i++
+  }
+  return hit
+}
+{ line=$0; HSTART=""
+  if (hd != "") {
+    if (line == hd) { hd=""; next }
+    if (hdq) next
+    if (line !~ /\\`/ && line ~ /`/) printf "%s:%d:%s\n", FILENAME, FNR, line
+    next
+  }
+  if (line ~ /^[ \t]*#/) next
+  h = scan(line)
+  if (HSTART != "") { hd=HSTART; hdq=HDQ; next }
+  if (h) printf "%s:%d:%s\n", FILENAME, FNR, line
+}
+AWKEOF
+prose_hits() { find "$1" -name '*.sh' 2>/dev/null | sort | while read -r f; do awk -f "$PROSE_AWK" "$f"; done; }
+
+# The fixtures: the two shapes that execute, and the four that do not.
+FIX="$W/prose"; rm -rf "$FIX"; mkdir -p "$FIX"
+printf '%s\n' 'echo "its `cat` fail silently"'                        > "$FIX/bad1.sh"
+printf '%s\n' 'cat > /tmp/x <<EOF' '# a comment with `cat` in it' 'EOF' > "$FIX/bad2.sh"
+printf '%s\n' "cat > /tmp/x <<'EOF'" '# a comment with `cat` in it' 'EOF' > "$FIX/good1.sh"
+printf '%s\n' 'echo "wrote $(grep -c '"'"'^| `'"'"' "$OUT") images"'  > "$FIX/good2.sh"
+printf '%s\n' 'echo "an escaped \`cat\` is prose"'                     > "$FIX/good3.sh"
+printf '%s\n' '# a top-level comment with `cat` in it'                 > "$FIX/good4.sh"
+FIXC=$(prose_hits "$FIX" | sed 's/.*\///' | cut -d: -f1 | sort | tr '\n' ' ')
+if [ "$FIXC" = "bad1.sh bad2.sh " ]; then
+  ok "the prose scanner catches both executing shapes and spares all four that only look like them"
+else
+  bad "the prose scanner's fixtures disagree with it: it reported '$FIXC' (wanted 'bad1.sh bad2.sh ')"
+fi
+
+TREE_HITS=$(prose_hits "$ROOT/scripts")
+N_TREE=$(printf '%s\n' "$TREE_HITS" | grep -c . )
+if [ "${N_TREE:-0}" = 0 ]; then
+  ok "no script in the tree executes its own prose -- no unescaped backtick in a printed string or an unquoted heredoc"
+else
+  bad "$N_TREE line(s) in the tree run a command the author meant as prose:"
+  printf '%s\n' "$TREE_HITS" | sed 's/^/        | /' | head -10
+fi
+
 # --- 5. this harness's own citation in the health check ------------------------------------------
 
 echo

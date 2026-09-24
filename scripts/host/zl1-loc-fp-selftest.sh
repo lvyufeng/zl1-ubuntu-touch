@@ -169,14 +169,14 @@ case "\$*" in
   cat "$W/props/\$k" 2>/dev/null ;;
 *"service list"*) cat "$W/services.txt" 2>/dev/null ;;
 *"logcat"*)
-  # `nsenter -t A -p -m -- /system/bin/logcat -d -v brief`: the container's log, from the fixture.
+  # \`nsenter -t A -p -m -- /system/bin/logcat -d -v brief\`: the container's log, from the fixture.
   # Without this case the stub answered nothing, so the probe's whole logcat block read an EMPTY dump:
   # every count in it was 0 in every scenario while the pattern LABELS still printed -- which is how
   # the old check ("it counts the caller's line") passed. A table of zeros with the right names in it
   # is exactly the shape this project keeps finding, so the fixture is now actually delivered.
   cat "$W/logcat.txt" 2>/dev/null ;;
 *"lshal"*)
-  # `nsenter ... -- lshal`: the same, for the HIDL service list.
+  # \`nsenter ... -- lshal\`: the same, for the HIDL service list.
   cat "$W/lshal.txt" 2>/dev/null ;;
 esac
 exit 0

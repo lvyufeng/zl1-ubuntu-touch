@@ -141,7 +141,7 @@ emit "s|\${p#/proc/}|\${p#$FR/proc/}|g"
 
 cat > "$STUB/ssh" <<EOF
 #!/bin/sh
-# ONE line per call: the commands this script sends are multi-line shell programs, and `printf '%s\n'`
+# ONE line per call: the commands this script sends are multi-line shell programs, and \`printf '%s\n'\`
 # would put their bodies on their own lines -- where \`grep '^ssh '\` cannot see them, which is every
 # assertion in this file that reads an ssh command.
 printf 'ssh %s\n' "\$(printf '%s' "\$*" | tr '\n' ' ')" >> "$ACT"
@@ -153,7 +153,7 @@ done
 case "\$*" in true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;; esac
 cmd=\$(printf '%s' "\$*" | sed -f "$W/paths.sed")
 # FP_STUB_PATH exists so the "this device has no timeout(1)" branch can be RUN rather than read: with a
-# PATH of our own we decide whether `command -v timeout` succeeds, which is the whole branch condition.
+# PATH of our own we decide whether \`command -v timeout\` succeeds, which is the whole branch condition.
 exec env PATH="\${FP_STUB_PATH:-$STUB:\$PATH}" FP_STATE="\${FP_STATE:-present}" sh -c "\$cmd"
 EOF
 
@@ -162,8 +162,8 @@ EOF
 cat > "$STUB/scp" <<EOF
 #!/bin/sh
 printf 'scp %s\n' "\$*" >> "$ACT"
-# `-o NAME=VALUE` is TWO argv entries and only the first begins with a dash, so a filter that skips
-# "anything starting with -" still leaves `BatchMode=yes` in the list -- and then the pair it takes as
+# \`-o NAME=VALUE\` is TWO argv entries and only the first begins with a dash, so a filter that skips
+# "anything starting with -" still leaves \`BatchMode=yes\` in the list -- and then the pair it takes as
 # src/dst is two option values, the copy fails, and every device step reports "could not copy". The
 # option's VALUE has to be skipped with it.
 args=""; skip=0
