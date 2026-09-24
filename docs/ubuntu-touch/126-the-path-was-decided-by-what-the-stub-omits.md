@@ -90,10 +90,13 @@ if (atoi(api_level) <= 27) ... else ...
 **因为那个常量被用在两个会写设备的地方。** 安装脚本里原来有：
 
 ```sh
-REL=/system/users/0/fpdata       # the <= 27 branch, which is where biometryd lands on this port
+REL=/system/users/0/fpdata
 ```
 
-`--install` 用它打印"将要创建哪一个"、`--remove` 用它打印"要撤销哪一个"。也就是说：**一次照着它执行的
+（`git show e259cc4^:scripts/install-fingerprint-store-dir.sh:98`，逐字。**这一行原本没有注释**——
+理由不在代码旁边，而在两篇文档里，这也是它没被复核过的原因之一。）
+
+`--install` 用它打印"将要创建哪一个"（`:440` 那一处）、`--remove` 用它打印"要撤销哪一个"（`:492`）。也就是说：**一次照着它执行的
 安装会创建 `/data/vendor_de/0/fpdata` 之外的另一个目录**（`--install` 的 applier 是运行时推导的，所以真正
 被创建的是**对**的那个；但 `--remove` 打印的 undo、以及 `--install` 显示给操作者的那条路径，都是**错**的
 那一个）。一个 undo 指着一条从未被创建的路径，就是"看起来像一次干净回退，其实什么都没退"。
