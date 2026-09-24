@@ -242,6 +242,37 @@ unknown_markers() {
   sed -n 's/CALLEE \([A-Z0-9]*\) args=.*/\1/p' "$ACT" 2>/dev/null | sort -u | grep -vxE "$CALLEE_NAMES" | tr '\n' ' '
 }
 
+# --- step 03's HOST-side preconditions, as a fixture -------------------------------------------------
+#
+# The runbook now refuses BEFORE step 01 when the heat chain could not start -- its first move is
+# `install-netwatch-service.sh --yes --ssh`, which refuses by name unless it has a verified misc backup
+# and a build carrying `ensure_addrs()`. Those are files on the HOST, and the subject READS their paths
+# out of that installer rather than repeating them (a second copy of a path is a second thing that can
+# go stale). So the harness has to provide the installer, and it must provide it with the FORM the reader
+# expects (`MISC_IMG="$MISC_OUT/misc.img"`) -- a fixture in a different form would exercise the
+# "extraction matched nothing" branch and prove nothing about the READY path.
+#
+# This is a fixture and not the real installer ON PURPOSE: pointing the subject at the real one would
+# make every scenario's verdict a statement about THIS laptop, and the ready/broken branches could not
+# both be driven.
+NWF="$W/fake-repo/scripts/install-netwatch-service.sh"
+mkdir -p "$(dirname "$NWF")"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# fixture for the harness: the same three variable FORMS the real installer uses\n'
+  printf 'MISC_OUT="%s"\n' "$W/fake-misc"
+  printf 'MISC_IMG="$MISC_OUT/misc.img"\n'
+  printf 'SRC="%s"\n' "$W/fake-src/zl1-netwatch.sh"
+} > "$NWF"
+mkdir -p "$W/fake-misc" "$W/fake-src"
+host_fixture_ok() { # the state every scenario starts from: a host that CAN run step 03
+  rm -rf "$W/fake-misc"; mkdir -p "$W/fake-misc"
+  head -c 262144 /dev/zero > "$W/fake-misc/misc.img"
+  ( cd "$W/fake-misc" && sha256sum misc.img > SHA256SUMS )
+  printf '#!/bin/sh\nensure_addrs() { :; }\n' > "$W/fake-src/zl1-netwatch.sh"
+}
+host_fixture_ok
+
 # --- the rewritten subject -------------------------------------------------------------------------
 SRC="$HERE/zl1-one-boot-runbook.sh"
 RB="$W/fake-repo/scripts/host/zl1-one-boot-runbook.sh"
@@ -268,6 +299,13 @@ for pair in "$CAL/host/zl1-post-recovery-capture.sh:scripts/host/zl1-post-recove
   grep -qF "$pat" "$RB" || { echo "the rewrite to '$pat' did not land" >&2; exit 2; }
   [ -f "$REPO/$rel" ] || { echo "the callee $rel does not exist in the tree" >&2; exit 2; }
 done
+# The new precondition fixture is cross-checked the same way: the FORM the reader parses has to be the
+# form the real installer writes, or this fixture proves nothing about the real thing.
+grep -q '^MISC_IMG="\$MISC_OUT/misc.img"$' "$NWF" || { echo "the fixture's MISC_IMG form changed" >&2; exit 2; }
+grep -q '^MISC_IMG="\$MISC_OUT/misc.img"$' "$REPO/scripts/install-netwatch-service.sh" \
+  || { echo "the REAL installer no longer writes MISC_IMG in the form the runbook parses -- the reader is now checking nothing" >&2; exit 2; }
+grep -q '^MISC_OUT="' "$REPO/scripts/install-netwatch-service.sh" || { echo "the real installer has no MISC_OUT=" >&2; exit 2; }
+grep -q '^SRC="'    "$REPO/scripts/install-netwatch-service.sh" || { echo "the real installer has no SRC=" >&2; exit 2; }
 
 # The subject derives its repo root from its own location, so -- rewritten under $W/fake-repo -- its
 # archives land there. One helper, because the nested substitutions this replaces were both wrong AND
@@ -522,6 +560,83 @@ want 'INTERRUPTED' "$(cat "$OD3/INDEX.txt" 2>/dev/null)" "and the index says so"
 ( cd "$OD3" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) \
   && ok "and the partial archive verifies -- a handler that writes into a step's file breaks this" \
   || bad "the partial archive fails its own sha256sum -c"
+
+# ==================================================================================================
+echo
+echo "== 9b. the HOST's own precondition: a broken host refuses BEFORE step 01 =="
+# ==================================================================================================
+# Why this section exists: a refusal at step 03 costs the two steps before it, and the boot is the one
+# thing here that cannot be re-run. So the check belongs before 01, and it has to be provable in BOTH
+# directions -- a host that can run step 03 must proceed, and a host that cannot must refuse with NO
+# callee having run at all.
+host_fixture_ok
+run --status
+want "step 03's preconditions hold" "$OUT" "--status: with a good host it says so"
+run --yes
+want "host check: step 03's preconditions hold" "$OUT" "and the run prints the same line before step 01"
+want 'CALLEE CAPTURE' "$(cat "$ACT")" "with a good host the sequence still runs"
+
+echo
+echo "   -- the misc backup is gone:"
+host_fixture_ok; rm -f "$W/fake-misc/misc.img"
+run --status
+want "step 03 CANNOT start on this host" "$OUT" "--status reports it as a refusal, before anything is run"
+run --yes
+[ "$RC" = 2 ] && ok "the run exits 2" || bad "the run exited $RC"
+want 'REFUSING, before anything ran' "$OUT" "and it says so before step 01"
+want 'the misc backup step 03 requires is missing or empty' "$OUT" "naming the file it looked for"
+want "$W/fake-misc/misc.img" "$OUT" "by its full path"
+[ -z "$(order)" ] && ok "and NO step ran at all" || { bad "a step ran anyway: $(order)"; }
+notwant 'CALLEE' "$(cat "$ACT")" "the device was not asked to do anything"
+# What IS true about the archive: the outdir is created before the check (so the boot_id is on record),
+# and it must hold no INDEX -- a directory with no index is "the run stopped before step 01", which is
+# exactly the claim, and asserting the stronger "nothing was created" would be asserting something false.
+arc=$(latest_archive)
+[ -n "$arc" ] && [ ! -f "$arc/INDEX.txt" ] && ok "and the archive has no INDEX.txt -- the run stopped before step 01" \
+  || bad "the archive looks like a completed run: ${arc:-<none>}"
+
+echo
+echo "   -- the backup is there but is not the image it claims to be:"
+host_fixture_ok
+printf 'not the same bytes\n' >> "$W/fake-misc/misc.img"
+run --yes
+[ "$RC" = 2 ] && ok "a backup that fails its own SHA256 is a refusal, not a warning" || bad "it exited $RC"
+want 'FAILS its recorded SHA256' "$OUT" "and the reason is the hash, not the file's existence"
+[ -z "$(order)" ] && ok "and again no step ran" || bad "a step ran: $(order)"
+
+echo
+echo "   -- the build step 03 would deploy has no ensure_addrs():"
+host_fixture_ok
+printf '#!/bin/sh\nnothing_useful() { :; }\n' > "$W/fake-src/zl1-netwatch.sh"
+run --yes
+[ "$RC" = 2 ] && ok "a build that cannot configure the addresses is a refusal" || bad "it exited $RC"
+want 'has no ensure_addrs()' "$OUT" "and it says which property of the file is missing"
+[ -z "$(order)" ] && ok "and no step ran" || bad "a step ran: $(order)"
+
+echo
+echo "   -- skipping 03 must still be possible on a broken host (it is a host problem, not a device one):"
+host_fixture_ok; rm -f "$W/fake-misc/misc.img"
+run --yes --skip 03-heat-chain
+[ "$RC" != 2 ] && ok "with 03 skipped the run is not refused (exit $RC)" || bad "it refused even though 03 was skipped"
+notwant 'REFUSING, before anything ran' "$OUT" "and it does not print the refusal"
+want 'CALLEE CAPTURE' "$(cat "$ACT")" "the other steps run"
+
+echo
+echo "   -- the reader reads the INSTALLER, so a form it does not know is reported, never passed:"
+host_fixture_ok
+printf 'MISC_OUT="%s"\nMISC_IMG="${MISC_OUT}/misc.img"\nSRC="%s"\n' "$W/fake-misc" "$W/fake-src/zl1-netwatch.sh" > "$NWF"
+run --yes
+[ "$RC" = 2 ] && ok "a MISC_IMG form the reader does not parse is a refusal" || bad "it exited $RC -- an unparsed path was treated as a pass"
+want 'the MISC_OUT/MISC_IMG form it uses is not the one this reads' "$OUT" "and the message says the extraction is what failed, not the backup"
+[ -z "$(order)" ] && ok "and no step ran" || bad "a step ran: $(order)"
+# restore the form the reader knows, so nothing after this section inherits the odd one
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'MISC_OUT="%s"\n' "$W/fake-misc"
+  printf 'MISC_IMG="$MISC_OUT/misc.img"\n'
+  printf 'SRC="%s"\n' "$W/fake-src/zl1-netwatch.sh"
+} > "$NWF"
+host_fixture_ok
 
 # ==================================================================================================
 echo

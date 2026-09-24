@@ -309,6 +309,69 @@ wanted() { # is this step in the set this run will execute?
   return 0
 }
 
+# --- the HOST's read on whether step 03 can run at all ---------------------------------------------
+#
+# Section 0 answers "is there a device". This answers the other half, and it is the half this script was
+# missing: **is there still a host?** Step 03 is the heat chain, and its FIRST move is
+# `install-netwatch-service.sh --yes --ssh`, which refuses BY NAME unless it has a verified misc backup
+# (`misc.img` non-empty, a `SHA256SUMS` beside it, and that hash still matching) and a source build that
+# carries `ensure_addrs()`. Those are files on THIS machine, on a path that nothing in this runbook
+# touches -- so a missing or stale one is invisible until step 03 refuses, and by then 01 and 02 have
+# already run: the boot is half spent and the heat half is gone, on a boot that a finger paid for.
+#
+# **It is a reading, not an assumption.** The paths and the `ensure_addrs()` rule are READ OUT OF THE
+# INSTALLER (`install-netwatch-service.sh`) rather than repeated here, because a second copy of a path
+# is a second thing that can go stale -- that is docs 126's lesson one file over. If the extraction finds
+# nothing, that is REPORTED as an unusable check, never as a pass: an extractor that silently matches
+# nothing is the "check that cannot fail" shape this tree keeps finding.
+HOST_MISC_IMG=""; HOST_MISC_SUMS=""
+NW="$HERE/../install-netwatch-service.sh"
+if [ -r "$NW" ]; then
+  HOST_MISC_OUT=$(sed -n 's/^MISC_OUT="\(.*\)"$/\1/p' "$NW" | head -1)
+  # MISC_IMG is written in the installer as `"$MISC_OUT/misc.img"`, so the FILE TEXT is not a path -- it
+  # is a path EXPRESSION, and the first version of this read it back verbatim and got the literal
+  # `$MISC_OUT/misc.img`. (Measured, by running that sed against the real installer.) So the two halves
+  # are read separately and the FORM is required: directory from MISC_OUT, basename from the part of
+  # MISC_IMG after `$MISC_OUT/`. A different form matches nothing and is reported below as an unusable
+  # check rather than passed.
+  _img=$(sed -n 's|^MISC_IMG="\$MISC_OUT/\(.*\)"$|\1|p' "$NW" | head -1)
+  HOST_MISC_IMG=$([ -n "$_img" ] && [ -n "$HOST_MISC_OUT" ] && echo "$HOST_MISC_OUT/$_img")
+  HOST_MISC_SUMS=$([ -n "$HOST_MISC_OUT" ] && echo "$HOST_MISC_OUT/SHA256SUMS")
+  HOST_NW_SRC=$(sed -n 's/^SRC="\(.*\)"$/\1/p' "$NW" | head -1)
+fi
+# Returns 0 when step 03 can start; otherwise it prints the reasons, one per line.
+host_for_step03() {
+  local bad=0
+  if [ ! -r "$NW" ]; then
+    echo "cannot read $NW, so the preconditions of step 03 cannot be read either"
+    return 1
+  fi
+  if [ -z "$HOST_MISC_IMG" ] || [ -z "$HOST_MISC_SUMS" ]; then
+    echo "the misc-backup paths could not be read out of $NW (the MISC_OUT/MISC_IMG form it uses is not the one this reads)"
+    bad=1
+  else
+    [ -s "$HOST_MISC_IMG" ] || { echo "the misc backup step 03 requires is missing or empty: $HOST_MISC_IMG"; bad=1; }
+    if [ -z "$HOST_MISC_SUMS" ] || [ ! -f "$HOST_MISC_SUMS" ]; then
+      echo "no SHA256SUMS beside it, so the backup cannot be shown to be the image it claims to be: $HOST_MISC_SUMS"
+      bad=1
+    elif [ -s "$HOST_MISC_IMG" ]; then
+      ( cd "$(dirname "$HOST_MISC_IMG")" && sha256sum -c "$(basename "$HOST_MISC_SUMS")" >/dev/null 2>&1 ) \
+        || { echo "the misc backup FAILS its recorded SHA256: $HOST_MISC_IMG (not the image it claims to be)"; bad=1; }
+    fi
+  fi
+  if [ -z "${HOST_NW_SRC:-}" ]; then
+    echo "the netwatch source path could not be read out of $NW"
+    bad=1
+  elif [ ! -r "$HOST_NW_SRC" ]; then
+    echo "the netwatch build step 03 deploys is missing: $HOST_NW_SRC"
+    bad=1
+  elif ! grep -q '^ensure_addrs()' "$HOST_NW_SRC"; then
+    echo "$HOST_NW_SRC has no ensure_addrs(), so deploying it would change nothing and 03 would refuse: $HOST_NW_SRC"
+    bad=1
+  fi
+  [ "$bad" = 0 ]
+}
+
 # --- --status: the plan AND the live state of the three prerequisites ------------------------------
 # Read-only, and it answers the one question a person with a booted phone actually has: what is left to
 # do on THIS boot? An installer already installed reads as installed, so re-running the sequence is
@@ -345,6 +408,13 @@ if [ "$MODE" = status ]; then
   esac
   say "  B. cpuidle counters: not checked here -- the trial reads them itself, and UNREADABLE IS NOT ZERO."
   say
+  if wanted 03-heat-chain; then
+    HOST_BAD=$(host_for_step03) \
+      && say "  host: step 03's preconditions hold (misc backup verifies, the build carries ensure_addrs())" \
+      || { say "  host: step 03 CANNOT start on this host -- the run will refuse before step 01:"; \
+           printf '%s\n' "$HOST_BAD" | sed 's/^/        * /'; }
+    say
+  fi
   say "  Nothing was written. To run it:   $0 --yes"
   say "  To also run the trial's write:   $0 --yes --apply-trial   (a decision, not a reading)"
   exit 0
@@ -362,6 +432,21 @@ say "  device:  $HOST (serial $DEV)"
 say "  boot_id: $BOOT_ID"
 say "  outdir:  $OUT"
 say
+
+# The host's own precondition, checked BEFORE step 01 -- see host_for_step03(). Refusing here costs
+# nothing; refusing at step 03 costs the two steps before it.
+if wanted 03-heat-chain; then
+  HOST_BAD=$(host_for_step03) || {
+    say "REFUSING, before anything ran: step 03 (the heat chain) cannot start on THIS HOST."
+    printf '%s\n' "$HOST_BAD" | sed 's/^/  * /'
+    say
+    say "  Nothing was run and nothing was written. This is not a device problem, and the boot is"
+    say "  untouched -- fix the host, or run the rest without that step:"
+    say "      $0 --yes --skip 03-heat-chain"
+    exit 2
+  }
+  say "-- host check: step 03's preconditions hold (misc backup verifies, the build carries ensure_addrs())"
+fi
 
 # One step = one archive entry + one note that is a DEVICE READING, not the step's exit code. It also
 # records the step in EXECUTION ORDER, which is checked against STEPS at the end -- see the note there.

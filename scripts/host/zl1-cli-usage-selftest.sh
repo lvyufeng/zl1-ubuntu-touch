@@ -301,6 +301,35 @@ else
   find "$ROOT/scripts" -name '*.sh' ! -perm -u+x 2>/dev/null | sed 's/^/        | /' | head -10
 fi
 
+# (d) A Markdown table row that never closes is a row that renders and is still wrong. Three rows of
+# `scripts/README.md`'s script table ended with their content and no final `|` (the runbook's, the
+# capture-selftest's, the fp-store-dir's), which GFM accepts because leading and trailing pipes are
+# optional -- so the table looked fine while three rows were spelled differently from the other twenty.
+# The rule here is the shape, not the count: every row of that table closes with a pipe. A row whose
+# prose contains a `|` inside code (e.g. `tr | grep | sed`) still ends with one, so this does not
+# confuse content with structure.
+README_TABLE_BAD=""
+for f in "$ROOT/scripts/README.md" "$ROOT/README.md"; do
+  [ -r "$f" ] || continue
+  # Only the script tables: a line that starts with `| ` and is followed by content. Blank lines and
+  # anything outside a table are skipped by construction.
+  # `substr` rather than a regex: the first draft used `/^\| /` and `/\/|[[:space:]]*$/`, and in an awk
+  # ERE `\|` is not the pipe -- the pattern matched unrelated lines and reported README.md:79, a bullet
+  # list entry with no pipe in it at all. A check whose pattern is wrong reports the wrong file, which
+  # is worse than reporting nothing: it sends the reader to a line that is fine.
+  n=$(awk 'substr($0,1,2)=="| " && substr($0,length($0))!="|" { print NR }' "$f" | tr '\n' ' ')
+  # The path relative to the repo, not the basename: BOTH files are called README.md, and the first
+  # draft printed `basename`, so a defect in scripts/README.md was reported as `README.md:79` -- a line
+  # number in the WRONG file. A report that names the wrong file is the same defect as a report that
+  # names the wrong process (docs 103), and it cost a real minute here.
+  [ -n "$n" ] && README_TABLE_BAD="$README_TABLE_BAD${f#"$ROOT"/}:$n "
+done
+if [ -z "$README_TABLE_BAD" ]; then
+  ok "every table row in the READMEs closes with a pipe (no half-closed rows)"
+else
+  bad "table row(s) that do not close with a pipe: $README_TABLE_BAD"
+fi
+
 # --- 4d. the same rule, one level up: the health check's number for a harness ------------------------
 #
 # The health check names each harness WITH a hand-typed check count, and docs 110 records that one of

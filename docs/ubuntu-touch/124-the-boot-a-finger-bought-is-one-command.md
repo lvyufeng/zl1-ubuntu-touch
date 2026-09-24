@@ -21,8 +21,8 @@
 | 顺序为什么是被强制的？ | 因为每一步的下游都有一步**拒绝**在前面：01 必须最先，因为 03 会杀掉 01 要读的 keeper 的 pid 和 ticks；02 和 03 必须早于 05，因为它们各自武装 05 的一道门 |
 | 它比手打多做什么？ | **每一步做完之后，从设备上重读下一步的前置条件**：02 之后读 `download_mode`，03 之后读 keeper 是否还在。在 05 才发现 A 或 C 根本没动，是在**唯一那个 boot 的末尾**才发现的 |
 | `--apply-trial` 是什么？ | **一个单独的开关。**它把第 05 步从 `--status` 升级成那次**写入**（写 SoC 的电源参数）。`--yes` **不**蕴含它，而且**除非 02 在同一次调用里真的跑了，它会被拒绝** |
-| 离线验证？ | `zl1-one-boot-runbook-selftest.sh` **95 检查 / 0 失败**；四个 callee 是**会记录调用的替身**（各自有自己的 harness），另外它自己的被测对象还断言"声明的步骤表和实际执行顺序一致" |
-| 家族全量跑呢？ | **18 个 harness / 1979 检查 / 全绿**（本页写完时是 1967；[`125`](125-the-device-read-those-four-things-already.md) 之后 runbook harness 90 → 95；[`126`](126-the-path-was-decided-by-what-the-stub-omits.md) 之后 loc-fp 195 → 200、fp-store-dir 131 → 137，即 **1990**） |
+| 离线验证？ | `zl1-one-boot-runbook-selftest.sh` **95 检查 / 0 失败**（→ 现在是 **118**，见 [`127`](127-the-host-can-also-be-the-thing-that-is-missing.md)：它现在还拒绝一个"宿主不齐备"的机器）；四个 callee 是**会记录调用的替身**（各自有自己的 harness），另外它自己的被测对象还断言"声明的步骤表和实际执行顺序一致" |
+| 家族全量跑呢？ | **18 个 harness / 1979 检查 / 全绿**（本页写完时是 1967；[`125`](125-the-device-read-those-four-things-already.md) 之后 runbook harness 90 → 95；[`126`](126-the-path-was-decided-by-what-the-stub-omits.md) 之后 loc-fp 195 → 200、fp-store-dir 131 → 137，即 **1990**；[`127`](127-the-host-can-also-be-the-thing-that-is-missing.md) 之后 runbook harness 95 → 118、meta-harness 124 → 125，即 **2014**） |
 | 动设备了吗？ | **没有。**这条命令**从来没有在设备上跑过**；设备仍在 EDL |
 
 ---
@@ -93,9 +93,15 @@ doc 122 §9 那张清单是六条手打的命令。这一轮加的不是"把它�
 
 ---
 
-## 5. 离线验证：95 检查
+## 5. 离线验证：95 检查（→ 118，见 `127`）
 
 `scripts/host/zl1-one-boot-runbook-selftest.sh`，**95 检查 / 0 失败**（90 是本页写完时的数字；[`125`](125-the-device-read-those-four-things-already.md) 给 `download_mode` 的读法加了 5 条）。
+
+> **2026-09-24 追记（[`127`](127-the-host-can-also-be-the-thing-that-is-missing.md)）：现在是 **118 检查**。**
+> 本页证明的是"五步的顺序是对的"，但没有证明**这台机器**还能跑第 03 步——而它需要的三样东西
+> （misc 备份非空、它记录的 SHA256 还对得上、要部署的 build 里有 `ensure_addrs()`）**都在宿主机上**，
+> 这条 runbook 一个都不碰。少一样，第 03 步会拒绝，而那时 01 和 02 已经跑过了：**用一次手指换来的 boot
+> 已经花掉一半。** 现在它在第 01 步之前就拒绝，并且是在 `--status` 里也报出来。
 四个 callee 是**会记录调用的替身**（每个都有自己的 harness；这里要测的是**它们被调用了、顺序对、参数对**），
 传输层和家族里其他 harness 一样：**stub 目录就是设备**，假根 + 沙箱 `PATH`。
 
