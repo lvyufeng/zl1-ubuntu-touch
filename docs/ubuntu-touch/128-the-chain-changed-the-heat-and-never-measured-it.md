@@ -255,3 +255,4 @@ bash scripts/host/zl1-heat-fix-chain-selftest.sh | sed -n '/9c\./,$p'
 | `scripts/README.md` | 改：heat-chain 行（新参数与第 06b 步）、heat-chain harness 行 107 → 159 |
 | `docs/ubuntu-touch/124-*.md` | 追记：过期的家族检查数（数字留着，更正贴着写） |
 | `docs/ubuntu-touch/128-*.md` | 本篇 |
+| `docs/ubuntu-touch/evidence/heat-fix-chain-selftest-2026-09-24-b159.log` | 这一轮 159 检查那一跑的干净输出（上一份 `...-2026-09-24.log` 是 107 检查时候的，留着不动） |
