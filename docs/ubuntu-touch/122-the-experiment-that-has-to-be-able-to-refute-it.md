@@ -232,7 +232,7 @@ bash scripts/host/zl1-lpm-ladder-trial-selftest.sh     # 124 检查 / 0 失败 /
 
 本轮收尾时全家族：
 
-**17 个 harness / 1869 检查 / 0 失败。**
+**17 个 harness / 1873 检查 / 0 失败。**
 
 （`zl1-cli-usage-selftest.sh` 从 114 涨到 **118**：它扫的是"这个页面点名过的脚本"，
 本轮页面里多了两个名字。它同时是**元检查**——它要求页面点名的每个 harness 都带
@@ -263,14 +263,27 @@ citation 漂移守卫，而这一条**当场**抓到了本轮的 harness：守�
 
 ```
 # 0. 先出 EDL：物理长按 POWER 10–20 秒，等 RNDIS 和 ssh
-scripts/host/zl1-post-recovery-capture.sh            # 0 系列（含 04b modem / 04c sleep）
+scripts/host/zl1-post-recovery-capture.sh            # 只读：0 系列（含 04b modem / 04c sleep）
+scripts/install-no-edl-on-panic.sh --install         # ← 门 A，而且它是这一串里唯一跨 boot 的一步
 scripts/host/zl1-heat-fix-chain.sh --status          # 只读：发烫链条的四个问题
 scripts/host/zl1-heat-fix-chain.sh --yes             # 前两个修复：governor + 退役 keeper
-scripts/install-no-edl-on-panic.sh --install         # 门 A —— 没有它，这个实验拒绝跑
 scp scripts/device/zl1-lpm-ladder-trial.sh root@$IP:/tmp/ && \
   ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --status'
 ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --apply'   # ← 这一步是一次决定，不是一次读数
 ```
+
+**顺序本身是这一轮改掉的一个缺陷。**`install-no-edl-on-panic.sh` 有两半，而它们**不一样**：
+
+| | 写什么 | 活多久 |
+|---|---|---|
+| `--capture-only` | pstore → `/userdata` | **这一个 boot** |
+| `--install` | 上面那一半 **+ 一个每次 boot 都写 `download_mode=0` 的 unit** | **跨 boot** |
+
+它是这一串写入里**唯一一个让"下一个 boot 更安全"的动作**，而它恰好也是本实验的门 A。
+一次手指换来的那个 boot，是最值得把它装上的时候——**装一次，之后每个 boot 都自动满足门 A**。
+可是 capture 打印的"接下来做什么"里，那一行原本只写着 `--capture-only`（也就是**不装策略**的那一半）。
+这已经修了：两半现在分开点名，并且写清楚哪一半更久、为什么值得先做，
+同时把 doc 86 那句警告一起带上——它**降低概率，不移除路径**，任何地方都不许引成"EDL 不会再发生"。
 
 **`--apply` 要写的是 SoC 的电源参数。它是用户要做的决定，不是一件可以顺手做的事。**
 在它跑之前，`--status` 会先把三件事读出来（`download_mode`、cpuidle 是否可读、keeper 在不在），

@@ -443,7 +443,25 @@ say "    sensors depend on. Read the health check's own next-command line."
 say
 say "  Then, and only then, the steps that WRITE -- each one is the operator's call, not this script's:"
 say "      scripts/install-fingerprint-store-dir.sh --status     # read-only; then --install (docs 106)"
-say "      scripts/install-no-edl-on-panic.sh --capture-only     # or --with-capture above"
+# The two halves of the panic installer are named SEPARATELY, and the reason is the whole point of this
+# boot: --capture-only writes the pstore archive, and --install ALSO writes the policy that turns a panic
+# into a reboot instead of a trip into EDL. Only the second one OUTLASTS this boot, which makes it the
+# one write here that buys something for every future boot rather than for this one -- and it is
+# prerequisite A of the LPM ladder trial (docs 122), whose own refusal says a hang must not cost a
+# finger. This line said `--capture-only # or --with-capture above` and nothing else, i.e. the advice
+# pointed at the half that does NOT arm the policy, on the one boot where arming it is nearly free.
+# Doc 86's caution is carried with it rather than dropped: it lowers a probability, it does not remove
+# the path, and nothing here may be cited as "EDL can no longer happen".
+say "      scripts/install-no-edl-on-panic.sh --capture-only     # evidence only: pstore -> /userdata"
+say "      scripts/install-no-edl-on-panic.sh --install          # ALSO the policy: download_mode -> 0 at"
+say "                                                            # every boot. THIS IS THE HALF THAT"
+say "                                                            # OUTLASTS THE BOOT -- the only write in"
+say "                                                            # this list that makes the NEXT boot"
+say "                                                            # safer, and prerequisite A of the LPM"
+say "                                                            # ladder trial (docs 122). It LOWERS a"
+say "                                                            # probability and does not remove the path"
+say "                                                            # (docs 86); never cite it as \"EDL can no"
+say "                                                            # longer happen\"."
 say "      scripts/install-retire-debug-keeper.sh --install      # only if 02 said netwatch-configured"
 
 [ "$FAIL" = 0 ]

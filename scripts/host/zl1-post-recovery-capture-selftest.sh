@@ -577,6 +577,14 @@ run "$W/out/withoutcapture"
 notwant '^CALLEE NOEDL' "$(order)" "the step that writes is not run by default"
 want 'NOT run, and it is the one that writes' "$OUT" "and the operator is told it exists and why it did not run"
 want '\-\-capture-only' "$OUT" "by name, so the decision is theirs"
+# The advice names the two halves of the panic installer SEPARATELY, because only one of them outlasts
+# the boot -- and the line used to name only --capture-only, i.e. the half that does NOT arm the policy.
+# These three assertions are the distinction itself: both flags are named, and the durable half is called
+# out as the one that makes the next boot safer rather than as an equivalent alternative.
+want 'install-no-edl-on-panic\.sh --install' "$OUT" "and the DURABLE half of it is named too, not just the evidence half"
+want 'OUTLASTS THE BOOT' "$OUT" "with the distinction stated: only the policy half survives a reboot"
+want 'prerequisite A of the LPM' "$OUT" "and why it matters beyond this boot -- it is the trial's refusal A"
+want 'does not remove the path' "$OUT" "while doc 86's caution travels with it (it lowers a probability)"
 
 # ==================================================================================================
 echo
