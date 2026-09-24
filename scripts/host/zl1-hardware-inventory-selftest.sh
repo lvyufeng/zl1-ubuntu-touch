@@ -402,8 +402,8 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  want '^blocks: 29 hardware -- 23 with a named instrument, \*\*6 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \\
-    "29 hardware blocks, 23 read by something, **6 read by nothing**"
+  want '^blocks: 29 hardware -- 24 with a named instrument, \*\*5 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "29 hardware blocks, 24 read by something, **5 read by nothing**"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -427,10 +427,16 @@ else
   # scripts/device/zl1-sdcard-probe.sh. Asserted by name and by node count like the three above.
   want '^sdcard +2 +zl1-sdcard-probe\.sh' "$R" \
     "sdcard -- two controllers -- is reported as covered, by name, with both of its nodes"
+  # The next one closed, 2026-09-24 (docs 143): `usb-pd`, which is not one device but a MENU of four
+  # CC-logic chips plus two vendor platform nodes -- and the row's own pattern did not match the second of
+  # the two nodes the tree ENABLES (`cclogic_dev`), so the count moved from 5 to 6 as well as the verdict
+  # from NONE to covered. Asserted by name and by count like the four above.
+  want '^usb-pd +6 +zl1-usbpd-probe\.sh' "$R" \
+    "usb-pd -- six nodes, a menu rather than a device -- is reported as covered, by name, with all six"
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
   # The gaps, by name. These are the answer to "which hardware has no probe"; if one of them gains a
   # probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in nfc fm-radio usb-pd wfd hdmi eeprom; do
+  for b in nfc fm-radio wfd hdmi eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came

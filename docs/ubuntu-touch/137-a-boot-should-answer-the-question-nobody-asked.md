@@ -13,9 +13,10 @@
 > [`139`](139-the-two-blocks-a-finger-touches-first.md)，`vibrator` 见 [`140`](140-the-block-that-was-another-phones.md)
 （那一行原本点名的仪器属于另一台手机），剩下最大的那个 `video-codec`（十二个节点）见
 > [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)，两个存储控制器那个 `sdcard`（其中可插拔
-> 的一半在设备树里是关掉的）见 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)。所以那份清单现在是
-> **6 个**，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 23 / 6（这两个数字是**手改**的：关掉一个缺口必须有人看见，
-> 这正是那份清单存在的理由）。本页正文不变，它是当天的读数。
+> 的一半在设备树里是关掉的）见 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，而**另一台手机的 CC 逻辑
+> 冒充这块板的**那个 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)。所以那份清单现在是
+> **5 个**，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 24 / 5（这两个数字是**手改**的：关掉一个缺口必须有人看见，
+> 这正是那份清单存在的理由）。本页正文不变，它是当天的读数——唯一一处更正在 §3.2 里，见上方那个引用块。
 
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、
 [`136`](136-the-two-early-exiting-readers-are-not-the-same-defect.md)（同一天：harness 之外的形状普查）、
@@ -103,6 +104,13 @@ stock 有、rebuilt 没有的：1 个节点
 
 filtered 与 stock 的差别：2 个节点（+qcom,mincpubw / −qcom,msm-thermal-simple）
 ```
+
+> **一处更正（2026-09-24，见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)）**：上面那三个
+> `usb_cclogic` / `dp_analogic` 节点**不是这台手机的 CC 逻辑**。它们是 **LE_X2 的**——出现在那份 blob 里 23 棵 X2 树上，
+> 而这台手机自己的 15 棵 ZL1 树里**一个都没有**。上面这个对照本身没错（它说的是**那份 blob** 里 rebuilt 比 stock 多了什么），
+> 错的是把它们当成了这块板的硬件——这正是 [`140`](140-the-block-that-was-another-phones.md) 在 `vibrator` 那一行修过的同一类缺陷，
+> 隔壁一行。这台手机的 CC 逻辑是 i2c@75b5000 上的 `tusb320@67` 和 `cclogic_dev@3d`，两个都是 `status = ok`，
+> 而内核里**一个驱动都没有编**。
 
 **所以"这块板上有振动马达吗"这个问题，DTB 自己回答不了**——它取决于启动的是哪个 image。rebuilt 多出来的那 21 个节点里有一个 `drv2604l`（触觉驱动），也有三个额外的触摸控制器；两个集合都带的两个显示驱动代际则挂在**同一个节点**上：
 

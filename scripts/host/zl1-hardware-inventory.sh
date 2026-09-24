@@ -159,7 +159,7 @@ thermal-lmh	qcom,lmh	lmh	HW	scripts/device/zl1-lmh-probe.sh
 thermal-policy	qcom,msm-thermal|qcom,msm-thermal-simple|qpnp-temp-alarm|adc-tm	qcom,thermal|thermal|cpufreq|scaling_governor|throttle	HW	scripts/install-cpufreq-governor.sh
 battery	qcom,smb1351-charger|qpnp-smbcharger|qpnp-vadc|qpnp-rtc|coincell	charger|battery|voltage_now|capacity|power_supply	HW	scripts/device-readonly-inventory.sh
 usb	qcom,dwc-usb3-msm|snps,dwc3|qcom,qusb2phy|qcom,android-usb|qcom,usb-bam|qcom,usb-dbm	rndis|dwc3|/sys/class/power_supply/usb	HW	scripts/host/zl1-rndis-recover.sh
-usb-pd	tusb302l|tusb320|pi5usb|cypress,cyccg|analogix,ohio|analogix,anx7816	tusb|typec|usb_pd|cclogic|cclogic_dev	HW	-
+usb-pd	tusb302l|tusb320|pi5usb|cclogic_dev|cypress,cyccg|analogix,ohio|analogix,anx7816	tusb|typec|usb_pd|cclogic|id_table	HW	scripts/device/zl1-usbpd-probe.sh
 sdcard	qcom,sdhci-msm	sdhci|mmcblk|/dev/mmcblk	HW	scripts/device/zl1-sdcard-probe.sh
 wfd	mdss_fb_wfd|mdss_wb	wfd|miracast|writeback	HW	-
 hdmi	qcom,hdmi-tx|qcom,hdmi-display|qcom,hdmi-tx-8996|mdss_hdmi_pll|hdmi-audio	HDMI|hdmi	HW	-

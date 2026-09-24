@@ -453,6 +453,20 @@ step 04g-video         device "$HERE/../device/zl1-video-probe.sh"
 # phone. So the probe reads /sys/block/*/size, /proc/partitions and /proc/mounts instead, writes nothing,
 # and its offline harness spends its first mutation on exactly that write.
 step 04h-sdcard        device "$HERE/../device/zl1-sdcard-probe.sh"
+# 04i, same class an eighth time: read-only, write-free, no person. docs 143 closed the next gap on docs
+# 137's list -- `usb-pd`, and it is not one device either: it is a MENU of four CC-logic chips on two i2c
+# buses plus two vendor "driver" nodes, and the device tree ENABLES exactly two of the six
+# (`tusb320@67` and `cclogic_dev@3d`, both on i2c@75b5000) while the kernel has a driver for NEITHER --
+# while it HAS built the two drivers for the four nodes it disables. That is a build-time disagreement
+# between the device tree and the kernel config, and it is why the port's state is UNDECIDED rather than
+# merely unread: /sys/class/typec/typec_device/cc_state says `none`, and `none` is ALSO the correct value
+# for "nothing is plugged in", so the probe names the WRITER before it lets a reader believe the value.
+#
+# Its surface is small and it is still named: the one module parameter in the block is mode 0664, so it
+# LOOKS writable (cclogic.c passes a NULL setter and a write is refused with -EPERM), and tusb320.c
+# registers a misc device whose fops are a write-class interface. The probe writes neither, opens neither,
+# and its offline harness spends its first mutation on the parameter write.
+step 04i-usbpd         device "$HERE/../device/zl1-usbpd-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -463,8 +477,8 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video and 04h-sdcard: all seven are read-only and write nothing, so they are not in this"
-  say "   group.)"
+  say "   04g-video, 04h-sdcard and 04i-usbpd: all eight are read-only and write nothing, so they are"
+  say "   not in this group.)"
   say
 fi
 
