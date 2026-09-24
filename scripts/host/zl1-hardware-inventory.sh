@@ -20,15 +20,23 @@
 #
 # Two derived facts, both re-derived on every run rather than written down:
 #
-#   1. Which DTB set a block came from. The stock set (5 DTBs, out of the vendor boot image) and
-#      the rebuilt set (28 DTBs, out of the Halium build) do **not** describe the same board:
-#      the rebuilt set carries 21 nodes the stock set does not (including the v2/v3 SoC family,
-#      a second audio amp, a haptics driver, three more touch controllers and the USB-C CC logic),
-#      and the stock set carries one the rebuilt set does not (`qcom,msm-thermal-simple`).
-#      Both sets also put two generations of display driver on the SAME node (`qcom,mdss_*` and
-#      `qcom,sde_*`), so which one binds is decided by the kernel, not by the DTB. **Which set the
-#      device boots is therefore a real question with a real answer**, and the only place it can be
-#      answered is `/proc/device-tree` on the device -- see --live below.
+#   1. Which DTB set -- and WHICH PHONE -- a block came from. Those are two different questions, and
+#      conflating them is how this report once got a block wrong. The stock set is 5 DTBs out of the
+#      vendor boot image and the rebuilt set is 28 out of the Halium build, but **23 of those 28
+#      describe a different phone** (the LeEco X2): the rebuild appended the device trees of every
+#      board that kernel supports. So the difference between the sets was never "21 more nodes on
+#      this board" -- the second haptics chip (`ti,drv2604l`), the second audio amp (`tfa9890`), the
+#      three extra touch controllers and the USB-C CC logic are the X2's, and this board's own
+#      haptics is the PMI8994 block (`qcom,qpnp-haptic`) that is in every set. The board is read
+#      from each tree's own `model`, because the two boards' root `compatible` is **byte-identical**
+#      (`qcom,msm8996-mtp\0qcom,msm8996\0qcom,mtp`) -- which also means every probe whose device
+#      guard tests for `msm8996` is satisfied by the other phone's tree.
+#      Rows are filtered to this phone by default (`--board all` shows both, `--board x2` the other),
+#      and a row that matches nodes in the X2's trees only is reported as its own finding rather than
+#      as a broken pattern or a gap. Both boards' trees also put two generations of display driver on
+#      the SAME node (`qcom,mdss_*` and `qcom,sde_*`), so which one binds is decided by the kernel,
+#      not by the DTB. **Which set the device boots is therefore a real question with a real
+#      answer**, and the only place it can be answered is `/proc/device-tree` -- see --live below.
 #   2. Which blocks no script names. The per-block token list is a **curated claim** (a wrong token
 #      shows up as a false gap, which is why the harness has a fixture for exactly that); the file
 #      column is **measured** by searching the tracked scripts for those tokens, every run.
@@ -37,8 +45,10 @@
 #   zl1-hardware-inventory.sh                      # all blocks + summary
 #   zl1-hardware-inventory.sh --gaps               # only the blocks nothing reads
 #   zl1-hardware-inventory.sh --block audio        # one block, in full
-#   zl1-hardware-inventory.sh --dump-compatibles   # path<TAB>compatible<TAB>sets for the matched nodes
+#   zl1-hardware-inventory.sh --dump-compatibles   # path<TAB>compatible<TAB>set<TAB>board, plus provenance
 #   zl1-hardware-inventory.sh --snapshot FILE      # read that dump instead of the DTBs (no DTBs needed)
+#   zl1-hardware-inventory.sh --board all|x2       # report on both boards, or on the other phone
+#   zl1-hardware-inventory.sh --boards             # one line per DTB: set, board, model, size, sha256
 #   zl1-hardware-inventory.sh --table FILE         # use another block table (default: the one below)
 #
 # --live is the one mode that touches the device, and it is **read-only**: it prints the compatible
@@ -60,6 +70,7 @@ TABLE_OVERRIDE=
 DTB_DIRS=()
 DO_LIVE=0
 OUT=
+BOARD_FILTER=zl1
 while [ $# -gt 0 ]; do
   case "$1" in
   --gaps) MODE=gaps ;;
@@ -68,6 +79,8 @@ while [ $# -gt 0 ]; do
   --snapshot) SNAPSHOT="${2:-}"; shift ;;
   --dtb-dir) DTB_DIRS+=("${2:-}"); shift ;;
   --dtb) DTB_DIRS+=("${2:-}"); shift ;;
+  --board) BOARD_FILTER="${2:-}"; shift ;;
+  --boards) MODE=boards ;;
   --live) DO_LIVE=1 ;;
   --table) TABLE_OVERRIDE="${2:-}"; shift ;;
   --out) OUT="${2:-}"; shift ;;
@@ -76,6 +89,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+case "$BOARD_FILTER" in
+zl1 | x2 | all) ;;
+*) echo "--board takes zl1, x2 or all (got: $BOARD_FILTER)" >&2; exit 2 ;;
+esac
 
 # ---------------------------------------------------------------------------------------------
 # The block table. One row per piece of hardware a person would call hardware.
@@ -105,10 +122,17 @@ done
 #                ever looked at it.
 #
 # The DTB patterns are written against the compatible strings the real DTBs carry, not against what
-# the block is usually called: `nq-nci` (not "nfc"), `si4705` (not "fm"), `drv2604` (not
-# "vibrator"). A pattern that matches a name nothing uses is a gap that cannot be found, which is
-# why a row whose pattern matches no node at all is reported separately instead of counted as
-# covered.
+# the block is usually called: `nq-nci` (not "nfc"), `si4705` (not "fm"), `qcom,qpnp-haptic` (not
+# "vibrator", and NOT `drv2604` -- see below). A pattern that matches a name nothing uses is a gap
+# that cannot be found, which is why a row whose pattern matches no node at all is reported
+# separately instead of counted as covered.
+#
+# The `vibrator` row is the one this table has already got wrong, and the correction is worth keeping
+# in view: it used to be `ti,drv2604`, which is the X2's second haptics chip and is declared by that
+# phone's trees ONLY. The row therefore read "1 node, only in the rebuilt set" -- a reading that
+# looked like a quirk of the image and was in fact the report talking about another phone. The
+# board column is what makes that impossible now, and the `X2 only` finding below is what makes it
+# visible rather than merely absent.
 # ---------------------------------------------------------------------------------------------
 BLOCKS=$(cat <<'TABLE'
 display-panel	mdss_dsi|dsi-display|sde_dsi|dsi-ctrl-hw|dsi-phy|mdss-fb	compositor|/dev/dri|DSI|dsi_ctrl|mdss-fb	HW	scripts/device/zl1-egl-probe.py
@@ -119,7 +143,7 @@ keys	gpio-keys|gpio_keys|qpnp-power-on|pmic-reset-reason	/dev/input|BTN_TOUCH|KE
 fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/device/zl1-fingerprint-probe.sh
 nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	-
 fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	-
-vibrator	ti,drv2604	drv2604|vibrat|timed_output|haptic	HW	-
+vibrator	qcom,qpnp-haptic|qcom,haptic	qpnp.hap|qpnp_haptic|haptic|timed_output|vibrat	HW	scripts/device/zl1-vibrator-probe.sh
 torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	scripts/device/zl1-leds-probe.sh
 backlight	qpnp-wled	backlight|wled|brightness	HW	scripts/hybris-shims/free-container-display.sh
 notification-led	qcom,leds-qpnp	leds-qpnp|led_classdev|/sys/class/leds	HW	scripts/device/zl1-leds-probe.sh
@@ -180,7 +204,10 @@ fi
 #     property's length is a multiple of 4 -- so the walk returns a plausible, short tree.
 # ---------------------------------------------------------------------------------------------
 walker() {
-  "$PY" - "$@" <<'PYEOF'
+  # ZL1_INV_ROOT is handed to the parser only so the `#file` provenance line can be printed relative
+  # to the repository, the way the `#   source` lines are. A committed snapshot that records
+  # `/home/someone/zl1-bb10/...` is a snapshot nobody else can regenerate.
+  ZL1_INV_ROOT="$ROOT" "$PY" - "$@" <<'PYEOF'
 import struct, sys, os
 
 MAGIC = 0xd00dfeed
@@ -189,6 +216,55 @@ def be(b, off, n): return int.from_bytes(b[off:off+n], 'big')
 def cstr(b, off):
     end = b.index(b'\0', off)
     return b[off:end].decode('utf-8', 'replace')
+
+def root_model(b):
+    """The ROOT node's `model`, or '' -- the one property that tells this board from the X2.
+
+    It matters because the appended device-tree blob in the flashed boot image carries BOTH boards'
+    trees (5 for the zl1, 23 for the LeEco X2), and their root `compatible` is byte-identical
+    (`qcom,msm8996-mtp\\0qcom,msm8996\\0qcom,mtp`), so `compatible` cannot tell them apart at all.
+    Only `model` can, and without it this report attributed the X2's nodes -- a second haptics chip,
+    a second audio amp, three more touch controllers -- to "the zl1's board". That is the same class
+    of error as a probe that reads the wrong SoC, one level up: a reading about the wrong device.
+    """
+    if be(b, 0, 4) != MAGIC:
+        return ''
+    off_struct, off_strings = be(b, 8, 4), be(b, 12, 4)
+    i, depth = off_struct, 0
+    while i < off_strings:
+        tok = be(b, i, 4); i += 4
+        if tok == 1:                                  # FDT_BEGIN_NODE
+            j = i
+            while b[j] != 0: j += 1
+            i = (j + 1 + 3) & ~3
+            depth += 1
+        elif tok == 2:                                # FDT_END_NODE
+            depth -= 1
+            if depth <= 0: break                      # left the root: no model here
+        elif tok == 3:                                # FDT_PROP
+            ln, noff = be(b, i, 4), be(b, i+4, 4); i += 8
+            pname = cstr(b, off_strings + noff)
+            val = b[i:i+ln]
+            i = (i + ln + 3) & ~3
+            if pname == 'model' and depth == 1:
+                return val.rstrip(b'\0').decode('utf-8', 'replace')
+        elif tok == 4:                                # FDT_NOP
+            continue
+        elif tok == 9:                                # FDT_END
+            break
+        else:
+            break
+    return ''
+
+def board_of(model):
+    """`z` for this phone, `x` for the LeEco X2, `?` when the tree names neither.
+
+    `?` is not a failure mode to hide: a scratch directory of trees with no `model` is exactly what
+    the fixtures are, and a row that matches them must behave as it did before this column existed.
+    """
+    if 'LE_ZL1' in model: return 'z'
+    if 'LE_X2' in model: return 'x'
+    return '?'
 
 def walk(b):
     if be(b, 0, 4) != MAGIC:
@@ -220,6 +296,7 @@ def walk(b):
         else:
             raise ValueError('bad token %d at %d' % (tok, i - 4))
 
+census = {}
 for path in sys.argv[1:]:
     if os.path.isdir(path):
         print('PARSE-FAILED\t%s\tis a directory, not a device tree' % path, file=sys.stderr)
@@ -228,9 +305,11 @@ for path in sys.argv[1:]:
         print('PARSE-FAILED\t%s\tnot readable' % path, file=sys.stderr)
         sys.exit(3)
     # The set name is how a block's provenance is reported, so it has to be able to tell `stock`
-    # from `rebuilt` -- both live in a directory called `dtbs`, 5 against 28, and they do not
-    # describe the same board. One letter each, because the column is narrow and the meaning is in
-    # the header; anything else keeps its directory name rather than being forced into a code.
+    # from `rebuilt` -- both live in a directory called `dtbs`, 5 against 28. One letter each,
+    # because the column is narrow and the meaning is in the header; anything else keeps its
+    # directory name rather than being forced into a code. The BOARD is a fourth field and not part
+    # of this name: the set tells you which artifact the tree came out of, the board tells you which
+    # phone it describes, and the rebuilt artifact holds both phones' trees.
     d = os.path.dirname(os.path.abspath(path))
     base = os.path.basename(d)
     parent = os.path.basename(os.path.dirname(d))
@@ -243,15 +322,29 @@ for path in sys.argv[1:]:
     else:
         setname = base
     b = open(path, 'rb').read()
+    model = root_model(b)
+    board = board_of(model)
+    census[setname + board] = census.get(setname + board, 0) + 1
+    # One line per FILE, before its nodes: which artifact it came out of, which phone it describes, and
+    # the `model` that says so. The report's data lines carry the first two as fields; this line is what
+    # makes the third checkable, and it is what --boards and the snapshot's provenance print.
+    root = os.environ.get('ZL1_INV_ROOT', '')
+    shown = path[len(root) + 1:] if root and path.startswith(root + '/') else path
+    print('#file\t%s\t%s\t%s\t%s' % (shown, setname, board, model))
     try:
         for p, cs in walk(b):
             for c in cs:
-                print('%s\t%s\t%s' % (p, c, setname))
+                print('%s\t%s\t%s\t%s' % (p, c, setname, board))
     except ValueError as e:
         # Louder than a traceback would be usefully: a DTB that does not parse is a hole in the
         # inventory, and the caller must be able to see which one.
         print('PARSE-FAILED\t%s\t%s' % (path, e), file=sys.stderr)
         sys.exit(3)
+# The per-file census, on stderr with the provenance it belongs to. THIS is the line that says the
+# corpus is two phones: `z*` is this board, `x*` is the LeEco X2. Counted per FILE, so it cannot be
+# confused with the report's per-node counts, and printed even when every row below is filtered:
+# "23 of the 38 trees describe a different phone" is the fact a reader of this table has to know.
+print('# boards: ' + ' '.join('%s %d' % (k, census[k]) for k in sorted(census)), file=sys.stderr)
 PYEOF
 }
 
@@ -347,8 +440,30 @@ instrument_files() {
 
 main_report() {
   local data block dtbpat toks kind named
-  data=$(collect) || exit $?
-  local total_nodes total_paths total_sets
+  local all notes
+  all=$(collect) || exit $?
+  # The `#` lines are provenance, not data: one per DTB (set, board, model) plus the census. They are
+  # printed by the modes that want them and stripped before every count below, because a line that
+  # leaked into the matching would be counted as a node by whichever pattern was broad enough to match
+  # it -- and a false node is a false COVERED, which is the error this whole report exists to avoid.
+  notes=$(printf '%s\n' "$all" | grep -E '^#' || true)
+  all=$(printf '%s\n' "$all" | grep -vE '^[[:space:]]*#' || true)
+  # The board filter, and the reason this report has one: the flashed boot image's appended blob carries
+  # the device trees of the LeEco X2 as well (23 of 38), under a byte-identical root `compatible`. A
+  # report about this phone that counted those trees would credit this board with another phone's
+  # hardware -- which is exactly what the old `vibrator` row did. `?` (a tree naming neither board) is
+  # KEPT under every filter: a tree this report cannot identify is not a tree it may silently drop.
+  case "$BOARD_FILTER" in
+  zl1) data=$(printf '%s\n' "$all" | awk -F'\t' '$4 != "x"') ;;
+  # `?` means the tree names NEITHER board, so it is kept under the other filter too. Writing this as
+  # `$4 == "x"` looks right and is not: it drops every tree this report cannot identify, under the one
+  # filter whose whole purpose is "show me the other phone" -- so the unidentified rows would vanish
+  # exactly when a reader is looking for what is not this board. (The harness caught it: three trees,
+  # and the x2 report was one path short of the zl1 report.)
+  x2) data=$(printf '%s\n' "$all" | awk -F'\t' '$4 == "x" || $4 == "?"') ;;
+  all) data="$all" ;;
+  esac
+  local total_nodes total_paths total_sets all_paths
   # Pairs and paths are different counts and the difference is not noise: a node can carry several
   # compatibles (the display nodes carry two driver generations each), and a path can appear twice
   # in one DTB (`/soc/wlan_en_vreg` does). Printing only one of the two would make the other look
@@ -361,6 +476,8 @@ main_report() {
   # path and as `F R S`,`R` on the other. Sorting the *tokens* makes the two indistinguishable.
   norm_sets() { tr ' ' '\n' | grep . | sort -u | tr '\n' ' ' | sed 's/ $//'; }
   total_sets=$(printf '%s\n' "$data" | cut -f3 | norm_sets)
+  # The unfiltered count, so a reader can see what the filter took away rather than having to trust it.
+  all_paths=$(printf '%s\n' "$all" | cut -f1 | sort -u | wc -l)
 
   if [ "$MODE" = dump ]; then
     # The snapshot is what makes this report checkable on a fresh clone: the DTBs are `tmp-*/`
@@ -369,9 +486,26 @@ main_report() {
     # which files it came from and prove it against them if the DTBs are still around.
     printf '# zl1 device-tree compatibles -- GENERATED by scripts/host/zl1-hardware-inventory.sh\n'
     printf '# Regenerate:  zl1-hardware-inventory.sh --dump-compatibles > this-file\n'
-    printf '# Columns: path <TAB> compatible <TAB> set   (S=stock R=rebuilt F=filtered)\n'
+    printf '# Columns: path <TAB> compatible <TAB> set <TAB> board\n'
+    printf '#   set:   S=stock (vendor boot image) R=rebuilt (Halium build) F=filtered (patched stock)\n'
+    printf '#   board: z=LE_ZL1 (this phone) x=LE_X2 (a different phone, whose trees are in the SAME\n'
+    printf '#          appended blob) ?=the tree names neither. Read from each tree own `model`, because\n'
+    printf '#          both boards root `compatible` is byte-identical.\n'
     printf '# This is a derived subset: nodes carrying a `compatible`, which is every block the\n'
     printf '# kernel can bind. Nodes without one (memory reservations, chosen, aliases) are omitted.\n'
+    # The snapshot is written from the UNFILTERED data, on purpose: it is the whole derived corpus
+    # (both phones), and every filter is applied when it is read back. Writing it filtered would make
+    # `--board x2` and `--board all` unreproducible on a fresh clone -- which is the only thing the
+    # snapshot is for -- and would leave the report with no way to say how many paths the filter took away.
+    local snap_nodes snap_paths snap_sets snap_rows
+    snap_nodes=$(printf '%s\n' "$all" | cut -f1,2 | sort -u | wc -l)
+    snap_paths=$(printf '%s\n' "$all" | cut -f1 | sort -u | wc -l)
+    # The file has one row per (path, compatible, board), which is MORE than the pair count above: both
+    # phones' trees declare most of the same nodes, so a pair is usually two rows. Printing only the
+    # pair count would make the file look 2x too long to anyone counting its lines -- a discrepancy
+    # that is not a defect, but that nobody would be able to tell from a defect. So both are printed.
+    snap_rows=$(printf '%s\n' "$all" | cut -f1,2,4 | sort -u | wc -l)
+    snap_sets=$(printf '%s\n' "$all" | cut -f3 | norm_sets)
     local f d
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -379,8 +513,19 @@ main_report() {
       printf '#   source %-58s %10s bytes  sha256=%s\n' "${f#"$ROOT"/}" "$(stat -c%s "$f")" \
         "$(sha256sum "$f" | cut -d' ' -f1)"
     done <<< "$(find_dtbs)"
-    printf '# totals: %s distinct paths, %s path/compatible pairs, sets: %s\n' "$total_paths" "$total_nodes" "$total_sets"
-    # One line per (path, compatible), with the sets merged. Without this the snapshot is 38
+    printf '# totals: %s distinct paths, %s path/compatible pairs (%s rows with the board attached), sets: %s\n' \
+      "$snap_paths" "$snap_nodes" "$snap_rows" "$snap_sets"
+    # The per-file provenance: which artifact each tree came out of, which phone it describes, and the
+    # `model` string that says so -- the reading the board column is derived from, kept where a reader
+    # can check it. Then the census, counted per FILE (not per node) so the two cannot be confused.
+    printf '%s\n' "$notes" | grep -E '^#file|^# boards:' || true
+    # One line per (path, compatible, BOARD), with the sets merged. The board is part of the key and
+    # not decoration: both phones' trees contain most of the same node paths, so merging without it
+    # would fuse the X2's copy of a node into this phone's row -- and, worse, would leave the snapshot
+    # with no board column at all, so reading it back under the default filter would filter against an
+    # empty field, keep every X2 row, and report 699 nodes for a board that has 688. (That is exactly
+    # how the two input paths came to disagree; the harness's "same report either way" check caught it.)
+    # Without this merging the snapshot is 38
     # copies of the same tree (1.4 MB, 26000 lines) because all 38 DTBs describe most of the same
     # board -- which is the fact the SETS column exists to show, and it shows it better merged.
     # The letters are sorted so the file does not change when the --dtb-dir order does.
@@ -388,8 +533,8 @@ main_report() {
     # characters, which is only correct while every set name is one letter -- run against two scratch
     # directories (`dtbs`, `dtbs2`) it produced the set `2bdst`, which is not a set. The names are
     # words here and stay words.
-    printf '%s\n' "$data" | awk -F'\t' '
-      { k = $1 "\t" $2
+    printf '%s\n' "$all" | awk -F'\t' '
+      { k = $1 "\t" $2 "\t" $4
         if (!(k in seen)) { order[++n] = k; seen[k] = "" }
         if (index(seen[k], "\t" $3 "\t") == 0) seen[k] = seen[k] "\t" $3 }
       END { for (i = 1; i <= n; i++) {
@@ -404,7 +549,11 @@ main_report() {
               while (sw)
               d = ""
               for (j = 1; j <= c; j++) { d = d u[j]; if (j < c) d = d " " }
-              printf "%s\t%s\n", order[i], d
+              # Field order is path, compatible, SETS, board -- the same order the per-DTB lines use,
+              # because this file is fed back in as `--snapshot` and every reader of it splits on $4.
+              # Printing the board before the sets would put the board in the field the filter reads.
+              split(order[i], p, "\t")
+              printf "%s\t%s\t%s\t%s\n", p[1], p[2], d, p[3]
               delete u } }'
     return 0
   fi
@@ -414,6 +563,24 @@ main_report() {
     echo "zl1 hardware inventory -- derived from the device's own device trees"
     echo "  source sets:   $total_sets"
     echo "  nodes in the device tree: $total_paths distinct paths, $total_nodes path/compatible pairs"
+    # NOT `|| true` here: inside a command substitution a command line ending in `||` immediately before
+    # a `case` is a parse error in bash 5.1 (`syntax error near unexpected token ';;'`), which cost an
+    # hour when this header was written. The `case` is moved above the census line instead, and neither
+    # needs the `|| true`: this script does not run under `set -e`.
+    case "$BOARD_FILTER" in
+    zl1) echo "  board:         THIS PHONE (LE_ZL1) only -- $total_paths of $all_paths paths. The other"
+         echo "                 23 DTBs in the blob describe the LE_X2 (a different phone) and are"
+         echo "                 EXCLUDED below; --board all to see both, --board x2 for the other one. A"
+         echo "                 row that matches only the X2 is reported as such, never counted as a gap."
+         ;;
+    x2)  echo "  board:         the OTHER PHONE (LE_X2) only -- $total_paths of $all_paths paths. Nothing"
+         echo "                 below is this board; --board zl1 (the default) for this phone."
+         ;;
+    all) echo "  board:         BOTH boards of the appended blob -- $total_paths paths. Every count below"
+         echo "                 mixes this phone with the LE_X2; use --board zl1 for the default view."
+         ;;
+    esac
+    printf '%s\n' "$notes" | grep -E '^# boards:' | sed -e 's/^# boards:/  dtb files by board:/'
     echo "  SETS: S=stock (vendor boot image) R=rebuilt (Halium build) F=filtered (patched stock)."
     echo "        A block in one set and not another is a block whose existence depends on which"
     echo "        image boots; the device's own answer is /proc/device-tree, i.e. --live."
@@ -421,13 +588,27 @@ main_report() {
     printf '%-16s %-5s %-38s %s\n' BLOCK DTB INSTRUMENT SETS
     printf '%-16s %-5s %-38s %s\n' --------- ----- ---------------------------------------- ----
   )
-  local covered=0 gap=0 infra=0 nstale=0 gapwall="" nodewall="" stalewall=""
+  # Which phone this report is about, and which one it is not. Under `--board all` there is no
+  # "other", so the wording says that instead of picking one -- a section headed "the other board"
+  # in a report that is about both is a sentence that is false in the mode it is printed in.
+  local this_board other_board
+  case "$BOARD_FILTER" in
+  zl1) this_board='the LE_ZL1 (this phone)' other_board='the LE_X2, a different phone' ;;
+  x2)  this_board='the LE_X2'              other_board='the LE_ZL1 (this phone)' ;;
+  *)   this_board='every board'            other_board='another board' ;;
+  esac
+  local covered=0 gap=0 infra=0 nstale=0 nboard=0 gapwall="" nodewall="" stalewall="" x2wall=""
   while IFS=$'\t' read -r block dtbpat toks kind named; do
     [ -n "$block" ] || continue
     if [ "$MODE" = block ] && [ "$block" != "${ONLY_BLOCK:-}" ]; then continue; fi
     local nodes sets n=0 files nfiles=0 shown others
     nodes=$(printf '%s\n' "$data" | awk -F'\t' -v p="$dtbpat" 'tolower($1" "$2) ~ tolower(p) {print $1"\t"$2}' | sort -u)
     [ -n "$nodes" ] && n=$(printf '%s\n' "$nodes" | wc -l)
+    # The same match against the UNFILTERED data. When a row matches nothing here but something there,
+    # the block is declared by the other phone's trees only -- which is this table's own worst mistake
+    # (the old `vibrator` row was exactly that) and must not be reported as a broken pattern or a gap.
+    n_all=$(printf '%s\n' "$all" | awk -F'\t' -v p="$dtbpat" 'tolower($1" "$2) ~ tolower(p) {print $1"\t"$2}' | sort -u | grep -c . || true)
+    sets_all=$(printf '%s\n' "$all" | awk -F'\t' -v p="$dtbpat" 'tolower($1" "$2) ~ tolower(p) {print $3"\t"$4}' | sort -u | tr '\t' '/' | tr '\n' ' ' | sed 's/ $//')
     sets=$(printf '%s\n' "$data" | awk -F'\t' -v p="$dtbpat" 'tolower($1" "$2) ~ tolower(p) {print $3}' | norm_sets)
     files=$(instrument_files "$toks")
     [ -n "$files" ] && nfiles=$(printf '%s\n' "$files" | wc -l)
@@ -437,6 +618,12 @@ main_report() {
     fi
     # A row whose DTB pattern matches no node at all is not a covered block: it is a broken
     # pattern, and it is reported as its own thing rather than counted as either.
+    if [ "$n" -eq 0 ] && [ "${n_all:-0}" -gt 0 ]; then
+      nboard=$((nboard + 1))
+      x2wall="${x2wall}${block}|${n_all}|${sets_all}
+"
+      continue
+    fi
     if [ "$n" -eq 0 ]; then
       nodewall="${nodewall}${block}|${dtbpat}
 "
@@ -483,9 +670,13 @@ main_report() {
 $(printf '%-16s %-5s %-38s %s\n' "$block" "$n" "$(printf '%s' "$shown" | cut -c1-38)" "$sets")"
   done <<< "$BLOCKS"
 
+  # Only said when it is true. A clause that reads "0 rows ..." in every report is furniture, and
+  # furniture in a summary line is how a reader learns to skip the summary line.
+  nboard_note=""
+  [ "$nboard" -gt 0 ] && nboard_note=" $nboard row(s) matched only another board's trees, so they are listed below and not counted here."
   report="${report}
 $(printf '%-16s %-5s %-38s %s\n' '-----' '-----' '----------------------------------------' '----')
-blocks: $((covered + gap + nstale)) hardware -- $covered with a named instrument, **$gap with none**, $nstale STALE; plus $infra infrastructure rows, which need no instrument of their own"
+blocks: $((covered + gap + nstale)) hardware -- $covered with a named instrument, **$gap with none**, $nstale STALE; plus $infra infrastructure rows, which need no instrument of their own.$nboard_note"
   if [ "$gap" -gt 0 ]; then
     report="${report}
 
@@ -502,6 +693,14 @@ $(printf '%s' "$gapwall" | while IFS='|' read -r b n s f; do
 Claimed instruments that no longer name their block -- the table has rotted:
 $(printf '%s' "$stalewall" | while IFS='|' read -r b f; do [ -n "$b" ] && printf '  %-16s %s\n' "$b" "$f"; done)"
   fi
+  if [ -n "$x2wall" ]; then
+    report="${report}
+
+Declared by another board only -- nothing in this report says $this_board has this hardware:
+$(printf '%s' "$x2wall" | while IFS='|' read -r b n s; do
+          [ -n "$b" ] && printf "  %-16s %s node(s), in %s -- declared by %s\n" "$b" "$n" "$s" "$other_board"
+        done)"
+  fi
   if [ -n "$nodewall" ]; then
     report="${report}
 
@@ -516,6 +715,43 @@ $(printf '%s' "$nodewall" | while IFS='|' read -r b p; do [ -n "$b" ] && printf 
   if [ -n "$OUT" ]; then printf '%s\n' "$report" >"$OUT"; fi
 }
 
+boards_mode() {
+  # One line per DTB: which artifact it came out of, which phone it describes, the `model` string that
+  # says so, its size and its sha256. It is the dump's own provenance printed as the report, because
+  # "the appended blob carries two phones' trees" is a claim about 38 files, and this is the reading a
+  # reader can check it against. The `#file` lines and the `#   source` lines come from the same file
+  # list in the same order, and that is ASSERTED below rather than assumed: a mispaired table would
+  # attribute one tree's model to another tree's checksum, which is a wrong reading with no smell.
+  local args=() d
+  if [ -n "$SNAPSHOT" ]; then
+    args=(--snapshot "$SNAPSHOT")
+  else
+    for d in "${DTB_DIRS[@]}"; do args+=(--dtb-dir "$d"); done
+  fi
+  bash "$0" "${args[@]}" --dump-compatibles |
+    awk -F'\t' '
+      /^#   source[ \t]/ { n++; split($0, a, /[ \t]+/); spath[n] = a[3]; ssize[n] = a[4]
+                           for (j = 1; j <= length(a); j++) if (a[j] ~ /^sha256=/) { ssha[n] = substr(a[j], 8) }
+                           next }
+      /^#file/            { m++; fpath[m] = $2; fset[m] = $3; fbrd[m] = $4; fmodel[m] = $5 }
+      END {
+        printf "%-5s %-4s %-11s %-9s %s\n", "SET", "BRD", "SHA256", "SIZE", "MODEL / FILE"
+        for (i = 1; i <= m; i++) {
+          # The two lists must be the same 38 trees in the same order. Both carry a path relative to the
+          # repository, but the source list is padded to a fixed width and the file list is not, so the
+          # basename is what is comparable -- and comparing a FIELD would have compared the padding.
+          if (basename_of(spath[i]) != basename_of(fpath[i])) {
+            printf "MISPAIRED at %d: the source list and the per-file list are not in the same order\n", i
+            exit 1
+          }
+          printf "%-5s %-4s %-11s %-9s %s\n", fset[i], fbrd[i], substr(ssha[i], 1, 10), ssize[i], fmodel[i]
+          printf "%-5s %-4s %-11s %-9s   %s\n", "", "", "", "", fpath[i]
+        }
+        printf "%d device tree(s); BRD z=LE_ZL1 (this phone) x=LE_X2 (a different phone) ?=names neither\n", m
+      }
+      function basename_of(p) { nb = split(p, b, "/"); return b[nb] }'
+}
+
 live() {
   # Read-only, and the only mode that goes near the device. `/proc/device-tree` is the tree the
   # *running* kernel was handed: it settles which of the offline sets the board actually boots,
@@ -524,7 +760,17 @@ live() {
     -o ConnectTimeout=10 "$DEV" '
       [ -r /proc/device-tree/compatible ] || { echo "no /proc/device-tree -- not a live device" >&2; exit 1; }
       printf "  root compatible: %s\n" "$(tr "\0" " " < /proc/device-tree/compatible)"
-      printf "  model:           %s\n" "$(tr -d "\0" < /proc/device-tree/model 2>/dev/null)"
+      m=$(tr -d "\0" < /proc/device-tree/model 2>/dev/null)
+      printf "  model:           %s\n" "$m"
+      case "$m" in
+      *LE_ZL1*) echo "  board:           LE_ZL1 -- this phone. The appended blob also carries 23 trees for"
+                echo "                   the LE_X2, and their root compatible is BYTE-IDENTICAL, so this"
+                echo "                   line is the only reading that tells the two apart." ;;
+      *LE_X2*)  echo "  board:           LE_X2 -- *** NOT THIS PHONE ***. The bootloader picked the tree of"
+                echo "                   the other board: every reading on this boot is about the X2." ;;
+      *)        echo "  board:           neither LE_ZL1 nor LE_X2 -- identify this tree before trusting"
+                echo "                   any reading taken on this boot." ;;
+      esac
       echo "  nodes with a compatible:"
       find /proc/device-tree -name compatible -type f 2>/dev/null | while read -r f; do
         printf "    %-56s %s\n" "${f#/proc/device-tree}" "$(tr "\0" " " < "$f")"
@@ -533,6 +779,11 @@ live() {
 
 if [ "$DO_LIVE" = 1 ]; then
   live
+  exit $?
+fi
+
+if [ "$MODE" = boards ]; then
+  boards_mode
   exit $?
 fi
 

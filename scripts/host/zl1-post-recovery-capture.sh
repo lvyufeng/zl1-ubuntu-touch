@@ -404,6 +404,17 @@ step 04d-lmh           device "$HERE/../device/zl1-lmh-probe.sh"
 # real -- every LED is drivable by writing `brightness` -- so the probe writes nothing at all and its
 # offline harness spends a mutation on exactly that write.
 step 04e-leds          device "$HERE/../device/zl1-leds-probe.sh"
+# 04f, same class a fifth time, and this one carries a correction worth having on the boot: read-only,
+# write-free, no person. docs 140 found that the inventory's `vibrator` row had been naming the LeEco
+# X2's second haptics chip -- the flashed image's appended blob carries BOTH boards' device trees under
+# a byte-identical root `compatible`, so this probe reads `model` BEFORE anything else and reports which
+# board's tree the running kernel was handed. On a boot that picked the wrong tree, that single line
+# re-reads every other reading in this archive.
+#
+# Its dangerous surface is the sharpest of the five: /sys/class/timed_output/vibrator/enable is
+# WRITABLE, and writing a millisecond count makes the phone buzz. So the probe writes nothing at all,
+# and its verdict says the buzzing test is a separate step rather than a side effect of a reading.
+step 04f-vibrator      device "$HERE/../device/zl1-vibrator-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -413,8 +424,8 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
-  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh and 04e-leds: all four are read-only"
-  say "   and write nothing, so they are not in this group.)"
+  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds and 04f-vibrator: all five are"
+  say "   read-only and write nothing, so they are not in this group.)"
   say
 fi
 

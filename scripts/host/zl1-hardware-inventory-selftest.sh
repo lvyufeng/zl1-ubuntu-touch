@@ -165,7 +165,7 @@ want '^/soc/i2c/touch[[:space:]]' "$R" "the FDT_NOP emitted right after /soc's n
 n=$(printf '%s\n' "$R" | grep -c 'vendor,')
 [ "$n" = 7 ] && ok "all 7 compatible values in the fixture are found (a short tree is the padding bug's signature)" ||
   bad "found $n of 7 compatible values -- the walk is losing nodes"
-want '# totals: 5 distinct paths, 7 path/compatible pairs, sets: dtbs' "$R" "and the totals are counted, not assumed (the snapshot's own header line)"
+want '# totals: 5 distinct paths, 7 path/compatible pairs \(7 rows with the board attached\), sets: dtbs' "$R" "and the totals are counted, not assumed (the snapshot's own header line)"
 
 # A file that is not an FDT must be reported, never silently walked. An instrument that cannot report
 # is this tree's oldest defect (docs 72), and this is the one place where the parser could hide one.
@@ -180,9 +180,105 @@ notwant 'vendor,' "$OUT" "and emits no compatibles from it -- a tree that did no
 mkdir -p "$W/dtbs2"
 python3 "$W/fdtbuild.py" '{"name":"","props":{},"children":[{"name":"soc2","props":{"compatible":"other,board"},"children":[]}]}' "$W/dtbs2/other.dtb"
 R=$(bash "$SRC" --dump-compatibles --dtb-dir "$W/dtbs/tree.dtb" --dtb-dir "$W/dtbs2/other.dtb" 2>/dev/null)
-want '^/soc2	other,board	dtbs2$' "$R" "a second --dtb-dir is tagged with its own directory, not the first one"
+want '^/soc2	other,board	dtbs2	\?$' "$R" "a second --dtb-dir is tagged with its own directory, not the first one"
 
-# ==================================================================================================
+# ---- the board column, and the mistake it exists to stop --------------------------------
+#
+# Three trees that differ in NOTHING but their root `model`. That is not a hypothetical: the flashed
+# boot image's appended blob carries this phone's trees **and 23 of the LeEco X2's**, and the two
+# boards' root `compatible` is byte-identical (`qcom,msm8996-mtp\0qcom,msm8996\0qcom,mtp`). So every
+# guard of the form `grep -qa msm8996 /proc/device-tree/compatible` -- which ~25 probes in this tree
+# use -- is satisfied by the other phone's tree, and `model` is the ONLY reading that separates them.
+# This is also where the report's old `vibrator` row came from: it credited this board with the X2's
+# second haptics chip (`ti,drv2604l`). The checks below are about reading `model`, and then USING it.
+#
+# `[[:space:]]`, never a literal tab or `\t`: the pattern has to mean "the separator" whether or not an
+# editor has been near this file, and GNU grep reads `\t` as the letter t.
+#
+# The three trees are deliberately ASYMMETRIC (two nodes for this phone, one each for the others), so
+# that the three filter modes produce three different pairs of numbers. Equal counts would let a
+# filter that does nothing pass every check below.
+mkdir -p "$W/boards"
+b13() { # $1 = file, $2 = model, $3.. = the nodes only this tree has
+  local f=$1 m=$2 n kids=""
+  shift 2
+  for n in "$@"; do
+    kids="$kids,{\"name\":\"$n\",\"props\":{\"compatible\":\"vendor,$n\"},\"children\":[]}"
+  done
+  python3 "$W/fdtbuild.py" "{\"name\":\"\",\"props\":{\"compatible\":[\"qcom,msm8996-mtp\",\"qcom,msm8996\",\"qcom,mtp\"],\"model\":\"$m\"},\"children\":[{\"name\":\"shared\",\"props\":{\"compatible\":\"vendor,shared\"},\"children\":[]}$kids]}" "$f"
+}
+b13 "$W/boards/zl.dtb" 'Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1' zlonly1 zlonly2
+b13 "$W/boards/x2.dtb" 'Letv Technologies, Inc. MSM 8996 v3 + PMI8996 LE_X2-PVT' x2only
+b13 "$W/boards/nb.dtb" 'Acme Reference Board' neither
+BARG=()
+for b in "$W/boards/zl.dtb" "$W/boards/x2.dtb" "$W/boards/nb.dtb"; do BARG+=(--dtb-dir "$b"); done
+BD=$(bash "$SRC" --dump-compatibles "${BARG[@]}" 2>&1)
+nonempty "the three-board dump has content" "$BD"
+want '^#file[[:space:]].*/zl\.dtb[[:space:]]boards[[:space:]]z[[:space:]]Letv Technologies, Inc\. MSM 8996pro \+ PMI8996 LE_ZL1-DVT1$' "$BD" \
+  "the board column is derived from the tree's own model, and the model is printed verbatim"
+want '^#file[[:space:]].*/x2\.dtb[[:space:]]boards[[:space:]]x[[:space:]]Letv Technologies, Inc\. MSM 8996 v3 \+ PMI8996 LE_X2-PVT$' "$BD" \
+  "and the other phone is a different letter with a different model, not the same one twice"
+want '^#file[[:space:]].*/nb\.dtb[[:space:]]boards[[:space:]][?][[:space:]]Acme Reference Board$' "$BD" \
+  "a tree whose model names neither board is a question mark -- it is not filed under one of them"
+want '^# boards: boards[?] 1 boardsx 1 boardsz 1' "$BD" \
+  "the per-DTB census counts files: one z, one x, one unidentified"
+want '^/zlonly1[[:space:]]vendor,zlonly1[[:space:]]boards[[:space:]]z$' "$BD" "every data line carries its own tree's board"
+n=$(printf '%s\n' "$BD" | grep -c '^/shared[[:space:]]vendor,shared[[:space:]]boards[[:space:]]')
+[ "$n" = 3 ] && ok "and the same node in three trees is three rows -- the board is part of a row's identity, not decoration" ||
+  bad "the shared node produced $n rows, not 3"
+n=$(printf '%s\n' "$BD" | grep -c '^/neither[[:space:]]vendor,neither[[:space:]]boards[[:space:]][?]$')
+[ "$n" = 1 ] && ok "the unidentifiable tree's own node is filed under the question mark, not under a board" ||
+  bad "the unidentifiable tree's node was filed under something else"
+
+BR=$(bash "$SRC" "${BARG[@]}" 2>/dev/null)
+nonempty "the board-filtered report has content" "$BR"
+want 'board:         THIS PHONE \(LE_ZL1\) only -- 5 of 6 paths' "$BR" \
+  "the default report is this phone's trees only, and says how many paths the filter took away"
+want 'nodes in the device tree: 5 distinct paths, 7 path/compatible pairs' "$BR" \
+  "and the counts are the filtered ones: this phone's two trees plus the unidentified one"
+BX=$(bash "$SRC" "${BARG[@]}" --board x2 2>/dev/null)
+want 'board:         the OTHER PHONE \(LE_X2\) only -- 4 of 6 paths' "$BX" \
+  "--board x2 reports on the other phone, and its counts differ from this phone's -- the filter has a direction"
+BA=$(bash "$SRC" "${BARG[@]}" --board all 2>/dev/null)
+want 'nodes in the device tree: 6 distinct paths, 8 path/compatible pairs' "$BA" \
+  "--board all is the unfiltered count: the largest of the three, and equal to neither of them"
+BO=$(bash "$SRC" "${BARG[@]}" --boards 2>/dev/null)
+nonempty "the --boards table has content" "$BO"
+want '^boards +z +[0-9a-f]{10} +[0-9]+ +Letv Technologies, Inc\. MSM 8996pro' "$BO" \
+  "--boards is one line per DTB: set, board, sha256, size, model"
+want '3 device tree\(s\); BRD z=LE_ZL1' "$BO" "and it counts the trees it printed"
+# A row whose pattern matches only the OTHER phone's node is this report's own worst mistake, and it
+# must not be reported as a gap (which would say "this phone has this hardware and nothing reads it")
+# nor as a broken pattern. It is its own finding, and it is exactly what the old `vibrator` row was.
+# Three rows, one per tree, so the direction of the filter is visible in the DTB node counts.
+printf '%s\n' \
+  'zlblock	vendor,zlonly	zzz_nothing_reads_this	HW	-' \
+  'x2block	vendor,x2only	zzz_nothing_reads_this	HW	-' \
+  'nbblock	vendor,neither	zzz_nothing_reads_this	HW	-' > "$W/table-boards.txt"
+X=$(bash "$SRC" "${BARG[@]}" --table "$W/table-boards.txt" 2>/dev/null)
+nonempty "the board-filtered table report has content" "$X"
+want '^zlblock +2 +\*\*NONE\*\*' "$X" "this phone's block is counted with BOTH of its nodes"
+want '^nbblock +1 +\*\*NONE\*\*' "$X" "the unidentified tree's block is counted too -- it is not dropped"
+want 'Declared by another board only' "$X" "the other phone's block has its own section"
+want '^  x2block +1 node\(s\), in boards/x -- declared by the LE_X2, a different phone$' "$X" \
+  "and that row names the block, the count, the set and WHICH other board"
+notwant '^x2block' "$X" "it is NOT in the block table -- nothing here says this phone has the hardware"
+notwant '^  x2block +1 dtb node' "$X" "and it is not in the gap list either -- the two lists differ by their wording, so this is a reading and not a guess"
+want 'blocks: 2 hardware -- 0 with a named instrument, \*\*2 with none\*\*' "$X" \
+  "the counts are the two gaps; the other board's row is added to neither side (the table prints two rows, not three)"
+want '1 row\(s\) matched only another board' "$X" "and the summary line says so"
+Y=$(bash "$SRC" "${BARG[@]}" --table "$W/table-boards.txt" --board x2 2>/dev/null)
+want '^x2block +1 +\*\*NONE\*\*' "$Y" "under the other board's filter the same row is an ordinary gap"
+want '^  zlblock +2 node\(s\), in boards/z -- declared by the LE_ZL1 \(this phone\)$' "$Y" \
+  "and this phone's row is now the one in the other-board section -- the row is not special, the filter is"
+want '^nbblock +1 +\*\*NONE\*\*' "$Y" "and the unidentified row is a gap under BOTH filters -- which is what keeps a tree this report cannot identify from disappearing"
+Z=$(bash "$SRC" "${BARG[@]}" --table "$W/table-boards.txt" --board all 2>/dev/null)
+want '^zlblock +2 +\*\*NONE\*\*' "$Z" "with no filter, this phone's block is in the table"
+want '^x2block +1 +\*\*NONE\*\*' "$Z" "and so is the other phone's, as a row of its own"
+want 'blocks: 3 hardware -- 0 with a named instrument, \*\*3 with none\*\*' "$Z" \
+  "and with no filter all three rows are gaps, so a row that moved out of the table under a filter is not lost"
+notwant 'Declared by another board only' "$Z" "and there is no other-board section, because there is no other board in this report"
+
 echo "== 2. the instrument search, against a fake repo =="
 # ==================================================================================================
 #
@@ -293,10 +389,21 @@ else
   ok "the committed snapshot is readable"
   R=$(bash "$SRC" --snapshot "$SNAP" 2>/dev/null)
   nonempty "the report has content" "$R"
-  want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$R" \
-    "the device's own enumeration, counted (the two numbers differ: a node can carry several compatibles, and a path can appear twice in one DTB)"
-  want '^blocks: 29 hardware -- 20 with a named instrument, \*\*9 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 20 read by something, **9 read by nothing**"
+  want 'nodes in the device tree: 688 distinct paths, 705 path/compatible pairs' "$R" \
+    "THIS PHONE's enumeration, counted (the two numbers differ: a node can carry several compatibles, and a path can appear twice in one DTB)"
+  # The board filter is not a detail of this report, it is the correction it exists to carry: the
+  # flashed boot image's appended blob holds the LeEco X2's device trees too, and the two boards' root
+  # `compatible` is byte-identical, so an unfiltered report credits this phone with another phone's
+  # hardware. That is what the old `vibrator` row did (`ti,drv2604l`, the X2's second haptics chip).
+  want 'board:         THIS PHONE \(LE_ZL1\) only -- 688 of 699 paths' "$R" \
+    "and the report says which phone it is about, and how many paths the filter took away"
+  want '23 DTBs in the blob describe the LE_X2' "$R" "naming the other phone and the size of its share of the blob"
+  notwant 'drv2604l' "$R" "the other phone's haptics chip is nowhere in this phone's report"
+  RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
+  want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
+    "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
+  want '^blocks: 29 hardware -- 21 with a named instrument, \*\*8 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \\
+    "29 hardware blocks, 21 read by something, **8 read by nothing**"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -312,16 +419,32 @@ else
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
   # The gaps, by name. These twelve are the answer to "which hardware has no probe"; if one of them gains
   # a probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in nfc fm-radio vibrator video-codec usb-pd sdcard wfd hdmi eeprom; do
+  for b in nfc fm-radio video-codec usb-pd sdcard wfd hdmi eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came
   # from decides whether it is on this board at all.
-  want '^vibrator +1 +\*\*NONE\*\* +R$' "$R" "the haptics driver is in the rebuilt tree only -- its existence depends on which image boots"
-  want '^touch +6 ' "$R" "six touch controllers are enumerated (one is the one the user's finger proved)"
-  want '^audio-codec +67 +zl1-audio-test\.sh' "$R" "the audio block's 67 nodes are read by one named probe"
+  # The vibrator, and the correction that produced this column. The block is the PMI8994 haptics
+  # block (`qcom,qpnp-haptic`), which is in EVERY set; the `ti,drv2604l` node that made the old report
+  # say "rebuilt only" belongs to the other phone. So the row must be COVERED here with no set
+  # qualifier, and the old claim must be gone.
+  want '^vibrator +1 +zl1-vibrator-probe\.sh \(\+1\) +F R S$' "$R" \
+    "the vibrator is this board's PMI8994 haptics block, in every set -- not the X2's ti,drv2604l -- and exactly one other file names it (the capture chain that runs it)"
+  want '^touch +3 ' "$R" "three touch controllers on this phone's trees (one is the one the user's finger proved)"
+  want '^audio-codec +66 +zl1-audio-test\.sh' "$R" "the audio block's 66 nodes are read by one named probe"
+  # The same two rows under --board all: the difference IS the other phone. This is the reading that
+  # makes "the filter is doing something" visible on the real data and not only in a fixture.
+  want '^touch +6 ' "$RA" "the other phone adds three more touch controllers to the same row"
+  want '^audio-codec +67 +zl1-audio-test\.sh' "$RA" "and one more audio node -- its second amplifier"
   want '^modem +7 +zl1-modem-probe\.sh' "$R" "and the modem by its own, not by whichever file alphabetically mentions 'modem' first"
   want '^usb +10 +zl1-rndis-recover\.sh' "$R" "the USB block is credited to the RNDIS recovery, which actually rebinds it"
+  # Symmetry: under the other board's filter, this phone's own fingerprint node is the one that lands in
+  # the other-board section. A mechanism that works in one direction only is a coincidence.
+  RX=$(bash "$SRC" --snapshot "$SNAP" --board x2 2>/dev/null)
+  want '^  fingerprint +1 node\(s\), in .* -- declared by the LE_ZL1 \(this phone\)$' "$RX" \
+    "and under --board x2 this phone's fingerprint node is the one listed as the other board's"
+  notwant '^fingerprint' "$RX" "so it is not in the other board's own table -- the row moved, it did not disappear"
+  notwant '^  fingerprint +1 dtb node' "$RX" "and not in its gap list either -- a block in the other phone's trees is neither covered nor missing here"
 
   # The modes have to be modes: --gaps is the tail of the full report, and --block is one row.
   G=$(bash "$SRC" --snapshot "$SNAP" --gaps 2>/dev/null)

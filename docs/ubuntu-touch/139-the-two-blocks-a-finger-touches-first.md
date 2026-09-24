@@ -7,6 +7,10 @@
 并接进"一次启动"的默认集（新步骤 **04e**）。清单从 **11 个缺口**变成 **9 个**。
 家族 **23 个 harness / 2627 检查 / 全绿**（本页之前是 2529）。
 
+**后续**: 本页之后，`vibrator` 这一行也关掉了，而且它引出的不是一条新缺口，而是**这份清单本身的一个错误**：
+那一行点名的"仪器"（`ti,drv2604l`）是**另一台手机**（LeEco X2）的芯片，见
+[`140`](140-the-block-that-was-another-phones.md)。清单现在是 **8 个**缺口，表格在 §8。
+
 **接续**: [`137`](137-a-boot-should-answer-the-question-nobody-asked.md)（缺口的来源）、
 [`138`](138-the-hardware-limiter-had-never-been-read.md)（前一天收的第三个，硬件限温器）、
 [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——04e 加进的就是它）。
@@ -180,7 +184,8 @@ scp scripts/device/zl1-leds-probe.sh root@10.15.19.82:/tmp/ && ssh root@10.15.19
 | `thermal-lmh`（硬件限温器） | docs **138** 收口 |
 | `torch`（相机手电筒） | 本页收口 |
 | `notification-led`（通知/充电灯） | 本页收口 |
-| `nfc`、`fm-radio`、`vibrator`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | **9 个仍然没有探针** |
+| `vibrator`（振动马达） | docs **140** 收口——而且收的过程发现这一行原来的"仪器"是**另一台手机**的芯片 |
+| `nfc`、`fm-radio`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | **8 个仍然没有探针** |
 
 其中 `sdcard` 已经有一条**离线就能读出来**的结论值得先记下：DTB 里有两个 `qcom,sdhci-msm` 控制器，
 `sdhc1@7464900` 的 `status = "ok"` 且带 `qcom,nonremovable`（HS400/HS200，不可移除 → 内部存储），
