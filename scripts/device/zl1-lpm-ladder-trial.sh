@@ -195,7 +195,10 @@ zl1 LPM ladder trial -- what each reading decides, and why it is this reading
      The four answers are REFUTED / SUPPORTED (not proven) / INCONCLUSIVE / CONFOUNDED, and the words
      around them say which reading produced them. "The counters moved" is not proof of a mechanism: the
      counters are evidence about behaviour, the parameter is evidence about intent, and neither is the
-     driver's source, which is not on this device.
+     driver's source. (That source IS on the host -- scripts/host/zl1-lpm-sleep-semantics.sh reads the
+     gate out of it, docs 153 -- and it says the parameter returns level index 0, a bare wfi(). That is
+     WHY this script's job is the behaviour: the mechanism is already read, and the size of the effect is
+     not something a source file can answer.)
 
   7. THE REVERT, on every exit path, with the read-back. And the one fact that makes all of this cheap:
      the value does not survive a reboot -- the next boot sets it to 1 from the cmdline again -- so a
@@ -623,9 +626,11 @@ if [ "$DEEP_DU" -gt 0 ]; then
   say "   -> SUPPORTED, NOT PROVEN: with the ladder allowed, state$DEEPEST was entered $DEEP_DU time(s)"
   say "      where it had been entered 0 times in the whole boot before. That is consistent with"
   say "      sleep_disabled gating the ladder, and it is not proof of it: nothing here measures whether"
-  say "      the same opportunity would have entered it anyway, and the driver's source -- which is where"
-  say "      the semantics of the parameter live -- is not on this device. What it DOES settle is that the"
-  say "      ladder is reachable on this device at all, which no image here had ever shown."
+  say "      the same opportunity would have entered it anyway, and no source file can measure that. (The"
+  say "      semantics of the parameter are read from the driver's source on the host -- docs 153 -- so the"
+  say "      open question was never what the parameter does; it is what the ladder is WORTH on this board.)"
+  say "      What this DOES settle is that the ladder is reachable on this device at all, which no image"
+  say "      here had ever shown."
   if [ "$CONFOUNDED" = 1 ]; then
     say "      CONFOUNDED, and it is stated here rather than left to the reader: a confounder recorded"
     say "      above (the keeper running, or the deepest state disabled) can produce this sign on its own,"
@@ -641,7 +646,11 @@ if [ "$CONFOUNDED" = 1 ]; then
 else
   say "   -> NOT SUPPORTED: state0 moved $WFI_DU time(s) -- so there WAS idle opportunity -- and"
   say "      state$DEEPEST was still entered 0 times with the ladder allowed. Either the parameter does"
-  say "      not gate what it appears to gate, or this SoC's ladder needs something else as well (the"
-  say "      kernel's own source would say; it is not on this device). Do not report this as the fix."
+  say "      not gate what it appears to gate, or this SoC's ladder needs something else as well. The"
+  say "      driver's source IS readable from the host (docs 153: the gate returns level index 0, and index"
+  say "      0 is a bare wfi() -- lpm_cpuidle_enter then carries that index into psci_enter_sleep, whose"
+  say "      'if (!idx)' branch is the wfi). So a NOT SUPPORTED result here is not a source question; it is"
+  say "      a fact about this board that the source cannot explain, and it is the interesting outcome."
+  say "      Do not report this as the fix."
 fi
 exit 0

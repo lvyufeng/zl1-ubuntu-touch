@@ -33,6 +33,10 @@ set -uo pipefail
 HOST="${ZL1_HOST:-root@10.15.19.82}"
 IP="${ZL1_IP:-10.15.19.82}"
 SERIAL_PREFIX="${ZL1_SERIAL:-33e80afe}"
+# The two USB ids this device presents, both seen on this wire. Named, because the difference between them
+# is the difference between "booted and reachable" and "waiting in the bootloader".
+RNDIS_ID="${ZL1_RNDIS_ID:-18d1:d001}"
+FASTBOOT_ID="${ZL1_FASTBOOT_ID:-18d1:d00d}"
 QUIET=0
 NO_SSH=0
 
@@ -73,15 +77,33 @@ while read -r port vidpid serial product mfr; do
   # docs 49 section 5 fell into and docs 80 section 7 fell into again.
   05c6:9008)
     MODE="edl"; PORT="$port"; DETAIL="$product $mfr" ;;
-  # The RNDIS gadget the port boots into. The serial is the *only* safe discriminator (docs 76): an
-  # unrelated Xiaomi on this bus can present the same IDs.
+  # THE SERIAL SAYS WHICH DEVICE; THE PRODUCT ID SAYS WHAT IT IS RUNNING -- two different questions. The
+  # serial alone was read as the whole answer: every id carrying serial $SERIAL_PREFIX* was called "the
+  # RNDIS gadget", including the one the BOOTLOADER presents, so a phone sitting in fastboot was reported
+  # as a gadget and the page sent the operator to fix the HOST (bind rndis_host, set addresses) while the
+  # phone was waiting in the bootloader. Found 2026-09-24 by running this page with the device in exactly
+  # that state -- which is the state it is most often in, because a phone that has just been flashing sits
+  # there. The serial is still what keeps the unrelated Xiaomi out (docs 76).
   *)
     case "$serial" in
     "$SERIAL_PREFIX"*)
-      MODE="rndis"; PORT="$port"; DETAIL="$vidpid serial=$serial" ;;
+      PORT="$port"; DETAIL="$vidpid serial=$serial"
+      case "$vidpid" in
+      "$RNDIS_ID")    MODE="rndis" ;;
+      "$FASTBOOT_ID") MODE="fastboot" ;;
+      *)              MODE="other" ;;
+      esac ;;
     esac ;;
   esac
 done < <(usb_table)
+
+# AND THE ID IS READ FROM THE SAME TABLE THE FIXTURES REWRITE. The first version of this fix asked the
+# `fastboot` TOOL instead, which reads the real bus: this page's own harness rewrites
+# /sys/bus/usb/devices to a fake tree, so the check stepped straight out of its sandbox and took a
+# host-side harness of another subsystem down with it (docs 153). An instrument whose input cannot be
+# replaced is one no fixture can drive.
+# The two ids, both seen on this wire: d001 is the UT RNDIS gadget (docs 20/37/47), d00d is the
+# bootloader -- product string "Android", one vendor-specific interface. The PID is the reading.
 
 # --- report + route ------------------------------------------------------------------------------
 
@@ -120,8 +142,26 @@ edl)
   always "next: long-press POWER 10-20 s, then re-run this script"
   exit 2 ;;
 
+fastboot)
+  always "== device: IN FASTBOOT (bootloader) -- $FASTBOOT_ID, serial $SERIAL_PREFIX, port $PORT"
+  always "   The id it presents is the BOOTLOADER's, so the phone is in fastboot and not booted. The serial"
+  always "   is right and NOTHING IS WRONG WITH THE HOST: no rndis_host step, no address and no interface"
+  always "   applies to this state. (This is the state a key combo leaves the phone in, and the state"
+  always "   flashing happens in -- see scripts/flash-boot-image.sh.)"
+  always "   To get a booted device: press power, or \`fastboot reboot\`, which is a DEVICE action and is"
+  always "   a person's call -- this script does not run it. Re-run this page afterwards."
+  always ""
+  always "next: boot the device, then re-run this script"
+  exit 2 ;;
 rndis)
   always "== device: ON THE BUS as the RNDIS gadget (port $PORT, $DETAIL)"
+  ;;
+other)
+  always "== device: ON THE USB BUS as $DETAIL"
+  always "   The serial is $SERIAL_PREFIX*, so this IS the zl1 -- but its USB id is neither the RNDIS gadget"
+  always "   ($RNDIS_ID) nor the bootloader ($FASTBOOT_ID), and this page will not guess what a third id"
+  always "   means. The host-side check below runs anyway: if usb0 exists and answers, the gadget is up"
+  always "   whatever it calls itself."
   ;;
 esac
 
@@ -291,8 +331,8 @@ say "   cpu0 governor: $(field gov)"
 always "   BEFORE ANY OF IT, and with no device involved at all -- every command below is a script,"
 always "   and every script here documents itself in its own header. This checks that it can:"
 always "       scripts/host/zl1-cli-usage-selftest.sh,"
-always "   198 checks. It sweeps every script THIS page names (76 of them -- 70 the page spells out as a"
-always "   path, 6 it names by bare basename) and requires --help to print that script's"
+always "   202 checks. It sweeps every script THIS page names (78 of them -- 73 the page spells out as a"
+always "   path, 5 it names by bare basename) and requires --help to print that script's"
 always "   own header and nothing else (docs 113). Two were printing something else before it existed:"
 always "   install-retire-debug-keeper.sh printed 12 lines of its own shell code, and zl1-thermal.sh"
 always "   printed 'set -u' -- because 17 scripts printed their usage with a hard-coded line range, a"
@@ -1264,6 +1304,39 @@ always "      line, asserted to be that large, so a writer back in the pipeline 
 always "      host with no load required -- a check that only fails sometimes is a check nobody can act on."
 always "      The same shape was in thirteen harnesses and seven of them set pipefail; the invariant that"
 always "      keeps it out is in the meta-harness below."
+always "   4d. heat, the SUPPLY side -- WHAT THE PARAMETER DOES, read from the driver's own source"
+always "       (docs 153). Items 4b and 4c measure BEHAVIOUR, and both of them, plus the trial's own"
+always "       verdict text, used to tell the operator the same thing: the reading that would settle what"
+always "       \`lpm_levels.sleep_disabled\` MEANS is 'in the kernel source, which is not on this device'."
+always "       THAT PREMISE IS FALSE, and answering it needs no phone at all:"
+always "                                        bash scripts/host/zl1-lpm-sleep-semantics.sh"
+always "       The source that built the running image is on this laptop, and the DTBs built from it are"
+always "       byte-identical to the five appended to that image. The reading: the parameter has ONE gate"
+always "       site -- \`cpu_power_select()\`'s \`if (sleep_disabled || sleep_us < 0) return 0;\` -- and that 0"
+always "       is a LEVEL INDEX, not a boolean; \`lpm_cpuidle_enter()\` carries the index into"
+always "       \`psci_enter_sleep()\`, whose \`if (!idx)\` branch is a literal \`wfi()\` with no PSCI call and"
+always "       no \`cpu_suspend()\`. So the parameter does not choose a shallower state: it removes the"
+always "       ladder from the top and leaves the architectural WFI. Three readings keep that from being a"
+always "       grep -- WHICH of the file's three \`#if\` arms compiles is decided from the built \`.config\`"
+always "       (a config that selects another arm takes the verdict down, because facts about dead text are"
+always "       not facts); the ladder is read out of the appended FDTs GROUPED PER \`pm-cpu\` cluster (this"
+always "       board has two, so a flattened six-entry list would make 'index 0 is wfi' a claim about every"
+always "       third entry); and \`qcom,use-psci\` is itself verdict-bearing, since without it the"
+always "       \`psci_enter_sleep()\` branch never runs. It also COMPUTES the \`qcom,min-child-idx\` story"
+always "       rather than recalling it: the sentence 'parsed and never consumed' was printed as prose and"
+always "       is contradicted by the source, which reads it six times -- consumed, but on the"
+always "       cluster-aggregation and broadcast-timer paths, NOT on the one this gate returns into. What"
+always "       it does not settle is the SIZE of the effect: that is item 4c's measurement. Offline:"
+always "       scripts/host/zl1-lpm-sleep-semantics-selftest.sh, 102 checks -- the fixtures are a kernel"
+always "       source tree emitted LINE BY LINE by a generator that prints the line numbers it wrote, and a"
+always "       boot image with a real FDT appended at a NON-4-ALIGNED offset (an FDT's offsets are relative"
+always "       to the blob; aligning them to the file is how a walk returns a one-node tree). It re-creates"
+always "       the three defects the instrument shipped -- the argument order of its function finder, a"
+always "       bare-node-name comparison for \`qcom,use-psci\`, and a \`LEVELS -\` sentinel that the ladder"
+always "       count read as a ladder -- so the harness is asserted to be non-vacuous rather than declared"
+always "       to be. One of its fixtures found a real defect in the subject: a tree describing NO ladder"
+always "       was counted as one cluster WITH a ladder, and the run printed \`THE TREES DISAGREE\` -- a"
+always "       wrong answer with exit 0 -- instead of claiming nothing."
 always "   5. modem / telephony        ->  scp scripts/device/zl1-modem-probe.sh root@$IP:/tmp/ && \\"
 always "                                   ssh root@$IP 'sh /tmp/zl1-modem-probe.sh'"
 always "      (docs 120) THE SUBSYSTEM NOBODY HAS LOOKED AT, and the reason it looks fine from here:"

@@ -43,8 +43,12 @@
 # CONSEQUENCE rather than the parameter: the parameter's name is only evidence, the cpuidle counters are
 # evidence of behaviour. A boot with `sleep_disabled=1` whose deep-state time counters are still moving
 # would refute the mechanism; a boot whose counters sit at zero is the mechanism having its effect. The
-# reading that would settle the semantics of the parameter itself is in the kernel source, which is not
-# on this device -- so this script never claims to know what the parameter does, only what is happening.
+# semantics of the parameter itself USED TO BE UNREADABLE FROM HERE, and that is no longer true: the
+# kernel source that built this image is on the host, and `scripts/host/zl1-lpm-sleep-semantics.sh` reads
+# the gate out of it (docs 153 -- the parameter makes cpu_power_select() return level index 0, and index 0
+# is a bare wfi(), so the ladder is removed from the top rather than a shallower state being chosen).
+# THIS script still claims nothing about the mechanism: it measures what is HAPPENING, and the two are
+# different kinds of evidence on purpose.
 #
 # THE SAFETY LINE, and it is the same one as its siblings:
 #   * it writes NOTHING -- no sysfs node, no property, no module, no service, no signal;
@@ -209,8 +213,10 @@ if [ -r /proc/cmdline ]; then
     say "   -> lpm_levels.sleep_disabled = ${SLEEP_DISABLED:-EMPTY}"
     case "$SLEEP_DISABLED" in
     0) say "      (0 = the parameter is set to allow sleeping; section 3 still decides what happens)";;
-    *) say "      (non-zero = this boot asked for the low-power modes to be OFF. What that does is in"
-       say "       the kernel source, which is not on this device; section 3 measures the effect.)";;
+    *) say "      (non-zero = this boot asked for the low-power modes to be OFF. What that DOES is read"
+       say "       out of the driver's own source on the host -- scripts/host/zl1-lpm-sleep-semantics.sh,"
+       say "       docs 153: level 0, which is a bare wfi(). This script measures the effect, not the"
+       say "       mechanism, and it is still the effect that section 3 reports.)";;
     esac
     CAUSE_LPM="cmdline-asked"
   else
