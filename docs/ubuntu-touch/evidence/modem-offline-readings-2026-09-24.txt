@@ -1,0 +1,142 @@
+zl1 modem/telephony -- offline readings, 2026-09-24
+READ-ONLY, HOST-SIDE, NO DEVICE: every command below reads an image file (or the boot image) with
+debugfs in read-only mode or with a parser that opens the file O_RDONLY. Nothing is mounted, nothing
+is written, and the device was not touched (it is in EDL). Reproduce with the commands as shown.
+
+images: /mnt/data/zl1-backups/2026-06-07-adb-root-staged/{boot,modem,vendor}.img
+        /mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host.img
+
+==============================================================================
+1. the device tree: what the kernel is told to load
+==============================================================================
+$ python3 <fdt-walk>  boot.img     # 5 DTBs; the first parses cleanly:
+   /soc/qcom,mss@2080000   compatible          qcom,pil-q6v55-mss
+                            qcom,firmware-name  modem
+                            qcom,pil-self-auth  (present, no value = true)
+                            status              ok
+   (and its 32 properties in full: reg/reg-names/clocks/clock-names/vdd_* supplies,
+    qcom,sysmon-id, qcom,ssctl-instance-id, the gpio-* handshakes, memory-region, ...)
+
+$ LC_ALL=C grep -ac 'qcom,pil-q6v55-mss' boot.img
+5
+   # 5 -- one per DTB. The other four did NOT parse with this walker, so this file claims nothing
+   # about them beyond their string tables:
+   DTB at 11554920  totalsize=408918   strings=34398  has 'qcom,firmware-name'=True has 'qcom,pil-self-auth'=True
+   DTB at 11963838  totalsize=413425   strings=34377  has 'qcom,firmware-name'=True has 'qcom,pil-self-auth'=True
+   DTB at 12377263  totalsize=408914   strings=34398  has 'qcom,firmware-name'=True has 'qcom,pil-self-auth'=True
+   DTB at 12786177  totalsize=412626   strings=34006  has 'qcom,firmware-name'=True has 'qcom,pil-self-auth'=True
+   DTB at 13198803  totalsize=408918   strings=34398  has 'qcom,firmware-name'=True has 'qcom,pil-self-auth'=True
+
+==============================================================================
+2. the Android vendor image has NO modem firmware
+==============================================================================
+$ debugfs -R 'ls /firmware' vendor.img | wc -w   -> 126 entries
+$ debugfs -R 'ls /firmware' vendor.img | grep -iE 'modem|mba'
+modem_pr
+   # modem_pr only: the RF/carrier CONFIGURATION tree. No modem.mdt, no modem.b*, no mba.mbn.
+   # (a530_* a530v* venus.* cpp_firmware_* Signedrompatch_* are the OTHER DSPs)
+
+==============================================================================
+3. the modem partition: a FAT16 volume, and what is on it
+==============================================================================
+$ file modem.img
+/mnt/data/zl1-backups/2026-06-07-adb-root-staged/modem.img: DOS/MBR boot sector, code offset 0x3c+2, OEM-ID "MSDOS5.0", Bytes/sector 4096, sectors/cluster 4, root entries 512, Media descriptor 0xf8, sectors/FAT 4, sectors/track 63, heads 255, sectors 28160 (volumes > 32 MB), serial number 0xbc614e, unlabeled, FAT (16 bit)
+
+$ python3 fatwalk.py modem.img MODEM
+BPB: bytes/sector=4096 sectors/cluster=4 reserved=1 fats=2 root_entries=512 sectors_per_fat=4
+root directory:
+   DIR  IMAGE cluster=4
+   DIR  VERINFO cluster=2
+the tree: 301 files, 82003504 bytes (78.2 MiB)
+
+entries whose name contains 'MODEM': 101
+   IMAGE/MODEM.B00                   884
+   IMAGE/MODEM.B01                  7272
+   IMAGE/MODEM.B02                  5460
+   IMAGE/MODEM.B03               1612836
+   IMAGE/MODEM.B04               3229019
+   IMAGE/MODEM.B05                163056
+   IMAGE/MODEM.B06                734144
+   IMAGE/MODEM.B07               2028468
+   IMAGE/MODEM.B08              14223856
+   IMAGE/MODEM.B09                327264
+   IMAGE/MODEM.B10                180672
+   IMAGE/MODEM.B11                458208
+   IMAGE/MODEM.B12              10351032
+   IMAGE/MODEM.B13               7242464
+   IMAGE/MODEM.B15                 79632
+   IMAGE/MODEM.B16                498151
+   IMAGE/MODEM.B17              10645504
+   IMAGE/MODEM.B18                 81920
+   IMAGE/MODEM.B19               1830912
+   IMAGE/MODEM.B20                238112
+   IMAGE/MODEM.MDT                  8156
+
+$ python3 fatwalk.py modem.img MBA
+the tree: 301 files, 82003504 bytes (78.2 MiB)
+
+entries whose name contains 'MBA': 1
+   IMAGE/MBA.MBN                  213824
+
+==============================================================================
+4. MODEM.MDT is the image's ELF header, and its program headers ARE the file set
+==============================================================================
+$ readelf -h <MODEM.MDT>
+   Magic: 7f 45 4c 46 ... Class: ELF32  Data: little endian  Type: EXEC
+   Machine: QUALCOMM DSP6 Processor     Entry point address: 0x88800000
+$ python3 elfph.py modem.img MODEM.MDT
+MODEM.MDT: 8156 bytes, first cluster 4516
+ELF32: e_phoff=52 e_phentsize=32 e_phnum=26
+ idx   p_type   p_offset   p_filesz    p_memsz   the file on the partition
+   0      0x0          0        884          0   MODEM.B00
+   1      0x0       4096       7272       8192   MODEM.B01
+   2      0x1      12288       5460       5460   MODEM.B02
+   3      0x1      20480    1612836    1612836   MODEM.B03
+   4      0x1    1634304    3229019    3229019   MODEM.B04
+   5      0x1    4866048     163056     163056   MODEM.B05
+   6      0x1    5029888     734144     734144   MODEM.B06
+   7      0x1    5767168    2028468    2028468   MODEM.B07
+   8      0x1    7798784   14223856   14223856   MODEM.B08
+   9      0x1   22024192     327264     327264   MODEM.B09
+  10      0x1   22351872     180672     180672   MODEM.B10
+  11      0x1   22536192     458208     458208   MODEM.B11
+  12      0x1   22994944   10351032   10351032   MODEM.B12
+  13      0x1   33349632    7242464    7242464   MODEM.B13
+  14      0x1   40595456          0   24548416   -- nothing to load --
+  15      0x1   40595456      79632      79632   MODEM.B15
+  16      0x1   40677376     498151     498151   MODEM.B16
+  17      0x1   41177088   10645504   10645504   MODEM.B17
+  18      0x1   51826688      81920      81920   MODEM.B18
+  19      0x1   51912704    1830912    1830912   MODEM.B19
+  20      0x1   53747712     238112     238112   MODEM.B20
+  21      0x3       8192          0          0   -- nothing to load --
+  22      0x2       8192          0          0   -- nothing to load --
+  23      0x1   40592096          0          0   -- nothing to load --
+  24      0x1   69734944          0          0   -- nothing to load --
+  25      0x1   53989376          0   23351296   -- nothing to load --
+
+   # The sizes in the table above are the sizes of the MODEM.B* files listed in section 3,
+   # one for one: 26 program headers, exactly 20 with p_filesz != 0, exactly 20 MODEM.B* files
+   # on the partition. Index 14 is one of the headers with p_filesz = 0, which is why no
+   # MODEM.B14 exists -- it is not a missing piece of a broken file set.
+
+==============================================================================
+5. where Android mounts it, and that UT does not
+==============================================================================
+$ debugfs -R 'cat /etc/fstab.qcom' vendor.img | grep modem
+/dev/block/bootdevice/by-name/modem                          /vendor/firmware_mnt     vfat    ro,shortname=lower,uid=0,gid=1000,dmask=227,fmask=337,context=u:object_r:firmware_file:s0          wait
+
+$ debugfs -R 'cat /etc/fstab' rootfs-...-zl1-host.img
+# UNCONFIGURED FSTAB FOR BASE SYSTEM
+$ debugfs -R 'stat /lib' rootfs...img     # /lib is a SYMLINK (usrmerge)
+Generation: 0    Version: 0x00000000:00000000
+User:     0   Group:     0   Project:     0   Size: 7
+File ACL: 0
+$ debugfs -R 'stat /lib/firmware' rootfs...img
+/lib/firmware: File not found by ext2_lookup 
+$ debugfs -R 'stat /usr/lib/firmware' rootfs...img
+/usr/lib/firmware: File not found by ext2_lookup 
+
+   # So on the UT side there is no /etc/fstab entry for the modem partition and NO firmware
+   # directory anywhere in the rootfs. THE HYPOTHESIS this supports (not proves): the kernel's
+   # request_firmware() has nowhere to find modem.mdt. The probe measures it on the device.

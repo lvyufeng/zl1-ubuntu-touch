@@ -1,0 +1,106 @@
+zl1 modem probe -- offline self-test
+  script under test: /mnt/data/zl1-bb10/scripts/host/../device/zl1-modem-probe.sh
+  fake device:       /tmp/zl1-modem-probe-selftest/root
+
+== 0. it writes NOTHING -- checked statically, and the guard has teeth ==
+PASS  the shipped probe contains no write to /sys, /proc, a block device, a module or a unit
+PASS  the mutation really differs from the shipped file
+PASS  the guard CATCHES a write that is put back (so the check above is live)
+PASS  and names the line it found
+PASS  the guard catches a BIND MOUNT -- so its mount allowlist is not 'any mention of mount'
+PASS  and names the mount it found
+PASS  and the shipped probe contains none
+
+== 1. the guard: not the zl1 ==
+PASS  a different SoC exits 2
+PASS  and says what it is refusing
+PASS  naming the string it wanted
+PASS  and reads nothing beyond the guard
+PASS  and runs no command at all
+
+== 2. --explain reads nothing and says why each reading decides ==
+PASS  --explain exits 0
+PASS  it explains the firmware-name reading
+PASS  and the search path
+PASS  and why the FAT name is upper-case while the kernel asks for lower
+PASS  and what the verdict is for
+PASS  --explain reads no log
+PASS  and does not look at the container
+
+== 3. the healthy readings: every section answers, and the name comes from the device ==
+PASS  a full read exits 0
+PASS  the compatible string is printed
+PASS  and the firmware name the kernel will ask for
+PASS  the self-auth property is reported as present
+PASS  the subsystem-restart view is read by name AND state
+PASS  a netdev count that is a number, not a blank
+PASS  with no firmware files, it says the file is not on the path
+PASS  the firmware name is taken from the DEVICE TREE, not assumed
+PASS  and the search path is compared against THAT name
+PASS  and not against the literal word modem
+
+== 4. the firmware reaching the path, and where the firmware actually is ==
+PASS  firmware on the search path: it says so
+PASS  and reports the MBA as present too
+PASS  the verdict names that rung
+PASS  and does not hedge a question it answered
+PASS  the partition's mount line is printed
+PASS  mounted but off the search path: the verdict says exactly that -- the port-problem branch
+PASS  and names the fix, not a partition change
+PASS  including that the modem partition must never be written
+PASS  and does not fall through to the rung below
+PASS  both: the reachable rung wins over the mount rung
+
+== 5. the two UNANSWERED branches, which must never read as a negative ==
+PASS  an unreadable kernel log exits 1
+PASS  it says the log could not be read
+PASS  and says the zeroes below are for that reason
+PASS  the verdict is UNANSWERED
+PASS  and it does NOT claim the driver was silent
+PASS  and does not reach the port-problem conclusion either
+PASS  no firmware-name in the device tree exits 1
+PASS  it reports the node as unreadable
+PASS  the verdict says the boot did not name it
+PASS  no directory is asked for a file it cannot name
+PASS  and the search-path section refuses to conclude
+PASS  so it never reports the comparison as a negative
+
+== 6. the (none) lines actually print -- the pipeline trap ==
+PASS  a boot that logged nothing: the named (none) line IS printed for the pil/mss grep
+PASS  and for the firmware-failure grep
+PASS  with a matching line, its own (none) line is gone
+PASS  while the OTHER pattern keeps its own (none) line
+PASS  an nsenter that answered nothing says so
+PASS  and does not read as a clean listing of no mount
+PASS  when the namespace does answer, the path is printed
+
+== 7. the UT side: an active daemon is not a modem ==
+PASS  ofono's unit state is printed
+PASS  and the bus name is read as NOT owned
+PASS  with the sentence that says what that means
+PASS  and it does not claim gdbus is missing
+PASS  an owned bus name is printed as the owner
+PASS  and not as 'not owned'
+PASS  with no gdbus, it says the name was NOT READ
+PASS  and explicitly that this is not the same as 'not owned'
+
+== 8. --quiet keeps the headings, the boot identity and the verdict -- and nothing else ==
+PASS  --quiet keeps the boot identity (a verdict with no boot is not attributable)
+PASS  and the section headings, so the verdict can be read
+PASS  --quiet drops the reading lines
+PASS  and the per-pattern counts
+PASS  and the (none) lines, which are readings like any other
+PASS  --quiet still prints the verdict's header
+PASS  and the verdict itself
+PASS  --quiet still prints the UNANSWERED verdict
+
+== 9. it never opens a block device, and never touches anything that resets a subsystem ==
+PASS  the actions taken name no block-device writer and no module operation
+PASS  and no systemctl verb that changes state
+PASS  the container is entered for its MOUNT TABLE only
+PASS  and NOT with -p (nothing here needs binder, and -p is the namespace that reaches it)
+
+== 10. the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 79 checks, and this run has exactly that many
+
+pass=79 fail=0
