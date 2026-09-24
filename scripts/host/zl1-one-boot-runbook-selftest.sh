@@ -284,6 +284,39 @@ for f in "$NW" "$RETIRE" "$CPUFREQ" "$PROOF"; do
 done
 CHAINSHAPE
   fi
+  # AND THE TWO ARCHIVING STAND-INS CARRY THEIR CALLEES' NUMBERS, for the same reason one level further
+  # down: the runbook computes each of those two steps' bound OUT OF THE CALLEE (its device-step count
+  # times its own per-step limit; the chain's settle plus its counted call sites), and a stand-in with no
+  # shape would leave both UNREAD -- so the arithmetic, the printing and the failure notice would all be
+  # exercised by nothing. The forms are the REAL ones: a bare `SETTLE=10` and a defaulted
+  # `STEP_LIMIT=${ZL1_STEP_LIMIT:-3}`, because the extractor handles both and a fixture with only one
+  # would not show it. The `step`/`read_state` lines are inside a here-document so nothing executes: the
+  # count is what is being read, not a call.
+  if [ "$2" = CAPTURE ]; then
+    cat >> "$CAL/$1" <<'CAPSHAPE'
+STEP_LIMIT=240
+: <<'CAPSTEPS'
+step 01-edl-postmortem   device "$HERE/../device/zl1-edl-postmortem.sh"
+step 02-boot-address     device "$HERE/../device/zl1-boot-address-check.sh"
+step 04b-modem           device "$HERE/../device/zl1-modem-probe.sh"
+CAPSTEPS
+CAPSHAPE
+  fi
+  if [ "$2" = HEAT ]; then
+    cat >> "$CAL/$1" <<'HEATNUMS'
+SETTLE=10
+STEP_LIMIT=${ZL1_STEP_LIMIT:-3}
+AB_WINDOW=${ZL1_AB_WINDOW:-5}
+AB_HOLD=${ZL1_AB_HOLD:-7}
+STATE_LIMIT=${ZL1_STATE_LIMIT:-4}
+PROOF_DEV_LIMIT=${ZL1_PROOF_DEV_LIMIT:-6}
+: <<'HEATSHAPE'
+step 01-netwatch-deploy "x" "$NW" --yes --ssh
+step 02-netwatch-activate "x" "$NW" --yes --ssh --activate
+read_state
+HEATSHAPE
+HEATNUMS
+  fi
   chmod +x "$CAL/$1"
 }
 callee host/zl1-post-recovery-capture.sh    CAPTURE
@@ -546,6 +579,30 @@ reset; run --yes --only 04-fingerprint
 [ "$(order | wc -l)" = 1 ] && ok "--only runs exactly the one step" || bad "$(order | wc -l) step(s) ran"
 want 'CALLEE FP args=--install' "$(order)" "and it is the one that was asked for"
 
+echo
+echo "   -- and a SKIP is not a plan/run disagreement, which is what it used to be reported as:"
+# Two defects here, both live at HEAD, both found by giving the archiving steps a computed bound and
+# therefore driving `--skip` in a scenario that asserts the exit code.
+#
+# (1) `ACTUAL` was built from the steps RECORDED -- and every skipped step gets a `step_done <name> skip`
+#     row, because the archive has to say "not in this boot's plan". Compared against the steps WANTED, ANY
+#     `--skip` looked like the declared order disagreeing with the executed one. So the run reported
+#     "1 failed" and exited 1 for a skip, and the refusal branch that recommends `--skip <step>` to an
+#     operator whose host is missing a file was recommending a false failure.
+# (2) the branch that reports it called `bad`, which is a HARNESS function and does not exist in the
+#     subject: the one branch whose job is to say "this script is wrong" printed `bad: command not found`
+#     into the step's own file and no diagnosis at all.
+reset; run --yes --skip 03-heat-chain
+[ "$RC" = 0 ] && ok "a --skip run exits 0 -- the skip is in the plan, not a disagreement with it" \
+              || bad "a --skip run exited $RC, so the plan check is comparing the wrong two lists again"
+notwant 'THE PLAN AND THE RUN DISAGREE' "$OUT" "and it says nothing about a disagreement"
+notwant 'command not found' "$OUT" "and every line it printed came from a function that exists"
+# The static half, because defect (2) is invisible until the branch fires: the subject may call no helper
+# of this harness's, and `bad` is the one it did call.
+notwant 'bad "' "$(cat "$SRC" 2>/dev/null)" "the subject calls no bad -- that name is this harness's, and the subject has no such function"
+want 'say "   THE PLAN AND THE RUN DISAGREE' "$(cat "$SRC" 2>/dev/null)" \
+  "the plan-mismatch diagnosis goes through say, which exists in both files"
+
 # ==================================================================================================
 echo
 echo "== 5. the two device readings are READINGS, and they follow the device =="
@@ -774,6 +831,87 @@ want 'run_bg "${SSH[@]}"' "$SSHSITES" "the other is handed to run_bg, which boun
 LEFT=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null | grep -vE 'devssh\(\)|run_bg "\$\{SSH' || true)
 [ -z "$LEFT" ] && ok "and with those two removed, no \${SSH[@]} call site is left unbounded" \
               || { bad "these \${SSH[@]} uses are neither devssh nor run_bg -- route them through devssh:"; printf '%s\n' "$LEFT" | sed 's/^/        | /'; }
+
+# ==================================================================================================
+echo
+echo "== 7d. the two ARCHIVING steps' bounds are COMPUTED from the callee, and the flag is a FLOOR =="
+# The requirement was PROSE -- "--step-limit has to be looser than the heat chain's own total" -- and
+# nothing measured it, so the number went 5x stale while every check in this file stayed green: the
+# capture has eighteen device steps now and was bounded by a flag chosen when it had six. Cutting either
+# archiving callee off mid-flight does not fail it, it throws away the rest of what that boot was going to
+# read, on a boot that cannot be re-run. So three things are asserted, and none of them is the subject
+# agreeing with itself:
+#
+#   (1) the ARITHMETIC, printed, out of the fixture's numbers -- so the derivation is a reading and not a
+#       sentence about one;
+#   (2) the flag is a FLOOR: with the default flat bound ABOVE the computed one the floor applies, and with
+#       --step-limit below it the computed number is what the step actually gets;
+#   (3) the two SHIPPED callees really do exceed the shipped default -- computed HERE, from their own
+#       sources, by a second implementation of the arithmetic. That is the check that would have caught
+#       the drift, and it is deliberately not the runbook's own number read back.
+echo
+echo "   -- the derivation is printed, per step, with the callee's own counted shape:"
+reset; host_fixture_ok
+run --status
+want '01-capture     900s   the callee computes to 855s (3 device steps x (240+5) + 120 of slack)' "$OUT" \
+  "the capture's bound is its device-step count times its own per-step limit, printed as arithmetic"
+want '03-heat-chain  900s   the callee computes to 362s (settle 10 + (2 step sites + 0 bounded scps) x (3+5) + proof (6+4) + A/B (2x5+7+60) + 1 read-backs x (4+5) + 240 of slack)' "$OUT" \
+  "and the chain's is every counted call site at the chain's own numbers"
+want 'under the flat floor, so the floor is what applies' "$OUT" \
+  "and when the flat bound is the higher one, it says so instead of leaving that to be inferred"
+notwant 'THE CALLEE SHAPE COULD NOT BE READ' "$OUT" \
+  "because both stand-ins carry their callee's shape -- a fixture with none would report the hole and prove nothing"
+
+echo
+echo "   -- and the flag is a FLOOR: below the computed number, the computed number is what applies:"
+reset; host_fixture_ok
+run --yes --step-limit 2 --skip 02-panic-guard --skip 03-heat-chain --skip 04-fingerprint --skip 05-trial
+want 'bound: 855s   computed from the callee: 3 device steps x (240+5) + 120 of slack' "$OUT" \
+  "step 01 gets its callee's 855s, NOT the 2s that was asked for -- the computed bound can only loosen"
+OD7d=$(latest_archive)
+want '01-capture = 855s  3 device steps x (240+5) + 120 of slack' "$(cat "$OD7d/INDEX.txt" 2>/dev/null)" \
+  "and the archive records the number that actually applied, next to the arithmetic, so a 124 in the rc column is readable"
+
+echo
+echo "   -- a shape that could not be read is NOT a pass, and it keeps the flat bound:"
+reset; host_fixture_ok
+CAP_BAK="$W/cap.bak"; cp "$CAL/host/zl1-post-recovery-capture.sh" "$CAP_BAK"
+printf '#!/bin/sh\nprintf "CALLEE CAPTURE args=%%s\\n" "$*"\nexit 0\n' > "$CAL/host/zl1-post-recovery-capture.sh"
+chmod +x "$CAL/host/zl1-post-recovery-capture.sh"
+run --status
+cp "$CAP_BAK" "$CAL/host/zl1-post-recovery-capture.sh"; chmod +x "$CAL/host/zl1-post-recovery-capture.sh"
+want "01-capture's own worst case could not be read out of" "$OUT" \
+  "the operator is told which callee could not be read, and by name"
+want 'a check could not be made, which is NOT a pass' "$OUT" "reported through the host check's UNUSABLE channel, which is NOT a pass"
+want '900s   THE CALLEE SHAPE COULD NOT BE READ' "$OUT" "and the step's own line says the flat bound is what applies and is NOT covered"
+
+echo
+echo "   -- the two SHIPPED callees exceed the SHIPPED default, measured here and not read back:"
+# The independent half. A second implementation of the arithmetic, over the real files, whose only job is
+# to answer "was the flat 900 s ever enough?" -- if a future edit raises the default past these numbers
+# this reddens and somebody has to say why, and if the capture grows another ten steps it reddens too.
+_shipped_num() { grep -m1 "^$1=" "$2" 2>/dev/null | sed -n -e 's/.*:-\([0-9][0-9]*\)}.*/\1/p' -e 's/^[^=]*=\([0-9][0-9]*\)$/\1/p' | sed -n '1p'; }
+SCAP="$REPO/scripts/host/zl1-post-recovery-capture.sh"; SHEAT="$REPO/scripts/host/zl1-heat-fix-chain.sh"
+SCAP_WORST=""; SHEAT_WORST=""; SDEF=""
+if [ -r "$SCAP" ] && [ -r "$SHEAT" ]; then
+  _n=$(grep -cE '^ *step [0-9a-z-]+ +device ' "$SCAP"); _l=$(_shipped_num STEP_LIMIT "$SCAP")
+  case "$_n$_l" in ''|*[!0-9]*) ;; *) SCAP_WORST=$(( _n * (_l + 5) + 120 )) ;; esac
+  _n=$(grep -cE '^ *step [0-9]' "$SHEAT"); _sc=$(grep -cE '(^|if ) *(bound "\$STEP_LIMIT" "\$\{SCP\[@\]\}")' "$SHEAT")
+  _rs=$(grep -cE '^ *read_state$' "$SHEAT")
+  _l=$(_shipped_num STEP_LIMIT "$SHEAT"); _st=$(_shipped_num SETTLE "$SHEAT"); _w=$(_shipped_num AB_WINDOW "$SHEAT")
+  _h=$(_shipped_num AB_HOLD "$SHEAT"); _sl=$(_shipped_num STATE_LIMIT "$SHEAT"); _pd=$(_shipped_num PROOF_DEV_LIMIT "$SHEAT")
+  case "$_n$_sc$_rs$_l$_st$_w$_h$_sl$_pd" in ''|*[!0-9]*) ;; *) SHEAT_WORST=$(( _st + (_n + _sc) * (_l + 5) + (_pd + _sl) + (_w * 2 + _h + 60) + _rs * (_sl + 5) + 240 )) ;; esac
+  SDEF=$(sed -n 's/^STEP_LIMIT=${ZL1_RB_STEP_LIMIT:-\([0-9][0-9]*\)}$/\1/p' "$SRC" | sed -n '1p')
+fi
+if [ -n "$SCAP_WORST" ] && [ -n "$SHEAT_WORST" ] && [ -n "$SDEF" ]; then
+  ok "the shipped callees' worst cases were computed from their own sources (capture ${SCAP_WORST}s, chain ${SHEAT_WORST}s, shipped default ${SDEF}s)"
+  [ "$SCAP_WORST" -gt "$SDEF" ] && ok "the capture's ${SCAP_WORST}s EXCEEDS the flat default ${SDEF}s, so the computed bound is load-bearing and not decoration" \
+                                 || bad "the capture's worst case ${SCAP_WORST}s no longer exceeds the flat default ${SDEF}s -- this check has stopped measuring anything"
+  [ "$SHEAT_WORST" -gt "$SDEF" ] && ok "and the chain's ${SHEAT_WORST}s exceeds it too, for the same reason" \
+                                 || bad "the chain's worst case ${SHEAT_WORST}s no longer exceeds the flat default ${SDEF}s"
+else
+  bad "the two shipped callees' worst cases could not be computed (capture [$SCAP_WORST] chain [$SHEAT_WORST] default [$SDEF]) -- this check CANNOT report, so it is not a pass"
+fi
 
 # ==================================================================================================
 echo
@@ -1055,7 +1193,7 @@ fi
 # The other one this section is for: the bound that makes a hung step say so instead of spending a boot in
 # silence. The scenario gives ONE step a real 5 s and a 2 s bound; without the bound the step simply
 # succeeds late and the archive says 0, which is what a hang would also say.
-if mutate notimeout 's#^    timeout -k 5 "\$STEP_LIMIT" "\$@" &$#    "$@" \&#'; then
+if mutate notimeout 's#^    timeout -k 5 "\$lim" "\$@" &$#    "$@" \&#'; then
   FP_SLEEP_FP=5 mutrun "$MUTDIR/notimeout.sh" --yes --step-limit 2
   FP_SLEEP_FP=""
   [ "$MRC" = 0 ] && ok "mutation 'no step bound': the run completes -- a step that outlasted its bound is a pass" \
@@ -1065,6 +1203,34 @@ if mutate notimeout 's#^    timeout -k 5 "\$STEP_LIMIT" "\$@" &$#    "$@" \&#'; 
     && ok "and the index says 0 for it, which is exactly what a hang would have said (the check is live)" \
     || bad "the mutant did not record 04-fingerprint as 0 -- the scenario is not measuring the bound"
   notwant 'DID NOT FINISH' "$MOUT" "with nothing anywhere telling the operator it took longer than it was allowed to"
+fi
+
+echo
+# The computed bound on the two ARCHIVING steps. Removing it puts both back on the flat flag -- which is
+# exactly the state this whole change came out of: 900 s over a callee whose own worst case is 4530 s. What
+# the mutant must do is stop the number from being COMPUTED, so the only assertion that can see it is the
+# one that names the arithmetic.
+if mutate noboundshape 's#^    CAP_BOUND=\$(( _n \* (_l + 5) + 120 ))$#    CAP_BOUND=""#'; then
+  reset; host_fixture_ok
+  FP_SLEEP_FP=0 mutrun "$MUTDIR/noboundshape.sh" --yes --step-limit 2 --skip 02-panic-guard --skip 03-heat-chain --skip 04-fingerprint --skip 05-trial
+  [ "$MRC" = 0 ] && ok "mutation 'the bound is not computed': the run still completes" \
+                 || bad "the mutant exited $MRC (it did not land)"
+  notwant 'bound: 855s   computed from the callee' "$MOUT" \
+    "the mutant shows no computed bound for 01-capture, so the check above is reading the computation and not a constant"
+  want 'THE CALLEE SHAPE COULD NOT BE READ' "$MOUT" \
+    "and it falls back LOUDLY -- a step that is no longer covered by a number read out of its callee says so"
+fi
+
+echo
+# The plan check's two lists. Reverting the skip exclusion puts ANY `--skip` back into "the declared order
+# agrees with the executed one" being FALSE and into exit 1 -- which is the state this fix came out of, and
+# the state the refusal branch recommends an operator to walk into.
+if mutate skipalarm 's#^  case "\$rc" in skip) ;; \*) EXECUTED+=("\$1") ;; esac$#  EXECUTED+=("$1")#'; then
+  reset; host_fixture_ok
+  mutrun "$MUTDIR/skipalarm.sh" --yes --skip 03-heat-chain
+  [ "$MRC" = 1 ] && ok "mutation 'a skip left out of the ran-list': a skip is reported as a plan/run disagreement and the run exits 1 (the check is live)" \
+                 || bad "the mutant exited $MRC -- the plan check is no longer comparing the two lists"
+  want 'THE PLAN AND THE RUN DISAGREE' "$MOUT" "and the diagnosis is printed by a function that exists in the subject"
 fi
 
 echo
@@ -1116,7 +1282,7 @@ fi
 # reports itself as ready. (Mutating the extraction instead changes nothing observable -- the empty
 # extraction still reaches the UNUSABLE branch and is still printed. Measured: that mutant reported the
 # hole exactly like the subject, so it proved nothing about the sentence this scenario asserts.)
-if mutate nocallees 's#^      echo "UNUSABLE .*$#      : #'; then
+if mutate nocallees 's#echo "UNUSABLE .*$#: #'; then
   reset; host_fixture_ok
   CHAIN_BAK2="$W/chain2.bak"; cp "$CAL/host/zl1-heat-fix-chain.sh" "$CHAIN_BAK2"
   printf '#!/bin/sh\nprintf "CALLEE HEAT args=%%s\\n" "$*"\nexit 0\n' > "$CAL/host/zl1-heat-fix-chain.sh"

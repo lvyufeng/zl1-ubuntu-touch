@@ -149,6 +149,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# THE ONE STEP WHOSE SSH WAS NOT BOUNDED, and the header above claimed otherwise. The device-side
+# `timeout -k 5 120` bounds the program ON the phone; it does nothing for the LOCAL ssh, which is what
+# blocks in read() when the RNDIS link stalls -- the exact shape `bound()`'s own comment names as the
+# reason it exists ("a stalled RNDIS link leaves the local ssh blocked in read() with the device-side
+# process still alive"). So for this one step the chain relied on the caller's backstop, and the runbook's
+# 900 s backstop around step 03 was the only thing between a stalled proof and the rest of the boot.
+#
+# It is bounded now, and like the measurement's bound it is COMPUTED from the two numbers that make it
+# rather than fixed: the device-side bound, plus one read-back's worth of slack for the link. Widening
+# --state-limit therefore widens this, and the arithmetic is printed where the step starts so the number
+# is readable instead of inferable.
+PROOF_DEV_LIMIT=${ZL1_PROOF_DEV_LIMIT:-120}
+PROOF_LIMIT=$(( PROOF_DEV_LIMIT + STATE_LIMIT ))
+
 say()  { [ "$QUIET" = 1 ] && [ -n "${1:-}" ] && return 0; printf '%s\n' "${*:-}"; }
 note() { printf '   %s\n' "$*"; }
 
@@ -658,9 +672,12 @@ say "== 4/6  the address-ownership proof (decides whether the keeper may be reti
 # verdict line in it is the licence for step 5.
 PROOF_BASE=$(basename "$PROOF")
 say "-- scp + run $PROOF_BASE --yes"
+note "bounded at ${PROOF_LIMIT}s (the device-side ${PROOF_DEV_LIMIT}s plus ${STATE_LIMIT}s of link slack);"
+note "  without this the local ssh is what a stalled RNDIS link blocks, and only the caller's backstop"
+note "  would end it -- which would cost everything the rest of the boot was going to read."
 STEP_NAMES+=("04-proof")
-if "${SCP[@]}" "$PROOF" "$HOST:/tmp/$PROOF_BASE" > "$OUT/04-proof.txt" 2>&1; then
-  "${SSH[@]}" "if command -v timeout >/dev/null 2>&1; then timeout -k 5 120 sh /tmp/$PROOF_BASE --yes; else sh /tmp/$PROOF_BASE --yes; fi" >> "$OUT/04-proof.txt" 2>&1
+if bound "$STEP_LIMIT" "${SCP[@]}" "$PROOF" "$HOST:/tmp/$PROOF_BASE" > "$OUT/04-proof.txt" 2>&1; then
+  bound "$PROOF_LIMIT" "${SSH[@]}" "if command -v timeout >/dev/null 2>&1; then timeout -k 5 $PROOF_DEV_LIMIT sh /tmp/$PROOF_BASE --yes; else sh /tmp/$PROOF_BASE --yes; fi" >> "$OUT/04-proof.txt" 2>&1
   PROOF_RC=$?
 else
   PROOF_RC=90

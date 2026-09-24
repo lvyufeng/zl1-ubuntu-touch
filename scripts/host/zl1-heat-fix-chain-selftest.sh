@@ -589,6 +589,26 @@ want 'bounded at 77s \(2 x 5 \+ 7 \+ 60\)' "$OUT" "window 5 and hold 7 give a 77
 notwant 'bounded at 120s' "$OUT" "not a fixed number that a wider measurement would then silently outlast"
 
 echo
+echo "   -- and the PROOF's ssh is bounded by the same rule, out of the same two numbers:"
+# This step was the chain's ONE unbounded call, and it is the one where the defect costs most: the
+# device-side `timeout -k 5 120` bounds the program ON the phone and does nothing for the LOCAL ssh, which
+# is what blocks in read() when the RNDIS link stalls -- the exact shape `bound()` exists for. Left
+# unbounded, the only thing that ends it is the CALLER's backstop, and when that fires the rest of the
+# boot's readings are gone on a boot that cannot be re-run.
+scen proof-bound
+run "$S" --yes --state-limit 25
+[ "$RC" = 0 ] && ok "a widened read-back bound still runs" || bad "it exited $RC"
+want 'bounded at 145s \(the device-side 120s plus 25s of link slack\)' "$OUT" \
+  "120 + 25 is printed as arithmetic, so widening --state-limit widens this with it"
+notwant 'bounded at 180s' "$OUT" "and it is not the default number printed regardless of the flags"
+# The static half, because a bound nobody asserts on can be deleted without any scenario noticing: the
+# proof's ssh must go through `bound`, and its scp must too.
+want '^  bound "\$PROOF_LIMIT" "\$\{SSH\[@\]\}"' "$(cat "$SRC" 2>/dev/null)" \
+  "in the SHIPPED chain, the proof's ssh is wrapped in bound, so it is bounded on the host and not only on the phone"
+notwant '^ *"\$\{SSH\[@\]\}"' "$(cat "$SRC" 2>/dev/null)" \
+  "and no raw \${SSH[@]} call site is left in the shipped chain -- this is the invariant, not one line of it"
+
+echo
 echo "   -- the work outlasted the hold: the deltas are declared CONTAMINATED, not published:"
 # An instant stand-in cannot make the work outlast the hold, so this scenario shortens BOTH knobs and
 # makes one step really take time. Without the alignment check the chain would print a temperature

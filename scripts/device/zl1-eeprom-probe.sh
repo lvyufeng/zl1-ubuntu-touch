@@ -874,8 +874,8 @@ if [ -n "$CLIENT_ACTUAL" ] && [ -d "/sys/bus/i2c/devices/$CLIENT_ACTUAL" ]; then
     esac
   done
   if [ "$ATTR_FOUND" = yes ]; then
-    always "      AND THE ATTRIBUTE IS THE STRONGEST WITNESS HERE: sysfs_create_bin_file() is the LAST"
-    always "      FALLIBLE thing at24_probe() does -- after the chip's magic was decoded from the id_table,"
+    always "      AND THE ATTRIBUTE IS THE STRONGEST WITNESS HERE: sysfs_create_bin_file() is the LAST thing"
+    always "      at24_probe() does that can FAIL -- after the chip's magic was decoded from the id_table,"
     always "      after the adapter was checked for I2C_FUNC_I2C, after the possible dummy clients, the zero"
     always "      checks and the write-buffer allocation. (Only i2c_set_clientdata(), a dev_info() and an"
     always "      optional chip.setup() follow it, and none of those can fail.) So an 'eeprom' file"
@@ -1023,7 +1023,7 @@ elif [ -z "${DRV_BOUND:-}" ]; then
   VMSG="the driver is registered and NOTHING is bound to the EEPROM node, so either the match never happened or at24_probe() ran and failed. The match is where this block can fail QUIETLY: at24_probe() returns -ENODEV before touching the chip if the id_table entry's driver_data is zero, which for a device-tree client depends on the compatible STRIPPING TO a name the id_table carries -- 'atmel,24c32' -> '24c32'. After that it can fail on a missing I2C_FUNC_I2C (with AT24_FLAG_ADDR16 that is -EPFNOSUPPORT), on a zero page_size (-EINVAL), on a dummy client it cannot create (-EADDRINUSE), or on the sysfs attribute itself."
 elif [ "$ATTR_FOUND" = no ]; then
   V=no-eeprom-attribute
-  VMSG="the driver is bound but its 'eeprom' attribute is not in the device directory. sysfs_create_bin_file() is the LAST FALLIBLE statement at24_probe(), so this means something before it failed -- and the two candidates that come after the bind are the dummy clients (none here, num_addresses is 1 for a 4096-byte part) and the attribute creation itself. The kernel log section above says which."
+  VMSG="the driver is bound but its 'eeprom' attribute is not in the device directory. sysfs_create_bin_file() is the LAST FALLIBLE statement at24_probe(), so its absence means a statement before it failed -- and the two candidates that come after the bind are the dummy clients (none here, num_addresses is 1 for a 4096-byte part) and the attribute creation itself. The kernel log section above says which."
 else
   V=eeprom-exposed
   VMSG="the node is enabled, the i2c client exists, the driver is bound to it, and the attribute the driver creates as its LAST statement is present -- so the whole chain from the device tree to a readable sysfs file is in place. AND NOTE WHAT THIS RUNG IS: the software path, not the chip's data. The attribute is present; its CONTENTS were not read, and reading them is the one thing this probe refuses."

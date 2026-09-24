@@ -64,6 +64,15 @@
 #                  this phone the next move is a physical power hold and nothing else. It has to be
 #                  looser than the heat chain's own total (that chain bounds each of its steps itself);
 #                  if you widen --settle or the chain's --ab-window/--ab-hold, widen this with it.
+#
+#                  THAT SENTENCE USED TO BE PROSE AND NOTHING MEASURED IT. Two steps here are ARCHIVING
+#                  callees -- 01-capture and 03-heat-chain -- and each bounds its own steps from the
+#                  inside, so each has a worst case that 900 s does not cover: the capture runs eighteen
+#                  device steps at --step-limit 240 (4x over) and the chain's own total is larger still.
+#                  Cutting either one off mid-flight does not fail it: it throws away the rest of what
+#                  that boot was going to read, on a boot that cannot be re-run. So those two steps get a
+#                  bound COMPUTED FROM THE CALLEE ITSELF, and this flag is their FLOOR, not their value.
+#                  Both numbers are printed with the arithmetic that produced them.
 #   --state-limit SECS  wall-clock bound on the ssh calls that are NOT steps (default 60): the
 #                  reachability probe, the boot-id read, and the two readings that decide A and C. A
 #                  bound on the steps is defeated by an unbounded call between them -- and a timeout that
@@ -351,6 +360,12 @@ archive() {
     printf 'boot_id: %s\n' "$BOOT_ID"
     printf 'device: %s (serial %s)\n' "$HOST" "$DEV"
     printf 'ran: %s   mode: %s   apply_trial: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODE" "$APPLY_TRIAL"
+    # The bound each step got, with the arithmetic it came from. A `124` in the rc column is only readable
+    # next to the number that produced it -- and for the two archiving steps that number is not the flag on
+    # the command line, it is the callee's own worst case.
+    printf 'bound per step: 02/04/05 = %ss (--step-limit)\n' "$STEP_LIMIT"
+    printf '                01-capture = %ss  %s\n' "$(step_bound 01-capture)" "${CAP_WHY:-NOT COVERED: the callee shape could not be read, so this is the flat bound}"
+    printf '              03-heat-chain = %ss  %s\n' "$(step_bound 03-heat-chain)" "${CHAIN_WHY:-NOT COVERED: the callee shape could not be read, so this is the flat bound}"
     [ -n "$ONLY" ] && printf 'only: %s\n' "$ONLY"
     [ -n "$SKIP" ] && printf 'skip: %s\n' "$SKIP"
     [ "$INTERRUPTED" = 1 ] && printf 'INTERRUPTED: yes -- the steps below are all that ran\n'
@@ -369,7 +384,7 @@ archive() {
     # A bare `124` in the rc column reads as "the step said 124", which is not what happened. The steps
     # that ran out of time are named, in the archive, next to what the codes mean (the same rule the heat
     # chain's INDEX.txt follows -- docs 131).
-    [ -n "${TIMED_OUT_STEPS:-}" ] && printf '\n# DID NOT FINISH: rc=124 is timeout(1), 137 its -k SIGKILL -- the host gave up at %ss.\n# Neither a failure of the step nor a success, and NOTHING here read the device after it started:%s\n' "$STEP_LIMIT" "$TIMED_OUT_STEPS"
+    [ -n "${TIMED_OUT_STEPS:-}" ] && printf '\n# DID NOT FINISH: rc=124 is timeout(1), 137 its -k SIGKILL -- the host gave up at that step'\''s own\n# bound, which is the number in the table above and is NOT always --step-limit.\n# Neither a failure of the step nor a success, and NOTHING here read the device after it started:%s\n' "$TIMED_OUT_STEPS"
   } > "$OUT/INDEX.txt"
   ( cd "$OUT" && sha256sum ./*.txt 2>/dev/null > SHA256SUMS )
 }
@@ -403,13 +418,21 @@ RB_RC=0
 # than inside `bound() &` because the background pid has to be `timeout`'s own: the signal handler kills
 # that pid, and a wrapper function's pid would leave the timeout and the device call orphaned -- the
 # interrupt path would report "stopped" while the step kept running.
+#
+# The bound is a LEADING ARGUMENT and not a global. It has to differ per step -- the two archiving steps
+# carry a bound computed from the callee they wrap, the other three a flat one -- and a global holding the
+# previous step's number is the shape this tree keeps recording (a variable outliving the call that set
+# it, and /bin/sh having no locals). Nothing here is inherited: a caller that wants the flat bound simply
+# does not pass --bound.
 run_bg() {
+  local lim="$STEP_LIMIT"
+  if [ "${1:-}" = --bound ]; then lim="${2?--bound needs SECONDS}"; shift 2; fi
   if [ "$HAVE_TIMEOUT" = 1 ]; then
-    timeout -k 5 "$STEP_LIMIT" "$@" &
+    timeout -k 5 "$lim" "$@" &
   else
     # Loud, and into the STEP's own file (run_step redirects both streams): an unbounded step is the
     # difference between "it failed" and "it could have hung forever and nobody would know".
-    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (the limit would have been %ss)\n' "$STEP_LIMIT" >&2
+    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (the limit would have been %ss)\n' "$lim" >&2
     "$@" &
   fi
   RB_PID=$!; wait "$RB_PID"; RB_RC=$?; RB_PID=""; return "$RB_RC"
@@ -522,6 +545,142 @@ if [ -r "$HEAT" ]; then
   # The names in the chain's own refusal loop, on ONE line: `for f in "$NW" "$RETIRE" ...; do`.
   CHAIN_HARD=$(sed -n '/^for f in /{s/^for f in //; s/; do.*//; s/"//g; s/\$//g; p; q;}' "$HEAT")
 fi
+
+# --- the two ARCHIVING callees' own worst cases, READ OUT OF THE CALLEES ---------------------------
+#
+# The header states the requirement ("it has to be looser than the heat chain's own total") and nothing
+# measured it. It was written when the capture had SIX device steps; it has EIGHTEEN now, because every
+# gap-closing stage since docs 138 added one, and no one re-read a number on another file. Measured:
+#
+#   capture  18 device steps, each bounded on the DEVICE at STEP_LIMIT 240 -> 18 x 245 + 120 = 4530 s
+#   chain    settle 90 + 5 step sites x 305 + 2 bounded scps x 305 + the proof 180 + the A/B 240
+#            + 4 read-backs x 65 + slack = 3145 s
+#   runbook  one timeout(1) of 900 s over the WHOLE of either invocation -> 5.0x and 3.5x over
+#
+# and the consequence is not a failure, which is what makes it dangerous: a step inside either callee that
+# HANGS is handled by the callee itself (it records it and moves on), so 900 s buys only the first three
+# or four of the capture's eighteen readings and then SIGKILLs the rest -- including 04-health-check and
+# the whole 04b..04n probe group -- on a boot that cost a finger and cannot be re-run.
+#
+# So the bound for these two steps is COMPUTED, from the callee's own numbers, the same way step 03's host
+# preconditions are read out of the chain: a second copy of the arithmetic here would be a second thing to
+# go stale. Every term is COUNTED FROM THE CALLEE'S SOURCE, and every count is taken the CONSERVATIVE way
+# -- call sites rather than the invocations a given path takes, and the two steps the capture skips by
+# default included anyway. Too loose costs elapsed time on a boot that is already spent; too tight costs
+# the boot. `--step-limit` stays the FLOOR and the value for the other three steps, so an operator who
+# raises it still gets a bigger bound -- but nothing can quietly make one of these two TIGHTER than the
+# callee it wraps.
+#
+# Both directions of failure are loud. If a shape cannot be read, the step keeps the flat bound AND says
+# so; that is NOT a pass, because the check that would have made it safe did not happen. The extractor
+# reads the number out of a `NAME=` line, which is only sound while those lines keep their form, so the
+# harness pins BOTH forms against the real files rather than trusting this comment.
+CAP_BOUND=""; CAP_WHY=""
+CHAIN_BOUND=""; CHAIN_WHY=""
+_num() { # VARNAME, file -> the number the first `VARNAME=` line gives, or nothing
+  # TWO FORMS, and neither is the other's superset: `SETTLE=90` and `STEP_LIMIT=240` are bare, while the
+  # chain writes `STEP_LIMIT=${ZL1_STEP_LIMIT:-300}` -- so the number the script will USE is the part
+  # after `:-`. The first version took the first run of digits on the line, which read `ZL1_STEP_LIMIT`
+  # as `1`: a 1-second bound, out of a variable NAME. Both forms are pinned against the real files.
+  grep -m1 "^$1=" "$2" 2>/dev/null \
+    | sed -n -e 's/.*:-\([0-9][0-9]*\)}.*/\1/p' -e 's/^[^=]*=\([0-9][0-9]*\)$/\1/p' \
+    | sed -n '1p'
+}
+_cap_shape() { # -> "DEVICE_STEPS PER_STEP_SECONDS"; non-zero when either cannot be read
+  local n lim
+  n=$(grep -cE '^ *step [0-9a-z-]+ +device ' "$CAP" 2>/dev/null)
+  lim=$(_num STEP_LIMIT "$CAP")
+  case "$n"   in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$lim" in ''|0|*[!0-9]*) return 1 ;; esac
+  printf '%s %s\n' "$n" "$lim"
+}
+_chain_shape() { # -> "STEPS SCP_SITES PER_STEP SETTLE AB_WINDOW AB_HOLD STATE_LIMIT READBACKS PROOF_DEV"
+  local n sc lim st w h sl rs pd
+  n=$(grep -cE '^ *step [0-9]' "$HEAT" 2>/dev/null)
+  # The host-bounded scp sites: the A/B's instrument and the proof's own script. Counted, not remembered
+  # -- the proof's was NOT bounded until this change, and that is the same defect as this one, one file
+  # over. `if ` is allowed in front because the proof's is the condition of an `if`.
+  sc=$(grep -cE '(^|if ) *(bound "\$STEP_LIMIT" "\$\{SCP\[@\]\}")' "$HEAT" 2>/dev/null)
+  rs=$(grep -cE '^ *read_state$' "$HEAT" 2>/dev/null)
+  lim=$(_num STEP_LIMIT "$HEAT")
+  st=$(_num SETTLE "$HEAT")
+  w=$(_num AB_WINDOW "$HEAT")
+  h=$(_num AB_HOLD "$HEAT")
+  sl=$(_num STATE_LIMIT "$HEAT")
+  pd=$(_num PROOF_DEV_LIMIT "$HEAT")
+  for v in "$n" "$sc" "$rs" "$lim" "$st" "$w" "$h" "$sl" "$pd"; do
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  done
+  printf '%s %s %s %s %s %s %s %s %s\n' "$n" "$sc" "$lim" "$st" "$w" "$h" "$sl" "$rs" "$pd"
+}
+if [ -r "$CAP" ]; then
+  _s=$(_cap_shape)
+  if [ $? -eq 0 ]; then
+    _n=${_s%% *}; _l=${_s##* }
+    # Each device step is bounded ON THE DEVICE with `-k 5`, so its own worst case is LIM+5; the identity
+    # block, the archive and the three HOST steps ride in the slack. CONSERVATIVE ON PURPOSE: the two
+    # probe steps the capture skips by default are counted anyway, because too loose costs elapsed time
+    # and too tight costs the boot.
+    CAP_BOUND=$(( _n * (_l + 5) + 120 ))
+    CAP_WHY="$_n device steps x ($_l+5) + 120 of slack"
+  fi
+fi
+if [ -r "$HEAT" ]; then
+  _s=$(_chain_shape)
+  if [ $? -eq 0 ]; then
+    # A here-document rather than `set --`: this script's positional parameters are its ARGUMENTS, and
+    # clobbering them to unpack a string is how a later `$1` quietly becomes something else.
+    read -r _n _sc _l _st _w _h _sl _rs _pd <<EOF
+$_s
+EOF
+    # The terms, in the order the chain runs them: the settle; EVERY `step` call site at its own bound (a
+    # single path takes four of the five, and the sites are counted, which is the conservative side); the
+    # two host-bounded scps; the proof's ssh (device-side plus one read-back of link slack); the A/B's
+    # measurement at the SAME computed bound the chain itself uses (2 x window + hold + 60); and every
+    # read-back site. A new call site anywhere in the chain grows this, because it is counted and not
+    # listed. The 240 at the end is the slack for what is left: the two archives, the identity write, and
+    # the SHA256SUMS.
+    CHAIN_BOUND=$(( _st + (_n + _sc) * (_l + 5) + (_pd + _sl) + (_w * 2 + _h + 60) + _rs * (_sl + 5) + 240 ))
+    CHAIN_WHY="settle $_st + ($_n step sites + $_sc bounded scps) x ($_l+5) + proof ($_pd+$_sl) + A/B (2x$_w+$_h+60) + $_rs read-backs x ($_sl+5) + 240 of slack"
+  fi
+fi
+
+# Which bound a step gets. `max(flat, computed)`: the computed number is the callee's own worst case, so
+# it can only ever LOOSEN a step -- nothing here can quietly make one of the two archiving steps tighter
+# than the callee it wraps, which is the defect this whole block exists to close. A step with no computed
+# shape (02, 04, 05 -- each one installer invocation) gets the flat bound unchanged.
+#
+# DEFINED HERE, next to the numbers it reads, and NOT beside run_step() further down: `--status` prints
+# these bounds too and exits before reaching that point, so the first version called an undefined function
+# and every `--status` scenario lost its output from there on. Found by the harness, which is the reason
+# it asserts on --status at all.
+step_bound() { # name -> SECONDS on stdout
+  case "$1" in
+  01-capture)    if [ -n "$CAP_BOUND" ] && [ "$CAP_BOUND" -gt "$STEP_LIMIT" ]; then printf '%s' "$CAP_BOUND"; return; fi ;;
+  03-heat-chain) if [ -n "$CHAIN_BOUND" ] && [ "$CHAIN_BOUND" -gt "$STEP_LIMIT" ]; then printf '%s' "$CHAIN_BOUND"; return; fi ;;
+  esac
+  printf '%s' "$STEP_LIMIT"
+}
+# The three states a step's bound can be in, printed as ONE line so the number is never left to be
+# inferred: the shape was read and it wins; the shape was read and the floor is higher (so the floor is
+# what applies -- and saying which is the difference between "covered" and "covered by accident"); or the
+# shape could not be read at all, which is NOT a pass.
+step_bound_line() { # name -> one line for --status
+  local comp="" why="" flat="$STEP_LIMIT" eff
+  case "$1" in
+  01-capture)    comp="$CAP_BOUND";   why="$CAP_WHY" ;;
+  03-heat-chain) comp="$CHAIN_BOUND"; why="$CHAIN_WHY" ;;
+  esac
+  eff=$(step_bound "$1")
+  if [ -z "$comp" ]; then
+    printf '%ss   THE CALLEE SHAPE COULD NOT BE READ -- this is the flat --step-limit, and the step is NOT covered' "$eff"
+  elif [ "$comp" -gt "$flat" ]; then
+    printf '%ss   computed from the callee: %s' "$eff" "$why"
+  else
+    printf '%ss   the callee computes to %ss (%s), under the flat floor, so the floor is what applies' "$eff" "$comp" "$why"
+  fi
+}
+
 # The chain writes its callees as `$HERE/../install-*.sh`, so the resolved path has a `..` in it. A
 # message somebody reads at 2 a.m. should not make them resolve that in their head, and a check that
 # asserts the path should assert the file, not the journey to it. Resolved textually as far as it can be:
@@ -577,6 +736,13 @@ EOF
 $(host_for_step03)
 EOF2
   fi
+  # (d) the two COMPUTED bounds. A shape that could not be read is not a pass: the step will still run,
+  #     on the flat --step-limit, which is the number measured to be too tight for both of these callees.
+  #     It is not a refusal either -- a bound that is too loose costs elapsed time and nothing else, and
+  #     refusing here would throw the whole boot away to protect a smaller loss than the refusal causes
+  #     (the same rule as the HARD/SOFT split above). What must not happen is silence.
+  wanted 01-capture && [ -z "$CAP_BOUND" ] && echo "UNUSABLE 01-capture's own worst case could not be read out of $CAP, so its bound is the flat ${STEP_LIMIT}s -- if that callee runs more device steps than that covers, this run can cut it off mid-flight and lose the rest of the boot's readings"
+  wanted 03-heat-chain && [ -z "$CHAIN_BOUND" ] && echo "UNUSABLE 03-heat-chain's own worst case could not be read out of $HEAT, so its bound is the flat ${STEP_LIMIT}s -- if the chain's own total is larger than that, this run can cut it off mid-flight"
   [ "$bad" = 0 ]
 }
 
@@ -595,6 +761,13 @@ if [ "$MODE" = status ]; then
   say "  03-heat-chain    WRITES      retires the keeper, which arms C for step 05"
   say "  04-fingerprint   WRITES      a directory + a unit; its verdict is a log count"
   say "  05-trial         reads       last, because only here can A and C both be true"
+  say
+  say "the bound each step gets (this is the number that decides whether a step is cut off mid-flight):"
+  say "  01-capture     $(step_bound_line 01-capture)"
+  say "  02/04/05       ${STEP_LIMIT}s   flat (--step-limit); each is one installer invocation, with no"
+  say "                            callee of its own to read a shape out of"
+  say "  03-heat-chain  $(step_bound_line 03-heat-chain)"
+  say "  a step that outlasts its bound is DID NOT FINISH -- not a failure, and not a success"
   say
   say "the trial's two hard prerequisites, as the DEVICE reads them right now:"
   DM=$(read_download_mode)
@@ -698,18 +871,31 @@ step_done() { # name, rc, note
   case "$rc" in
   124|137)
     N_TIMED_OUT=$((N_TIMED_OUT + 1)); TIMED_OUT_STEPS="$TIMED_OUT_STEPS $1"
-    nt="$nt -- DID NOT FINISH: the host gave up at ${STEP_LIMIT}s (timeout(1) rc=$rc). That is not a failure of the step and not a reading of the device: whatever it was doing may be half-done ON THE PHONE, and nothing here read the state after it."
-    say "   -> DID NOT FINISH: killed at ${STEP_LIMIT}s (rc=$rc, timeout(1)). This is NOT a failure of the"
+    # THE STEP'S OWN BOUND, not the flat flag: for 01 and 03 the two are different numbers, and a report
+    # that names the wrong one sends the reader to the wrong line. `step_bound` is the single place that
+    # decides it, which is also the single place that could get it wrong.
+    local b; b=$(step_bound "$1")
+    nt="$nt -- DID NOT FINISH: the host gave up at ${b}s (timeout(1) rc=$rc). That is not a failure of the step and not a reading of the device: whatever it was doing may be half-done ON THE PHONE, and nothing here read the state after it."
+    say "   -> DID NOT FINISH: killed at ${b}s (rc=$rc, timeout(1)). This is NOT a failure of the"
     say "      step and NOT a success. Its output so far is $1.txt; anything it was writing may be half-done." ;;
   esac
-  STEP_NAMES+=("$1"); STEP_RC+=("$rc"); STEP_NOTE+=("$nt"); EXECUTED+=("$1")
+  STEP_NAMES+=("$1"); STEP_RC+=("$rc"); STEP_NOTE+=("$nt")
+  # EXECUTED is the steps that RAN, so a `skip` row is recorded in the archive and NOT in this list --
+  # see the plan check at the end of this file for what comparing the wrong two lists cost.
+  case "$rc" in skip) ;; *) EXECUTED+=("$1") ;; esac
 }
 declare -a EXECUTED=()
 run_step() { # name, human sentence, command...
   local name="$1" why="$2"; shift 2
   say "-- $name"
   note "$why"
-  run_bg "$@" > "$OUT/$name.txt" 2>&1
+  local b; b=$(step_bound "$name")
+  # Printed, not inferred: this is the number that decides whether the step is cut off mid-flight, and the
+  # derivation is on the same line as it.
+  case "$name" in
+  01-capture|03-heat-chain) note "   bound: $(step_bound_line "$name")" ;;
+  esac
+  run_bg --bound "$b" "$@" > "$OUT/$name.txt" 2>&1
   return "$RB_RC"
 }
 # The two facts the LAST step turns on, re-read from the device after the step that is supposed to move
@@ -919,12 +1105,22 @@ fi
 EXPECTED=""
 for t in "${STEPS[@]}"; do wanted "$t" && EXPECTED="$EXPECTED $t"; done
 EXPECTED=${EXPECTED# }
+# ACTUAL is the steps that RAN, and it is a different list from the steps that were RECORDED: every
+# skipped step gets a `step_done <name> skip` row too (the archive has to say "not in this boot's plan"),
+# and comparing the wanted list against the recorded one made ANY `--skip` look like a plan/run
+# disagreement. Measured at HEAD: `--yes --skip 03-heat-chain` reported "1 failed" and exited 1 -- and the
+# refusal branch above recommends `--skip <step>` to an operator whose host is missing a file, so the
+# advice this script gives produced a failure that was not real.
 ACTUAL="${EXECUTED[*]:-}"
 if [ "$ACTUAL" != "$EXPECTED" ]; then
-  bad "   THE PLAN AND THE RUN DISAGREE -- this is a defect in this script, not on the device:"
-  bad "   STEPS says : $EXPECTED"
-  bad "   it ran     : $ACTUAL"
-  bad "   Nothing was undoed; read the archive and fix this script before trusting the order."
+  # AND THIS BRANCH USED TO CALL `bad`, which is a HARNESS function and does not exist here. So the one
+  # branch whose whole job is to say "this script is wrong" printed four `bad: command not found` lines
+  # into the step's own file and no diagnosis at all -- an instrument that cannot report what it exists to
+  # report (docs 72), in the file that reports on the others.
+  say "   THE PLAN AND THE RUN DISAGREE -- this is a defect in this script, not on the device:"
+  say "   STEPS says : $EXPECTED"
+  say "   it ran     : $ACTUAL"
+  say "   Nothing was undoed; read the archive and fix this script before trusting the order."
   FAIL=$((FAIL + 1))
   step_done plan-mismatch 1 "the declared order and the executed order disagree -- a defect in this script"
 fi
@@ -947,7 +1143,8 @@ if [ "$FAIL" = 0 ] && [ "$N_TIMED_OUT" = 0 ]; then
   say "one-boot runbook complete: $PASS step(s) ran, 0 failed"
 else
   say "one-boot runbook did not complete: $PASS step(s) ran, $FAIL failed, $N_TIMED_OUT did not finish"
-  [ "$N_TIMED_OUT" != 0 ] && say "  the bound was ${STEP_LIMIT}s per step (--step-limit); a step that outlasted it is NOT a"
+  [ "$N_TIMED_OUT" != 0 ] && say "  the bound was the one named above each step (--step-limit ${STEP_LIMIT}s for 02/04/05, and the"
+  [ "$N_TIMED_OUT" != 0 ] && say "  callee's own computed worst case for 01/03, see INDEX.txt); a step that outlasted it is NOT a"
   [ "$N_TIMED_OUT" != 0 ] && say "  failure of the step -- but the boot is spent, so read that step's own file and the archive"
 fi
 say
