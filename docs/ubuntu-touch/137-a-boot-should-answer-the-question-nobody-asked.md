@@ -18,9 +18,11 @@
 > `hdmi` 见 [`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md)，而**决定这一块大小的东西是一个字符串**的
 > `wfd` 见 [`145`](145-the-count-that-is-a-string.md)，而**决定它那行的配置项在它自己那个菜单之外**的
 > `nfc` 见 [`146`](146-the-config-line-outside-its-own-menu.md)，而**设备树自己把节点关掉、而项目手上两颗内核都把它的驱动编进去了**的
-> `fm-radio` 见 [`147`](147-the-tree-switches-off-the-block-both-kernels-build.md)。所以那份清单现在是
-> **1 个**（`eeprom`），而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 28 / 1（这两个数字是**手改**的：关掉一个缺口必须有人看见，
-> 这正是那份清单存在的理由）。本页正文不变，它是当天的读数——唯一一处更正在 §3.2 里，见上方那个引用块。
+> `fm-radio` 见 [`147`](147-the-tree-switches-off-the-block-both-kernels-build.md)，而**最后一个、也是唯一一个"什么都不缺"的**那个
+> `eeprom` 见 [`148`](148-the-block-with-nothing-missing-is-the-one-that-binds-through-a-name-the-tree-never-spells.md)。所以那份清单现在是
+> **0 个**：12 个缺口全部关掉，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 **29 / 0**（这两个数字是**手改**的：关掉一个缺口必须有人看见，
+> 这正是那份清单存在的理由）。清单**空了之后**它也不再只是"不印"，而是明说一句"29 of 29 rows, 0 gaps"——因为一份**印不出缺口**的报告
+> 和一份**没有缺口**的报告，读起来是完全一样的。本页正文不变，它是当天的读数——唯一一处更正在 §3.2 里，见上方那个引用块。
 
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、
 [`136`](136-the-two-early-exiting-readers-are-not-the-same-defect.md)（同一天：harness 之外的形状普查）、

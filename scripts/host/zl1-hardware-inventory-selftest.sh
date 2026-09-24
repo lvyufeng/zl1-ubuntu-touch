@@ -402,8 +402,13 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  want '^blocks: 29 hardware -- 28 with a named instrument, \*\*1 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 28 read by something, **1 read by nothing**"
+  # The LAST gap closed, and this is the line the whole table was built to be able to print: every one of
+  # the 29 hardware rows now has a named instrument. The number is typed by hand and must be edited by
+  # whoever closes a gap -- which is exactly why closing the last one had to change it.
+  want '^blocks: 29 hardware -- 29 with a named instrument, \*\*0 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "29 hardware blocks, 29 read by something, and NO gaps left"
+  want '^eeprom +[0-9]+ +zl1-eeprom-probe\.sh' "$R" \
+    "with the last one -- eeprom, nothing missing -- covered by name"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -459,9 +464,20 @@ else
   # that read the config would call this block one build option away from working.
   want '^fm-radio +1 +zl1-fm-radio-probe\.sh' "$R" \
     "fm-radio -- one node, switched off by the tree itself -- is covered, by name"
-  for b in eeprom; do
-    want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
-  done
+  # The TWELFTH and last gap closed, 2026-09-24 (docs 148): `eeprom`. It is the mirror image of the block
+  # above it in every respect that matters here -- one node, NOTHING missing (the driver is built into BOTH
+  # kernels and the tree leaves the node enabled), and the gap list reaches zero because of it.
+  want '^eeprom +1 +zl1-eeprom-probe\.sh' "$R" \
+    "eeprom -- one node, nothing missing, the last block with no instrument -- is covered, by name"
+  # ZERO GAPS. This is the line that has to be looked at rather than trusted: the loop that used to assert
+  # the remaining gaps would now assert nothing at all, so the reading is that the section prints its OWN
+  # sentence for the empty case -- a report that cannot show a gap and one with no gaps read the same
+  # otherwise, and this is the last row that made the difference visible.
+  want 'Every hardware block in this table is named by a script: 29 of 29 rows, 0 gaps' "$R" \
+    "and the gap section says in words that it is empty, rather than simply not appearing"
+  want '0 with none' "$R" "with the count at zero -- the number the whole table was built to reach"
+  notwant '^  eeprom +[0-9]+ dtb node\(s\), in ' "$R" \
+    "and eeprom no longer appears among the gaps -- a gap that is closed must leave the section"
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came
   # from decides whether it is on this board at all.
   # The vibrator, and the correction that produced this column. The block is the PMI8994 haptics

@@ -163,7 +163,7 @@ usb-pd	tusb302l|tusb320|pi5usb|cclogic_dev|cypress,cyccg|analogix,ohio|analogix,
 sdcard	qcom,sdhci-msm	sdhci|mmcblk|/dev/mmcblk	HW	scripts/device/zl1-sdcard-probe.sh
 wfd	qcom,mdss_wb|qcom,wb-display|mdss_fb_wfd	wfd|miracast|writeback	HW	scripts/device/zl1-wfd-probe.sh
 hdmi	qcom,hdmi-tx|qcom,hdmi-display|qcom,hdmi-tx-8996|mdss_hdmi_pll|hdmi-audio|qcom,msm-dai-q6-hdmi	HDMI|hdmi|dai-q6-hdmi	HW	scripts/device/zl1-hdmi-probe.sh
-eeprom	atmel,24c32	24c32|at24|nvmem|eeprom	HW	-
+eeprom	atmel,24c32	24c32|at24|nvmem|eeprom	HW	scripts/device/zl1-eeprom-probe.sh
 ufs	jedec,ufs-1.1|qcom,ufs-phy|qcom,ice	ufshc|ufs-phy|/sys/block	INFRA	-
 coresight	coresight|etm@|etm0|tpda|tpdm	coresight|stm_|etm|trace	INFRA	-
 interconnect	qcom,rpm-smd-regulator|qcom,gcc@|qcom,mmsscc|qcom,gpucc|qcom,cpr3|rpm-glink|rpm-log	clk|regulator	INFRA	-
@@ -686,6 +686,14 @@ $(printf '%s' "$gapwall" | while IFS='|' read -r b n s f; do
           [ "$f" = "-" ] && printf '  %-16s %s dtb node(s), in %s\n' "$b" "$n" "$s" ||
             printf '  %-16s %s dtb node(s), in %s -- %s names it only in prose\n' "$b" "$n" "$s" "${f##*/}"
         done)"
+  else
+    # SAID OUT LOUD, and not left as an absent section. This report's whole job is to be able to show a
+    # gap, and a report that CANNOT show one reads exactly like a report that has none -- which is how a
+    # broken pattern turns into silent coverage. So the empty case gets a sentence of its own.
+    report="${report}
+
+Every hardware block in this table is named by a script: $covered of $covered rows, 0 gaps. (The
+section above is empty because there is nothing to put in it, and this line is what says so.)"
   fi
   if [ "$nstale" -gt 0 ]; then
     report="${report}

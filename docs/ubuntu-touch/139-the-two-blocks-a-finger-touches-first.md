@@ -15,8 +15,10 @@
 [`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md) 与
 [`145`](145-the-count-that-is-a-string.md) 又各收一个，[`146`](146-the-config-line-outside-its-own-menu.md) 再收一个，
 [`147`](147-the-tree-switches-off-the-block-both-kernels-build.md) 收的是**唯一一个设备树自己把节点关掉、而两颗内核都把驱动编进去了**的块，
-所以那份清单现在是 **1 个**（`eeprom`），
-而 `zl1-hardware-inventory.sh` 的汇总行是 **28 / 1**。
+而 [`148`](148-the-block-with-nothing-missing-is-the-one-that-binds-through-a-name-the-tree-never-spells.md) 收的是**唯一一个什么都不缺**的块
+（`eeprom`，驱动在两颗内核里都编了、树也没关它）——**12 个缺口到此全部关掉，清单为空**，
+而 `zl1-hardware-inventory.sh` 的汇总行是 **29 / 0**，并且清单空了之后它不再只是不印，而是明说一句
+"29 of 29 rows, 0 gaps"。
 本页之后又收了一个：两个 SD/eMMC 控制器那个 `sdcard` 缺口，见
 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，以及设备树打开了两个节点、内核却一个驱动都没编的那个
 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)（它同时改掉了 [`137`](137-a-boot-should-answer-the-question-nobody-asked.md) §3.2
@@ -174,7 +176,7 @@ SPMI 绑定和节点 `status`，而 `no-flash-class` 要去看 `qcom,qpnp-flash-
 ```sh
 # 全部在宿主机上，不碰设备。
 bash scripts/host/zl1-leds-probe-selftest.sh                 # 91 项
-bash scripts/host/zl1-hardware-inventory.sh --gaps           # 现在只剩 9 个缺口
+bash scripts/host/zl1-hardware-inventory.sh --gaps           # 现在一个缺口都不剩了（会印出那句 0 gaps）
 
 # 那九个变异里的一个（点亮手电筒，必须被写保护抓住）：
 S=scripts/device/zl1-leds-probe.sh

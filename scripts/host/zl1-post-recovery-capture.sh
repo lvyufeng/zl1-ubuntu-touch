@@ -536,6 +536,25 @@ step 04l-nfc            device "$HERE/../device/zl1-nfc-probe.sh"
 # node and writes nothing, and the harness's write-guard teeth include both surfaces.
 step 04m-fm             device "$HERE/../device/zl1-fm-radio-probe.sh"
 
+# 04n-eeprom: the board's calibration memory. ONE node (`/soc/i2c@75b6000/at24@51`, `atmel,24c32`), and it
+# is the LAST row of docs 137's list -- and the only one whose reading is that NOTHING IS MISSING.
+# `CONFIG_EEPROM_AT24=y` in BOTH kernels in hand with `CONFIG_SYSFS=y`, and the node carries no `status`,
+# so the tree leaves it enabled. There is no gap for a ladder to find here; what the ladder reports is HOW
+# FAR THE CHAIN RAN.
+#
+# THE MATCH IS THE READING, and it travels through a name the tree never spells: `at24_of_match[]` has one
+# entry (`atmel,24c32`) and the i2c driver's `.name` is `at24`, so the sysfs directory is `at24` while the
+# CLIENT is the compatible with the vendor prefix STRIPPED (`of_modalias_node` -> `24c32`) -- which is an
+# `at24_ids[]` entry, and that entry is where the chip's size, its 16-bit address flag and its 1-byte write
+# cap all come from. A zero there is `-ENODEV` before the chip is touched.
+#
+# Its write surface is a READ-WRITE BINARY ATTRIBUTE, `/sys/bus/i2c/devices/8-0051/eeprom`: READING it
+# issues i2c transfers, and writing it writes the chip -- a chip that holds a board's calibration or serial
+# data. So this probe's claim is stronger than "it writes nothing": it reads the attribute's EXISTENCE and
+# none of its contents, and it never opens `/dev/i2c-8`, which is the same slave by a driverless route.
+# The harness carries a second static guard for exactly that, with its own teeth.
+step 04n-eeprom          device "$HERE/../device/zl1-eeprom-probe.sh"
+
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
   step 06-fingerprint      device "$HERE/../device/zl1-fingerprint-probe.sh"
@@ -545,8 +564,8 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd, 04l-nfc and 04m-fm: all twelve are read-only and"
-  say "   write nothing, so they are not in this group.)"
+  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd, 04l-nfc, 04m-fm and 04n-eeprom: all thirteen"
+  say "   are read-only and write nothing, so they are not in this group.)"
   say
 fi
 
