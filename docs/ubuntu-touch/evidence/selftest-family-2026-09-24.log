@@ -1,12 +1,12 @@
 zl1 offline self-test family
   repo:      /mnt/data/zl1-bb10
   harnesses: 19 under scripts/host/
-  tree check: on -- 403 tracked files hashed before and after
+  tree check: on -- 405 tracked files hashed before and after
 
 PASS  zl1-address-proof-selftest.sh                 49 checks  rc=0
 PASS  zl1-boot-address-selftest.sh                  24 checks  rc=0
 PASS  zl1-camera-app-test-selftest.sh               79 checks  rc=0
-PASS  zl1-cli-usage-selftest.sh                    129 checks  rc=0
+PASS  zl1-cli-usage-selftest.sh                    134 checks  rc=0
 PASS  zl1-edl-postmortem-selftest.sh                34 checks  rc=0
 PASS  zl1-fp-store-dir-selftest.sh                 137 checks  rc=0
 PASS  zl1-gps-first-client-selftest.sh              62 checks  rc=0
@@ -16,13 +16,13 @@ PASS  zl1-installers-selftest.sh                   377 checks  rc=0
 PASS  zl1-loc-fp-selftest.sh                       200 checks  rc=0
 PASS  zl1-lpm-ladder-trial-selftest.sh             131 checks  rc=0
 PASS  zl1-modem-probe-selftest.sh                  111 checks  rc=0
-PASS  zl1-one-boot-runbook-selftest.sh             118 checks  rc=0
+PASS  zl1-one-boot-runbook-selftest.sh             127 checks  rc=0
 PASS  zl1-orientation-axes-selftest.sh              33 checks  rc=0
 PASS  zl1-post-recovery-capture-selftest.sh        143 checks  rc=0
 PASS  zl1-selftest-family-selftest.sh               85 checks  rc=0
 PASS  zl1-sleep-and-throttle-selftest.sh           107 checks  rc=0
 PASS  zl1-thermal-selftest.sh                       48 checks  rc=0
 
-== the repository is unchanged (403 tracked files hashed before and after, no new file)
-== 19 harnesses run, 19 green, 0 not green, 2155 checks, 0 failing
+== the repository is unchanged (405 tracked files hashed before and after, no new file)
+== 19 harnesses run, 19 green, 0 not green, 2169 checks, 0 failing
 == verdict: all green
