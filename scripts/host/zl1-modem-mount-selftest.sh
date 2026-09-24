@@ -378,6 +378,34 @@ fi
 
 # ==================================================================================================
 echo
+echo "== 6b. --quiet, which is a claim about the OUTPUT and was therefore never tested =="
+# ==================================================================================================
+# The subject documents `--quiet` as "print the verdict only, not the readings". Nothing tested it, so
+# the shipped version did the OPPOSITE: its gate was `[ "$QUIET" = 1 ] && [ -n "$1" ] && return 0`, so
+# the verdict (non-empty) was suppressed and the blank separator lines (empty) were printed -- and the
+# readings that went through a `grep | sed` instead of through `say` printed too, because they never
+# reached the gate. A documented option that no assertion mentions is an option, not a feature.
+r "$IMG_RD_NONE" >/dev/null 2>&1                       # warm-up, so this is not the cold run
+run --boot "$BOOT_OK" --android "$IMG_RD_NONE" --rootfs "$W/x" --quiet; rc_is 0 "--quiet still exits 0"
+want '== verdict: THE LOOP IS EMPTY' "$OUT" "and it prints the verdict"
+want '  read from:' "$OUT" "and the verdict carries the identity of the input it was read from"
+notwant '== 1. the mechanism' "$OUT" "and NOT the section 1 readings"
+notwant 'entries in it:' "$OUT" "nor the ramdisk listing"
+notwant 'the entries this block turns on' "$OUT" "nor section 3's"
+notwant 'in the UT rootfs image:' "$OUT" "nor section 4's"
+# The other half, and the one the first fix missed: every line that reaches stdout WITHOUT going through
+# `say` has to be gated too. The counters below are the ones those pipelines emit.
+n_percent=$(printf '%s' "$OUT" | grep -c 'mount_android_partitions "' || true)
+[ "$n_percent" = 0 ] && ok "and none of the lines that bypass \`say\` (the grep/awk pipelines) leaked" \
+                     || bad "$n_percent line(s) reached stdout outside the quiet gate"
+# It must not be quiet about the WRONG things either: a run whose verdict was also suppressed would look
+# like a clean exit with no output, which is the most dangerous shape of all.
+n_lines=$(printf '%s' "$OUT" | grep -c . || true)
+[ "$n_lines" -ge 8 ] && ok "and the verdict block is $n_lines lines, not a truncated tail" \
+                     || bad "only $n_lines non-blank line(s) with --quiet -- the verdict may have been suppressed"
+
+# ==================================================================================================
+echo
 echo "== 7. it is a READ-ONLY instrument, and that is static =="
 # ==================================================================================================
 for pat in 'debugfs -w' 'mount -o' 'mount --' 'fastboot' 'dd of=' 'tune2fs' 'e2fsck'; do

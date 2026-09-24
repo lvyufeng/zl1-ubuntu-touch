@@ -67,7 +67,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-say() { [ "$QUIET" = 1 ] && [ -n "${1:-}" ] && return 0; printf '%s\n' "$*"; }
+# --quiet keeps READINGS out and the VERDICT in, and the two have to be told apart explicitly: the
+# first version gated every line through one predicate whose test was `[ -n "$1" ]`, which meant that
+# under --quiet the verdict (non-empty) was suppressed and the blank separator lines (empty) were
+# printed -- the option did the exact opposite of its own usage line, and nothing tested it. `SHOW`
+# is set once a verdict block begins, so "readings" and "the answer" are different things in code and
+# not just in the header.
+SHOW=0
+say() { [ "$QUIET" = 1 ] && [ "$SHOW" = 0 ] && return 0; printf '%s\n' "$*"; }
+# ...and every printer that writes to STDOUT DIRECTLY -- a `grep | sed`, an `awk` -- has to go through
+# the same gate. Those were the leak the first fix missed: `say` was only half of the output, and a
+# --quiet that suppresses some lines and prints others is worse than one that prints everything,
+# because its output looks like an answer.
+quiet() { while IFS= read -r _l; do say "$_l"; done; }
 
 # --- the tools, and the refusals that come before any reading --------------------------------------
 for t in python3 debugfs gzip; do
@@ -96,6 +108,18 @@ say "  READ-ONLY, HOST-SIDE, NO DEVICE: every path below is an image file on thi
 say "  boot image:    $BOOT"
 say "  android image: $ANDROID"
 say "  rootfs image:  $([ "$ROOTFS_OK" = 1 ] && echo "$ROOTFS" || echo "(not readable -- section 5 will say so)")"
+say
+# THE IDENTITY OF THE INPUT, printed with the reading and again with the verdict. This is not
+# decoration: images here get REBUILT UNDER THE SAME FILENAME (the boot image this project runs is
+# itself a rebuild that kept v63's name), so a reading that names only a path can be attributed to a
+# file that is no longer the one it describes. `scripts/host/zl1-artifact-manifest.sh` checks the
+# tracked record against the directory; this line binds THIS run to the bytes it actually read, which
+# is what a later reader needs when the directory has moved on. docs 149's rule, one level down.
+say "  the identity of what was read (sha256 and size, so this run can be traced to its input):"
+for f in "$BOOT" "$ANDROID" "$ROOTFS"; do
+  [ -r "$f" ] || continue
+  say "    $(sha256sum -- "$f" | awk '{print $1}')  $(stat -c %s -- "$f")  $f"
+done
 say
 
 # ==================================================================================================
@@ -151,6 +175,7 @@ else:
     sys.stdout.write(found)
 PY
 if grep -qF -- '__NOT_FOUND__' "$HALIUM_SRC"; then
+  SHOW=1
   say "  UNREADABLE: the boot image has no cpio member carrying scripts/halium."
   say "  No claim is made about the mount loop: this instrument reads the SHIPPED script, not a memory"
   say "  of it, and a boot image laid out differently is a reading it cannot take."
@@ -158,14 +183,14 @@ if grep -qF -- '__NOT_FOUND__' "$HALIUM_SRC"; then
 fi
 say "  the boot image's initrd carries scripts/halium, and it reads the fstab in exactly these places:"
 say
-grep -n 'fstab' "$HALIUM_SRC" | sed 's/^/    /'
+grep -n 'fstab' "$HALIUM_SRC" | sed 's/^/    /' | quiet
 say
 # The call site that matters, quoted rather than summarised: a summary is a place for a mistake to live.
 say "  the call site, verbatim:"
-grep -n 'mount_android_partitions "' "$HALIUM_SRC" | sed 's/^/    /'
+grep -n 'mount_android_partitions "' "$HALIUM_SRC" | sed 's/^/    /' | quiet
 say
 say "  and the part of mount_android_partitions that decides what happens when the glob matches nothing:"
-awk '/^mount_android_partitions\(\)/,/^}/' "$HALIUM_SRC" | grep -n -E 'fstab=|cat \$\{fstab\}|while read|^}|tell_kmsg "checking fstab' | sed 's/^/    /'
+awk '/^mount_android_partitions\(\)/,/^}/' "$HALIUM_SRC" | grep -n -E 'fstab=|cat \$\{fstab\}|while read|^}|tell_kmsg "checking fstab' | sed 's/^/    /' | quiet
 say
 say "  READ THAT AS THREE FACTS: the fstab argument is a GLOB; it is expanded unquoted; and the only"
 say "  consumer of it is 'cat \${fstab} | while read line'. A glob that matches no file makes cat exit"
@@ -184,6 +209,7 @@ say "== 2. the ramdisk that lands on that glob's directory =="
 RDLIST="$W/ramdisk.list"
 debugfs -R 'dump /boot/android-ramdisk.img '"$W"'/android-ramdisk.img' "$ANDROID" >/dev/null 2>&1
 if [ ! -s "$W/android-ramdisk.img" ]; then
+  SHOW=1
   say "  UNREADABLE: $ANDROID has no readable /boot/android-ramdisk.img."
   say "  This image is not the one halium extracts from, so nothing here is a reading about the boot this"
   say "  project runs. (Which is a finding in itself -- but it is about the IMAGE, not the device.)"
@@ -259,7 +285,7 @@ say "  entries in it: $N_ENTRIES"
 say
 say "  every entry whose NAME contains fstab:"
 if grep -qi 'fstab' "$RDLIST"; then
-  grep -i 'fstab' "$RDLIST" | sed 's/^/    /'
+  grep -i 'fstab' "$RDLIST" | sed 's/^/    /' | quiet
 else
   say "    (none -- and that is the reading, not an empty list to scroll past)"
 fi
@@ -277,7 +303,9 @@ say "== 3. where the container's /vendor/firmware_mnt comes from =="
 # In the ramdisk root, `firmware` and `dsp` and `bt_firmware` are SYMLINKS INTO `/vendor`, and `/vendor`
 # is a REAL but EMPTY directory in the ramdisk -- i.e. it is a placeholder for exactly the mount the
 # fstab loop was supposed to perform. So the two sides of the missing mount can be printed side by side.
-python3 - "$W/android-ramdisk.img" <<'PY'
+# The python block below writes to STDOUT directly, so `say` never saw it -- which is exactly how
+# --quiet leaked these lines while suppressing everything around them. They go through the same gate.
+python3 - "$W/android-ramdisk.img" <<'PY' | while IFS= read -r _ln; do say "$_ln"; done
 import sys, gzip, zlib
 def pad4(n):
     return (n + 3) & ~3
@@ -323,7 +351,7 @@ if [ "$ROOTFS_OK" = 1 ]; then
   say "  in the UT rootfs image: /vendor is a ${V:-?} whose target is '${VT:-?}'"
   say "  and /var/lib/lxc/android/rootfs in that image holds:"
   debugfs -R 'ls /var/lib/lxc/android/rootfs' "$ROOTFS" 2>/dev/null \
-    | tr -s ' ' '\n' | grep -vE '^$|^\(|^[0-9]+$' | grep -vE '^\.\.?$' | sed 's/^/    /' || true
+    | tr -s ' ' '\n' | grep -vE '^$|^\(|^[0-9]+$' | grep -vE '^\.\.?$' | sed 's/^/    /' | quiet || true
   say "  (empty is the shipped shape, and it is not a defect: the ramdisk is mount --move'd ON TOP of it"
   say "   at boot, which is what hides anything that image might otherwise have put there)"
 else
@@ -332,8 +360,17 @@ fi
 say
 
 # ==================================================================================================
+SHOW=1
 say "== 5. the verdict =="
 # ==================================================================================================
+# Restated here so the verdict travels with its input: an archived verdict without the identity of
+# what produced it is a sentence about an unnamed file.
+say "  read from:"
+for f in "$BOOT" "$ANDROID" "$ROOTFS"; do
+  [ -r "$f" ] || continue
+  say "    $(sha256sum -- "$f" | awk '{print $1}')  $f"
+done
+say
 say
 if grep -qi 'fstab' "$RDLIST"; then
   # An fstab IS there. Then the question moves one level down, and the answer is about its CONTENT --

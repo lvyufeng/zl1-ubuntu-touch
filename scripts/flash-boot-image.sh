@@ -11,6 +11,7 @@
 #
 # Usage: flash-boot-image.sh <IMAGE> --yes
 #        flash-boot-image.sh --list
+#        flash-boot-image.sh --help
 
 set -euo pipefail
 
@@ -26,6 +27,17 @@ LOG="/mnt/data/zl1-bb10/flash-boot-${STAMP}.log"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; }
 die() { log "FAIL: $*"; exit 1; }
 
+# The header IS the manual (docs 113): print this file's own leading comment block and nothing else.
+# Added because the health check now names this script, and a script the page tells you to run has to
+# be able to explain itself -- before this arm existed, `--help` was taken as an IMAGE NAME and the run
+# died in the preflight with "image missing: --help". The `case` form and the plain `print` (no `#`
+# stripping) are what every other covered script uses, and the sweep's static gate looks for exactly
+# this pattern before it will execute a script at all.
+case "${1:-}" in
+--help|-h)
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"
+  exit 0 ;;
+esac
 if [[ "${1:-}" == "--list" ]]; then
   [[ -f "$SUMS" ]] && awk '{printf "  %s  %s\n", $1, $2}' "$SUMS" || echo "  (no SHA256SUMS yet)"
   exit 0
