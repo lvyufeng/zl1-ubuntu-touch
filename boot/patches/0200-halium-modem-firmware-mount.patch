@@ -1,0 +1,142 @@
+--- a/scripts/halium
++++ b/scripts/halium
+@@ -141,9 +141,32 @@
+ 	fstab=$1
+ 	mount_root=$2
+ 	real_userdata=$3
++	zl1_fstab_fallback=${4:-}
+ 
+ 	tell_kmsg "checking fstab $fstab for additional mount points"
+ 
++	# zl1 (docs 154): an UNMATCHED GLOB and a MISSING FILE are the same silence, and on this device
++	# the glob has matched nothing on EVERY boot -- the fstab halium looks for lives in the Android
++	# ramdisk it extracts, and that ramdisk carries no fstab at all. `cat` on a pattern that matched
++	# nothing fails, so the body of the `while read` below never runs: NOTHING IS MOUNTED AND NOTHING
++	# IS SAID. That is this device's modem failure. The loop itself is otherwise untouched: when the
++	# glob DOES match, `cat` still expands it and concatenates every match, exactly as before.
++	zl1_fstab_matched=
++	for zl1_fstab_file in $fstab; do
++		[ -e "$zl1_fstab_file" ] || continue
++		zl1_fstab_matched=1
++		break
++	done
++	if [ -z "$zl1_fstab_matched" ]; then
++		if [ -n "$zl1_fstab_fallback" ] && [ -e "$zl1_fstab_fallback" ]; then
++			tell_kmsg "fstab $fstab matched NO file; using the one this initramfs carries: $zl1_fstab_fallback"
++			fstab=$zl1_fstab_fallback
++		else
++			tell_kmsg "fstab $fstab matched NO file and no fallback is present: NOTHING WILL BE MOUNTED"
++			fstab=/dev/null
++		fi
++	fi
++
+ 	# On systems with A/B partition layout, current slot is provided via cmdline parameter.
+ 	ab_slot_suffix=$(grep -o 'androidboot\.slot_suffix=..' /proc/cmdline |  cut -d "=" -f2)
+ 	[ ! -z "$ab_slot_suffix" ] && tell_kmsg "A/B slot system detected! Slot suffix is $ab_slot_suffix"
+@@ -164,24 +187,44 @@
+ 
+ 		tell_kmsg "checking mount label $label"
+ 
+-		# In case fstab provides /dev/mmcblk0p* lines
+-		path="/dev/$label"
+-		for dir in by-partlabel by-name by-label by-path by-uuid by-partuuid by-id; do
+-			# On A/B systems not all of the partitions are duplicated, so we have to check with and without suffix
+-			if [ -e "/dev/disk/$dir/$label$ab_slot_suffix" ]; then
+-				path="/dev/disk/$dir/$label$ab_slot_suffix"
+-				break
+-			elif [ -e "/dev/disk/$dir/$label" ]; then
+-				path="/dev/disk/$dir/$label"
+-				break
+-			fi
+-		done
++		# zl1 (docs 154): THE FSTAB NAMES THE DEVICE, and this used to throw that name away and
++		# re-derive the partition from its LAST PATH COMPONENT alone. When the path the fstab gives is
++		# really there, it is the one to use -- the entry above names /dev/disk/by-partlabel/modem, and
++		# that path exists in an initramfs that has run udev.
++		path="$1"
++		if [ ! -e "$path" ]; then
++			# In case fstab provides /dev/mmcblk0p* lines
++			path="/dev/$label"
++			for dir in by-partlabel by-name by-label by-path by-uuid by-partuuid by-id; do
++				# On A/B systems not all of the partitions are duplicated, so we have to check with and without suffix
++				if [ -e "/dev/disk/$dir/$label$ab_slot_suffix" ]; then
++					path="/dev/disk/$dir/$label$ab_slot_suffix"
++					break
++				elif [ -e "/dev/disk/$dir/$label" ]; then
++					path="/dev/disk/$dir/$label"
++					break
++				fi
++			done
++		fi
+ 
+-		[ ! -e "$path" ] && continue
++		# zl1 (docs 154): the third silence was here -- an absent device was a bare `continue`, with no
++		# message. On a stock device that is right, because an fstab lists partitions that legitimately
++		# do not exist; on this one the whole repair rests on the modem partition being FOUND, so say it
++		# either way. This reports; it does not change which lines are mounted.
++		if [ ! -e "$path" ]; then
++			tell_kmsg "no device for label $label: tried $1 and /dev/disk/* -- this line is skipped"
++			continue
++		fi
+ 
+ 		mkdir -p ${mount_root}/$2
+ 		tell_kmsg "mounting $path as ${mount_root}/$2"
+-		mount $path ${mount_root}/$2 -t $3 -o $4
++		# zl1 (docs 154): say so when it fails. REPORT ONLY -- this initramfs does not run under
++		# `set -e` (read out of /init and /scripts/functions, not assumed), so a failed mount never
++		# aborted the boot; it left the directory empty and quiet, which is the same symptom as never
++		# having tried, and the two want telling apart.
++		if ! mount $path ${mount_root}/$2 -t $3 -o $4; then
++			tell_kmsg "MOUNT FAILED: $path as ${mount_root}/$2 -t $3 -o $4"
++		fi
+ 	done
+ 
+ 	# Provide a bind mount from /cache to /userdata/cache on systems without a dedicated cache partition
+@@ -622,8 +665,9 @@
+ 
+ 		process_bind_mounts
+ 
+-		# Mount all the Android partitions
+-		mount_android_partitions "${rootmnt}/var/lib/lxc/android/rootfs/fstab*" ${rootmnt}/android ${rootmnt}/userdata
++		# Mount all the Android partitions. zl1 (docs 154): the fourth argument is the fstab this
++		# initramfs carries, used when the glob above matches nothing -- which is every boot here.
++		mount_android_partitions "${rootmnt}/var/lib/lxc/android/rootfs/fstab*" ${rootmnt}/android ${rootmnt}/userdata /zl1-android-fstab
+ 
+ 		# system is a special case
+ 		tell_kmsg "moving Android system to /android/system"
+--- /dev/null
++++ b/zl1-android-fstab
+@@ -0,0 +1,33 @@
++# zl1 (docs 154): THE ONE PARTITION THIS INITRAMFS MOUNTS BY ITSELF.
++#
++# Format: Android's own -- <source> <mount point under the mount root> <type> <options> -- because
++# mount_android_partitions() consumes exactly that, and that is the function this file is read by.
++#
++# WHY THIS FILE EXISTS AT ALL. Halium's Android-partition mount loop reads the fstab of the Android
++# ramdisk it extracts (/var/lib/lxc/android/rootfs/fstab*), and the ramdisk in this device's system
++# image carries NO fstab at all. An unmatched glob makes `cat` fail, the loop body never runs, and
++# NOTHING IS MOUNTED AND NOTHING IS SAID. Everything Android's own /etc/fstab.qcom would have
++# mounted -- /vendor itself, /vendor/dsp, /vendor/bt_firmware, /vendor/firmware_mnt, and the modem
++# partition among them -- has therefore been absent on every boot of this port.
++#
++# WHY ONLY THE MODEM LINE, AND NOT THE VENDOR PARTITION TOO. One deliberate change per boot. The
++# question this image is built to answer is "does the KERNEL find the modem's firmware". Mounting
++# the vendor partition would also hand the container a real /vendor tree, and that is worth doing --
++# as the NEXT measured change, so a boot that goes wrong has one cause rather than two. `persist` is
++# in Android's fstab as well and must never be mounted from here: Android mounts it WRITABLE, and
++# this project does not write to that partition.
++#
++# WHY /vendor/firmware_mnt IS THE RIGHT MOUNT POINT. The kernel looks for the modem's firmware in
++# `firmware_class.path`, which every zl1 cmdline -- the stock image's included -- sets to
++# /vendor/firmware_mnt/image. In the UT rootfs /vendor is a symlink to /android/vendor, and with no
++# fstab line for /vendor halium leaves /android/vendor a real directory on the /android tmpfs, so
++# this line both creates that directory and mounts the partition inside it. The FAT16 modem
++# partition's own root holds IMAGE/ and VERINFO/, so the file the kernel asks for is
++# <mount point>/image/modem.mdt -- which is exactly the directory firmware_class.path names.
++#
++# The options are Android's own, from the vendor image's /etc/fstab.qcom, minus its SELinux
++# `context=` field: this kernel's cmdline says `security=apparmor`, so an SELinux context option
++# would be an option nothing recognises. `ro` and `shortname=lower` are load-bearing -- read-only
++# because this partition is never written from here, and lower-case because the names on the volume
++# are upper case and the kernel asks for `modem.mdt`.
++/dev/disk/by-partlabel/modem    /vendor/firmware_mnt    vfat    ro,shortname=lower,uid=0,gid=1000,dmask=227,fmask=337

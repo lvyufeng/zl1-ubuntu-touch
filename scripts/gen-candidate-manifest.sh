@@ -42,6 +42,10 @@ result_of() {
       echo "**the next one to test** — v63 with one change: the keeper no longer rebuilds the USB gadget after killing a USB manager. Measured 2026-09-17: that rebuild re-enumerated the device every ~118 s (16 times in 36 minutes) and the link was reachable for 2 pings of those 36 minutes. Verified to differ from v63 in exactly one initramfs file" ;;
     halium-boot-zl1-v63-rebuilt.img)
       echo "v63 rebuilt from tracked source (boot/v63/ + make-v63-boot-image.sh): v63's kernel + this repo's reconstruction of its initramfs. Verified content-identical to halium-boot-zl1-v63-usbd-disabled.img in every component; the hash differs only because the initramfs gzip framing does" ;;
+    halium-boot-zl1-v63-modemfw.img)
+      echo "**the modem-firmware mount, built and verified offline -- never run on hardware yet** (docs/ubuntu-touch/154-no-in-kernel-client-loads-the-modem-so-the-mount-has-to-happen-itself.md). One deliberate change to the rebuilt v63: the initramfs carries a fallback fstab (\`zl1-android-fstab\`: the \`modem\` partition, read-only, at \`/vendor/firmware_mnt\`) and halium's Android-partition loop reports an unmatched glob, an absent device and a failed mount instead of staying silent. **Kernel, the five appended DTBs and the cmdline are byte-identical to the rebuilt v63** (the kernel Image differs in 29 bytes: the build-id note), so the undo is flashing the previous boot image" ;;
+    halium-boot-zl1-v63-modemfstab.img)
+      echo "**SUPERSEDED -- do not flash.** An earlier draft of the modem mount, replaced by \`halium-boot-zl1-v63-modemfw.img\` (docs/ubuntu-touch/154-...). It was built from a patch that no longer exists in this repo; it was never run on hardware" ;;
     halium-boot-zl1-v63-uether-txwakeup.img)
       echo "**built to test** — v63's initramfs and cmdline (content-verified against the v63 binary) on the transmit-wakeup kernel. This is the image that asks whether the u_ether patch removes the intermittent stall" ;;
     halium-boot-zl1-uether-txwakeup.img)

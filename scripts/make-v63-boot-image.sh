@@ -131,6 +131,10 @@ if (( ${#EXTRA_PATCHES[@]} > 0 )); then
       || { echo "failed to apply $p" >&2; exit 1; }
     echo "  applied $(basename "$p")"
   done
+  # A patch may ADD files as well as change them. `patch` creates those with the host's umask,
+  # so without this the archive's recorded mode — and therefore the image hash — would depend
+  # on the machine that built it. 0644: read, not executed.
+  [[ -f "$WORK/rd/zl1-android-fstab" ]] && chmod 0644 "$WORK/rd/zl1-android-fstab"
 fi
 
 echo "== repacking the initramfs =="
