@@ -482,6 +482,23 @@ step 04i-usbpd         device "$HERE/../device/zl1-usbpd-probe.sh"
 # write to `hpd` or `hot_plug` CHANGES the port's state. The probe writes neither, opens nothing, and its
 # offline harness spends its first mutation on exactly that write.
 step 04j-hdmi           device "$HERE/../device/zl1-hdmi-probe.sh"
+# 04k, same class a tenth time: read-only, write-free, no person. docs 145 closed the next gap on docs 137's
+# list -- `wfd`, the writeback / screen-mirroring block -- and like the HDMI one it is not a device but a
+# description spread over nodes. The panel (`qcom,mdss_wb`) points at its framebuffer (`qcom,mdss_fb_wfd`)
+# with a PHANDLE, and `mdss_register_panel()` reads that phandle from the PANEL's own node: without it the
+# driver logs "Unable to find fb node for device", returns -ENODEV, and its error path UNREGISTERS the
+# switch it registered a moment earlier -- which is why `/sys/class/switch/wfd` existing is an end-to-end
+# witness rather than one trace among several. The numbers that size the hardware are on two OTHER nodes
+# (`qcom,mdss-wb-count` on the rotator, `qcom,mdss-wb-off` and `qcom,mdss-mixer-wb-off` on mdss_mdp), and
+# one of the counts is not a number at all but the STRING `qcom,mdss-wfd-mode`, read twice with two
+# different consequences.
+#
+# Its write surface is an ioctl, not a sysfs write: `/sys/class/switch/wfd/state` is
+# `DEVICE_ATTR(state, S_IRUGO, state_show, NULL)` -- a NULL store, so a shell write is refused -- and the
+# value is only ever set by `mdss_mdp_wb_set_mirr_hint()` through an MDP ioctl on the framebuffer device.
+# The probe writes nothing, opens no framebuffer, and its harness's write-guard teeth include a `dd` onto
+# `/dev/graphics/fbN`, which is the shell's nearest thing to that ioctl.
+step 04k-wfd            device "$HERE/../device/zl1-wfd-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -492,7 +509,7 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard, 04i-usbpd and 04j-hdmi: all nine are read-only and write nothing, so"
+  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi and 04k-wfd: all ten are read-only and write nothing, so"
   say "   they are not in this group.)"
   say
 fi

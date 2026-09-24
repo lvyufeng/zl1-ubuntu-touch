@@ -10,6 +10,11 @@
 **后续**: 本页之后，`vibrator` 这一行也关掉了，而且它引出的不是一条新缺口，而是**这份清单本身的一个错误**：
 那一行点名的"仪器"（`ti,drv2604l`）是**另一台手机**（LeEco X2）的芯片，见
 [`140`](140-the-block-that-was-another-phones.md) 和 [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)。
+本页正文的 **9 个缺口**是当天的读数；此后 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)、
+[`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)、
+[`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md) 与
+[`145`](145-the-count-that-is-a-string.md) 又各收一个，所以那份清单现在是 **3 个**（`nfc`、`fm-radio`、`eeprom`），
+而 `zl1-hardware-inventory.sh` 的汇总行是 **26 / 3**。
 本页之后又收了一个：两个 SD/eMMC 控制器那个 `sdcard` 缺口，见
 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，以及设备树打开了两个节点、内核却一个驱动都没编的那个
 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)（它同时改掉了 [`137`](137-a-boot-should-answer-the-question-nobody-asked.md) §3.2
@@ -190,7 +195,7 @@ scp scripts/device/zl1-leds-probe.sh root@10.15.19.82:/tmp/ && ssh root@10.15.19
 | `torch`（相机手电筒） | 本页收口 |
 | `notification-led`（通知/充电灯） | 本页收口 |
 | `vibrator`（振动马达） | docs **140** 收口——而且收的过程发现这一行原来的"仪器"是**另一台手机**的芯片 |
-| `nfc`、`fm-radio`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | 当时是 **8 个没有探针**；其中六个此后被收口，只剩 `nfc`、`fm-radio`、`wfd`、`eeprom` |
+| `nfc`、`fm-radio`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | 当时是 **8 个没有探针**；其中七个此后被收口（最近一个是**决定这一块大小的东西是一个字符串**的 `wfd`，见 [`145`](145-the-count-that-is-a-string.md)），只剩 `nfc`、`fm-radio`、`eeprom` |
 
 其中 `sdcard` 已经有一条**离线就能读出来**的结论值得先记下：DTB 里有两个 `qcom,sdhci-msm` 控制器，
 `sdhc1@7464900` 的 `status = "ok"` 且带 `qcom,nonremovable`（HS400/HS200，不可移除 → 内部存储），
