@@ -9,7 +9,9 @@
 
 **后续**: 本页之后，`vibrator` 这一行也关掉了，而且它引出的不是一条新缺口，而是**这份清单本身的一个错误**：
 那一行点名的"仪器"（`ti,drv2604l`）是**另一台手机**（LeEco X2）的芯片，见
-[`140`](140-the-block-that-was-another-phones.md) 和 [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)。清单现在是 **7 个**缺口，表格在 §8。
+[`140`](140-the-block-that-was-another-phones.md) 和 [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)。
+本页之后又收了一个：两个 SD/eMMC 控制器那个 `sdcard` 缺口，见
+[`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)。清单现在是 **6 个**缺口，表格在 §8。
 
 **接续**: [`137`](137-a-boot-should-answer-the-question-nobody-asked.md)（缺口的来源）、
 [`138`](138-the-hardware-limiter-had-never-been-read.md)（前一天收的第三个，硬件限温器）、

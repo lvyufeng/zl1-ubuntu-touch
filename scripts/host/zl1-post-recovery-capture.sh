@@ -432,6 +432,27 @@ step 04f-vibrator      device "$HERE/../device/zl1-vibrator-probe.sh"
 # platform device's `thermal_level`/`pwr_collapse_delay` are writable. So the probe writes nothing, and its
 # offline harness spends its first mutation on exactly that write.
 step 04g-video         device "$HERE/../device/zl1-video-probe.sh"
+# 04h, same class a seventh time: read-only, write-free, no person. docs 142 closed the next gap on docs
+# 137's list -- `sdcard`, which is not ONE device but TWO controllers that are not the same kind of thing.
+# /soc/sdhci@7464900 is `qcom,nonremovable` (the vendor's name for it is `sdhc1`), and /soc/sdhci@74A4900
+# carries `cd-gpios` -- a card-detect line -- so it is the REMOVABLE slot, and in every one of the 38
+# device trees of all three sets it is `status = "disabled"`. So on this phone an EMPTY SLOT and A SLOT
+# THIS KERNEL CANNOT DRIVE produce the same reading, and the probe says which of the two it is looking at
+# instead of reporting a dead card reader.
+#
+# Two readings make it worth a slot. The first is the disabled slot itself: it is a DEVICE-TREE decision
+# inside the boot image, not a runtime fault, and knowing which one you have changes the next move
+# completely. The second is that the number does NOT identify the controller -- mmc core names a host from
+# the lowest free id in an idr and this driver sets PROBE_PREFER_ASYNCHRONOUS, so `mmc0` is whatever probed
+# first; the probe prints each mmcN with the PARENT DEVICE its number belongs to, and tells the two
+# controllers apart by the parent.
+#
+# Its dangerous surface is the most tempting one in this whole file: everything in sight is writable (the
+# driver's `disable_slots` bitmask, `force_ro` beside every block device), and the obvious "test" -- reading
+# /dev/mmcblk0 to see whether it answers -- OPENS A BLOCK DEVICE, which this project does not do on this
+# phone. So the probe reads /sys/block/*/size, /proc/partitions and /proc/mounts instead, writes nothing,
+# and its offline harness spends its first mutation on exactly that write.
+step 04h-sdcard        device "$HERE/../device/zl1-sdcard-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -441,8 +462,9 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
-  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator and"
-  say "   04g-video: all six are read-only and write nothing, so they are not in this group.)"
+  say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
+  say "   04g-video and 04h-sdcard: all seven are read-only and write nothing, so they are not in this"
+  say "   group.)"
   say
 fi
 
