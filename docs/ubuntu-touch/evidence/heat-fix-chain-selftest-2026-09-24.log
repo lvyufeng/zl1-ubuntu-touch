@@ -1,0 +1,120 @@
+zl1 heat-fix chain -- offline self-test
+  script under test: scripts/host/zl1-heat-fix-chain.sh
+  fake device:       /tmp/zl1-heat-fix-chain-selftest/fake
+
+== 1. --help and the plan: the header, and no --yes = no run ==
+PASS  --help prints the usage block
+PASS  and stops at the header, not in the code after it
+PASS  --help exits 0
+PASS  no --yes: exit 2 (refused), not 0
+PASS  it says it is a plan and that nothing was run
+PASS  the plan names step 5 in full
+PASS  and says what licenses it
+PASS  no installer was invoked
+PASS  and nothing was pushed to the device
+PASS  the only ssh calls are the reachability probe (no write)
+
+== 2. --status: read-only, no --yes needed, and it answers the chain's four questions ==
+PASS  --status exits 0
+PASS  it reports the netwatch file, its function and the unit
+PASS  and whether the keeper is still there
+PASS  and whether the two addresses are on the interfaces
+PASS  and what the four cores are set to
+PASS  --status runs no installer
+PASS  the questions are asked ON the device, in one script
+
+== 3. the three ways of being unreachable: refuse, name the next move, run nothing ==
+PASS  EDL: exit 2
+PASS  it names the physical move, which is the only one there is
+PASS  it says a downloader may NOT be run
+PASS  and names the tools it is not offering, so 'no QDL' cannot be read as vagueness
+PASS  rather than offering one as a way out
+PASS  no ssh call was made at all
+PASS  and no installer ran
+PASS  absent: exit 2
+PASS  it says the device is not on the bus
+PASS  and names the other phone on this bus that must be ignored
+PASS  and no installer ran
+PASS  ssh down: exit 2
+PASS  it points at the HOST-side recovery (no key press needed for that one)
+PASS  and no installer ran
+
+== 4. the preflight: a misc backup that is not verified stops the chain BEFORE it writes ==
+PASS  an EMPTY misc.img: exit 2
+PASS  it says the backup is not usable
+PASS  and stops before step 1
+PASS  a misc.img that FAILS its SHA256: exit 2
+PASS  and the reason names the checksum, not merely the file
+PASS  and stops before step 1
+PASS  a verified backup is reported as verified, and the chain proceeds
+PASS  and it went on to run the steps
+
+== 5. the order, the wait, and the licence ==
+PASS  the whole chain exits 0
+PASS  the four installers ran in the order deploy -> activate -> retire -> governor
+PASS  step 1 is a deploy over ssh, with no --activate
+PASS  step 2 activates, and proves the running build
+PASS  step 5 carries the licence flag, so the applier re-measures rather than remembers
+PASS  step 6 is the governor, which is the other half of the heat
+PASS  and it waited the default 90 s before the proof
+PASS  the proof was run ON the device, with --yes (it stops a process)
+PASS  and the REAL proof was pushed, not a stand-in
+PASS  the index lists step 01 with its rc
+PASS  and step 06
+PASS  the wait is a step of its own (a chain that skipped it would fail in the proof)
+PASS  the archive's checksums verify
+PASS  and the final read-back is printed
+PASS  --settle 5 waits 5 s
+
+== 6. the licence: a verdict that is not exactly 'proof-obtained' does not kill anything ==
+PASS  proof-unclear: exit 1 (a stopped chain, not a crash)
+PASS  the keeper was NOT retired
+PASS  and the chain stopped there rather than running the next step anyway
+PASS  it says so out loud
+PASS  and says the keeper still owns the addresses, i.e. the phone is reachable
+PASS  and it left an archive that says how far it got
+PASS  no verdict line at all: exit 1
+PASS  and nothing was killed
+PASS  the missing verdict is stated as missing, not as a failed proof
+PASS  a verdict line that only CONTAINS the words: exit 1
+PASS  and it did not license the kill (the whole-line rule)
+PASS  the verdict line is right but the proof exited 1: exit 1
+PASS  and the kill waits for a proof that succeeded, not one that printed the word
+
+== 7. a failing step stops the chain, and says where it stopped ==
+PASS  step 1 failing: exit 1
+PASS  nothing after it ran
+PASS  and the proof was not attempted on a device whose netwatch is not deployed
+PASS  the stop is stated as a stop
+PASS  and the device was read back, so the next reader knows what state it is in
+PASS  the archive records the failing rc
+PASS  step 5 failing: exit 1
+PASS  the governor was not installed
+PASS  but the proof DID run, and the archive shows it
+PASS  and the read-back after the failure is taken (the fixture says the keeper is gone)
+
+== 8. an interrupt still leaves an archive, and exits 3 ==
+PASS  SIGTERM during the wait: exit 3 (its own code)
+PASS  and it archived an INDEX anyway
+PASS  which says it was interrupted
+PASS  and lists the steps that HAD finished
+
+== 9. the mutations: each one must change what the checks above observe ==
+PASS  mutation 'nosettle': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  and it still reached the steps (an empty sleep is a change, not a refusal)
+PASS  mutation 'no settle': the wait is gone (so the assertion that it IS 90 is live)
+PASS  mutation 'substring': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  mutation 'substring gate': a near-miss verdict now licenses the kill (the check is live)
+PASS  and the keeper was killed on a verdict that only contains the words
+PASS  mutation 'proofafter': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  and the mutant reached the steps, so the licence flag is what is being read
+PASS  mutation 'drop --after-proof': the applier is asked to kill without re-measuring
+PASS  mutation 'weakexist': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  mutation 'weak preflight': an EMPTY backup no longer stops the chain (the check is live)
+PASS  mutation 'noedlrefuse': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  mutation 'no EDL refusal': something ran against a phone in EDL (the check is live)
+
+== 10. the citation in the health check is checked by the thing it cites ==
+PASS  the health check cites 95 checks, and this run has exactly that many
+
+pass=95 fail=0
