@@ -452,6 +452,111 @@ else
   printf '%s\n' "$TREE_HITS" | sed 's/^/        | /' | head -10
 fi
 
+# --- 4f. and the OTHER page that states those numbers, which nothing was checking ----------------
+#
+# `scripts/README.md` says how many checks each harness has, and on 2026-09-24 one of those rows was
+# found stating 95 for a harness that had grown to 127 -- stale since docs 127, through every stage
+# after it, because **nothing reads those numbers**. The health check's copy of each number IS checked,
+# by the harness itself (section 4d guarantees the guard is there, and each harness compares the number
+# with its own run), so the two pages can be compared without running anything: the health check's
+# citation is the verified side, and scripts/README has to agree with it.
+#
+# The comparison is only worth anything for rows that BOTH pages state, so the count of rows actually
+# compared is printed and floored -- an extractor that stops matching would otherwise report "0
+# mismatches" and look like a clean bill of health.
+
+# Flattened to one line first: the health check WRAPS, so `zl1-heat-fix-chain-selftest.sh,` ends one
+# string literal and `159 checks.` begins the next, and a line-at-a-time reader sees no number at all.
+hc_flatten() { sed -e 's/always "/ /g' -e 's/"$//' "$1" | tr '\n' ' '; }
+
+# awk rather than grep, because two things have to be paired up: the name a page states and the number
+# that FOLLOWS it. `grep -oE '[0-9]+'` over a line holding `zl1-one-boot-runbook-selftest.sh` reads the
+# `1` out of the name -- the extractor defect section 5 already records.
+count_rows() { # health-check-flattened-file, readme -- prints "name readme_n cited_n" for mismatches
+  awk -v hcf="$1" '
+    BEGIN {
+      BT = sprintf("%c", 96)   # the backtick, without spelling one inside a quoted string
+      while ((getline line < hcf) > 0) hc = hc " " line
+      # walk the flattened page for `<name>.sh<sep><number> checks`, taking one match at a time and
+      # advancing past it, so a name mentioned twice cannot shadow its own citation.
+      s = hc
+      while (match(s, /[A-Za-z0-9_.-]+\.sh[ ,(]+[0-9]+ checks/)) {
+        t = substr(s, RSTART, RLENGTH)
+        n = t; sub(/ checks$/, "", n); sub(/^.*[ ,(]/, "", n)   # strip the UNIT first, then the name
+        nm = t; sub(/[ ,(].*$/, "", nm)
+        cited[nm] = n
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    {
+      line = $0
+      if (substr(line, 1, 3) != "| " BT) next
+      rest = substr(line, 4)
+      p = index(rest, BT)
+      if (p == 0) next
+      path = substr(rest, 1, p - 1)
+      body = substr(rest, p + 1)
+      nm = path; sub(/^.*\//, "", nm)
+      if (nm !~ /\.sh$/) next
+      if (body !~ /\*\*[0-9]+ checks?\*\*/) next
+      if (!(nm in cited)) next
+      t = body
+      if (!match(t, /\*\*[0-9]+ checks?\*\*/)) next
+      t = substr(t, RSTART, RLENGTH); gsub(/\*/, "", t); sub(/ checks?$/, "", t)
+      rows++
+      if (t != cited[nm]) printf "MISMATCH %s %s %s\n", nm, t, cited[nm]
+    }
+    # The ROW COUNT is printed as its own line and not derived from the output: the output is the
+    # mismatches, so "0 lines" means "nothing disagreed" OR "the extractor matched nothing", and those
+    # two must not be the same reading.
+    END { printf "ROWS %d\n", rows + 0 }
+  ' "$2"
+}
+
+echo
+echo "== 4f. scripts/README states the same per-harness counts, and has to agree =="
+hc_flatten "$HEALTH" > "$W/hcflat"
+hcread="$W/hc-rows"
+count_rows "$W/hcflat" "$ROOT/scripts/README.md" > "$hcread"
+nrows=$(sed -n 's/^ROWS \([0-9][0-9]*\)$/\1/p' "$hcread" | tail -1)
+nrows=${nrows:-0}
+nmis=$(grep -c '^MISMATCH' "$hcread" 2>/dev/null | tr -d ' ')
+# A floor: the two pages state a dozen-odd of these today, and a silent extractor failure must not read
+# as agreement.
+if [ "$nrows" -ge 8 ]; then
+  ok "scripts/README and the health check state the same $nrows harness check counts (a floor of 8, so a broken extract cannot pass)"
+else
+  bad "only $nrows harness rows could be paired across the two pages -- the extractor is broken, not the numbers"
+fi
+if [ "${nmis:-1}" = 0 ]; then
+  ok "and no row disagrees"
+else
+  bad "$nmis scripts/README row(s) state a check count the harness does not have:"
+  grep '^MISMATCH' "$hcread" | while read -r _ nm rn cn; do
+    printf '        | %s: README says %s, the verified citation says %s\n' "$nm" "$rn" "$cn"
+  done
+fi
+
+# The check above is only live if it can see a disagreement, and the way to know that is to hand it one
+# -- in a fixture. Both sides are written here rather than taken from the tree, so the demonstration
+# cannot be quieted by editing either page to agree.
+printf 'always "      zl1-fixture-selftest.sh, 11 checks, and prose that wraps"\nalways "      onto the next literal."\n' > "$W/fx-hc"
+printf '| `host/zl1-fixture-selftest.sh` | Host-side. **11 checks** covering it. |\n| `host/zl1-other-selftest.sh` | Host-side. **3 checks** covering it. |\n' > "$W/fx-readme"
+printf 'always "      zl1-other-selftest.sh, 4 checks."\n' >> "$W/fx-hc"
+got=$(count_rows "$W/fx-hc" "$W/fx-readme")
+case "$got" in
+*"MISMATCH zl1-other-selftest.sh 3 4"*) ok "the checker flags a row whose count disagrees with the verified citation" ;;
+*) bad "it did not flag a row that disagrees: $(printf '%s' "$got" | tr '\n' ' ')" ;;
+esac
+case "$got" in
+*"MISMATCH zl1-fixture-selftest"*) bad "it also complained about the row that AGREES (11 vs 11) -- so it is not a comparison" ;;
+*) ok "and says nothing about the row that agrees (11 vs 11) -- so it is a comparison, not a blanket complaint" ;;
+esac
+case "$got" in
+*"ROWS 2"*) ok "and it reports how many rows it actually compared, so an extractor matching nothing cannot pass" ;;
+*) bad "the row count was not reported (got: $(printf '%s' "$got" | tr '\n' ' '))" ;;
+esac
+
 # --- 5. this harness's own citation in the health check ------------------------------------------
 
 echo

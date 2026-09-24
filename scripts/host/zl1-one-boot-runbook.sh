@@ -509,17 +509,24 @@ say
 
 # --- 03 -------------------------------------------------------------------------------------------
 if wanted 03-heat-chain; then
+  # AND IT ARCHIVES INSIDE OURS, for the reason step 01 does and this step did not: the chain makes its
+  # own archive (INDEX.txt, the per-step files, and `06b-heat-ab.txt` -- the A/B measurement it takes
+  # around the two fixes) and, left alone, it puts that at `$REPO/tmp-heat-fix-<timestamp>/`, which is a
+  # SECOND directory for the same boot, BESIDE this archive rather than inside it, and one that
+  # `.gitignore`'s `tmp-*/` covers -- so it is scratch that nothing in this boot's INDEX names and
+  # nothing preserves. On a boot that cannot be re-run, the reading landing where the boot's own record
+  # does not point is the "found late" failure this whole script exists to prevent (docs 107/124).
   if [ -n "$SETTLE" ]; then
     run_step 03-heat-chain "the two known heat fixes, in their own order (the activate stage drops this session for ~90 s)" \
-      "$HEAT" --yes --settle "$SETTLE"
+      "$HEAT" --yes --settle "$SETTLE" --outdir "$OUT/03-heat-chain"
   else
     run_step 03-heat-chain "the two known heat fixes, in their own order (the activate stage drops this session for ~90 s)" \
-      "$HEAT" --yes
+      "$HEAT" --yes --outdir "$OUT/03-heat-chain"
   fi
   rc=$?
   if [ "$rc" = 0 ]; then
     say "   -> rc=0"
-    step_done 03-heat-chain 0 "ran to the end -- both halves in"
+    step_done 03-heat-chain 0 "ran to the end -- both halves in; its own archive (with the A/B reading) is in 03-heat-chain/ inside this one"
     PASS=$((PASS + 1))
   elif [ "$rc" = 1 ]; then
     # The heat chain's own 1 is "stopped short", and it distinguishes a REFUSAL (the proof did not
@@ -528,11 +535,11 @@ if wanted 03-heat-chain; then
     # half may well be in, and step 05 will read prerequisite C from the device either way.
     say "   -> rc=1 (stopped short -- its own archive says whether a step failed or the proof did not"
     say "      license the keeper kill; the fingerprint step does not depend on either)"
-    step_done 03-heat-chain 1 "stopped short -- read its own archive; C is re-read from the device below"
+    step_done 03-heat-chain 1 "stopped short -- its own archive is in 03-heat-chain/ inside this one; C is re-read from the device below"
     FAIL=$((FAIL + 1))
   else
     say "   -> rc=$rc"
-    step_done 03-heat-chain "$rc" "the chain did not complete -- read 03-heat-chain.txt"
+    step_done 03-heat-chain "$rc" "the chain did not complete -- read 03-heat-chain.txt and 03-heat-chain/INDEX.txt"
     FAIL=$((FAIL + 1))
   fi
 else

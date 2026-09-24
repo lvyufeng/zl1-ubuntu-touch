@@ -62,6 +62,9 @@ mkdir -p "$FR" "$STUB" "$CAL" "$W/out"
 # which reads exactly like "the order is wrong".
 ACT="$W/act"; export ACT
 : > "$ACT"
+# Where an outdir-less stand-in archives. NOT the repository root: see the callee stub's fallback.
+FALLBACK="$W/fallback"; export FP_FALLBACK_DIR="$FALLBACK"
+rm -rf "$FALLBACK"
 
 # --- the fake device ------------------------------------------------------------------------------
 # Only the two things the runbook itself reads, plus the two paths the callee stand-ins do not touch:
@@ -221,6 +224,28 @@ callee() { # relative path, marker
 printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
 [ -n "\${FP_SLEEP_$2:-}" ] && sleep "\${FP_SLEEP_$2}"
 rc=\$(printf '%s' "\${FP_RC_$2:-0}"); [ -n "\$rc" ] || rc=0
+# Outdir-aware, and it models the REAL scripts instead of a convenient fiction. Only TWO of the five
+# make an archive of their own -- the capture and the heat chain -- so only those two are given this
+# behaviour; the three installers write device state and archive nothing, and a stand-in that made them
+# archive would be inventing a shape the subject cannot be judged against.
+case "$2" in CAPTURE|HEAT) marker_files=1 ;; *) marker_files=0 ;; esac
+if [ "\$marker_files" = 1 ]; then
+  # Given --outdir DIR it archives INTO DIR (what the real chain does: INDEX.txt plus 06b-heat-ab.txt,
+  # the A/B reading). Given none it makes a directory of its OWN somewhere else, which is what the chain
+  # does when it defaults to \$REPO/tmp-heat-fix-<timestamp>/ -- and that is the shape the subject has to
+  # be judged against. The fallback is an env var and NOT \$PWD, because a scenario that leaves an
+  # untracked file in the repository makes the FAMILY runner (docs 129) redden for a reason that has
+  # nothing to do with this subject.
+  out=; want=0
+  for a in "\$@"; do
+    if [ "\$want" = 1 ]; then out="\$a"; want=0; continue; fi
+    [ "\$a" = --outdir ] && want=1
+  done
+  [ -n "\$out" ] || out="\${FP_FALLBACK_DIR:-/tmp/zl1-rb-fallback}"
+  mkdir -p "\$out" 2>/dev/null
+  printf 'CALLEE $2 INDEX\n' > "\$out/INDEX.txt"
+  printf 'CALLEE $2 ab-reading\n' > "\$out/06b-heat-ab.txt"
+fi
 printf 'CALLEE $2 rc=%s\n' "\$rc" >> "$ACT"
 exit "\$rc"
 EOF
@@ -316,7 +341,7 @@ latest_archive() { ls -dt "$OUTROOT"/tmp-one-boot-* 2>/dev/null | head -1; }
 # `bash` here is 127 -- and 127 from every scenario reads exactly like "the subject refuses everything".
 BASH_BIN=$(command -v bash)
 run()  { : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?; }
-reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; }
+reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; }
 
 echo "zl1 one-boot runbook -- offline self-test"
 echo "  subject: $SRC"
@@ -400,7 +425,7 @@ echo "== 3. the five steps, in the one order =="
 reset; run --yes
 want 'CALLEE CAPTURE args=--outdir' "$(order | sed -n '1p')" "step 01 runs FIRST, and the capture is told where to archive"
 want 'CALLEE PANIC args=--install' "$(order | sed -n '2p')" "then the panic guard, installed"
-want 'CALLEE HEAT args=--yes' "$(order | sed -n '3p')" "then the heat chain, in its --yes mode"
+want 'CALLEE HEAT args=--yes --outdir' "$(order | sed -n '3p')" "then the heat chain, in its --yes mode, and TOLD WHERE TO ARCHIVE"
 want 'CALLEE FP args=--install' "$(order | sed -n '4p')" "then the fingerprint store directory"
 want 'CALLEE TRIAL args=--status' "$(order | sed -n '5p')" "and LAST the trial, READ-ONLY by default"
 [ "$(order | wc -l)" = 5 ] && ok "exactly five steps -- no step runs twice and none is smuggled in" || bad "$(order | wc -l) callee call(s) ran"
@@ -410,6 +435,22 @@ want 'CALLEE TRIAL args=--status' "$(order | sed -n '5p')" "and LAST the trial, 
 want '--outdir' "$(order | sed -n '1p')" "the capture is given an outdir rather than sharing ours by accident"
 OD1=$(latest_archive)
 want 'capture/' "$(cat "$OD1/INDEX.txt" 2>/dev/null)" "and the capture's own archive is named as living inside ours"
+# The heat chain's archive, which is the ONE thing this script must not get wrong about step 03: the chain
+# takes an A/B measurement around the two fixes and writes it to `06b-heat-ab.txt` inside its OWN archive,
+# and left alone it puts that archive at `$REPO/tmp-heat-fix-<timestamp>/` -- a second directory for the
+# same boot, BESIDE this one, covered by .gitignore's `tmp-*/`, named by nothing in this INDEX. On a boot
+# that cannot be re-run, the reading landing where the boot's own record does not point is the "found
+# late" failure this whole script exists to prevent. So the assertion is two-sided: the reading IS inside
+# the boot's archive, and it is NOT in the directory the chain would have chosen by itself.
+[ -f "$OD1/03-heat-chain/06b-heat-ab.txt" ] \
+  && ok "step 03's own archive -- including the A/B reading -- lands INSIDE this boot's archive" \
+  || bad "03-heat-chain/06b-heat-ab.txt is not inside $OD1: the measurement is beside the archive, not in it"
+[ -f "$OD1/03-heat-chain/INDEX.txt" ] && ok "with the chain's own INDEX.txt beside it, so two records of the same boot survive" \
+  || bad "the chain's own INDEX.txt is not inside the boot's archive"
+want '03-heat-chain/' "$(cat "$OD1/INDEX.txt" 2>/dev/null)" "and the boot's INDEX names that directory, so a reader following it finds the reading"
+[ ! -f "$FALLBACK/06b-heat-ab.txt" ] \
+  && ok "and NOTHING was archived into the directory an outdir-less step would have made for itself" \
+  || bad "a step archived outside the boot's own archive, into $FALLBACK"
 # The subject's own plan list and its execution order are checked against EACH OTHER by the subject, and
 # that check is asserted here because it is the only thing standing between "the order is enforced" and
 # "the order is a comment". A mutation that swaps two entries of STEPS changes nothing about what runs --
@@ -421,7 +462,7 @@ unknown_markers >/dev/null 2>&1
 # --settle is passed through, because the heat chain's default (90 s) is the gap the netwatch needs and
 # this script must not quietly shorten it.
 reset; run --yes --settle 12
-want 'CALLEE HEAT args=--yes --settle 12' "$(order | sed -n '3p')" "--settle reaches the heat chain unchanged"
+want 'CALLEE HEAT args=--yes --settle 12 --outdir' "$(order | sed -n '3p')" "--settle reaches the heat chain unchanged, and the outdir is not lost when --settle is given"
 
 # ==================================================================================================
 echo
@@ -656,6 +697,56 @@ done
 want 'THE TRIAL WRITES TO THE' "$(cat "$SRC")" "and it says out loud that --apply-trial is the write"
 
 # ==================================================================================================
+# ==================================================================================================
+echo
+echo "== 10b. the mutations: each one must change what the checks above observe =="
+# ==================================================================================================
+# This harness had no in-file mutation until now: doc 127 measured the two it quotes by hand (cp the
+# subject aside, sed it, run, restore), which is a procedure and not a mechanism -- the same distinction
+# the family now enforces everywhere else (docs 129). The subject here is the REWRITTEN copy, so a
+# mutation has to land on both: asserted to change the SHIPPED file first, or the mutant is not a mutant.
+# BESIDE the rewritten subject, not in a directory of their own: the subject resolves its siblings as
+# \$HERE/../install-*.sh and \$HERE/../../scripts/, so a mutant in \$W/mut would refuse for a reason that
+# has nothing to do with the mutation -- measured, not reasoned about: the first version of this block put
+# them in \$W/mut and every mutant exited 2 with "cannot read .../mut/../install-netwatch-service.sh".
+MUTDIR="$W/fake-repo/scripts/host"; mkdir -p "$MUTDIR"
+mutate() { # name, sed-script
+  if cmp -s <(sed "$2" "$SRC" 2>/dev/null) "$SRC"; then
+    bad "mutation '$1': its sed matches no line of the SHIPPED script, so nothing is being tested"
+    return 1
+  fi
+  sed "$2" "$RB" > "$MUTDIR/$1.sh"
+  if cmp -s "$RB" "$MUTDIR/$1.sh"; then
+    bad "mutation '$1': the sed changes the shipped file but not the subject -- it did not land"
+    return 1
+  fi
+  bash -n "$MUTDIR/$1.sh" 2>/dev/null || { bad "mutation '$1': the mutant does not parse"; return 1; }
+  chmod +x "$MUTDIR/$1.sh"
+  ok "mutation '$1': landed (it changes a line of the shipped script, and the mutant parses)"
+  return 0
+}
+mutrun() { # mutant path, args...
+  MUT="$1"; shift
+  : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*
+  MOUT=$(env PATH="$STUB:$MINBIN" "$BASH_BIN" "$MUT" "$@" 2>&1); MRC=$?
+}
+
+# The one this section is for: step 03 stops being told where to archive. The observable difference is
+# not "an argument is missing" -- it is that the boot's measurement is no longer inside the boot's record.
+if mutate nooutdir 's# --outdir "\$OUT/03-heat-chain"##'; then
+  mutrun "$MUTDIR/nooutdir.sh" --yes
+  [ "$MRC" = 0 ] && ok "mutation 'no outdir for step 03': the run still exits 0" || bad "the mutant exited $MRC"
+  MOTD=$(latest_archive)
+  [ ! -f "$MOTD/03-heat-chain/06b-heat-ab.txt" ] \
+    && ok "and the A/B reading is NO LONGER inside the boot's archive (the check is live)" \
+    || bad "the reading is still inside the archive -- the assertion above is not measuring the outdir"
+  [ -f "$FALLBACK/06b-heat-ab.txt" ] \
+    && ok "and it went where an untold step puts it: a directory of its own, named by nothing" \
+    || bad "the reading vanished rather than landing outside the archive -- the two-sided assertion is broken"
+  [ "$MRC" = 0 ] && notwant 'CALLEE HEAT args=--yes --outdir' "$(order)" \
+    "and the chain was invoked without an outdir, which is the change itself"
+fi
+
 echo
 echo "== 11. the health check cites this harness's count, and that citation cannot drift =="
 # ==================================================================================================
