@@ -394,6 +394,40 @@ clear_zones; hot_zones
 run_th --seconds 1 --quiet        # the instrument, on the same zones, for the agreement check
 rm -f "$W/called"
 HC_OUT=$(PATH="$STUB:$PATH" ZL1_HOST=root@10.15.19.82 timeout 60 bash "$W/hc.sh" 2>&1); HC_RC=$?
+
+# --- the page must PRINT its prose, not RUN it ----------------------------------------------------
+#
+# Found on 2026-09-24 by a stray empty file in the repository root, and the cause is a shell trap that
+# this page walked into seven times: **backticks inside a double-quoted string are command
+# substitution**, so every emphasised word in the page's prose was being executed as a command when the
+# line was printed. Three real symptoms, none of them visible in stdout: `\`/\`` ran `bash: /: Is a
+# directory` and the printed sentence silently LOST the character; `` `tr | grep | sed ||` `` was an
+# incomplete command, so the substitution failed and the rest of that printed line vanished; and
+# `` `nsenter -m -- test` `` / `` `systemctl --user status` `` were commands on the host, run by a page
+# whose entire purpose is to be read-only. The prose is escaped now (`\``), and the two symptoms are
+# checked HERE, behaviourally, because a grep for a backtick would have to re-implement the quoting
+# rules it is trying to police: the page is run in a directory of its own with stderr kept SEPARATE,
+# and both must come back empty -- an executed fragment lands in one or the other.
+HC_CWD="$W/cwd"; mkdir -p "$HC_CWD"
+( cd "$HC_CWD" && PATH="$STUB:$PATH" ZL1_HOST=root@10.15.19.82 timeout 60 bash "$W/hc.sh" \
+    > /dev/null 2> "$W/hc.err" )
+if [ -s "$W/hc.err" ]; then
+  bad "the page writes to stderr -- its prose may be executing (first line: $(head -1 "$W/hc.err"))"
+else
+  ok "the page prints its prose without executing any of it (stderr is empty)"
+fi
+HC_LEFTOVER=$(ls -A "$HC_CWD" 2>/dev/null)
+[ -z "$HC_LEFTOVER" ] && ok "and it created no file in the directory it ran in" \
+  || bad "it left something behind in its working directory: $HC_LEFTOVER"
+# The run above only covers the sections THIS fixture reaches. The static half covers the rest: an
+# unescaped backtick anywhere in the page's prose is an execution waiting for its line to be printed, so
+# it is refused wherever it sits -- every section, not just the ones a fake root can walk into. (When
+# this check was written, it failed on the two lines that DOCUMENT the defect: the same trap, twice, in
+# the text describing it.)
+UNESC=$(grep -nE '^always ".*[^\\]`' "$HC" 2>/dev/null | head -3)
+[ -z "$UNESC" ] && ok "and no unescaped backtick survives in the page's prose, printed or not" \
+  || { bad "unescaped backticks in the page's prose -- those lines execute when they are printed"
+       printf '%s\n' "$UNESC" | sed 's/^/        | /'; }
 printf '%s\n' "$HC_OUT" > "$W/out.hc"
 want 'thermal: hottest of 6 zones: tsens_tz_sensor8 58\.0 C \(raw 580 = deci-degC\)' "$HC_OUT" \
      "the health check reports the SoC at 58.0 C with its raw value"
