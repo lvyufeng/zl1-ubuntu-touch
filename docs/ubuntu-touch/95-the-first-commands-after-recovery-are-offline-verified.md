@@ -137,6 +137,14 @@ harness 在 PATH 最前面放一个桩 `gdbus`（`loadPlugin`、`requestSensor` 
 
 * **对设备的结论：零。** 两个 harness 都在宿主机上，假根树里的设备状态是编的，设备整轮都在 EDL。
 * **不证明真机上的路径就是假根树里那些**：`/sys/module/msm_poweroff/parameters/download_mode`、`/sys/kernel/dload/`、复位之后 `/sys/fs/pstore` 里到底有没有东西、`/userdata/zl1-kmsg/keep/` 里是不是真的躺着那个死掉的 boot——`86` §5 列的这四件，**仍然一件都没在真机上出现过**。
+
+  > **2026-09-24 更正（[`125`](125-the-device-read-those-four-things-already.md)）：写这一句的时候，这四件里有三件和第四件的一半已经在真机上被读到了。**
+  > 读数来自**这一页交付的那条命令**自己在 2026-09-23 和 2026-09-24 两次真机运行留下的归档
+  > （`tmp-post-recovery-*/01-edl-postmortem.txt`）：路径是 `/sys/module/msm_poweroff/parameters/download_mode`
+  > （= 1）、`/sys/kernel/dload` 有 `emmc_dload`、`/userdata/zl1-kmsg/keep/` 有 4 个 `boot-<id>/` 且其中一个带死亡特征；
+  > `/sys/fs/pstore` 只证明了**目录存在且可读**——里面是空的，而空什么都不证明。
+  > 这一句留在这里，是因为它比它想说的那件事更有用：**一句话说"没验过"，可以在读数已经落地之后继续活着，
+  > 而且下一轮的人（和这一轮的我）会拿它当理由去编一个 fixture。**
 * **不证明这次就是最后的 bug**。它证明的是这三个具体的缺陷没了；下一个会是另一种形状，那时诚实的做法是再加一个场景，而不是把结论说大。
 * **命令护栏不是沙箱**：它只证明这 7 种状态下 post-mortem 没有调用那 23 条命令。不在名单里的命令、这些状态没走到的分支，都不在覆盖范围内。它挡住的是这个脚本**已经犯过一次**的那类事故。
 

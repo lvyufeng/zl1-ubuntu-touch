@@ -282,7 +282,9 @@ want '\$SNAP_AFTER/counters' "$(targets_in "$W/mut-real.sh")" "and an append is 
 # ==================================================================================================
 # The fixture is written ONCE with every switch in it, so a scenario changes the device and that change
 # is the ONLY difference. The switches, and what each is for:
-#   FAKE_DL       0 | 1 | missing            prerequisite A: the panic -> EDL escalation
+#   FAKE_DL       0 | 1 | missing            prerequisite A: the panic -> EDL escalation (the real
+#                                             module name, msm_poweroff)
+#   FAKE_DL2      0 | 1                    a SECOND download_mode parameter that sorts after the first
 #   FAKE_CPUIDLE  clean | nodir              prerequisite B
 #   FAKE_KEEPER   0 | 1                      prerequisite C, plus a bystander that must NOT be matched
 #   FAKE_PARAM    1 | 0 | missing            the parameter's value
@@ -299,7 +301,7 @@ cat > "$W/reset.sh" <<EOF
 set -u
 rm -rf "$FR"
 mkdir -p "$FR/proc/device-tree" "$FR/sys/devices/system/cpu/cpuidle" "$FR/tmp" \\
-         "$FR/sys/module/lpm_levels/parameters" "$FR/sys/module/msm_mpoweroff/parameters" 2>/dev/null
+         "$FR/sys/module/lpm_levels/parameters" "$FR/sys/module/msm_poweroff/parameters" 2>/dev/null
 printf '%s\\0' "\${FAKE_COMPAT:-qcom,msm8996pro}" > "$FR/proc/device-tree/compatible"
 printf 'qcom-cpuidle\\n' > "$FR/sys/devices/system/cpu/cpuidle/current_driver"
 # /proc is NOT created wholesale: the keeper scenarios add their own processes, and a directory that
@@ -307,12 +309,31 @@ printf 'qcom-cpuidle\\n' > "$FR/sys/devices/system/cpu/cpuidle/current_driver"
 mkdir -p "$FR/proc"
 
 # --- prerequisite A: the panic -> EDL escalation -------------------------------------------------
-# The module name is deliberately NOT the one docs 86's string search suggested (msm_mpoweroff, not
-# msm_poweroff): the trial discovers it by glob, and a fixture named exactly as the trial expects would
-# let a hard-coded path pass every scenario.
+# The PRIMARY parameter carries the REAL module name, because on 2026-09-24 the device said what it is:
+# \`/sys/module/msm_poweroff/parameters/download_mode = 1\`, read twice and archived in this repository
+# (tmp-post-recovery-20260923T145530Z/01-edl-postmortem.txt:14 and
+# tmp-post-recovery-20260924T013059Z/01-edl-postmortem.txt:13; docs 125). This fixture used to carry a
+# fabricated near-miss name justified by doc 86's "never seen on a device" line -- which stopped being
+# true the moment that capture was written, and which was also a misreading of 86 (86 said the name
+# *should be* msm_poweroff and had not been confirmed; the device confirmed it).
+#
+# The glob tooth is kept, and made stronger, by FAKE_DL2: the trial reads EVERY parameter of that name,
+# because the unit that arms the policy clears all of them and fails itself if any did not clear. So a
+# decoy is a scenario -- with the primary at 0 and the decoy at 1, a reader that stops at the first match
+# reports the gate SATISFIED on a boot where a panic would still arm EDL, i.e. it hands back exactly the
+# finger the gate exists to save. The decoy sorts AFTER the primary on purpose (\`qcom_poweroff\`), so the
+# primary is the first match and the two behaviours must disagree; the first decoy name tried
+# (\`msm_mpoweroff\`) sorted BEFORE, both readers answered about the same parameter, and the mutation that
+# removes the multi-match reading reddened everything except the check written for it.
 case "\${FAKE_DL:-0}" in
 missing) : ;;
-*) printf '%s\\n' "\${FAKE_DL:-0}" > "$FR/sys/module/msm_mpoweroff/parameters/download_mode" ;;
+*) printf '%s\\n' "\${FAKE_DL:-0}" > "$FR/sys/module/msm_poweroff/parameters/download_mode" ;;
+esac
+rm -rf "$FR/sys/module/qcom_poweroff"
+case "\${FAKE_DL2:-}" in
+"") : ;;
+*) mkdir -p "$FR/sys/module/qcom_poweroff/parameters"
+   printf '%s\\n' "\${FAKE_DL2}" > "$FR/sys/module/qcom_poweroff/parameters/download_mode" ;;
 esac
 
 # --- the parameter this trial writes ------------------------------------------------------------
@@ -399,8 +420,8 @@ EOF
 chmod +x "$STUB/sleep"
 
 
-export FAKE_COMPAT= FAKE_DL= FAKE_CPUIDLE= FAKE_KEEPER= FAKE_PARAM= FAKE_DEEP_BEFORE= FAKE_DEEP_DIS= \
-       FAKE_IDLE= FAKE_AFTERFAIL=
+export FAKE_COMPAT= FAKE_DL= FAKE_DL2= FAKE_CPUIDLE= FAKE_KEEPER= FAKE_PARAM= FAKE_DEEP_BEFORE= \
+       FAKE_DEEP_DIS= FAKE_IDLE= FAKE_AFTERFAIL=
 
 # For the scenarios that are about state a previous run left behind (the --keep then --revert pair),
 # `run` would reset the fake device first and destroy exactly the state under test.
@@ -477,6 +498,25 @@ FAKE_DL=1 run "--status"
 want 'A PANIC WOULD ARM EDL' "$OUT" "--status reports it without refusing"
 want 'would REFUSE' "$OUT" "and says --apply would refuse"
 FAKE_DL=
+
+# A is a reading of EVERY `download_mode` parameter, and not of the first one seen. The unit that arms
+# this policy loops the same glob and FAILS ITSELF if any parameter did not clear, so a gate satisfied by
+# the first match hands back exactly the finger it exists to save. FAKE_DL2 adds a second parameter that
+# sorts AFTER the primary (`qcom_poweroff` > `msm_poweroff`), so the primary is the first match and a
+# reader that stopped there must disagree with one that reads them all.
+FAKE_DL=0 FAKE_DL2=1 run "--apply"
+[ "$RC" = 3 ] && ok "a SECOND download_mode parameter at 1 refuses, even though the first reads 0" || bad "it exited $RC"
+want 'REFUSED \(prerequisite A\)' "$OUT" "and it is the same refusal, on the same terms"
+want 'qcom_poweroff' "$OUT" "and the report names the parameter that is armed, not only the one it read first"
+[ "$(param)" = 1 ] && ok "and the parameter this trial writes still reads 1 -- the refusal wrote nothing" || bad "the parameter reads $(param)"
+FAKE_DL=0 FAKE_DL2=0 run "--apply"
+[ "$RC" != 3 ] && ok "with BOTH parameters at 0 the gate opens (the run gets past A)" || bad "it refused at A with both at 0"
+FAKE_DL= FAKE_DL2=
+# "NOT FOUND" means no such parameter anywhere, not "the one under the first name is absent".
+FAKE_DL=missing FAKE_DL2=0 run "--status"
+notwant 'NOT FOUND' "$OUT" "with the primary absent but another parameter present, A is not reported as untestable"
+want 'all 1 download_mode parameter' "$OUT" "and it reports the one it found"
+FAKE_DL= FAKE_DL2=
 
 # ==================================================================================================
 echo

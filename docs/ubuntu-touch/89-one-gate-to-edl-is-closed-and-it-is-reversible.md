@@ -66,6 +66,13 @@ kmsg drain 管的是 `/dev/kmsg` 的环形缓冲（复位即失），pstore 是�
 * **`zl1-panic-guard.sh` 四个场景**（打桩 `/sys/fs/pstore` + `/userdata`）：有 panic 记录（抄下来、索引写对、**原文里 `Kernel panic` 还在**）、pstore 为空（干净退出且**一个目录都不建**）、五份归档时按 mtime 只留最新四份、`/sys/fs/pstore` 整个不存在（退出 0，不把 unit 判失败）。
 * **`zl1-no-edl-on-panic.sh` 四个场景**（打桩 `/sys/module/*/parameters/`）：正常写入 `1 -> 0` 且退出 0、幂等、**写不动（值停在 1）时退出 1 并明说闸门没关上**、参数不存在时退出 1。第三个场景要用"已武装 + 写不进去"才算真测到——第一版打桩先用幂等场景把值留成了 0，于是 `0 -> 0` 读回"成功"、退出 0，**这不是脚本的 bug 而是测试的 bug**，但它说明这一条必须用武装态去测，否则测的是一个恒真的判断。
 * **没有在设备上跑过任何东西**（设备在 EDL）。未验证的是设备侧的事实：那个 sysfs 路径是不是 `/sys/module/msm_poweroff/parameters/download_mode`（脚本用 glob，不写死；`msm-poweroff.o` → 模块名应是 `msm_poweroff`，**没在真机上确认过**）、`/sys/fs/pstore` 复位后到底有没有东西、以及**上面 §2 那个根本问题**（关掉标志是否真的足以不进 EDL）。
+
+  > **2026-09-24 更正（[`125`](125-the-device-read-those-four-things-already.md)）：第一条不再是未验证的。**
+  > 真机读数是 `/sys/module/msm_poweroff/parameters/download_mode = 1`，两次，出处见
+  > `tmp-post-recovery-20260923T145530Z/01-edl-postmortem.txt:14` 和
+  > `tmp-post-recovery-20260924T013059Z/01-edl-postmortem.txt:13`——**这个文件里的猜测（`msm_poweroff`）被设备确认了**。
+  > **但 §2 那个根本问题一个字都没变**：写 0 是否有用要等那个 unit 真的装上并跑过，
+  > 而 `/sys/fs/pstore` 那边只证明了**目录存在且可读**（归档里它是空的，空不证明任何事）。
 * **因此：本轮交付的是"一个已校验的执行器 + 一条可逆的策略"，不是结果。** 真正的验证只能是"下一次 panic 时它正常重启了"或者"pstore 里有东西"。
 
 ## 6. 复现

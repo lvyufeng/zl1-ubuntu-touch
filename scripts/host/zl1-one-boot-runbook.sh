@@ -189,13 +189,34 @@ BOOT_ID=$("${SSH[@]}" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d 
 # exits 0 and a knob that moved are two different facts, and the whole point of ordering the sequence
 # is that the second one is what the LAST step depends on.
 # ==================================================================================================
-# `download_mode` -- the trial's prerequisite A. Discovered by GLOB, not by name, for the same reason
-# the trial does it: doc 86 records that the poweroff driver's name was not what the string search
-# suggested. It is a 0644 module parameter, so 0 means a panic reboots instead of arming EDL.
+# `download_mode` -- the trial's prerequisite A. It is a 0644 module parameter, so 0 means a panic
+# reboots instead of arming EDL.
+#
+# EVERY match is read, and not the first one. The unit that arms this policy clears all of them and
+# FAILS ITSELF if any did not clear (`install-no-edl-on-panic.sh`'s applier loops the same glob and sets
+# `ok=0` on a value that is not 0), so a reader that stopped at the first match would answer a question
+# about a different knob than the writer touches: it could print "A is MET" on a boot where the unit
+# itself reports the guard is NOT armed. On the device as measured there is exactly one --
+# `/sys/module/msm_poweroff/parameters/download_mode`, = 1 at boot (a real reading, twice:
+# tmp-post-recovery-*/01-edl-postmortem.txt and docs 125) -- so this is about not being wrong if that
+# ever stops being true. The glob (rather than the name) is kept for the same reason every other script
+# here globs it, and the archived reading is what retires the older justification: `msm_poweroff` IS the
+# name the guess named. See docs 125.
+#
+# The output is ONE token of its own shape, because the verdict below is a `case` on it:
+#   all=0 (N parameter(s))                  every parameter reads 0 -> A is met
+#   ARMED <path>=<value>[ <path>=<value>]   at least one does not    -> A is NOT met, and which
+#   NOT-FOUND                               the driver's param is not exposed at all
 read_download_mode() {
-  "${SSH[@]}" 'for p in /sys/module/*/parameters/download_mode; do
-      [ -e "$p" ] && { printf "%s=%s" "$p" "$(cat "$p" 2>/dev/null)"; exit 0; }
-    done; printf "NOT-FOUND"' 2>/dev/null | tr -d '\r\n'
+  "${SSH[@]}" 'n=0; bad=""
+    for p in /sys/module/*/parameters/download_mode; do
+      [ -e "$p" ] || continue
+      v=$(cat "$p" 2>/dev/null); n=$((n + 1))
+      [ "$v" = 0 ] || bad="${bad}${bad:+ }${p}=${v:-<unreadable>}"
+    done
+    if [ "$n" = 0 ]; then printf "NOT-FOUND"; exit 0; fi
+    if [ -n "$bad" ]; then printf "ARMED %s" "$bad"; exit 0; fi
+    printf "all=0 (%s parameter(s))" "$n"' 2>/dev/null | tr -d '\r\n'
 }
 # The debug keeper -- the trial's prerequisite C. Matched by ARGV, the same rule every other script here
 # uses: a shell whose command line merely MENTIONS the keeper's path is not the keeper.
@@ -307,13 +328,16 @@ if [ "$MODE" = status ]; then
   say "the trial's two hard prerequisites, as the DEVICE reads them right now:"
   DM=$(read_download_mode)
   KP=$(read_keeper)
-  # `*=0` and not `0`, for the same reason as the run branch below: the reading is `<path>=<value>`.
-  # Both spellings were wrong in the first version, in the same way, and the harness caught the run
-  # branch first and the status branch second -- which is what a harness is for.
+  # The `case` is on the reader's own token, and there is deliberately NO fall-through that could read a
+  # near-miss as a pass. Both earlier spellings here were wrong in the same way (`0*`, then `*=0`: the
+  # value position), and this file has already been bitten twice by a reading whose shape the verdict
+  # assumed rather than checked. So the only branch that says MET is the one the reader prints when every
+  # parameter reads 0.
   case "$DM" in
-  *=0) say "  A. download_mode: $DM   <- a panic will NOT arm EDL (prerequisite A is MET)";;
+  all=0*) say "  A. download_mode: $DM   <- every parameter reads 0: a panic will NOT arm EDL (prerequisite A is MET)";;
   NOT-FOUND) say "  A. download_mode: NOT FOUND under /sys/module/*/parameters/ -- A cannot be checked, so it is NOT met";;
-  *) say "  A. download_mode: $DM   <- a panic WOULD arm EDL (A is NOT met; step 02 is what fixes it)";;
+  ARMED*) say "  A. download_mode: $DM   <- a panic WOULD arm EDL (A is NOT met; step 02 is what fixes it)";;
+  *) say "  A. download_mode: $DM   <- the reading is not a shape this script knows, so A is treated as NOT met";;
   esac
   case "$KP" in
   none*) say "  C. debug keeper: none -- C is MET";;
@@ -441,12 +465,16 @@ C_AFTER=$(read_keeper 2>/dev/null); [ -n "$C_AFTER" ] || C_AFTER="UNREADABLE"
 say "== the device, after the steps that were supposed to move it"
 say "   download_mode : $A_AFTER"
 say "   debug keeper  : $C_AFTER"
-# `*=0` and NOT `0*`: the reading is `<path>=<value>`, so the value is at the END. The first version
-# matched the value at the START, which meant A was reported unmet on every boot however the device
-# read -- a check whose answer no scenario could change, found by the harness moving the flag.
+# The case is on the reader's OWN token now (`all=0 (N parameter(s))`), not on the value position: the
+# earlier version matched `*=0` against a single `<path>=<value>` line, and the version before that
+# matched `0*`, i.e. the value at the START -- so A was reported unmet on every boot however the device
+# read. That was a check whose answer no scenario could change, and the harness found it by moving the
+# flag. An explicit token makes the shape checkable instead of positional.
 case "$A_AFTER" in
-*=0) note "prerequisite A is MET";;
+all=0*) note "prerequisite A is MET -- every download_mode parameter reads 0";;
+ARMED*) note "A is NOT met -- the parameter(s) named above do not read 0, so a panic would still arm EDL; the cause is 02 or the driver, not the trial";;
 UNREADABLE) note "A: UNREADABLE -- the link or the driver did not answer. A is NOT met.";;
+NOT-FOUND) note "A is NOT met -- no /sys/module/*/parameters/download_mode on this device, so the policy unit could not arm itself either.";;
 *) note "A is NOT met -- step 05 will refuse on A, and the cause is 02 or the driver, not the trial";;
 esac
 case "$C_AFTER" in

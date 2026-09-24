@@ -68,13 +68,36 @@ ACT="$W/act"; export ACT
 # the trial runs on the "device", and the ssh stub maps the runbook's device-side commands into here.
 printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"
 
-# A `download_mode` parameter, discovered by GLOB exactly as the runbook discovers it. The driver's
-# directory name is deliberately NOT `msm-poweroff`: doc 86 records that the real one was not what the
-# string search suggested, and a fixture that used the expected name would pass while the glob was
-# broken.
-DM_DIR="$FR/sys/module/msmpoweroff_msm/parameters"
-mkdir -p "$DM_DIR"
-dm_set() { printf '%s\n' "$1" > "$DM_DIR/download_mode"; }
+# A `download_mode` parameter, discovered by GLOB exactly as the runbook discovers it.
+#
+# The PRIMARY one carries the REAL name, because on 2026-09-24 the device finally said what it is:
+# `/sys/module/msm_poweroff/parameters/download_mode = 1`, read twice and archived in this repository
+# (tmp-post-recovery-20260923T145530Z/01-edl-postmortem.txt:14 and
+# tmp-post-recovery-20260924T013059Z/01-edl-postmortem.txt:13; see docs 125). This fixture used to carry
+# a FABRICATED name, on the reasoning that a fixture using the expected name would pass while the glob
+# was broken -- which was the right worry, answered the wrong way: a fixture with an invented shape
+# cannot show that the reader works on the shape the device actually has, and doc 86's "the real path was
+# never seen on a device" stopped being true the moment that capture was taken.
+#
+# The glob tooth is kept, and made stronger, by a SECOND module directory: the runbook now reads EVERY
+# match (the policy unit clears all of them and fails itself if any did not clear), so a decoy is a
+# scenario rather than a comment -- with `msm_poweroff` at 0 and the decoy at 1, a reader that stopped at
+# the first match reports A MET and a reader hard-coded to one name cannot even see the count.
+DM_PRIMARY="$FR/sys/module/msm_poweroff/parameters"
+# The decoy sorts AFTER the primary on purpose: the glob expands alphabetically, so a decoy named
+# `msm_mpoweroff` (the first name tried here) came FIRST and the scenario could not tell a reader that
+# takes the first match apart from one that reads them all -- both would have reported on the same
+# parameter, and the mutation proved it by reddening everything except the check it was written for.
+# With `qcom_poweroff` the primary is the first match, so "first match only" and "every match" must
+# disagree. A fixture that cannot make two behaviours differ is the "tested nothing" shape this tree
+# keeps recording.
+DM_DECOY="$FR/sys/module/qcom_poweroff/parameters"
+mkdir -p "$DM_PRIMARY"
+# `dm_set` writes ONLY the primary and takes the decoy away, because "exactly one parameter" is the shape
+# the device was measured to have -- so every scenario that does not ask for two runs on the real shape,
+# and `reset` gets it for free.
+dm_set()   { printf '%s\n' "$1" > "$DM_PRIMARY/download_mode"; rm -rf "$FR/sys/module/qcom_poweroff"; }
+dm_decoy() { mkdir -p "$DM_DECOY"; printf '%s\n' "$1" > "$DM_DECOY/download_mode"; }
 dm_set 1
 
 keeper_dir="$FR/proc/900"
@@ -395,6 +418,20 @@ want 'prerequisite C is MET' "$OUT" "with no keeper in /proc the run reports C a
 reset; keep_on; run --yes
 want 'C is NOT met' "$OUT" "with the keeper running it reports C as not met"
 want 'the cause is 03' "$OUT" "and attributes it to the heat chain, not to the trial"
+
+# A is a reading of EVERY `download_mode` parameter, and not of the first one seen. The policy unit that
+# arms A loops the same glob and FAILS ITSELF if any parameter did not clear, so a reader that stopped at
+# the first match answers a question about a different knob than the writer touches: it can print A MET on
+# a boot where the unit itself reports the guard is NOT armed. The device has exactly one parameter today
+# (measured, docs 125), which is why this needs a scenario rather than a memory.
+reset; dm_set 0; dm_decoy 1; run --yes
+want 'A is NOT met' "$OUT" "with a SECOND download_mode parameter at 1, A is not met even though the first reads 0"
+want 'qcom_poweroff' "$OUT" "and the report names the parameter that is armed, rather than only the one it read first"
+reset; dm_set 0; dm_decoy 0; run --yes
+want 'prerequisite A is MET' "$OUT" "with BOTH parameters at 0 it is met"
+want 'all=0 (2 parameter(s))' "$OUT" "and the reading says how many it looked at -- a count a hard-coded single path could not produce"
+reset; dm_set 0; run --status
+want 'all=0 (1 parameter(s))' "$OUT" "and on the device's real shape -- one parameter -- --status says so"
 # Both readings must be UNREADABLE rather than a value when the link dies -- because the heat chain's own
 # activate stage re-enumerates the gadget, so the first ssh after it can fail, and a value invented there
 # would be the worst possible answer.

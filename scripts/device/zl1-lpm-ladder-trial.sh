@@ -25,9 +25,13 @@
 #   has, as far as every image in this repository shows, NEVER RUN on this device. So the experiment
 #   is allowed to proceed only when three things are true, and each refusal names which one is not:
 #
-#     A. THE PANIC -> EDL ESCALATION IS DISARMED. `download_mode` (a 0644 module param of the msmpoweroff
+#     A. THE PANIC -> EDL ESCALATION IS DISARMED. `download_mode` (a 0644 module param of the poweroff
 #        driver, compiled in as 1) is what turns a panic into a device that sits in EDL (docs 86).
-#        `install-no-edl-on-panic.sh --install` writes 0 to it. This trial REFUSES to run without it,
+#        `install-no-edl-on-panic.sh --install` writes 0 to it, and it clears EVERY such parameter. This
+#        trial refuses unless every one of them reads 0 -- reading the first match would let the gate be
+#        satisfied by a knob that is not the one the policy clears (docs 125; the device was measured to
+#        expose exactly one, `/sys/module/msm_poweroff/parameters/download_mode`, so this is about the
+#        gate being about the same thing the writer writes). This trial REFUSES to run without it,
 #        because the difference is exactly "a hang reboots the phone" versus "a hang costs a finger".
 #        It also means this trial never has to argue that it cannot hang.
 #     B. THE COUNTERS ARE READABLE. The whole experiment is a before/after on cpuidle's usage/time, so a
@@ -201,7 +205,9 @@ EOF
 fi
 
 # ==================================================================================================
-# find the parameter, and the panic -> EDL knob, by GLOB AND NOT BY NAME
+# find the parameter, and the panic -> EDL knob, by GLOB AND NOT BY NAME -- the real name was measured on
+# 2026-09-24 (`msm_poweroff`, docs 125); the glob stays because it is robust to a renamed module, not
+# because the name was ever in doubt
 # ==================================================================================================
 # Both are module params of drivers named after the vendor's own scheme, and docs 86 records that the
 # poweroff driver's name was not what the string-search suggested. So they are discovered, and their
@@ -213,24 +219,39 @@ find_param() { # $1 = the parameter's bare name
   return 1
 }
 PARAM=$(find_param sleep_disabled) || PARAM=
-DL=$(find_param download_mode) || DL=
 
 # ==================================================================================================
 hdr "1. the three prerequisites (nothing is written until all three are checked)"
 # ==================================================================================================
 A_OK=0; B_OK=0; C_OK=0
 
-# A. the panic -> EDL escalation.
-if [ -z "$DL" ]; then
+# A. the panic -> EDL escalation. EVERY `download_mode` parameter is read, not the first one found: the
+#    unit that arms this policy loops the same glob and FAILS ITSELF if any parameter did not clear
+#    (`install-no-edl-on-panic.sh`), so a gate satisfied by the first match can be satisfied by a knob
+#    that is not the one the policy clears -- and this gate is a refusal, so what it buys in that case is
+#    exactly the finger it exists to save. The device as measured has ONE such parameter
+#    (`/sys/module/msm_poweroff/parameters/download_mode`, = 1 at boot; real readings in
+#    tmp-post-recovery-*/01-edl-postmortem.txt and docs 125), which is why this needs a scenario in the
+#    harness rather than a memory here. Same reading, same reason, as the runbook's prerequisite A.
+DL_N=0; DL_BAD=
+for p in /sys/module/*/parameters/download_mode; do
+  [ -e "$p" ] || continue
+  DL_N=$((DL_N + 1))
+  v=$(rd "$p")
+  [ "$v" = 0 ] || DL_BAD="$DL_BAD $p=$v"
+done
+DL_BAD=${DL_BAD# }
+if [ "$DL_N" = 0 ]; then
   say "   A. download_mode: NOT FOUND under /sys/module/*/parameters/."
   say "      READS AS: this cannot be checked, so it is not satisfied. install-no-edl-on-panic.sh is"
   say "      what arms it, and its absence here is a reading about this boot's drivers, not a licence."
-elif [ "$(rd "$DL")" = 0 ]; then
-  A_OK=1
-  say "   A. A panic will NOT arm EDL: $DL = 0 (docs 86)"
-else
-  say "   A. A PANIC WOULD ARM EDL: $DL = $(rd "$DL")  (1 = the image default)"
+elif [ -n "$DL_BAD" ]; then
+  say "   A. A PANIC WOULD ARM EDL: $DL_BAD  (1 = the image default)"
+  [ "$DL_N" -gt 1 ] && say "      ($DL_N download_mode parameter(s) exist, and the unit that arms this clears ALL of them.)"
   say "      Run: scripts/install-no-edl-on-panic.sh --install     # then re-run this"
+else
+  A_OK=1
+  say "   A. A panic will NOT arm EDL: all $DL_N download_mode parameter(s) read 0 (docs 86)"
 fi
 
 # B. the counters. Counted exactly as the probe counts them, and for the same reason: a CPU with no
