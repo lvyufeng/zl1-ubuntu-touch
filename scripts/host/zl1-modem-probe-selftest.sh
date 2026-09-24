@@ -70,11 +70,11 @@ mkdir -p "$STUB" "$MINBIN" || exit 2
 # `type -P`, not `command -v`: in a shell whose profile has made `grep` a function, `command -v grep`
 # prints the word "grep" rather than a path, and the symlink would then point at itself -- which is exactly
 # the failure this loop guards against, arriving as a broken instead of a missing tool.
-for t in awk basename cat cut head ls sed sort tail tr uniq wc grep; do
+for t in awk basename cat cut head ls readlink sed sort tail tr uniq wc grep; do
   p="$(type -P "$t" 2>/dev/null)" || continue
   [ -n "$p" ] && ln -sf "$p" "$MINBIN/$t"
 done
-for t in awk grep ls sed tail tr wc; do
+for t in awk grep ls readlink sed tail tr wc; do
   [ -x "$MINBIN/$t" ] || { echo "the sandbox bin is missing $t -- the harness cannot run the probe honestly" >&2; exit 2; }
 done
 SH_BIN="$(type -P sh 2>/dev/null)"; [ -n "$SH_BIN" ] || SH_BIN=/bin/sh
@@ -91,15 +91,21 @@ SH_BIN="$(type -P sh 2>/dev/null)"; [ -n "$SH_BIN" ] || SH_BIN=/bin/sh
 # already run.
 #
 # Each pattern that is an element of a SPACE-SEPARATED LIST carries its leading space (`for mp in ...
-# /firmware`, and the firmware search PATHS) -- and the replacement KEEPS that space, or the list loses
-# its separators and `for mp in A B C` becomes the single word `inABC`, which is a syntax error rather
-# than a wrong reading. A bare `/firmware` rule would also hit `/lib/firmware`, so that one is written for
-# the list element it means and not for the substring.
+# /firmware`, `for sl in /vendor /android /firmware`, and the firmware search PATHS) -- and the
+# replacement KEEPS that space, or the list loses its separators and `for mp in A B C` becomes the single
+# word `inABC`, which is a syntax error rather than a wrong reading. A bare `/firmware` rule would also hit
+# `/lib/firmware`, so that one is written for the list element it means and not for the substring; the same
+# is true of `/vendor` and `/android` against `/vendor/firmware_mnt` and `/android/vendor/firmware_mnt`,
+# which is why those two rules come LAST -- sed applies the -e rules in order to each line, so the specific
+# path is consumed before the general one can see it.
 P1="$W/pass1.sh"
 sed -e 's# /android/vendor/firmware_mnt# __ZA1__#g' \
     -e 's# /vendor/firmware_mnt# __ZM1__#g' \
     -e 's# /lib/firmware# __ZL1__#g' \
     -e 's# /firmware# __ZF1__#g' \
+    -e 's#/var/lib/lxc#__ZLV__#g' \
+    -e 's# /vendor# __ZV1__#g' \
+    -e 's# /android# __ZA2__#g' \
     -e 's#/tmp/zl1-modem-klog.txt#__ZK__#g' \
     -e 's#/proc/#__ZP__#g' \
     -e 's#/sys/#__ZS__#g' \
@@ -110,6 +116,9 @@ sed -e "s#__ZA1__#$FR/android/vendor/firmware_mnt#g" \
     -e "s#__ZM1__#$FR/vendor/firmware_mnt#g" \
     -e "s#__ZL1__#$FR/lib/firmware#g" \
     -e "s#__ZF1__#$FR/firmware#g" \
+    -e "s#__ZLV__#$FR/var/lib/lxc#g" \
+    -e "s#__ZV1__#$FR/vendor#g" \
+    -e "s#__ZA2__#$FR/android#g" \
     -e "s#__ZK__#$W/klog-out.txt#g" \
     -e "s#__ZP__#$FR/proc/#g" \
     -e "s#__ZS__#$FR/sys/#g" \
@@ -150,6 +159,26 @@ grep -o -- '/proc/sys/' "$SRC" | wc -l >/dev/null
   || { echo "the /sys/ rewrite counted wrong (the ones inside /proc/sys/ are part of the /proc/ prefix)" >&2; exit 2; }
 [ "$(cnt '/dev/' "$SRC")" = "$(cnt '__ZD__' "$P1")" ] \
   || { echo "the /dev/ rewrite did not cover every /dev/ in the source" >&2; exit 2; }
+# The paths added when the probe learned to read the boot cmdline, the symlink chain and halium's fstab.
+# The first is exact; the other two are identities rather than counts, because a list element ` /vendor`
+# is consumed by the SPECIFIC rule when it is followed by `/firmware_mnt` and by the general one when it
+# is not -- so the total must be the two together, and a rule that stopped firing would show up here.
+[ "$(cnt '/var/lib/lxc' "$SRC")" = "$(cnt '__ZLV__' "$P1")" ] \
+  || { echo "the /var/lib/lxc rewrite did not cover every occurrence (halium's fstab glob)" >&2; exit 2; }
+[ "$(cnt ' /firmware' "$SRC")" = "$(cnt '__ZF1__' "$P1")" ] \
+  || { echo "the /firmware list-element rewrite did not cover every occurrence" >&2; exit 2; }
+# This one caught a real leak the first time it ran: the built-in search list was written as
+# `PATHS="/lib/firmware/updates/$KREL ..."` -- the FIRST element had a quote before it instead of a space,
+# so it was never rewritten and the probe asked THIS HOST's /lib/firmware/updates whether it held the
+# modem firmware. It answered MISSING, so nothing looked wrong; a host that HAD that directory would have
+# been read as if it were the phone. The probe's list now starts with a space (`for d in $PATHS` ignores
+# it) and this identity is what keeps every element covered.
+[ "$(cnt ' /lib/firmware' "$SRC")" = "$(cnt '__ZL1__' "$P1")" ] \
+  || { echo "the /lib/firmware rewrite missed an element (the list's first element has no leading space?)" >&2; exit 2; }
+[ "$(cnt ' /vendor' "$SRC")" = "$(( $(cnt '__ZV1__' "$P1") + $(cnt '__ZM1__' "$P1") ))" ] \
+  || { echo "the /vendor rewrite does not add up: bare + /vendor/firmware_mnt != every ' /vendor'" >&2; exit 2; }
+[ "$(cnt ' /android' "$SRC")" = "$(( $(cnt '__ZA2__' "$P1") + $(cnt '__ZA1__' "$P1") ))" ] \
+  || { echo "the /android rewrite does not add up: bare + /android/vendor/firmware_mnt != every ' /android'" >&2; exit 2; }
 # And the cascade, named as itself: the fake root's own path appearing immediately after itself, or a
 # device path landing INSIDE the fake root's proc/ directory.
 grep -qF "$FR$FR" "$RW" && { echo "a rewrite cascaded: $FR appears twice in a row" >&2; exit 2; }
@@ -157,6 +186,8 @@ grep -qF "$FR/proc/$FR" "$RW" && { echo "a rewrite cascaded into the fake root's
 grep -qF "MSS_DIR=$FR/proc/device-tree/soc/qcom,mss@2080000" "$RW" \
   || { echo "MSS_DIR was not rewritten -- every later reading is compared against that node" >&2; exit 2; }
 grep -qF "$FR/lib/firmware" "$RW" || { echo "the firmware search path was not rewritten" >&2; exit 2; }
+grep -qF "$FR/var/lib/lxc/android/rootfs/fstab*" "$RW" \
+  || { echo "the halium fstab glob was not rewritten -- the probe would read this host's /var/lib/lxc" >&2; exit 2; }
 grep -qF "$W/klog-out.txt" "$RW" || { echo "the kernel-log scratch path was not rewritten" >&2; exit 2; }
 
 # --- the static safety guard, and its teeth --------------------------------------------------------
@@ -171,8 +202,15 @@ grep -qF "$W/klog-out.txt" "$RW" || { echo "the kernel-log scratch path was not 
 # is exactly the read form the probe uses -- a `mount` whose output is piped -- and the teeth section
 # proves it discriminates by feeding the guard a bind mount as well as a redirect.
 #
+# The redirect rule excludes `->`: an arrow before a path is prose (the probe's own readings are written
+# as `-> /proc/cmdline could not be read`), while a redirect needs the `>` in command position. The
+# requirement is a character that is NOT `-` immediately before the `>` -- which still catches `x>/proc/y`
+# (the `x` is that character) and `echo 1 > /proc/y` (a space is). A guard that trips on the probe's own
+# prose would be "fixed" by weakening it, which is how a guard stops guarding; so it is made exact here
+# and the teeth below prove the redirect shape is still caught.
+#
 # Reading is the job. Anything that changes state is out of scope BY DESIGN, not by omission.
-WRITE_RE='(^|[;&|(`]|\$\()[[:space:]]*(dd|mkfs(\.ext4)?|mount|umount|fstrim|modprobe|insmod|rmmod|setprop|tee)[[:space:]]|>>?[[:space:]]*/(sys|proc|dev/block)|systemctl[[:space:]]+(start|stop|restart|enable|disable|mask|daemon-reload)'
+WRITE_RE='(^|[;&|(`]|\$\()[[:space:]]*(dd|mkfs(\.ext4)?|mount|umount|fstrim|modprobe|insmod|rmmod|setprop|tee)[[:space:]]|(^|[^-])>>?[[:space:]]*/(sys|proc|dev/block)|systemctl[[:space:]]+(start|stop|restart|enable|disable|mask|daemon-reload)'
 MOUNT_LIST_RE='\$\(mount([[:space:]]+2>/dev/null)?[[:space:]]*\|'
 writes_in() { grep -nE -- "$WRITE_RE" "$1" 2>/dev/null | grep -vE -- "$MOUNT_LIST_RE"; }
 # The teeth need to prove the guard is not simply "any mention of mount": a bind mount has to be caught.
@@ -242,13 +280,33 @@ rm -rf "$FR"
 mkdir -p "$FR/proc/device-tree/soc/qcom,mss@2080000" "$FR/proc/sys/kernel/random" \\
          "$FR/sys/module/firmware_class/parameters" "$FR/sys/bus/msm_subsys/devices/subsys0" \\
          "$FR/sys/class/net" "$FR/dev/block/bootdevice/by-name" "$FR/lib/firmware" \\
-         "$FR/vendor/firmware_mnt" "$FR/firmware" 2>/dev/null
+         "$FR/android/vendor" "$FR/android/firmware" "$FR/var/lib/lxc/android/rootfs" 2>/dev/null
+# The rootfs's SYMLINKS, in the shape the port's own rootfs image has them: /vendor -> /android/vendor and
+# /firmware -> /android/firmware (read out of the image with `debugfs stat`). The whole firmware question
+# on this port turns on that chain, so a fixture whose /vendor is a plain directory would be testing a
+# device that does not exist.
+ln -sfn "$FR/android/vendor" "$FR/vendor"
+ln -sfn "$FR/android/firmware" "$FR/firmware"
 printf '%s\\0' "\${FAKE_COMPAT:-qcom,msm8996pro}" > "$FR/proc/device-tree/compatible"
 printf 'qcom,pil-q6v55-mss\\0' > "$FR/proc/device-tree/soc/qcom,mss@2080000/compatible"
 [ "\${FAKE_NO_FWNODE:-0}" = 1 ] || printf '%s\\0' "\${FAKE_FWNAME:-modem}" > "$FR/proc/device-tree/soc/qcom,mss@2080000/qcom,firmware-name"
 [ "\${FAKE_NO_SELFAUTH:-0}" = 1 ] || : > "$FR/proc/device-tree/soc/qcom,mss@2080000/qcom,pil-self-auth"
 printf 'ok\\0' > "$FR/proc/device-tree/soc/qcom,mss@2080000/status"
 : > "$FR/sys/module/firmware_class/parameters/path"
+# The RUNNING path is a different reading from the boot's, so it is switchable: empty by default (the
+# stock device's value lives in the cmdline), and settable so "the two readings disagree" has a scenario.
+if [ -n "\${FAKE_FWPATH_SYSFS:-}" ]; then printf '%s' "\$FAKE_FWPATH_SYSFS" > "$FR/sys/module/firmware_class/parameters/path"; fi
+# The BOOT CMDLINE. This is the device's real one -- docs 20 records it from the stock boot image, and the
+# v63 images inherit it verbatim -- with the fake root substituted so the path resolves into the fixture.
+# The firmware path it carries is the one the whole probe is about, so the fixture carries it by default;
+# the two switches produce the two other readings (no such key, and no such file at all).
+if [ "\${FAKE_NO_CMDLINE:-0}" = 1 ]; then
+  :
+elif [ "\${FAKE_CMDLINE_NO_FWPATH:-0}" = 1 ]; then
+  printf 'androidboot.hardware=qcom ehci-hcd.park=3 apparmor=1 security=apparmor loop.max_part=7\n' > "$FR/proc/cmdline"
+else
+  printf 'androidboot.hardware=qcom ehci-hcd.park=3 lpm_levels.sleep_disabled=1 cma=32M@0-0xffffffff androidboot.configfs=true apparmor=1 security=apparmor firmware_class.path=$FR/vendor/firmware_mnt/image loop.max_part=7\n' > "$FR/proc/cmdline"
+fi
 printf '4.9.186-perf+\n' > "$FR/proc/sys/kernel/osrelease"
 printf 'aaaa-bbbb-cccc\n' > "$FR/proc/sys/kernel/random/boot_id"
 # The subsystem-restart view: a modem that did NOT come up. That is the honest default -- this port has
@@ -256,17 +314,38 @@ printf 'aaaa-bbbb-cccc\n' > "$FR/proc/sys/kernel/random/boot_id"
 printf 'modem\n' > "$FR/sys/bus/msm_subsys/devices/subsys0/name"
 printf 'OFFLINE\n' > "$FR/sys/bus/msm_subsys/devices/subsys0/state"
 : > "$FR/dev/block/bootdevice/by-name/modem"
-# FAKE_FW=path puts the firmware on the KERNEL's search path; =mnt mounts only the partition; =both both.
+# Where the firmware is. `path` = only the KERNEL's built-in list; `cmdfw` = the directory the cmdline
+# names, reached THROUGH the /vendor symlink (the real device shape: the FAT keeps the file one level
+# down, in `image/`); `mnt` = at the mount point but not one level down where the cmdline points;
+# `both` = both places.
 case "\${FAKE_FW:-}" in
 path|both)
   : > "$FR/lib/firmware/modem.mdt"; : > "$FR/lib/firmware/modem.b00"; : > "$FR/lib/firmware/mba.mbn" ;;
 esac
 case "\${FAKE_FW:-}" in
-mnt|both) : > "$FR/vendor/firmware_mnt/modem.mdt"; : > "$FR/vendor/firmware_mnt/mba.mbn" ;;
+cmdfw|both)
+  mkdir -p "$FR/android/vendor/firmware_mnt/image"
+  : > "$FR/android/vendor/firmware_mnt/image/modem.mdt"
+  : > "$FR/android/vendor/firmware_mnt/image/mba.mbn" ;;
+mnt)
+  mkdir -p "$FR/android/vendor/firmware_mnt"
+  : > "$FR/android/vendor/firmware_mnt/modem.mdt" ;;
 esac
+# halium's fstab: the file its mount loop reads on the UT path, before it mounts anything. Present with
+# the modem line by default, because that is the shape a mounted partition comes with; the two switches
+# are the failure shapes (no modem line, and no file at all -- which makes the loop mount nothing).
+if [ "\${FAKE_NO_FSTAB:-0}" != 1 ]; then
+  if [ "\${FAKE_FSTAB_NO_MODEM:-0}" = 1 ]; then
+    printf '/dev/block/bootdevice/by-name/system /system ext4 ro wait\n' > "$FR/var/lib/lxc/android/rootfs/fstab.qcom"
+  else
+    printf '/dev/block/bootdevice/by-name/system /system ext4 ro wait\n/dev/block/bootdevice/by-name/modem /vendor/firmware_mnt vfat ro,shortname=lower,uid=0,gid=1000,dmask=227,fmask=337 wait\n#endhalium\n' > "$FR/var/lib/lxc/android/rootfs/fstab.qcom"
+  fi
+fi
+# The mount TABLE, and its text is the DEVICE's rather than the fixture's: on the device the line really
+# reads /vendor/firmware_mnt, so that is what a faithful fixture prints.
 : > "$W/mount.txt"
 case "\${FAKE_FW:-}" in
-mnt|both) printf '/dev/block/bootdevice/by-name/modem on /vendor/firmware_mnt type vfat (ro,shortname=lower)\n' > "$W/mount.txt" ;;
+cmdfw|mnt|both) printf '/dev/block/bootdevice/by-name/modem on /vendor/firmware_mnt type vfat (ro,shortname=lower)\n' > "$W/mount.txt" ;;
 esac
 # The kernel log. The baseline mentions the modem but shows no failure, and is deliberately NOT empty: an
 # all-empty baseline would make "the (none) line prints" untestable.
@@ -294,7 +373,8 @@ verdict() { printf '%s\n' "$1" | sed -n '/^== [0-9][0-9]*\. *verdict$/,$p'; }
 # Which FAKE_* the probe's stubs must see (they are inherited by the stubbed commands the probe runs).
 export FAKE_KLOG_RC=0 FAKE_CONTAINER=700 FAKE_OFONO= FAKE_MODEMANAGER= FAKE_OFONO_OWNER= \
        FAKE_CONTAINER_FWMNT= FAKE_COMPAT= FAKE_FWNAME= FAKE_NO_FWNODE= FAKE_NO_SELFAUTH= \
-       FAKE_FW= FAKE_KLOG_QUIET=
+       FAKE_FW= FAKE_KLOG_QUIET= FAKE_NO_CMDLINE= FAKE_CMDLINE_NO_FWPATH= FAKE_FWPATH_SYSFS= \
+       FAKE_NO_FSTAB= FAKE_FSTAB_NO_MODEM=
 
 run() { # $1 = extra arguments (may be empty)
   : > "$ACT"
@@ -354,6 +434,20 @@ else
     bad "the guard let a bind mount through: its mount allowlist is too wide to mean anything"
   fi
 fi
+# The third tooth, and it was added the first time the guard fired on the probe itself: the probe writes
+# its readings as `-> /proc/cmdline could not be read`, which the old redirect rule read as `> /proc/...`.
+# So the rule now excludes a `-` immediately before the `>`, and BOTH halves of that need proving -- the
+# exclusion must not have neutered the rule, and an arrow must not still be read as a write.
+printf 'x > /proc/sys/kernel/foo\necho 1 >/sys/module/bar/baz\n' > "$W/mut-redir.txt"
+if [ -n "$(writes_in "$W/mut-redir.txt")" ]; then
+  ok "the redirect rule still catches a redirect, spaced and unspaced"
+else
+  bad "the redirect rule no longer catches a redirect -- the arrow exclusion went too far"
+fi
+printf 'say "     -> /proc/cmdline could not be read"\n' > "$W/mut-arrow.txt"
+[ -z "$(writes_in "$W/mut-arrow.txt")" ] \
+  && ok "and an arrow before a path is prose, not a write" \
+  || bad "an arrow before a path is still read as a redirect, so the probe's own readings fail the guard"
 
 # ==================================================================================================
 echo
@@ -415,13 +509,92 @@ FAKE_FW=mnt run ""
 want 'on /vendor/firmware_mnt type vfat' "$OUT" "the partition's mount line is printed"
 want 'THE PARTITION IS MOUNTED somewhere but the firmware is not on the kernel' "$(verdict "$OUT")" \
   "mounted but off the search path: the verdict says exactly that -- the port-problem branch"
-want 'bind mount or a' "$(verdict "$OUT")" "and names the fix, not a partition change"
-want 'never' "$(verdict "$OUT")" "including that the modem partition must never be written"
+want 'The fix is at the MOUNT' "$(verdict "$OUT")" "and names the fix, not a partition change"
+notwant 'firmware_class.path in the boot image' "$(verdict "$OUT")" \
+  "and does NOT blame the boot image, whose cmdline already names the right directory"
+want 'NEVER a write to' "$(verdict "$OUT")" "including that the modem partition must never be written"
 notwant 'NOT REACHABLE AND NOTHING' "$(verdict "$OUT")" "and does not fall through to the rung below"
 
 FAKE_FW=both run ""
 want 'THE FIRMWARE IS REACHABLE' "$(verdict "$OUT")" "both: the reachable rung wins over the mount rung"
 FAKE_FW=
+
+# ==================================================================================================
+echo
+echo "== 4b. the boot cmdline's path, the symlink chain, and the mount loop that would create it =="
+# ==================================================================================================
+# This section exists because the offline pass changed the probe's own hypothesis: the boot image does NOT
+# leave the firmware path unset -- every zl1 cmdline carries `firmware_class.path=/vendor/firmware_mnt/image`
+# (docs 20 recorded the stock one) -- and in the UT rootfs `/vendor` is a SYMLINK to `/android/vendor`. So
+# the decisive readings are the cmdline's path, the chain it resolves through, and whether halium's
+# mount loop had an fstab to read at all. All three are now readings the probe takes, so all three are
+# asserted here -- and the fixture carries the real shapes (the symlink, the `image/` level, the fstab).
+run ""
+want "firmware_class.path on the BOOT cmdline: +${FR}/vendor/firmware_mnt/image" "$OUT" \
+  "the path THIS BOOT was given is read from /proc/cmdline, not from the sysfs parameter"
+want 'NOT RESOLVED' "$OUT" \
+  "and with nothing mounted, the path does not resolve at all -- which is a reading, not an error"
+want "   ${FR}/vendor +-> ${FR}/android/vendor$" "$OUT" "the symlink chain itself is printed, not assumed"
+want 'boot: aaaa-bbbb-cccc' "$OUT" "and the boot identity is still printed next to it"
+notwant "firmware_class.path on the BOOT cmdline: +UNREADABLE" "$OUT" "with a readable cmdline it is not reported unreadable"
+
+# THE LEVEL DEFECT. The FAT's root holds IMAGE/, so on a mounted partition the file is `image/modem.mdt`
+# -- one directory below the mount point -- and the probe's first version asked only the mount point,
+# which reports MISSING for firmware that is right there. This scenario is that shape exactly.
+FAKE_FW=cmdfw run ""
+want 'THE FIRMWARE IS REACHABLE' "$(verdict "$OUT")" \
+  "firmware in the cmdline's directory (through the symlink): reachable"
+want '^     image/modem\.mdt +present$' "$OUT" "the file is found at the level it is really at (image/)"
+want '^     modem\.mdt +MISSING$' "$OUT" \
+  "while the bare mount point reports MISSING -- which is why both levels are asked"
+want 'resolves to: .*android/vendor/firmware_mnt/image' "$OUT" \
+  "and with the partition mounted, THAT path resolves through the /vendor symlink"
+want 'on /vendor/firmware_mnt type vfat' "$OUT" "and the mount line is read as well"
+notwant 'NOT REACHABLE AND NOTHING' "$(verdict "$OUT")" "so it does not fall to the nothing-mounted rung"
+
+# halium's fstab, three shapes. The first is the coherent one (the partition is mounted, so the fstab is
+# there and names it); the second is a fstab that exists and does not mention the modem; the third is the
+# one that explains a silent total gap -- no file at all, and the loop's `cat` fails without a message.
+want 'fstab.qcom exists; the line halium would mount this partition with' "$OUT" \
+  "the fstab halium's loop reads is looked for, and found"
+want '/vendor/firmware_mnt +vfat' "$OUT" "and the modem line in it is printed"
+FAKE_FSTAB_NO_MODEM=1 run ""
+want 'none: that fstab has no modem or firmware_mnt line' "$OUT" \
+  "a fstab without a modem line says so instead of printing nothing"
+FAKE_FSTAB_NO_MODEM=
+FAKE_NO_FSTAB=1 run ""
+want 'NO SUCH FILE' "$OUT" "no fstab at all is reported as no file, not as an empty listing"
+want 'MOUNTED NOTHING THIS BOOT' "$OUT" "and it says what that makes the mount loop do"
+notwant 'fstab.qcom exists' "$OUT" "and does not claim to have read a file that is not there"
+
+# The cmdline readings that are NOT a path: absent key, unreadable file, and a disagreement with sysfs.
+FAKE_CMDLINE_NO_FWPATH=1 run ""
+want 'firmware_class.path on the BOOT cmdline: +EMPTY' "$OUT" "a cmdline without the key reads EMPTY"
+want 'this boot was given no path at all' "$OUT" "and says what EMPTY means here"
+want 'This boot was given no firmware_class.path at all' "$(verdict "$OUT")" \
+  "the verdict uses the cmdline reading, and says so in its own words"
+FAKE_CMDLINE_NO_FWPATH=
+FAKE_NO_CMDLINE=1 run ""
+want 'firmware_class.path on the BOOT cmdline: +UNREADABLE' "$OUT" "an unreadable /proc/cmdline reads UNREADABLE"
+want 'what THIS BOOT was told is UNKNOWN' "$OUT" "and is not reported as 'no path was set'"
+want 'What this boot was told is UNKNOWN' "$(verdict "$OUT")" "the verdict says the same thing"
+notwant 'This boot was given no firmware_class.path at all' "$(verdict "$OUT")" \
+  "and does NOT reach the EMPTY conclusion, which is a different reading"
+FAKE_NO_CMDLINE=
+FAKE_FWPATH_SYSFS=/some/other/place run ""
+want 'and the RUNNING parameter does not match it' "$OUT" \
+  "a sysfs value that differs from the boot's is called out as two answers, not averaged"
+want 'some/other/place +modem\.mdt=MISSING' "$OUT" "and the running value is asked for the file too"
+FAKE_FWPATH_SYSFS=
+
+# And the verdict's last rung now names the path this boot was given, which is the sentence that turns
+# "nothing is mounted" into a statement about a specific directory.
+run ""
+want 'What this boot WAS given points at' "$(verdict "$OUT")" \
+  "the nothing-mounted verdict names the directory the kernel actually looked in"
+want "${FR}/vendor/firmware_mnt/image +\(MISSING\)" "$(verdict "$OUT")" "and its existence, as a reading"
+want 'halium.s mount loop reading an fstab that is not on this' "$(verdict "$OUT")" \
+  "and the two mechanisms section 3 measures"
 
 # ==================================================================================================
 echo

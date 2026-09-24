@@ -138,5 +138,67 @@ $ debugfs -R 'stat /usr/lib/firmware' rootfs...img
 /usr/lib/firmware: File not found by ext2_lookup 
 
    # So on the UT side there is no /etc/fstab entry for the modem partition and NO firmware
-   # directory anywhere in the rootfs. THE HYPOTHESIS this supports (not proves): the kernel's
-   # request_firmware() has nowhere to find modem.mdt. The probe measures it on the device.
+   # directory anywhere in the rootfs. The hypothesis this first supported -- "the kernel's
+   # request_firmware() has nowhere to find modem.mdt" -- is CORRECTED in section 6: there is still
+   # no /lib/firmware, but the boot cmdline names /vendor/firmware_mnt/image and /vendor is a symlink
+   # into the Android tree. Read section 6 before quoting this one.
+
+==============================================================================
+6. the correction, same day and BEFORE the first device run: the path IS set
+==============================================================================
+# Section 5 ends with "the UT side has no firmware path at all". That is half right, and the half
+# that is wrong is the half the hypothesis leaned on. Every command below is still read-only.
+
+$ debugfs -R 'stat /vendor' rootfs-...-zl1-host.img | sed -n 's/^ *Fast link dest: "\(.*\)"/\1/p'
+/android/vendor
+$ debugfs -R 'stat /firmware' rootfs-...-zl1-host.img | sed -n 's/^ *Fast link dest: "\(.*\)"/\1/p'
+/android/firmware
+   # Same for /system, /data, /cache, /factory: the UT rootfs reaches the Android tree through
+   # SYMLINKS. So the kernel's firmware path is not a directory -- it is a link that resolves only if
+   # something mounted the modem partition at /android/vendor/firmware_mnt on this boot.
+
+$ sed -n '33p' docs/ubuntu-touch/20-stage2-runbook.md      # the STOCK boot image's own cmdline
+firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7
+$ grep -n 'firmware_class.path' scripts/make-v63-boot-image.sh
+67:V63_CMDLINE="... firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7 init=/tmp/zl1-debug-init ..."
+   # so this is NOT something the port added or forgot: every zl1 cmdline carries it, stock included.
+
+$ python3 <fatwalk> /mnt/data/zl1-backups/2026-06-07-adb-root-staged/modem.img
+BPB: bytes/sector=4096 sectors/cluster=4 reserved=1 fats=2 root_entries=512 sectors_per_fat=4
+root directory:
+   DIR  IMAGE cluster=4
+   DIR  VERINFO cluster=2
+the tree: 301 files, 82003504 bytes (78.2 MiB)
+$ python3 <fatwalk> ... modem.img MODEM.MDT
+   IMAGE/MODEM.MDT                  8156
+$ python3 <fatwalk> ... modem.img MBA
+   IMAGE/MBA.MBN                  213824
+$ python3 <fatwalk> ... modem.img VERINFO/
+   VERINFO/VER_INFO.TXT             1002
+   # So the mounted file is <mnt>/image/modem.mdt -- ONE LEVEL BELOW the mount point -- and the
+   # cmdline's `/vendor/firmware_mnt/image` names exactly that directory. The probe's first version
+   # asked the mount point itself and would have reported MISSING for firmware lying right there.
+
+$ gzip -dc ramdisk.bin | cpio -it | grep -i fstab
+   # (no output: the Android ramdisk in /boot has NO fstab file at all, at any level)
+$ ls -la /tmp/rd | grep -E 'init\.miui|^d.*\.backup|overlay\.d'
+-rwx------ init.miui.rc, init.miui.cust.rc, init.miui.nativedebug.rc, init.miui.post_boot.sh ...
+d--------- .backup        drwxr-x--- overlay.d
+   # this /boot is a THIRD-PARTY MIUI ROM, corroborated by the system image's build.prop:
+$ debugfs -R 'cat /build.prop' system.img | grep -E 'ro\.product\.(model|brand|device|manufacturer)'
+ro.product.model=LeEco Pro3 / ro.product.brand=LeEco / ro.product.device=le_zl1
+ro.product.manufacturer=Xiaomi
+
+$ grep -n 'cat ${fstab}' /tmp/utrd/scripts/halium          # the UT boot ramdisk, unpacked
+151:	cat ${fstab} | while read line; do
+$ grep -n 'mount_android_partitions "' /tmp/utrd/scripts/halium
+577:		mount_android_partitions "${rootmnt}/fstab*" ${rootmnt} /tmpmnt
+626:		mount_android_partitions "${rootmnt}/var/lib/lxc/android/rootfs/fstab*" ${rootmnt}/android ${rootmnt}/userdata
+   # line 626 is the UT path. The fstab it reads sits at the ROOT of the Android ramdisk halium
+   # extracted (moved there by `mount --move /android-rootfs`). An unexpanded glob makes `cat` fail,
+   # so the loop's body never runs: NOTHING is mounted, and nothing is printed about it.
+
+# WHAT THIS CHANGES: the question is not "was the kernel told where to look" (it was, and correctly)
+# but "was the partition mounted at the place it was told". Two mechanisms can leave it unmounted and
+# they are different problems: halium's silent no-op loop, or a mount made only inside the Android
+# container's mount namespace -- which the kernel does not resolve firmware paths in.

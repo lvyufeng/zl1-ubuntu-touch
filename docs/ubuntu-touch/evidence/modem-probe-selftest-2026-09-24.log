@@ -1,3 +1,10 @@
+debugfs 1.46.5 (30-Dec-2021)
+debugfs: No such file or directory while trying to open stat
+scripts/host/zl1-modem-probe-selftest.sh: line 276: path: command not found
+scripts/host/zl1-modem-probe-selftest.sh: line 276: cmdfw: command not found
+scripts/host/zl1-modem-probe-selftest.sh: line 276: image/: No such file or directory
+scripts/host/zl1-modem-probe-selftest.sh: line 276: mnt: command not found
+scripts/host/zl1-modem-probe-selftest.sh: line 276: both: command not found
 zl1 modem probe -- offline self-test
   script under test: /mnt/data/zl1-bb10/scripts/host/../device/zl1-modem-probe.sh
   fake device:       /tmp/zl1-modem-probe-selftest/root
@@ -10,6 +17,8 @@ PASS  and names the line it found
 PASS  the guard catches a BIND MOUNT -- so its mount allowlist is not 'any mention of mount'
 PASS  and names the mount it found
 PASS  and the shipped probe contains none
+PASS  the redirect rule still catches a redirect, spaced and unspaced
+PASS  and an arrow before a path is prose, not a write
 
 == 1. the guard: not the zl1 ==
 PASS  a different SoC exits 2
@@ -47,9 +56,41 @@ PASS  and does not hedge a question it answered
 PASS  the partition's mount line is printed
 PASS  mounted but off the search path: the verdict says exactly that -- the port-problem branch
 PASS  and names the fix, not a partition change
+PASS  and does NOT blame the boot image, whose cmdline already names the right directory
 PASS  including that the modem partition must never be written
 PASS  and does not fall through to the rung below
 PASS  both: the reachable rung wins over the mount rung
+
+== 4b. the boot cmdline's path, the symlink chain, and the mount loop that would create it ==
+PASS  the path THIS BOOT was given is read from /proc/cmdline, not from the sysfs parameter
+PASS  and with nothing mounted, the path does not resolve at all -- which is a reading, not an error
+PASS  the symlink chain itself is printed, not assumed
+PASS  and the boot identity is still printed next to it
+PASS  with a readable cmdline it is not reported unreadable
+PASS  firmware in the cmdline's directory (through the symlink): reachable
+PASS  the file is found at the level it is really at (image/)
+PASS  while the bare mount point reports MISSING -- which is why both levels are asked
+PASS  and with the partition mounted, THAT path resolves through the /vendor symlink
+PASS  and the mount line is read as well
+PASS  so it does not fall to the nothing-mounted rung
+PASS  the fstab halium's loop reads is looked for, and found
+PASS  and the modem line in it is printed
+PASS  a fstab without a modem line says so instead of printing nothing
+PASS  no fstab at all is reported as no file, not as an empty listing
+PASS  and it says what that makes the mount loop do
+PASS  and does not claim to have read a file that is not there
+PASS  a cmdline without the key reads EMPTY
+PASS  and says what EMPTY means here
+PASS  the verdict uses the cmdline reading, and says so in its own words
+PASS  an unreadable /proc/cmdline reads UNREADABLE
+PASS  and is not reported as 'no path was set'
+PASS  the verdict says the same thing
+PASS  and does NOT reach the EMPTY conclusion, which is a different reading
+PASS  a sysfs value that differs from the boot's is called out as two answers, not averaged
+PASS  and the running value is asked for the file too
+PASS  the nothing-mounted verdict names the directory the kernel actually looked in
+PASS  and its existence, as a reading
+PASS  and the two mechanisms section 3 measures
 
 == 5. the two UNANSWERED branches, which must never read as a negative ==
 PASS  an unreadable kernel log exits 1
@@ -101,6 +142,6 @@ PASS  the container is entered for its MOUNT TABLE only
 PASS  and NOT with -p (nothing here needs binder, and -p is the namespace that reaches it)
 
 == 10. the health check cites this harness's count, and that citation cannot drift ==
-PASS  the health check cites 79 checks, and this run has exactly that many
+PASS  the health check cites 111 checks, and this run has exactly that many
 
-pass=79 fail=0
+pass=111 fail=0
