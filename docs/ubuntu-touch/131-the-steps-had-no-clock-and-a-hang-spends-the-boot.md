@@ -73,11 +73,17 @@ bound() { # SECS, command...
 if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
   TIMED_OUT=1
   note "DID NOT FINISH: killed at ${STEP_LIMIT}s (rc=$rc, timeout(1)) -- this is NOT a failure of the step"
-  note "and NOT a success: nothing here has read the device since it started."
-  say  "  $name 正在做的事可能在设备上只做了一半……"
+  note "and NOT a success: nothing here has read the device since it started. Output so far:"
+  ...                                        # 这一步的输出（尾部四行）
+  say "  THE CHAIN STOPPED HERE, on a step that ran out of time rather than one that failed. Whatever"
+  say "  $name was doing may be half-done ON THE DEVICE: read its output above, read the state below,"
+  say "  and do not run the next step by hand until you have. --step-limit raises the bound."
+  say "  State of the device now:"
   read_state; archive; say "  archive: $OUT"; exit 1
 fi
 ```
+
+（`...` 那一行是本页的省略，不是脚本里的内容；其余逐字来自该文件。）
 
 理由不是措辞：**"这一步失败了"是对手机的一个断言**（它跑了、它说了不），而"host 放弃了它"是关于
 **主机**的断言——下一步该怎么走完全不同。归档里也一样：`rc` 列里的一个裸 `124` 会被读成"这一步说了 124"，
@@ -131,7 +137,8 @@ raw=$(bound "$STATE_LIMIT" "${SSH[@]}" '...')
 rc=$?
 if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
   FINAL_STATE="UNREADABLE: the read-back did not answer within ${STATE_LIMIT}s (timeout(1) rc=$rc, so
-the ssh was killed and the device was NOT read). This is not 'the device said nothing'..."
+the ssh was killed and the device was NOT read). This is not 'the device said nothing', and it is not a
+statement about the phone: the fixes above may be installed. --state-limit raises the bound."
 ```
 
 两个细节是刻意的：
