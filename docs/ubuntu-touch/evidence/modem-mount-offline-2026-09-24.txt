@@ -1,0 +1,114 @@
+zl1 modem mount -- offline readings, 2026-09-24
+READ-ONLY, HOST-SIDE, NO DEVICE. Every path opened below is an image file on this laptop:
+the boot image, the Android system image (the same 4 GB file pushed to the phone as
+/data/system.img), and the UT host rootfs image. Nothing is mounted, nothing is written,
+and the device was NOT touched (it is in fastboot, serial 33e80afe). Reproduce verbatim:
+
+  $ bash scripts/host/zl1-modem-mount.sh
+  $ bash scripts/host/zl1-modem-mount.sh --quiet          # the verdict line only
+
+The question this answers is docs 120 section 3 item 3, which doc 120 filed as a device-side
+`ls` on the belief that this ramdisk could not be read offline. It can, and this is the log.
+==============================================================================
+
+zl1 modem mount -- offline readings
+  READ-ONLY, HOST-SIDE, NO DEVICE: every path below is an image file on this laptop.
+  boot image:    /mnt/data/halium-zl1-candidates/halium-boot-zl1-v63-rebuilt.img
+  android image: /mnt/data/halium-zl1-candidates/android-system-zl1-halium-candidate.img
+  rootfs image:  /mnt/data/ubports-rootfs/24.04-2.x/rootfs-24.04-2.x-arm64-android9plus-zl1-host.img
+
+== 1. the mechanism: what the boot image's halium script does ==
+  the boot image's initrd carries scripts/halium, and it reads the fstab in exactly these places:
+
+    141:	fstab=$1
+    145:	tell_kmsg "checking fstab $fstab for additional mount points"
+    151:	cat ${fstab} | while read line; do
+    167:		# In case fstab provides /dev/mmcblk0p* lines
+    300:	# Goes over /etc/system-image/writable-paths to create the correct fstab for
+    301:	# the bind-mounts. Writes them into ${rootmnt}/run/image.fstab which is
+    302:	# bind-mounted to /etc/fstab
+    309:	# Mount a tmpfs in /run of rootfs to put the future image.fstab
+    311:	# Prepare the fstab
+    312:	FSTAB=${rootmnt}/etc/fstab
+    313:	touch ${rootmnt}/run/image.fstab
+    314:	mount -o bind ${rootmnt}/run/image.fstab $FSTAB ||halium_panic "Could not bind-mount fstab"
+    378:			# mount all /etc dirs right now, not later when fstab is
+    577:		mount_android_partitions "${rootmnt}/fstab*" ${rootmnt} /tmpmnt
+    626:		mount_android_partitions "${rootmnt}/var/lib/lxc/android/rootfs/fstab*" ${rootmnt}/android ${rootmnt}/userdata
+
+  the call site, verbatim:
+    577:		mount_android_partitions "${rootmnt}/fstab*" ${rootmnt} /tmpmnt
+    626:		mount_android_partitions "${rootmnt}/var/lib/lxc/android/rootfs/fstab*" ${rootmnt}/android ${rootmnt}/userdata
+
+  and the part of mount_android_partitions that decides what happens when the glob matches nothing:
+    2:	fstab=$1
+    6:	tell_kmsg "checking fstab $fstab for additional mount points"
+    12:	cat ${fstab} | while read line; do
+    61:}
+
+  READ THAT AS THREE FACTS: the fstab argument is a GLOB; it is expanded unquoted; and the only
+  consumer of it is 'cat ${fstab} | while read line'. A glob that matches no file makes cat exit
+  non-zero AND PRINT NOTHING, so the loop body -- the mkdir and the mount -- never executes. There
+  is no else-branch and no message: an empty fstab and a missing fstab are the same silence.
+
+
+== 2. the ramdisk that lands on that glob's directory ==
+  the ramdisk: 2060050 bytes, extracted read-only with debugfs
+  entries in it: 65
+
+  every entry whose NAME contains fstab:
+    (none -- and that is the reading, not an empty list to scroll past)
+
+  the entries this block turns on (the container's own view of the firmware directory):
+    vendor   PRESENT in the ramdisk root
+    firmware   PRESENT in the ramdisk root
+    dsp   PRESENT in the ramdisk root
+    bt_firmware   PRESENT in the ramdisk root
+    sys   PRESENT in the ramdisk root
+
+
+== 3. where the container's /vendor/firmware_mnt comes from ==
+    bt_firmware    symlink -> /vendor/bt_firmware
+    dsp            symlink -> /vendor/dsp
+    firmware       symlink -> /vendor/firmware_mnt
+    vendor         directory
+
+
+== 4. the rootfs side: the two symlinks the kernel's firmware path resolves through ==
+  in the UT rootfs image: /vendor is a symlink whose target is '"/android/vendor"'
+  and /var/lib/lxc/android/rootfs in that image holds:
+  (empty is the shipped shape, and it is not a defect: the ramdisk is mount --move'd ON TOP of it
+   at boot, which is what hides anything that image might otherwise have put there)
+
+== 5. the verdict ==
+
+== verdict: THE LOOP IS EMPTY
+   The ramdisk halium extracts -- the one that lands ON the glob's directory -- carries
+   65 entries and NOT ONE of them has 'fstab' in its name. So:
+
+     'cat /var/lib/lxc/android/rootfs/fstab*'  ->  prints an error, exits non-zero
+     the 'while read' body                    ->  NEVER RUNS
+     the mkdir and the mount                  ->  never happen
+     the stderr                              ->  goes to the initrd's console, and the boot continues
+
+   Which is the mechanism docs 120 named as hypothesis (a) and left for the device: NOTHING IS
+   MOUNTED, AND NOTHING IS REPORTED. The container's /vendor/firmware_mnt -- the empty directory the
+   ramdisk carries for exactly this mount -- stays empty, so the modem firmware the kernel asks for
+   is not there to be loaded, however correct the path in the cmdline is.
+
+   What this is NOT: a claim about the phone. It is a claim about two IMAGE FILES, and the images are
+   the ones this project staged and the one that was pushed to /data/system.img. The device-side
+   confirmation is one command, and it is the one docs 120 already wrote into the probe:
+
+     ls -l /var/lib/lxc/android/rootfs/ | grep -c fstab      # expect 0
+
+   If that ever reads non-zero, the image on the phone is NOT the image this was read from, and that
+   is the finding -- not a contradiction.
+
+   THE REPAIRS, and neither is applied here because both are device side:
+     (a) give the ramdisk an fstab -- a file inside /data/system.img, i.e. a USERDATA-side write, not
+         a critical partition, but it means rewriting a 4 GB image the container boots from;
+     (b) make the boot script not depend on that file -- an initrd change, i.e. a 'fastboot flash
+         boot', which is what this project already does routinely and can roll back.
+   Which one is right depends on which file the NEXT change wants to own, and that is a decision for
+   a person with the device in hand.
