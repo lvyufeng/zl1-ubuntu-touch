@@ -500,6 +500,23 @@ step 04j-hdmi           device "$HERE/../device/zl1-hdmi-probe.sh"
 # `/dev/graphics/fbN`, which is the shell's nearest thing to that ioctl.
 step 04k-wfd            device "$HERE/../device/zl1-wfd-probe.sh"
 
+# 04l-nfc: the NFC controller. ONE node (`/soc/i2c@75b6000/nq@28`, `qcom,nq-nci`) that carries TWO
+# generations of property names -- the five `nfc_parse_dt()` reads, and `nxp,p61-pwr` / `nxp,p61-rst`,
+# which no .c, .h or Kconfig in this tree asks for -- and the two generations do not agree about the
+# wiring: the driver's power enable is a TLMM pin and the unread one is a PMIC pin.
+#
+# The reading this step is here for is a CONFIG LINE: `config NFC_NQ` sits in drivers/nfc/Kconfig AFTER
+# the `endmenu` of the menu that `depends on NFC`, so `CONFIG_NFC` does not gate it -- and the two kernels
+# this project has in hand prove it. The vendor boot image's 3.18.120 kernel has `# CONFIG_NFC is not set`
+# AND `CONFIG_NFC_NQ=y` (the driver is BUILT with the menu off); the v63 Halium kernel this port boots has
+# both off. The same `CONFIG_NFC` line appears in both, so a reader who checked the obvious one would get
+# the same answer from a kernel that has the driver and one that does not.
+#
+# Its write-class move is an ioctl on the device node (`NFC_SET_PWR`, 1 = on, 2 = download mode, 0 = off),
+# and the node's own read()/write() speak NCI to the chip: the probe opens no device node at all. The
+# harness's write-guard teeth include a `dd` onto `/dev/pn544` for exactly that.
+step 04l-nfc            device "$HERE/../device/zl1-nfc-probe.sh"
+
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
   step 06-fingerprint      device "$HERE/../device/zl1-fingerprint-probe.sh"
@@ -509,8 +526,8 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi and 04k-wfd: all ten are read-only and write nothing, so"
-  say "   they are not in this group.)"
+  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd and 04l-nfc: all eleven are read-only and"
+  say "   write nothing, so they are not in this group.)"
   say
 fi
 

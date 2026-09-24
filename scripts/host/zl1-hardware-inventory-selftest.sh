@@ -402,8 +402,8 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  want '^blocks: 29 hardware -- 26 with a named instrument, \*\*3 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 26 read by something, **3 read by nothing**"
+  want '^blocks: 29 hardware -- 27 with a named instrument, \*\*2 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "29 hardware blocks, 27 read by something, **2 read by nothing**"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -444,10 +444,16 @@ else
   # 2 -> 3 with the verdict.
   want '^wfd +3 +zl1-wfd-probe\.sh' "$R" \
     "wfd -- the panel, its framebuffer and the display-manager child nothing binds -- is covered, by name"
+  # The tenth gap closed, 2026-09-24 (docs 146): `nfc`. It is ONE node, and the node carries TWO
+  # generations of property names -- the five the driver reads and two (`nxp,p61-pwr` / `nxp,p61-rst`)
+  # that no .c, .h or Kconfig in this tree asks for -- on two different gpio controllers. The row names
+  # its instrument like the six above, and the node count is asserted with it.
+  want '^nfc +1 +zl1-nfc-probe\.sh' "$R" \
+    "nfc -- one node, two property namespaces and two gpio controllers -- is covered, by name"
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
   # The gaps, by name. These are the answer to "which hardware has no probe"; if one of them gains a
   # probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in nfc fm-radio eeprom; do
+  for b in fm-radio eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came

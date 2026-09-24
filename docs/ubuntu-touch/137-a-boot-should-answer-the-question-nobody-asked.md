@@ -16,8 +16,9 @@
 > 的一半在设备树里是关掉的）见 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，而**另一台手机的 CC 逻辑
 > 冒充这块板的**那个 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)，而**两个发射器世代抢同一个寄存器窗口**的
 > `hdmi` 见 [`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md)，而**决定这一块大小的东西是一个字符串**的
-> `wfd` 见 [`145`](145-the-count-that-is-a-string.md)。所以那份清单现在是
-> **3 个**（`nfc`、`fm-radio`、`eeprom`），而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 26 / 3（这两个数字是**手改**的：关掉一个缺口必须有人看见，
+> `wfd` 见 [`145`](145-the-count-that-is-a-string.md)，而**决定它那行的配置项在它自己那个菜单之外**的
+> `nfc` 见 [`146`](146-the-config-line-outside-its-own-menu.md)。所以那份清单现在是
+> **2 个**（`fm-radio`、`eeprom`），而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 27 / 2（这两个数字是**手改**的：关掉一个缺口必须有人看见，
 > 这正是那份清单存在的理由）。本页正文不变，它是当天的读数——唯一一处更正在 §3.2 里，见上方那个引用块。
 
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、

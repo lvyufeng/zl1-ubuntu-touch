@@ -141,7 +141,7 @@ gpu	kgsl-3d0|kgsl-iommu|kgsl-smmu|kgsl-busmon|kgsl-hyp|gpucc|gpu-mempool	kgsl|/d
 touch	focaltech|synaptics|atmel_mxt|hideep	/dev/input|ABS_MT|BTN_TOUCH|event[0-9]	HW	scripts/device/zl1-watch-input.py
 keys	gpio-keys|gpio_keys|qpnp-power-on|pmic-reset-reason	/dev/input|BTN_TOUCH|KEY_|BTN_POWER	HW	scripts/device/zl1-input-devices.py
 fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/device/zl1-fingerprint-probe.sh
-nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	-
+nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	scripts/device/zl1-nfc-probe.sh
 fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	-
 vibrator	qcom,qpnp-haptic|qcom,haptic	qpnp.hap|qpnp_haptic|haptic|timed_output|vibrat	HW	scripts/device/zl1-vibrator-probe.sh
 torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	scripts/device/zl1-leds-probe.sh
