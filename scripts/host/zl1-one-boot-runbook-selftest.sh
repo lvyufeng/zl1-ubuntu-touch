@@ -265,6 +265,25 @@ fi
 printf 'CALLEE $2 rc=%s\n' "\$rc" >> "$ACT"
 exit "\$rc"
 EOF
+  # THE HEAT CHAIN'S STAND-IN CARRIES THE CHAIN'S OWN SHAPE, and that is not decoration: since the
+  # runbook checks the whole sequence's host readiness BEFORE step 01, it reads the chain's callees OUT OF
+  # THE CHAIN (`NAME="$HERE/..."` plus the `for f in ...` loop the chain refuses on). A stand-in without
+  # those lines would leave that extraction empty, the runbook would report its own check as UNUSABLE, and
+  # the HARD/SOFT split -- the thing that decides whether a missing file costs the boot -- would be
+  # exercised by NOTHING. A fixture that cannot make two behaviours differ tests neither.
+  if [ "$2" = HEAT ]; then
+    cat >> "$CAL/$1" <<'CHAINSHAPE'
+HERE=$(cd "$(dirname "$0")" && pwd)
+NW="$HERE/../install-netwatch-service.sh"
+RETIRE="$HERE/../install-retire-debug-keeper.sh"
+CPUFREQ="$HERE/../install-cpufreq-governor.sh"
+PROOF="$HERE/../device/zl1-address-owner-proof.sh"
+THERMAL="$HERE/../device/zl1-thermal.sh"
+for f in "$NW" "$RETIRE" "$CPUFREQ" "$PROOF"; do
+  [ -r "$f" ] || { echo "cannot read $f" >&2; exit 2; }
+done
+CHAINSHAPE
+  fi
   chmod +x "$CAL/$1"
 }
 callee host/zl1-post-recovery-capture.sh    CAPTURE
@@ -311,6 +330,22 @@ host_fixture_ok() { # the state every scenario starts from: a host that CAN run 
   head -c 262144 /dev/zero > "$W/fake-misc/misc.img"
   ( cd "$W/fake-misc" && sha256sum misc.img > SHA256SUMS )
   printf '#!/bin/sh\nensure_addrs() { :; }\n' > "$W/fake-src/zl1-netwatch.sh"
+  # The chain stand-in's OWN callees, at exactly the paths its `NAME="$HERE/..."` lines resolve to (it
+  # lives in $CAL/host, so `../install-x` is $CAL/install-x and `../device/x` is $CAL/device/x). They
+  # exist so the readiness check has something to READ, and so a scenario can take one away -- which is
+  # the only way to show the HARD/SOFT split is real.
+  chain_callees_ok
+}
+chain_callees_ok() {
+  mkdir -p "$CAL/device"
+  for f in install-netwatch-service.sh install-retire-debug-keeper.sh install-cpufreq-governor.sh; do
+    [ -r "$CAL/$f" ] || printf '#!/bin/sh\n: chain callee %s\n' "$f" > "$CAL/$f"
+  done
+  [ -r "$CAL/device/zl1-address-owner-proof.sh" ] \
+    || printf '#!/bin/sh\n: the address-ownership proof\n' > "$CAL/device/zl1-address-owner-proof.sh"
+  [ -r "$CAL/device/zl1-thermal.sh" ] \
+    || printf '#!/bin/sh\n: the thermal instrument\n' > "$CAL/device/zl1-thermal.sh"
+  chmod +x "$CAL"/install-*.sh "$CAL/device/"*.sh 2>/dev/null
 }
 host_fixture_ok
 
@@ -787,16 +822,18 @@ echo "== 9b. the HOST's own precondition: a broken host refuses BEFORE step 01 =
 # callee having run at all.
 host_fixture_ok
 run --status
-want "step 03's preconditions hold" "$OUT" "--status: with a good host it says so"
+want "every step this run would take can start from this machine" "$OUT" \
+  "--status: with a good host it says so, about the WHOLE sequence and not just step 03"
 run --yes
-want "host check: step 03's preconditions hold" "$OUT" "and the run prints the same line before step 01"
+want "host check: every step this run takes can start from this machine" "$OUT" \
+  "and the run prints the same line before step 01"
 want 'CALLEE CAPTURE' "$(cat "$ACT")" "with a good host the sequence still runs"
 
 echo
 echo "   -- the misc backup is gone:"
 host_fixture_ok; rm -f "$W/fake-misc/misc.img"
 run --status
-want "step 03 CANNOT start on this host" "$OUT" "--status reports it as a refusal, before anything is run"
+want "the run WILL REFUSE before step 01" "$OUT" "--status reports it as a refusal, before anything is run"
 run --yes
 [ "$RC" = 2 ] && ok "the run exits 2" || bad "the run exited $RC"
 want 'REFUSING, before anything ran' "$OUT" "and it says so before step 01"
@@ -852,6 +889,97 @@ want 'the MISC_OUT/MISC_IMG form it uses is not the one this reads' "$OUT" "and 
   printf 'MISC_IMG="$MISC_OUT/misc.img"\n'
   printf 'SRC="%s"\n' "$W/fake-src/zl1-netwatch.sh"
 } > "$NWF"
+host_fixture_ok
+
+# ==================================================================================================
+echo
+echo "== 9c. the WHOLE sequence's host readiness, and the two kinds of missing =="
+# ==================================================================================================
+# Section 9b proves the one check that existed (step 03's installer-read preconditions). This section is
+# the generalisation: every step's own script, AND step 03's own callees, are files on THIS machine, and
+# discovering one missing costs the boot a finger bought. Two properties matter more than the enumeration:
+#
+#   * A MISSING SCRIPT IS A REFUSAL, A MISSING INSTRUMENT IS A WARNING. Refusing because the thermal
+#     instrument is absent would throw away the whole heat fix -- two installers that would have worked
+#     and the keeper kill -- to protect a smaller loss than the refusal causes. So the split is asserted
+#     from BOTH sides, and the mutation is the interesting direction: make the instrument a refusal and
+#     the boot is lost to it.
+#   * A STEP THIS RUN WILL NOT TAKE CANNOT FAIL. `--skip` / `--only` must keep working on exactly the
+#     host where they are the way through, so a missing script for a skipped step must not refuse.
+host_fixture_ok
+
+echo
+echo "   -- a step's OWN script is gone:"
+TRIAL_BAK="$W/trial.bak"; cp "$CAL/device/zl1-lpm-ladder-trial.sh" "$TRIAL_BAK"
+rm -f "$CAL/device/zl1-lpm-ladder-trial.sh"
+run --yes
+[ "$RC" = 2 ] && ok "the run refuses before step 01 (exit 2)" || bad "it exited $RC"
+want '05-trial cannot start: its own script is not readable' "$OUT" "naming the step and what is missing"
+want 'REFUSING, before anything ran' "$OUT" "as a refusal, not a warning"
+[ -z "$(order)" ] && ok "and NO step ran -- not even the four whose scripts are fine" || bad "a step ran: $(order)"
+run --status
+want 'the run WILL REFUSE before step 01' "$OUT" "--status says the same, so the read-only check is the whole answer"
+cp "$TRIAL_BAK" "$CAL/device/zl1-lpm-ladder-trial.sh"; chmod +x "$CAL/device/zl1-lpm-ladder-trial.sh"
+
+echo
+echo "   -- a step that will NOT be taken cannot fail:"
+rm -f "$CAL/device/zl1-lpm-ladder-trial.sh"
+run --yes --skip 05-trial
+[ "$RC" != 2 ] && ok "--skip 05-trial is still the way through (exit $RC)" || bad "it refused on a step it was told to skip"
+notwant 'REFUSING, before anything ran' "$OUT" "and it does not claim the host is broken"
+want 'CALLEE CAPTURE' "$(cat "$ACT")" "while the steps that DO run still run"
+run --yes --only 01-capture
+[ "$RC" != 2 ] && ok "--only 01-capture likewise (exit $RC)" || bad "it exited $RC"
+notwant '05-trial cannot start' "$OUT" "and the untaken step is not named as broken"
+cp "$TRIAL_BAK" "$CAL/device/zl1-lpm-ladder-trial.sh"; chmod +x "$CAL/device/zl1-lpm-ladder-trial.sh"
+host_fixture_ok
+
+echo
+echo "   -- a script STEP 03'S OWN BODY drives is gone, which the runbook never used to look at:"
+RETIRE_BAK="$W/retire.bak"; cp "$CAL/install-retire-debug-keeper.sh" "$RETIRE_BAK"
+rm -f "$CAL/install-retire-debug-keeper.sh"
+run --yes
+[ "$RC" = 2 ] && ok "refused before step 01 (exit 2)" || bad "it exited $RC"
+want '03-heat-chain cannot start: RETIRE is not readable' "$OUT" "naming the chain's own variable and file"
+want "$CAL/install-retire-debug-keeper.sh" "$OUT" "by the path the CHAIN resolves it to"
+[ -z "$(order)" ] && ok "and nothing ran" || bad "a step ran: $(order)"
+# And it is resolved against the CHAIN's directory, not the runbook's. The two are the same directory in
+# the real tree -- so resolving with the wrong one is right by accident there and wrong here, which is
+# exactly what a fixture that separates them is for. (The first version did resolve it wrongly and
+# refused for a file that was there all along, one directory over.)
+notwant "scripts/install-retire-debug-keeper.sh" "$OUT" "and NOT against the runbook's own directory"
+cp "$RETIRE_BAK" "$CAL/install-retire-debug-keeper.sh"; chmod +x "$CAL/install-retire-debug-keeper.sh"
+
+echo
+echo "   -- the INSTRUMENT is gone, and that must NOT cost the boot:"
+THERMAL_BAK="$W/thermal.bak"; cp "$CAL/device/zl1-thermal.sh" "$THERMAL_BAK"
+rm -f "$CAL/device/zl1-thermal.sh"
+run --yes
+[ "$RC" != 2 ] && ok "the run PROCEEDS (exit $RC) -- a missing instrument is not a reason to lose the heat fix" \
+              || bad "it refused; refusing here throws away two installers and the keeper kill"
+want 'WARNING: the run will proceed' "$OUT" "it is a WARNING, said out loud before step 01"
+want 'its MEASUREMENT WILL NOT' "$OUT" "naming exactly what will be lost"
+want 'the A/B as unusable' "$OUT" "and what the chain will say instead, so the archive is not a surprise"
+want 'CALLEE HEAT args=--yes' "$(cat "$ACT")" "and the chain still runs"
+cp "$THERMAL_BAK" "$CAL/device/zl1-thermal.sh"; chmod +x "$CAL/device/zl1-thermal.sh"
+run --status
+notwant 'WARNING' "$OUT" "with the instrument back, no warning -- so the warning is a reading, not a fixed line"
+
+echo
+echo "   -- and a check that CANNOT be made is not a pass:"
+# The extraction reads the chain's callees out of the chain. A chain whose shape this reader does not
+# know leaves the extraction empty, and "nothing to check" would read exactly like "everything is there".
+# So it is reported as UNUSABLE (and the run proceeds, naming the hole) -- never as a clean host.
+CHAIN_BAK="$W/chain.bak"; cp "$CAL/host/zl1-heat-fix-chain.sh" "$CHAIN_BAK"
+printf '#!/bin/sh\nprintf "CALLEE HEAT args=%%s\\n" "$*"\nexit 0\n' > "$CAL/host/zl1-heat-fix-chain.sh"
+chmod +x "$CAL/host/zl1-heat-fix-chain.sh"
+run --yes
+[ "$RC" != 2 ] && ok "a chain shape it cannot read does not refuse on its own" || bad "it exited $RC"
+want 'could not be made -- this run is NOT verified against it' "$OUT" "and it says the check has a HOLE, rather than nothing"
+want "the heat chain's callees could not be read out of" "$OUT" "naming what could not be read"
+run --status
+want 'which is NOT a pass' "$OUT" "--status says the same, in the same words"
+cp "$CHAIN_BAK" "$CAL/host/zl1-heat-fix-chain.sh"; chmod +x "$CAL/host/zl1-heat-fix-chain.sh"
 host_fixture_ok
 
 # ==================================================================================================
@@ -965,6 +1093,36 @@ if mutate notimeouttoken 's#^  gave_up "\$rc" && { printf .TIMEOUT.; return 0; }
                     || bad "the mutant hung -- the wrong thing was mutated"
   want 'A is treated as NOT met' "$MOUT" "mutation 'no timeout token': a host-side timeout is printed as 'A is treated as NOT met' -- a verdict about the phone (the check is live)"
   notwant 'NOT READ' "$MOUT" "with nothing anywhere saying the phone was never read"
+fi
+
+# The SOFT branch: make the missing instrument a REFUSAL, and see the boot get thrown away for it. The
+# HARD/SOFT split is carried by the PREFIX the check prints (that is what the caller switches on), so the
+# mutation changes that word -- a mutation of `bad=` instead would change nothing observable, because the
+# caller never refuses on `bad` (measured: that was the first version of this mutation, and the mutant
+# exited 0 and installed the heat fix, i.e. it proved nothing).
+if mutate hardinstrument 's#|| echo "SOFT 03-heat-chain#|| echo "HARD 03-heat-chain#'; then
+  reset; host_fixture_ok
+  THERMAL_BAK2="$W/thermal2.bak"; cp "$CAL/device/zl1-thermal.sh" "$THERMAL_BAK2"
+  rm -f "$CAL/device/zl1-thermal.sh"
+  mutrun "$MUTDIR/hardinstrument.sh" --yes
+  cp "$THERMAL_BAK2" "$CAL/device/zl1-thermal.sh"; chmod +x "$CAL/device/zl1-thermal.sh"
+  [ "$MRC" = 2 ] && ok "mutation 'the instrument made a refusal': the run REFUSES -- the whole heat fix is lost to a missing measuring tool (the check is live)" \
+                || bad "the mutant exited $MRC; the SOFT/HARD split is not what the checks above are measuring"
+  notwant 'CALLEE HEAT' "$(cat "$ACT")" "and the chain never ran, so the two fixes were never installed"
+fi
+# And the report for a check that could not be made: silence it, and a host that was never verified
+# reports itself as ready. (Mutating the extraction instead changes nothing observable -- the empty
+# extraction still reaches the UNUSABLE branch and is still printed. Measured: that mutant reported the
+# hole exactly like the subject, so it proved nothing about the sentence this scenario asserts.)
+if mutate nocallees 's#^      echo "UNUSABLE .*$#      : #'; then
+  reset; host_fixture_ok
+  CHAIN_BAK2="$W/chain2.bak"; cp "$CAL/host/zl1-heat-fix-chain.sh" "$CHAIN_BAK2"
+  printf '#!/bin/sh\nprintf "CALLEE HEAT args=%%s\\n" "$*"\nexit 0\n' > "$CAL/host/zl1-heat-fix-chain.sh"
+  chmod +x "$CAL/host/zl1-heat-fix-chain.sh"
+  mutrun "$MUTDIR/nocallees.sh" --yes
+  cp "$CHAIN_BAK2" "$CAL/host/zl1-heat-fix-chain.sh"; chmod +x "$CAL/host/zl1-heat-fix-chain.sh"
+  [ "$MRC" != 2 ] && ok "mutation 'no extraction': the run proceeds" || bad "the mutant exited $MRC"
+  notwant 'NOT verified against it' "$MOUT" "mutation 'no extraction': a check that could not be made is SILENT -- the run reports itself ready on a chain it never read (the check is live)"
 fi
 
 echo "== 11. the health check cites this harness's count, and that citation cannot drift =="

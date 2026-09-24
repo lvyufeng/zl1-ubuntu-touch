@@ -485,6 +485,101 @@ host_for_step03() {
   [ "$bad" = 0 ]
 }
 
+# --- the WHOLE sequence's host readiness, not just step 03's ---------------------------------------
+#
+# `host_for_step03` answers a question about ONE step, and it was written for the argument that applies
+# to all five: discovering on the boot that a file on THIS machine is missing costs the boot, and the
+# boot is the one thing here that cannot be re-run. But steps 01, 02, 04 and 05 need host files just as
+# much -- their own scripts -- and so does step 03's OWN body, which drives four more scripts the
+# runbook never looks at (`install-retire-debug-keeper.sh`, `install-cpufreq-governor.sh`,
+# `device/zl1-address-owner-proof.sh`, and `device/zl1-thermal.sh`). A missing capture script is found
+# at 01, a missing trial at 05, and a missing thermal instrument is found at NO step at all: the chain
+# degrades to `unusable`, prints that in the archive, and the boot ends with no measurement and no
+# second chance.
+#
+# TWO KINDS, AND THE DIFFERENCE IS NOT COSMETIC. A missing SCRIPT means a step cannot run: that is a
+# refusal, because a refusal costs nothing and a half-spent boot costs a finger. A missing INSTRUMENT
+# means the step runs and the measurement is lost -- and refusing on that would throw away the whole
+# heat fix (two installers that would have worked, plus the keeper kill) to protect a smaller loss than
+# the one the refusal causes. So it is reported as a WARNING that names exactly what will be lost, the
+# run proceeds, and the archive says `unusable` when it happens. That is docs 118's rule one file over:
+# the licence step 4 gives is for the kill, and over-gating loses a set of steps that never needed it.
+#
+# WHICH IS WHICH IS READ OUT OF THE HEAT CHAIN, not decided here: the chain has its own readability loop
+# (`for f in "$NW" "$RETIRE" "$CPUFREQ" "$PROOF"`) and the names in it are the ones it refuses on. Any
+# other callee it defines is one it degrades on. A second copy of that policy here would be a second
+# thing to go stale (docs 126), and if the extraction matches nothing the check reports itself UNUSABLE
+# rather than passing -- the shape this tree keeps finding in checks that cannot fail.
+CHAIN_CALLEES=""        # "NAME relative/path" per line, read out of the chain
+CHAIN_HARD=""           # the names the chain itself refuses on
+if [ -r "$HEAT" ]; then
+  # `NAME="$HERE/../somewhere"`, and **$HERE means the CHAIN's directory, not this script's**: the two
+  # happen to be the same directory in the real tree, and resolving with this script's $HERE would then be
+  # right by accident -- which is exactly the kind of accident a fixture that puts them in different
+  # directories catches. (It did: the first version resolved the chain's `../install-retire-...` against
+  # the runbook's directory and refused for a file that was there all along, one directory over.)
+  CHAIN_CALLEES=$(sed -n 's|^\([A-Z_][A-Z_0-9]*\)="\$HERE/\(.*\)"$|\1 \2|p' "$HEAT")
+  # The names in the chain's own refusal loop, on ONE line: `for f in "$NW" "$RETIRE" ...; do`.
+  CHAIN_HARD=$(sed -n '/^for f in /{s/^for f in //; s/; do.*//; s/"//g; s/\$//g; p; q;}' "$HEAT")
+fi
+# The chain writes its callees as `$HERE/../install-*.sh`, so the resolved path has a `..` in it. A
+# message somebody reads at 2 a.m. should not make them resolve that in their head, and a check that
+# asserts the path should assert the file, not the journey to it. Resolved textually as far as it can be:
+# if the parent does not exist the original is returned, because then the path IS the finding.
+_abs() { # path
+  local d b
+  d=$(dirname "$1"); b=$(basename "$1")
+  if [ -d "$d" ]; then ( cd "$d" 2>/dev/null && printf '%s/%s' "$(pwd)" "$b" ); else printf '%s' "$1"; fi
+}
+# Returns 0 when the sequence can start. One reason per line, PREFIXED, so the caller cannot confuse the
+# two kinds -- the whole point of the function is that they are not the same.
+host_ready() {
+  local bad=0 step path name rel
+  # (a) each step's own script. Skipped steps are not checked: a step this run will not take cannot fail,
+  #     and refusing on it would make `--skip` unusable on exactly the host where it is the way through.
+  while read -r step path; do
+    [ -n "$step" ] || continue
+    wanted "$step" || continue
+    [ -r "$path" ] || { echo "HARD $step cannot start: its own script is not readable: $path"; bad=1; }
+  done <<EOF
+01-capture $CAP
+02-panic-guard $PANIC
+03-heat-chain $HEAT
+04-fingerprint $FP
+05-trial $TRIAL
+EOF
+  if wanted 03-heat-chain; then
+    # (b) what step 03's own body will drive. Read out of the chain above.
+    if [ -z "$CHAIN_CALLEES" ] || [ -z "$CHAIN_HARD" ]; then
+      # NOT a pass. An extractor that matched nothing leaves both sides empty, and "nothing to check"
+      # would read exactly like "everything is there" -- the check-that-cannot-fail shape.
+      echo "UNUSABLE the heat chain's callees could not be read out of $HEAT, so whether step 03 can start is UNKNOWN (not a pass)"
+      bad=1
+    else
+      CHAIN_DIR=$(dirname "$HEAT")
+      while read -r name rel; do
+        [ -n "$name" ] || continue
+        path=$(_abs "$CHAIN_DIR/$(printf '%s' "$rel")")
+        if ! printf '%s\n' "$CHAIN_HARD" | grep -qw "$name"; then
+          # The chain runs without this one -- it says so in the archive instead. Warn, never refuse.
+          [ -r "$path" ] || echo "SOFT 03-heat-chain will run but its MEASUREMENT WILL NOT: $name ($path) is not readable, so the chain will report the A/B as unusable -- the two heat fixes still install"
+          continue
+        fi
+        [ -r "$path" ] || { echo "HARD 03-heat-chain cannot start: $name is not readable: $path"; bad=1; }
+      done <<EOF
+$CHAIN_CALLEES
+EOF
+    fi
+    # (c) and the two conditions the chain's own FIRST move refuses on, read out of the installer.
+    while IFS= read -r r; do
+      [ -n "$r" ] && { echo "HARD $r"; bad=1; }
+    done <<EOF2
+$(host_for_step03)
+EOF2
+  fi
+  [ "$bad" = 0 ]
+}
+
 # --- --status: the plan AND the live state of the three prerequisites ------------------------------
 # Read-only, and it answers the one question a person with a booted phone actually has: what is left to
 # do on THIS boot? An installer already installed reads as installed, so re-running the sequence is
@@ -526,13 +621,21 @@ if [ "$MODE" = status ]; then
   esac
   say "  B. cpuidle counters: not checked here -- the trial reads them itself, and UNREADABLE IS NOT ZERO."
   say
-  if wanted 03-heat-chain; then
-    HOST_BAD=$(host_for_step03) \
-      && say "  host: step 03's preconditions hold (misc backup verifies, the build carries ensure_addrs())" \
-      || { say "  host: step 03 CANNOT start on this host -- the run will refuse before step 01:"; \
-           printf '%s\n' "$HOST_BAD" | sed 's/^/        * /'; }
-    say
+  HOST_BAD=$(host_ready)
+  CASE_HARD=$(printf '%s\n' "$HOST_BAD" | grep '^HARD ' || true)
+  CASE_SOFT=$(printf '%s\n' "$HOST_BAD" | grep '^SOFT ' || true)
+  CASE_UNK=$(printf '%s\n' "$HOST_BAD" | grep '^UNUSABLE ' || true)
+  if [ -z "$CASE_HARD$CASE_SOFT$CASE_UNK" ]; then
+    say "  host: every step this run would take can start from this machine"
+  else
+    [ -n "$CASE_HARD" ] && { say "  host: the run WILL REFUSE before step 01 -- these cannot start:"; \
+      printf '%s\n' "$CASE_HARD" | sed 's/^HARD /        * /'; }
+    [ -n "$CASE_UNK" ] && { say "  host: a check could not be made, which is NOT a pass:"; \
+      printf '%s\n' "$CASE_UNK" | sed 's/^UNUSABLE /        * /'; }
+    [ -n "$CASE_SOFT" ] && { say "  host: WARNINGS -- the run proceeds, and something will be missing:"; \
+      printf '%s\n' "$CASE_SOFT" | sed 's/^SOFT /        * /'; }
   fi
+  say
   say "  Nothing was written. To run it:   $0 --yes"
   say "  To also run the trial's write:   $0 --yes --apply-trial   (a decision, not a reading)"
   exit 0
@@ -551,20 +654,36 @@ say "  boot_id: $BOOT_ID"
 say "  outdir:  $OUT"
 say
 
-# The host's own precondition, checked BEFORE step 01 -- see host_for_step03(). Refusing here costs
-# nothing; refusing at step 03 costs the two steps before it.
-if wanted 03-heat-chain; then
-  HOST_BAD=$(host_for_step03) || {
-    say "REFUSING, before anything ran: step 03 (the heat chain) cannot start on THIS HOST."
-    printf '%s\n' "$HOST_BAD" | sed 's/^/  * /'
-    say
-    say "  Nothing was run and nothing was written. This is not a device problem, and the boot is"
-    say "  untouched -- fix the host, or run the rest without that step:"
-    say "      $0 --yes --skip 03-heat-chain"
-    exit 2
-  }
-  say "-- host check: step 03's preconditions hold (misc backup verifies, the build carries ensure_addrs())"
+# The host's own precondition, checked BEFORE step 01 -- see host_ready(). Refusing here costs nothing;
+# refusing at the step that needs the file costs every step before it, and the boot.
+HOST_BAD=$(host_ready)
+HOST_HARD=$(printf '%s\n' "$HOST_BAD" | grep '^HARD ' || true)
+HOST_SOFT=$(printf '%s\n' "$HOST_BAD" | grep '^SOFT ' || true)
+HOST_UNK=$(printf '%s\n' "$HOST_BAD" | grep '^UNUSABLE ' || true)
+if [ -n "$HOST_UNK" ]; then
+  # A check that could not be made is NOT a pass, and it is not a refusal either: the operator is told
+  # that this run's host check has a hole in it and then chooses. What must not happen is silence.
+  say "NOTE: part of the host check could not be made -- this run is NOT verified against it:"
+  printf '%s\n' "$HOST_UNK" | sed 's/^UNUSABLE /  * /'
+  say
 fi
+if [ -n "$HOST_HARD" ]; then
+  say "REFUSING, before anything ran: a step of this run cannot start on THIS HOST."
+  printf '%s\n' "$HOST_HARD" | sed 's/^HARD /  * /'
+  say
+  say "  Nothing was run and nothing was written. This is not a device problem, and the boot is"
+  say "  untouched -- fix the host, or leave that step out and run the rest:"
+  say "      $0 --yes --skip <the step named above>"
+  exit 2
+fi
+if [ -n "$HOST_SOFT" ]; then
+  # NOT a refusal, and the reason is on the line: refusing would cost the whole boot's heat fix to
+  # protect a smaller loss than the refusal causes (see host_ready).
+  say "WARNING: the run will proceed, and this is what it will not be able to do:"
+  printf '%s\n' "$HOST_SOFT" | sed 's/^SOFT /  * /'
+  say
+fi
+say "-- host check: every step this run takes can start from this machine"
 
 # One step = one archive entry + one note that is a DEVICE READING, not the step's exit code. It also
 # records the step in EXECUTION ORDER, which is checked against STEPS at the end -- see the note there.
