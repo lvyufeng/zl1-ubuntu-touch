@@ -1,0 +1,535 @@
+#!/usr/bin/env bash
+# zl1 one-boot runbook -- offline self-test. Host-side, touches no device, needs no phone.
+#
+# Why this exists. `scripts/host/zl1-one-boot-runbook.sh` is the only script here whose whole content is
+# an ORDER: it runs five steps whose sequence is forced (01 must precede 03 because 03 destroys what 01
+# reads; 02 and 03 must precede 05 because each arms one of 05's refusals). An order is exactly the kind
+# of thing a harness checks well and a human checks badly, so what is asserted here is:
+#
+#   1. NOTHING RUNS when the device is not there -- and no ssh or scp call is even made. Section 1.
+#   2. The five steps run IN THE ONE ORDER, with the arguments each callee's own contract requires.
+#      Section 3.
+#   3. `--skip` and `--only` select, and an UNKNOWN step name is refused rather than treated as a
+#      no-op -- because `--skip 03-heatchain` (a typo) must not silently run the heat chain. Section 4.
+#   4. THE TWO DEVICE READINGS ARE READINGS. After 02 the harness changes `download_mode` in the fake
+#      device and the note must follow; after 03 it adds a keeper and the note must follow. This is the
+#      runbook's whole addition over a hand-typed list, so it is the section that matters most. Section 5.
+#   5. `--apply-trial` is refused unless 02 RAN IN THIS INVOCATION (not "was not skipped" -- under
+#      `--only 05-trial` nothing armed it either), and when it is allowed, step 05 uses --apply. Section 6.
+#   6. A step that fails does not stop the ones after it, and the exit code still reports it. Section 7.
+#   7. The archive: an INDEX.txt whose rows are the steps that ran, and a SHA256SUMS that verifies.
+#      Section 8.
+#   8. An interrupt archives what ran and exits 3. Section 9.
+#   9. `--status` WRITES NOTHING -- proven byte-for-byte over a fake device, not by grepping the source.
+#      Section 2.
+#
+# How it works: the same transport discipline as this family's other harnesses -- the stub directory IS
+# the device, `lsusb` and `ssh`/`scp` are stubs, and the FOUR CALLEES are recording stand-ins (each has
+# its own harness; what is under test here is that they are called, in order, with the right arguments).
+# The callee rewrite is checked to have LANDED and is cross-checked against the real tree, so a misspelt
+# callee cannot hide behind it.
+#
+# Usage: zl1-one-boot-runbook-selftest.sh [--keep]
+#   --keep   leave the fake root, the stand-ins and the archives in place
+
+set -uo pipefail
+
+for a in "$@"; do
+  case "$a" in
+  --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
+  --keep) ;;
+  *) echo "unknown argument $a (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(cd "$HERE/../.." && pwd)
+W=${TMPDIR:-/tmp}/zl1-one-boot-runbook-selftest
+KEEP=0
+[ "${1:-}" = --keep ] && KEEP=1
+rm -rf "$W"; mkdir -p "$W" || exit 2
+
+PASS=0; FAIL=0; SKIPPED=0
+ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
+want()    { case "$2" in *"$1"*) ok "$3" ;; *) bad "$3"; printf '        | wanted to find: %s\n' "$1" ;; esac; }
+notwant() { case "$2" in *"$1"*) bad "$3"; printf '        | did not want: %s\n' "$1" ;; *) ok "$3" ;; esac; }
+
+FR="$W/fake"; STUB="$W/stub"; CAL="$W/callees"
+mkdir -p "$FR" "$STUB" "$CAL" "$W/out"
+# The recording the stubs write into. EXPORTED, because the stubs and the stand-ins are child processes
+# and an unexported variable would leave every order assertion searching a file that nothing writes --
+# which reads exactly like "the order is wrong".
+ACT="$W/act"; export ACT
+: > "$ACT"
+
+# --- the fake device ------------------------------------------------------------------------------
+# Only the two things the runbook itself reads, plus the two paths the callee stand-ins do not touch:
+# the trial runs on the "device", and the ssh stub maps the runbook's device-side commands into here.
+printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"
+
+# A `download_mode` parameter, discovered by GLOB exactly as the runbook discovers it. The driver's
+# directory name is deliberately NOT `msm-poweroff`: doc 86 records that the real one was not what the
+# string search suggested, and a fixture that used the expected name would pass while the glob was
+# broken.
+DM_DIR="$FR/sys/module/msmpoweroff_msm/parameters"
+mkdir -p "$DM_DIR"
+dm_set() { printf '%s\n' "$1" > "$DM_DIR/download_mode"; }
+dm_set 1
+
+keeper_dir="$FR/proc/900"
+mkdir -p "$keeper_dir"
+keep_on()  { mkdir -p "$keeper_dir"; printf '/bin/sh\0/usr/local/sbin/zl1-debug-net.sh\0' > "$keeper_dir/cmdline"; }
+keep_off() { rm -rf "$keeper_dir"; }
+keeper_gone() { rm -rf "$FR/proc"; mkdir -p "$FR/proc"; }
+
+# A bystander whose command line merely MENTIONS the keeper path: the runbook matches by ARGV and must
+# not count it. This is the same rule every other script here uses, and a substring match is the defect
+# it was written to avoid.
+mkdir -p "$FR/proc/901"
+printf '/usr/bin/grep\0/usr/local/sbin/zl1-debug-net.sh\0' > "$FR/proc/901/cmdline"
+
+# --- the stubs ------------------------------------------------------------------------------------
+# lsusb: the FIRST question, and the one that decides whether anything runs. `lsusb -d ID` is a FILTER
+# that exits non-zero when nothing matches -- a stub that printed and exited 0 for everything would
+# report EDL for a healthy device, which is the false-negative the capture's harness recorded.
+cat > "$STUB/lsusb" <<EOF
+#!/bin/sh
+printf 'lsusb %s\n' "\$*" >> "$ACT"
+want_id=; [ "\$1" = -d ] && want_id="\$2"
+case "\${FP_STATE:-present}" in
+edl)    have_id=05c6:9008; line='Bus 003 Device 020: ID 05c6:9008 Qualcomm, Inc. Gobi Wireless Modem (QDL mode)' ;;
+absent) have_id=18d1:4ee7; line='Bus 003 Device 042: ID 18d1:4ee7 Google Inc.' ;;
+*)      have_id=18d1:4ee7; line='Bus 003 Device 042: ID 18d1:4ee7 Google Inc.' ;;
+esac
+if [ -n "\$want_id" ]; then
+  [ "\$want_id" = "\$have_id" ] || exit 1
+  printf '%s\n' "\$line"; exit 0
+fi
+printf '%s\n' "\$line"; exit 0
+EOF
+
+# The serial directory: the runbook looks for a /sys/bus/usb/devices/*/serial whose value STARTS WITH
+# the device's id, because the gadget really reports `33e80afe-v63-usbd-disabled-rndis` and an equality
+# test reports "absent" for a phone that is up (the capture's harness records that as a real bug).
+serial_on()  { rm -rf "$FR/sys/bus/usb/devices"; mkdir -p "$FR/sys/bus/usb/devices/3-3"; printf '%s\n' "33e80afe-v63-usbd-disabled-rndis" > "$FR/sys/bus/usb/devices/3-3/serial"; }
+serial_off() { rm -rf "$FR/sys/bus/usb/devices"; }
+serial_other() { rm -rf "$FR/sys/bus/usb/devices"; mkdir -p "$FR/sys/bus/usb/devices/3-4"; printf '%s\n' "4a2fe00b" > "$FR/sys/bus/usb/devices/3-4/serial"; }
+serial_on
+
+# A PATH sandbox with the real coreutils and nothing else. The list is deliberately explicit rather than
+# inherited: an inherited PATH would let a scenario reach a tool the subject did not ask for, and the
+# FIRST version of this list was short by `mkdir` -- which made every run die with "cannot create <outdir>"
+# and every scenario look like a refusal. `sh` is here because the stubs are shell, and `tee` because the
+# stand-ins record through it.
+MINBIN="$W/minbin"; mkdir -p "$MINBIN"
+for t in cat sed grep awk tr printf cut sort sha256sum md5sum ls date basename dirname mkdir rm find head tail wc tee sh env uniq; do
+  p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$MINBIN/$t"
+done
+# A REAL sleep, not a no-op: the interrupt scenario kills the run while a step is in flight, and a stub
+# that returned instantly would make that kill land after everything had already finished -- a scenario
+# that tests the absence of the thing it set up.
+printf '%s\n' '#!/bin/sh' "exec $(command -v sleep) \"\$@\"" > "$MINBIN/sleep"; chmod +x "$MINBIN/sleep"
+
+# ssh: the device. It drops the connection options, maps the runbook's device-side absolute paths into
+# the fake root, and runs the rest FOR REAL -- so the two readings the runbook turns on are measurements
+# of the fixture, and not strings the harness handed it.
+: > "$W/paths.sed"
+emit() { printf '%s\n' "$1" >> "$W/paths.sed"; }
+emit "s#/sys/module/\*/parameters/download_mode#$FR/sys/module/*/parameters/download_mode#g"
+emit "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g"
+emit "s|\${d#/proc/}|\${d#$FR/proc/}|g"
+emit "s#/proc/sys/kernel/random/boot_id#$FR/boot_id#g"
+# The trial is copied to /tmp and run there. Anchored on the shape this script actually sends, because a
+# bare `s#/tmp/#...#g` would re-process the earlier rules' own replacement text (the capture's harness
+# records that as a real bug producing a double prefix).
+emit "s#sh /tmp/zl1-lpm-ladder-trial.sh#sh $CAL/device/zl1-lpm-ladder-trial.sh#g"
+
+cat > "$STUB/ssh" <<EOF
+#!/bin/sh
+# Drop the connection options: everything up to the host, then the command.
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+  -o) shift 2 ;;
+  -*) shift ;;
+  *) break ;;
+  esac
+done
+host="\$1"; shift
+cmd="\$*"
+printf 'ssh %s\n' "\$cmd" >> "$ACT"
+case "\$cmd" in
+true) [ "\${FP_SSH_DOWN:-0}" = 1 ] && exit 255; exit 0 ;;
+esac
+[ "\${FP_SSH_DOWN:-0}" = 1 ] && exit 255
+# FP_SSH_DIE_ON: fail only for commands CONTAINING this string. The whole-link failure (FP_SSH_DOWN)
+# refuses before any step runs, so it cannot test what happens when the link dies AFTER the steps --
+# which is the real case, because the heat chain's activate stage re-enumerates the gadget.
+if [ -n "\${FP_SSH_DIE_ON:-}" ]; then
+  case "\$cmd" in *"\$FP_SSH_DIE_ON"*) exit 255 ;; esac
+fi
+mapped=\$(printf '%s\n' "\$cmd" | sed -f "$W/paths.sed")
+case "\$mapped" in *"sed:"*) printf 'SSH-MAP-BROKEN: %s\n' "\$mapped"; exit 9 ;; esac
+PATH="$MINBIN:\$PATH" exec sh -c "\$mapped"
+EOF
+
+cat > "$STUB/scp" <<EOF
+#!/bin/sh
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+  -o) shift 2 ;;
+  -*) shift ;;
+  *) break ;;
+  esac
+done
+src="\$1"
+printf 'scp %s\n' "\$src" >> "$ACT"
+exit "\${FP_SCP_RC:-0}"
+EOF
+chmod +x "$STUB"/*
+
+# --- the recording stand-ins -----------------------------------------------------------------------
+# Each prints a line saying which script ran and with what arguments (so ORDER and ARGUMENTS are both
+# assertable) and exits with a code the scenario chooses. `FP_RC_<NAME>` picks the code.
+callee() { # relative path, marker
+  mkdir -p "$CAL/$(dirname "$1")"
+  cat > "$CAL/$1" <<EOF
+#!/bin/sh
+printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
+[ -n "\${FP_SLEEP_$2:-}" ] && sleep "\${FP_SLEEP_$2}"
+rc=\$(printf '%s' "\${FP_RC_$2:-0}"); [ -n "\$rc" ] || rc=0
+printf 'CALLEE $2 rc=%s\n' "\$rc" >> "$ACT"
+exit "\$rc"
+EOF
+  chmod +x "$CAL/$1"
+}
+callee host/zl1-post-recovery-capture.sh    CAPTURE
+callee ../install-no-edl-on-panic.sh        PANIC
+callee host/zl1-heat-fix-chain.sh           HEAT
+callee ../install-fingerprint-store-dir.sh  FP
+callee device/zl1-lpm-ladder-trial.sh       TRIAL
+
+CALLEE_NAMES='CAPTURE|PANIC|HEAT|FP|TRIAL'
+order() { grep -E "CALLEE ($CALLEE_NAMES) args=" "$ACT" 2>/dev/null; }
+# Every `CALLEE <NAME>` line must be one this file knows how to look for: an unknown marker is a SETUP
+# failure, not a silent omission. This is the "extractor that drops an item" shape that doc 120 records
+# costing a whole section its sight: a step added to the subject without being added here was invisible
+# to every assertion below it.
+unknown_markers() {
+  sed -n 's/CALLEE \([A-Z0-9]*\) args=.*/\1/p' "$ACT" 2>/dev/null | sort -u | grep -vxE "$CALLEE_NAMES" | tr '\n' ' '
+}
+
+# --- the rewritten subject -------------------------------------------------------------------------
+SRC="$HERE/zl1-one-boot-runbook.sh"
+RB="$W/fake-repo/scripts/host/zl1-one-boot-runbook.sh"
+mkdir -p "$(dirname "$RB")"
+sed -e "s#^CAP=\"\$HERE/#CAP=\"$CAL/host/#" \
+    -e "s#^PANIC=\"\$HERE/../install-#PANIC=\"$CAL/../install-#" \
+    -e "s#^HEAT=\"\$HERE/#HEAT=\"$CAL/host/#" \
+    -e "s#^FP=\"\$HERE/../install-#FP=\"$CAL/../install-#" \
+    -e "s#^TRIAL=\"\$HERE/../device/#TRIAL=\"$CAL/device/#" \
+    -e "s#/sys/bus/usb/devices/#$FR/sys/bus/usb/devices/#g" \
+    "$SRC" > "$RB"
+chmod +x "$RB"
+bash -n "$RB" || { echo "the rewritten subject does not parse" >&2; exit 2; }
+
+# A rewrite that silently did not land would send the subject at the REAL scripts -- i.e. at the real
+# installers. So each is asserted, AND cross-checked against the real tree, so a misspelt callee is
+# distinguishable from a callee that ran and printed nothing.
+for pair in "$CAL/host/zl1-post-recovery-capture.sh:scripts/host/zl1-post-recovery-capture.sh" \
+            "$CAL/../install-no-edl-on-panic.sh:scripts/install-no-edl-on-panic.sh" \
+            "$CAL/host/zl1-heat-fix-chain.sh:scripts/host/zl1-heat-fix-chain.sh" \
+            "$CAL/../install-fingerprint-store-dir.sh:scripts/install-fingerprint-store-dir.sh" \
+            "$CAL/device/zl1-lpm-ladder-trial.sh:scripts/device/zl1-lpm-ladder-trial.sh"; do
+  pat=${pair%%:*}; rel=${pair##*:}
+  grep -qF "$pat" "$RB" || { echo "the rewrite to '$pat' did not land" >&2; exit 2; }
+  [ -f "$REPO/$rel" ] || { echo "the callee $rel does not exist in the tree" >&2; exit 2; }
+done
+
+# The subject derives its repo root from its own location, so -- rewritten under $W/fake-repo -- its
+# archives land there. One helper, because the nested substitutions this replaces were both wrong AND
+# unreadable.
+OUTROOT="$W/fake-repo"
+latest_archive() { ls -dt "$OUTROOT"/tmp-one-boot-* 2>/dev/null | head -1; }
+# `bash` by ABSOLUTE path: PATH is the sandbox below, which deliberately has no shell in it, so a bare
+# `bash` here is 127 -- and 127 from every scenario reads exactly like "the subject refuses everything".
+BASH_BIN=$(command -v bash)
+run()  { : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?; }
+reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; }
+
+echo "zl1 one-boot runbook -- offline self-test"
+echo "  subject: $SRC"
+echo "  fake device: $FR"
+echo
+
+# ==================================================================================================
+echo "== 1. no device, no calls at all =="
+# ==================================================================================================
+# The device is not there in three different ways, and the promise is the same in all of them: NOTHING
+# runs and not one ssh or scp is made. That is asserted against the recording, not against the prose.
+reset; FP_STATE=edl FP_SSH_DOWN=1 run --yes
+[ "$RC" = 2 ] && ok "an EDL device refuses with exit 2" || bad "it exited $RC"
+want 'long-press POWER' "$OUT" "and says the next move is the physical one"
+want 'nothing was written' "$OUT" "and that nothing was written"
+# The promise is "no ssh and no scp", not "no call at all": the lsusb filter IS how the script knows
+# the device is in EDL, so it must be made. An assertion of the stronger claim would have been wrong.
+notwant 'ssh ' "$(cat "$ACT")" "and made no ssh call -- the device is not there to be asked"
+notwant 'scp ' "$(cat "$ACT")" "and no scp call either"
+want 'lsusb -d 05c6:9008' "$(cat "$ACT")" "while the lsusb filter that establishes EDL IS made, because that is the question"
+
+# "absent" needs BOTH: nothing matching the vendor id AND no serial directory. Leaving the serial in
+# place is the fixture answering a question the scenario did not ask -- which is how this scenario first
+# came out reading "SSH does not answer" instead of "no device".
+reset; serial_off; FP_STATE=absent FP_SSH_DOWN=1 run --yes
+[ "$RC" = 2 ] && ok "a bus with no zl1 on it refuses with exit 2" || bad "it exited $RC"
+want '4a2fe00b' "$OUT" "and names the other phone as the thing to ignore"
+
+# The serial is a PREFIX on the real gadget, so the healthy case must not read as absent. This is the
+# false negative the capture's harness records as a real bug (an equality test reported "absent" for a
+# phone that was up and answering).
+reset; FP_SSH_DOWN=1 run --yes
+[ "$RC" = 2 ] && ok "a present-but-unreachable device refuses with exit 2" || bad "it exited $RC"
+want 'SSH does not answer' "$OUT" "and distinguishes 'on the bus' from 'not there'"
+want 'zl1-rndis-recover.sh' "$OUT" "and points at the HOST-side recovery, because that is where the other failure lives"
+notwant 'CALLEE' "$(order)" "and no callee ran"
+
+reset; serial_other; FP_SSH_DOWN=1 run --yes
+[ "$RC" = 2 ] && ok "the OTHER phone on the bus (4a2fe00b) still reads as absent" || bad "it exited $RC"
+serial_on
+
+# ==================================================================================================
+echo
+echo "== 2. --status writes NOTHING, and the flag surface refuses what it does not know =="
+# ==================================================================================================
+# --status is the mode a person runs first, and it reads two files on the device. It writes nothing --
+# and that is proven the way this family proves it, byte-for-byte, because a regex over the source
+# cannot tell a read from `printf 1 > "$s/download_mode"`.
+# The flag is set to 0 HERE, before the snapshot, because the scenario is "the device says 0" -- the
+# fixture's default is 1, and a scenario that forgets to move it is testing the baseline rather than the
+# reading. (The first version of this section did exactly that: it asserted A is met while reset() had
+# just written 1, so the assertion and the fixture disagreed and only the assertion was wrong.)
+reset; dm_set 0
+BEFORE=$( ( cd "$FR" && find . -printf '%y %p %s\n' | sort && find . -type f -exec md5sum {} + | sort ) )
+run --status
+[ "$RC" = 0 ] && ok "--status exits 0 on a reachable device" || bad "it exited $RC"
+want 'prerequisite A is MET' "$OUT" "it reads download_mode and reports A as met when the device says 0"
+AFTER=$( ( cd "$FR" && find . -printf '%y %p %s\n' | sort && find . -type f -exec md5sum {} + | sort ) )
+[ "$BEFORE" = "$AFTER" ] && ok "and the fake device is byte-for-byte what it was" || bad "--status changed the fake device"
+notwant 'CALLEE' "$(order)" "and no callee ran in --status"
+# The reading must FOLLOW the device, not the fixture's default: with the flag at 1 the same mode must
+# say A is not met. This is the same discipline as section 5, applied to the read-only mode.
+dm_set 1
+run --status
+want 'A is NOT met' "$OUT" "and with the flag back at 1 it says A is not met -- the note follows the device"
+
+run --not-a-flag
+[ "$RC" = 2 ] && ok "an unknown argument exits 2" || bad "it exited $RC"
+want 'unknown argument' "$OUT" "and says which one it did not understand"
+run --yes --only 99-nope
+[ "$RC" = 2 ] && ok "an unknown STEP name exits 2 rather than running nothing" || bad "it exited $RC"
+want 'unknown step' "$OUT" "and lists the steps it does know"
+run --yes --skip 03-heatchain
+[ "$RC" = 2 ] && ok "a TYPO in a step name is refused, not treated as a no-op" || bad "it exited $RC"
+want 'unknown step' "$OUT" "so a mistyped --skip cannot silently run the step it meant to leave out"
+
+# ==================================================================================================
+echo
+echo "== 3. the five steps, in the one order =="
+# ==================================================================================================
+reset; run --yes
+want 'CALLEE CAPTURE args=--outdir' "$(order | sed -n '1p')" "step 01 runs FIRST, and the capture is told where to archive"
+want 'CALLEE PANIC args=--install' "$(order | sed -n '2p')" "then the panic guard, installed"
+want 'CALLEE HEAT args=--yes' "$(order | sed -n '3p')" "then the heat chain, in its --yes mode"
+want 'CALLEE FP args=--install' "$(order | sed -n '4p')" "then the fingerprint store directory"
+want 'CALLEE TRIAL args=--status' "$(order | sed -n '5p')" "and LAST the trial, READ-ONLY by default"
+[ "$(order | wc -l)" = 5 ] && ok "exactly five steps -- no step runs twice and none is smuggled in" || bad "$(order | wc -l) callee call(s) ran"
+[ "$RC" = 0 ] && ok "and the run exits 0" || bad "it exited $RC"
+# The capture archives INSIDE ours, so its INDEX.txt is not overwritten by ours -- two records of the
+# same boot. A shared outdir would silently lose one of them.
+want '--outdir' "$(order | sed -n '1p')" "the capture is given an outdir rather than sharing ours by accident"
+OD1=$(latest_archive)
+want 'capture/' "$(cat "$OD1/INDEX.txt" 2>/dev/null)" "and the capture's own archive is named as living inside ours"
+# The subject's own plan list and its execution order are checked against EACH OTHER by the subject, and
+# that check is asserted here because it is the only thing standing between "the order is enforced" and
+# "the order is a comment". A mutation that swaps two entries of STEPS changes nothing about what runs --
+# which is exactly why it produced ZERO failures before the subject grew this check.
+notwant 'THE PLAN AND THE RUN DISAGREE' "$OUT" "and the declared order and the executed order agree in the subject"
+unknown_markers >/dev/null 2>&1
+[ -z "$(unknown_markers)" ] && ok "every stand-in that ran is one this harness knows how to look for" \
+  || bad "the subject ran a step this harness cannot see: $(unknown_markers)"
+# --settle is passed through, because the heat chain's default (90 s) is the gap the netwatch needs and
+# this script must not quietly shorten it.
+reset; run --yes --settle 12
+want 'CALLEE HEAT args=--yes --settle 12' "$(order | sed -n '3p')" "--settle reaches the heat chain unchanged"
+
+# ==================================================================================================
+echo
+echo "== 4. --skip and --only select, and the archive records it =="
+# ==================================================================================================
+reset; run --yes --skip 03-heat-chain
+want 'CALLEE CAPTURE' "$(order | sed -n '1p')" "with 03 skipped, 01 still runs"
+want 'CALLEE PANIC'  "$(order | sed -n '2p')" "then 02"
+want 'CALLEE FP'     "$(order | sed -n '3p')" "and the step after the skipped one runs -- a skip is not a stop"
+notwant 'CALLEE HEAT' "$(order)" "while the skipped step does not run"
+OD2=$(latest_archive)
+want '03-heat-chain' "$(cat "$OD2/INDEX.txt" 2>/dev/null)" "and the INDEX records the step rather than omitting it"
+want 'skip' "$(cat "$OD2/INDEX.txt" 2>/dev/null)" "with its status as skipped -- an absent row would read as 'not in the plan'"
+reset; run --yes --only 04-fingerprint
+[ "$(order | wc -l)" = 1 ] && ok "--only runs exactly the one step" || bad "$(order | wc -l) step(s) ran"
+want 'CALLEE FP args=--install' "$(order)" "and it is the one that was asked for"
+
+# ==================================================================================================
+echo
+echo "== 5. the two device readings are READINGS, and they follow the device =="
+# ==================================================================================================
+# This is the whole addition over a hand-typed list: after the step that is supposed to move a knob, the
+# runbook re-reads that knob FROM THE DEVICE and says whether the LAST step's precondition is now true.
+# A check whose answer the scenario cannot change is not a check, so both are moved here.
+reset; dm_set 0; run --yes
+want 'prerequisite A is MET' "$OUT" "with download_mode 0 the run reports A as met"
+reset; dm_set 1; run --yes
+want 'A is NOT met' "$OUT" "with download_mode 1 the SAME run reports A as not met -- the note is a reading"
+want 'the cause is 02 or the driver' "$OUT" "and it attributes the failure to the step that should have moved it"
+reset; keeper_gone; run --yes
+want 'prerequisite C is MET' "$OUT" "with no keeper in /proc the run reports C as met"
+reset; keep_on; run --yes
+want 'C is NOT met' "$OUT" "with the keeper running it reports C as not met"
+want 'the cause is 03' "$OUT" "and attributes it to the heat chain, not to the trial"
+# Both readings must be UNREADABLE rather than a value when the link dies -- because the heat chain's own
+# activate stage re-enumerates the gadget, so the first ssh after it can fail, and a value invented there
+# would be the worst possible answer.
+# The link dying AFTER the steps is the real case (the heat chain's activate stage re-enumerates the
+# gadget), so the stub fails only the reading commands. A reading that came back as a value here would be
+# the worst possible answer: it would be invented.
+reset; FP_SSH_DIE_ON=download_mode run --yes
+want 'UNREADABLE' "$OUT" "when the link dies after the steps, the readings say UNREADABLE and not a value"
+want 'A: UNREADABLE' "$OUT" "for A specifically"
+reset; FP_SSH_DIE_ON=cmdline run --yes
+want 'C: UNREADABLE' "$OUT" "and the same for C when it is the keeper read that fails"
+
+# ==================================================================================================
+echo
+echo "== 6. --apply-trial is a separate decision, and it is refused when 02 did not run =="
+# ==================================================================================================
+# The trial writes to the SoC's power parameter. The panic guard is what makes a hang a reboot instead
+# of an EDL trip, so applying the trial without having armed it is the one combination this script
+# refuses on its own account -- and the check is "did 02 RUN", not "was 02 not skipped": under
+# `--only 05-trial` nothing armed it either.
+reset; run --yes --skip 02-panic-guard --apply-trial
+[ "$RC" = 1 ] && ok "skipping the panic guard and applying the trial exits 1" || bad "it exited $RC"
+want 'REFUSED: --apply-trial was given, but 02-panic-guard did not run' "$OUT" "and says why, in those terms"
+want 'read it first' "$OUT" "and names the alternative: read it first rather than write it"
+notwant 'CALLEE TRIAL args=--apply' "$(order)" "and the trial was NOT run in its writing mode"
+reset; run --yes --only 05-trial --apply-trial
+[ "$RC" = 1 ] && ok "the same refusal fires under --only 05-trial, where 02 was neither skipped nor run" || bad "it exited $RC"
+want 'did not run in this invocation' "$OUT" "because the question is whether it RAN, not whether it was skipped"
+reset; run --yes --apply-trial
+want 'CALLEE TRIAL args=--apply' "$(order | sed -n '5p')" "with 02 having run, the trial gets --apply"
+notwant 'CALLEE TRIAL args=--status' "$(order)" "and not --status"
+# A verdict of REFUTED is a measurement, so the trial's own 0 must not be reported as a failure.
+reset; FP_RC_TRIAL=0 run --yes --apply-trial
+want 'REFUTED would also be 0' "$OUT" "and its own 0 is called a measurement, not a pass"
+reset; FP_RC_TRIAL=1 run --yes
+want 'INCONCLUSIVE or CONFOUNDED' "$OUT" "while its 1 is called a statement about the run, not the phone"
+reset; FP_RC_TRIAL=3 run --yes
+want 'REFUSED' "$OUT" "and its 3 is reported as a refusal with nothing written"
+
+# ==================================================================================================
+echo
+echo "== 7. a step that fails does not stop the ones after it, and the exit code says so =="
+# ==================================================================================================
+reset; FP_RC_HEAT=1 run --yes
+[ "$RC" = 1 ] && ok "a step that stops short makes the run exit 1" || bad "it exited $RC"
+want 'CALLEE FP args=--install' "$(order | sed -n '4p')" "and the NEXT step still runs -- the same rule the capture follows"
+want 'CALLEE TRIAL' "$(order | sed -n '5p')" "and so does the last one"
+want 'stopped short' "$OUT" "and the human-facing line says the run stopped short"
+# A step that failed BEFORE the two readings must not turn them into invented values.
+reset; FP_RC_PANIC=90 run --yes
+want 'A is NOT met' "$OUT" "a failed panic-guard install leaves A unmet, read from the device rather than assumed"
+
+# ==================================================================================================
+echo
+echo "== 8. the archive: an index of what ran, and checksums that verify =="
+# ==================================================================================================
+reset; run --yes >/dev/null
+OD=$(latest_archive)
+[ -n "$OD" ] && ok "the run archived into $OD" || bad "no archive directory was created"
+[ -f "$OD/INDEX.txt" ] && ok "with an INDEX.txt" || bad "no INDEX.txt"
+want '01-capture' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "naming the first step"
+want '05-trial' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "and the last one"
+want 'boot_id: ' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "and the boot it belongs to, because that is the whole point of the directory"
+n=0; for f in 01-capture 02-panic-guard 03-heat-chain 04-fingerprint 05-trial; do [ -f "$OD/$f.txt" ] && n=$((n + 1)); done
+[ "$n" = 5 ] && ok "and one file per step" || bad "only $n of 5 step files exist"
+( cd "$OD" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "and the SHA256SUMS verifies" || bad "sha256sum -c failed"
+# The archive is written by a function that is ALSO the signal handler, so a second call must be a
+# no-op rather than a rewrite -- otherwise a late signal could truncate a good index.
+want '01 and 05 read' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "and it says which steps read and which write"
+
+# ==================================================================================================
+echo
+echo "== 9. an interrupt archives what ran and exits 3 =="
+# ==================================================================================================
+# The first real run of its sibling was killed with the steps on disk and no index at all. Same handler,
+# same promise, and the interesting half is that the archive is COMPLETE enough to verify.
+reset; rm -rf "$OUTROOT"/tmp-one-boot-*
+env PATH="$STUB:$MINBIN" FP_SLEEP_HEAT=8 "$BASH_BIN" "$RB" --yes > "$W/int.out" 2>&1 &
+RP=$!
+sleep 2
+kill -TERM "$RP" 2>/dev/null
+wait "$RP"; RC=$?
+OUT="$W/int.out"
+[ "$RC" = 3 ] && ok "an interrupt exits 3, a code of its own" || bad "it exited $RC"
+OD3=$(latest_archive)
+[ -f "$OD3/INDEX.txt" ] && ok "and it archived what had run" || bad "no INDEX.txt after the interrupt"
+want 'INTERRUPTED' "$(cat "$OD3/INDEX.txt" 2>/dev/null)" "and the index says so"
+( cd "$OD3" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) \
+  && ok "and the partial archive verifies -- a handler that writes into a step's file breaks this" \
+  || bad "the partial archive fails its own sha256sum -c"
+
+# ==================================================================================================
+echo
+echo "== 10. --help prints the header, and the header is the contract =="
+# ==================================================================================================
+reset; run --help
+[ "$RC" = 0 ] && ok "--help exits 0" || bad "it exited $RC"
+# A substring that fits on ONE printed line: the header wraps, and `want` is a substring match over the
+# whole output, so a phrase spanning two lines can never match however true it is.
+want 'WHAT IT NEVER DOES' "$OUT" "--help prints the header's own words"
+want '01 capture' "$OUT" "including the forced order and the reason for each arrow"
+notwant '#!/usr/bin/env bash' "$OUT" "and not the shebang or any code"
+# The exit codes are a contract, and a code the header does not mention is one nobody can use.
+for c in '2  refused' '1  the sequence stopped short' '3  interrupted'; do
+  want "$c" "$(cat "$SRC")" "the header declares: $c"
+done
+want 'THE TRIAL WRITES TO THE' "$(cat "$SRC")" "and it says out loud that --apply-trial is the write"
+
+# ==================================================================================================
+echo
+echo "== 11. the health check cites this harness's count, and that citation cannot drift =="
+# ==================================================================================================
+# The extractor is this family's (docs 110) and deliberately not the obvious one: `grep -oE '[0-9]+'`
+# over a line containing this script's NAME matches the `1` in `zl1-...` and reads a citation of 89 as
+# "1". The name has to be matched FIRST and the number taken from what follows it; `[ ,(]*` because the
+# citation may be written `name, N checks` or `name (N checks)`, and the whole file is flattened to one
+# line so a citation broken across two string literals still counts.
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -r "$HEALTH" ]; then
+  CITED="$(sed -e 's/always "/ /g' -e 's/"$//' "$HEALTH" | tr '\n' ' ' \
+    | sed -n 's/.*zl1-one-boot-runbook-selftest\.sh[ ,(]*\([0-9][0-9]*\) checks.*/\1/p')"
+  N=$((PASS + FAIL + 1))
+  if [ -z "$CITED" ]; then
+    bad "the health check does not cite this harness at all -- add it to the item that names the offline verification"
+  elif [ "$CITED" = "$N" ]; then
+    ok "the health check cites $N checks, which is what this harness has"
+  else
+    bad "the health check cites $CITED checks, but this harness has $N -- fix host/zl1-health-check.sh"
+  fi
+else
+  bad "cannot read $HEALTH -- the citation check cannot run"
+fi
+
+echo
+echo "pass=$PASS fail=$FAIL"
+if [ "$KEEP" = 1 ]; then echo "kept: $W"; else rm -rf "$W"; fi
+[ "$FAIL" = 0 ] || exit 1
+exit 0

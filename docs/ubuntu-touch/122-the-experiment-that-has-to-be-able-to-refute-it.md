@@ -285,7 +285,10 @@ ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --apply'   # ← 这一步是一�
 这已经修了：两半现在分开点名，并且写清楚哪一半更久、为什么值得先做，
 同时把 doc 86 那句警告一起带上——它**降低概率，不移除路径**，任何地方都不许引成"EDL 不会再发生"。
 
-**`--apply` 要写的是 SoC 的电源参数。它是用户要做的决定，不是一件可以顺手做的事。**
+****这一串现在是 `scripts/host/zl1-one-boot-runbook.sh --yes` 一条命令**（[`124`](124-the-boot-a-finger-bought-is-one-command.md)）：
+顺序被强制执行，而第 05 步在这个序列里的位置**不是"放最后方便"**——门 A 由第 02 步满足、门 C 由第 03 步满足，
+所以**只有那里它才可能通过**。`--apply` 本身仍然是**单独的一次决定**（runbook 里是 `--apply-trial`），
+不是一件可以顺手做的事。**
 在它跑之前，`--status` 会先把三件事读出来（`download_mode`、cpuidle 是否可读、keeper 在不在），
 `--explain` 会把每个读数决定什么讲一遍——两者都**不写一个字节**。
 

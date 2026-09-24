@@ -107,16 +107,15 @@ GPS    让天气 app 的 "detect current location" 打开（zl1-gps-first-client
 设备仍在 **Qualcomm EDL**（`05c6:9008`，`Bus 003 Device 020`，无序列号），本轮复核过。
 整轮没有写任何分区或 boot，没有跑 QDL/QFIL，没有重启，没有绕过权限。
 
-回来时的顺序（`--install` 那一步是这一串里**唯一跨 boot** 的一步，见 doc 122 §9）：
+**出来之后是一条命令**（[`124`](124-the-boot-a-finger-bought-is-one-command.md)：顺序被强制执行，
+不是靠记性）：
 
 ```
 # 0. 物理长按 POWER 10–20 秒，等 RNDIS 和 ssh
-scripts/host/zl1-post-recovery-capture.sh        # 只读：0 系列（含 04b modem / 04c sleep）
-scripts/install-no-edl-on-panic.sh --install     # 门 A，也是唯一让下一个 boot 更安全的一步
-scripts/host/zl1-heat-fix-chain.sh --status
-scripts/host/zl1-heat-fix-chain.sh --yes         # 发烫的原因 ① 和 ②
-scripts/install-fingerprint-store-dir.sh --install        # 判据：biometryd 的 SYS_EINVAL 归零
-scp scripts/device/zl1-lpm-ladder-trial.sh root@$IP:/tmp/ && \
-  ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --status'
-ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --apply'    # ← 一次决定，不是一次读数
+scripts/host/zl1-one-boot-runbook.sh --status    # 只读：这个 boot 上还剩什么没做
+scripts/host/zl1-one-boot-runbook.sh --yes       # 五步，按唯一能成立的顺序
+ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --apply'   # ← 单独的一次决定，不是一次读数
 ```
+
+它跑的是 `01 capture`（只读）→ `02 panic guard`（**唯一跨 boot 的一步**）→ `03 heat chain`（发烫 ① 和 ②）
+→ `04 fingerprint`（判据：`setActiveGroup failed` 归零）→ `05 trial --status`（只读）。
