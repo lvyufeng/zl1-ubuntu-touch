@@ -517,6 +517,25 @@ step 04k-wfd            device "$HERE/../device/zl1-wfd-probe.sh"
 # harness's write-guard teeth include a `dd` onto `/dev/pn544` for exactly that.
 step 04l-nfc            device "$HERE/../device/zl1-nfc-probe.sh"
 
+# 04m-fm: the FM receiver. ONE node (`/soc/i2c@75b5000/silabs4705@11`, `silabs,si4705`), and this step
+# exists because of ONE property on it: `status = "disabled"`. Every other block this project has
+# instrumented carries NO status at all -- which the device tree reads as ENABLED -- and this node is the
+# exception, in all 15 LE_ZL1 trees and all three sets. A node that is not okay is never instantiated by
+# the i2c core, so there is no client, no bind and no radio device, whatever the kernel was built with.
+#
+# AND THE OBVIOUS EXPLANATION IS WRONG: `CONFIG_RADIO_SILABS=y` in BOTH of this project's kernels, the
+# vendor 3.18.120 one AND the v63 Halium one this port boots. So this is NOT the `nfc` step's shape (a
+# config line outside the menu that gates it, off in the shipping kernel) -- it is the mirror image: a
+# driver that is present and a TREE that refuses the node. `config RADIO_SILABS` does sit inside
+# `if RADIO_ADAPTERS && VIDEO_V4L2`, which is why the probe prints the whole chain rather than one line.
+#
+# Its write-class move is OPENING the device node: `silabs_fm_fops_open()` powers the chip up (both
+# regulators, the pinctrl active state, the three gpios) and the first ioctl writes real commands over
+# i2c -- and the v4l2 core puts ONE WRITABLE attribute on every radio device,
+# `/sys/class/video4linux/radioN/debug` (`DEVICE_ATTR_RW`), a verbosity knob. The probe opens no device
+# node and writes nothing, and the harness's write-guard teeth include both surfaces.
+step 04m-fm             device "$HERE/../device/zl1-fm-radio-probe.sh"
+
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
   step 06-fingerprint      device "$HERE/../device/zl1-fingerprint-probe.sh"
@@ -526,7 +545,7 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd and 04l-nfc: all eleven are read-only and"
+  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd, 04l-nfc and 04m-fm: all twelve are read-only and"
   say "   write nothing, so they are not in this group.)"
   say
 fi

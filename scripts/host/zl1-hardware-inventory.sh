@@ -142,7 +142,7 @@ touch	focaltech|synaptics|atmel_mxt|hideep	/dev/input|ABS_MT|BTN_TOUCH|event[0-9
 keys	gpio-keys|gpio_keys|qpnp-power-on|pmic-reset-reason	/dev/input|BTN_TOUCH|KEY_|BTN_POWER	HW	scripts/device/zl1-input-devices.py
 fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/device/zl1-fingerprint-probe.sh
 nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	scripts/device/zl1-nfc-probe.sh
-fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	-
+fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	scripts/device/zl1-fm-radio-probe.sh
 vibrator	qcom,qpnp-haptic|qcom,haptic	qpnp.hap|qpnp_haptic|haptic|timed_output|vibrat	HW	scripts/device/zl1-vibrator-probe.sh
 torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	scripts/device/zl1-leds-probe.sh
 backlight	qpnp-wled	backlight|wled|brightness	HW	scripts/hybris-shims/free-container-display.sh

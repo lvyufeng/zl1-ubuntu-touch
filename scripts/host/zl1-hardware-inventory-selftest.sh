@@ -402,8 +402,8 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  want '^blocks: 29 hardware -- 27 with a named instrument, \*\*2 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 27 read by something, **2 read by nothing**"
+  want '^blocks: 29 hardware -- 28 with a named instrument, \*\*1 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "29 hardware blocks, 28 read by something, **1 read by nothing**"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
   # scripts/device/zl1-leds-probe.sh. The number is typed by hand and must be edited by whoever closes a
   # gap -- that is the whole point of asserting it.
@@ -453,7 +453,13 @@ else
   notwant 'STALE: ' "$R" "and every named instrument still names its block -- this is the check that stops the table rotting"
   # The gaps, by name. These are the answer to "which hardware has no probe"; if one of them gains a
   # probe this goes red, and it should: the coverage number must not change without someone looking.
-  for b in fm-radio eeprom; do
+  # The eleventh gap closed, 2026-09-24 (docs 147): `fm-radio`. It is ONE node, and it is the ONLY block
+  # in this whole table whose device tree switches it OFF -- `status = "disabled"` in all 15 LE_ZL1 trees
+  # and all three sets -- while the driver that would bind it is built into BOTH kernels in hand. A row
+  # that read the config would call this block one build option away from working.
+  want '^fm-radio +1 +zl1-fm-radio-probe\.sh' "$R" \
+    "fm-radio -- one node, switched off by the tree itself -- is covered, by name"
+  for b in eeprom; do
     want "^  $b +[0-9]+ dtb node\\(s\\), in " "$R" "  $b is reported as having no instrument"
   done
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came
