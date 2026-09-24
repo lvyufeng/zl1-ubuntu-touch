@@ -99,7 +99,7 @@ sed -e "s#__ZDT__#$FR/proc/device-tree#g" \
 sh -n "$RW" || { echo "the rewritten trial does not parse" >&2; exit 2; }
 if grep -q -- '__Z' "$RW"; then
   echo "an unexpanded token is left in $RW:" >&2
-  grep -n -- '__Z' "$RW" | head -5 >&2
+  grep -n -- '__Z' "$RW" | sed -n '1,5p' >&2
   exit 2
 fi
 
@@ -135,8 +135,8 @@ FAIL=0
 SKIPPED=0
 ok() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
-want() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | grep -n . | sed 's/^/        | /'; fi; }
-notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+want() { if grep -Eq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; grep -n . <<< "$2" | sed 's/^/        | /'; fi; }
+notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
 # The verdict is the LAST section of the trial, so it is extracted from its own header. Anchored on the
 # numbered header and not on the first `->` line anywhere: this script prints `->` in earlier sections.
 verdict() { printf '%s\n' "$1" | sed -n '/^== 10\. the verdict$/,$p'; }
@@ -197,7 +197,7 @@ else
     case "$t" in
     /dev/null) : ;;
     *)
-      printf '%s\n' "$DECLARED" | grep -qxF -- "$t" || UNDECLARED="$UNDECLARED $t" ;;
+      grep -qxF -- "$t" <<< "$DECLARED" || UNDECLARED="$UNDECLARED $t" ;;
     esac
   done <<EOF
 $SHIPPED_TARGETS
@@ -218,7 +218,7 @@ EOF
         && ok "the trial does use $t (as the snapshot helper's argument)" \
         || bad "the declared path $t is never used -- the whitelist does not describe this script" ;;
     *)
-      printf '%s\n' "$SHIPPED_TARGETS" | grep -qxF -- "$t" \
+      grep -qxF -- "$t" <<< "$SHIPPED_TARGETS" \
         && ok "the trial does write $t" \
         || bad "the declared path $t is never written -- the whitelist does not describe this script" ;;
     esac
@@ -256,7 +256,7 @@ if cmp -s "$SRC" "$W/mut-extra.sh"; then
 else
   ok "the extra-target mutation really differs from the shipped file"
   EXTRA="$(targets_in "$W/mut-extra.sh" | grep -vxF -e '/dev/null' -e '\$PARAM' -e '\$REVERT_SH' -e '\$SNAP_BEFORE' -e '\$SNAP_AFTER' -e '\$DELTAS' -e '\$1/counters' || true)"
-  if printf '%s\n' "$EXTRA" | grep -q 'thermal_zone0/mode'; then
+  if grep -q 'thermal_zone0/mode' <<< "$EXTRA"; then
     ok "the whitelist CATCHES a fifth write target (a thermal zone's mode)"
   else
     bad "the whitelist let a fifth write target through -- a mutation adding one must fail this check"
@@ -583,7 +583,7 @@ want 'is back to 1, verified by read-back' "$OUT" "and reverts, verified by read
 # The only trace left in the fake device is the undo file the trial wrote on purpose: the whitelist is
 # checked against the actual after-state, not against the source text.
 DIFF="$( ( cd "$FR" && find . -type f -printf '%p\n' | sort ) )"
-printf '%s\n' "$DIFF" | grep -q 'tmp/zl1-lpm-trial-revert.sh' \
+grep -q 'tmp/zl1-lpm-trial-revert.sh' <<< "$DIFF" \
   && ok "the undo file is on the device, where a lost session can still reach it" \
   || bad "the undo file was not written -- the undo would only exist in this session"
 grep -q 'printf 1 >' "$FR/tmp/zl1-lpm-trial-revert.sh" 2>/dev/null \
@@ -755,6 +755,39 @@ want '^# Exit codes: 0 ' "$(cat "$SRC")" "the header declares the exit codes"
 for c in 'REFUTED, which is a measurement' '3 REFUSED' '4 the write happened'; do
   want "$c" "$(cat "$SRC")" "and names: $c"
 done
+
+# ==================================================================================================
+echo
+echo "== 11b. this harness's own want() cannot be defeated by its writer =="
+# ==================================================================================================
+# MEASURED, not reasoned about, and it took a while to believe. While verifying docs 133 this harness
+# reported a FAIL for a check whose haystack -- read back at the moment of failure -- DID hold the
+# pattern: 36615 bytes, 647 lines, and the same `grep -Eq` re-run on the same string returned 0. The
+# reader was not the tool that failed. `want` used to be `printf '%s\n' "$2" | grep -Eq -- "$1"`, and
+# under `set -o pipefail` a pipeline's status is the last non-zero status ANYWHERE in it -- so when the
+# reader exits at the first match (which is what -q is for) and the writer has not finished writing, the
+# writer is killed by SIGPIPE and pipefail reports the WRITER's death as this check's answer. At the
+# moment of failure `PIPESTATUS` was `printf=141 grep=0`: the pattern matched, and the check said no.
+#
+# It is a race -- 4 red runs in 100 here -- and it stops being a race the moment the haystack is bigger
+# than a pipe: measured with a 2 MB haystack whose match is on line 1, the old shape failed 200/200 and
+# handing the same string to grep with no writer process in between failed 0/200. So the trap below is
+# deterministic on every host, with no load required: put the writer back in the pipeline and it fails
+# every time. That is the whole point -- a check that only fails sometimes is a check nobody can act on.
+BIG="$( { printf 'the first line is the one that matches\n'; seq 1 200000; } )"
+NBIG=${#BIG}
+[ "$NBIG" -gt 1000000 ] \
+  && ok "the trap's haystack is $NBIG bytes, larger than any default pipe (so a writer in the pipeline must block)" \
+  || bad "the trap's haystack is only $NBIG bytes -- it may fit in a pipe, and then the trap proves nothing"
+want '^the first line is the one that matches$' "$BIG" \
+  "a haystack larger than a pipe ($(printf '%s' "$BIG" | wc -c) bytes) with the match on its FIRST line"
+notwant 'a pattern that is nowhere in the haystack' "$BIG" \
+  "and the same haystack does not match a pattern that is not in it"
+# The mechanism itself is NOT re-measured here, and that is deliberate: measuring it needs the exact shape
+# the family now forbids (a writer on the left of an early-exiting reader), and a guard that has to carry
+# an exemption for its own demonstration is worse than a demonstration that lives in the doc. The numbers
+# above are from that measurement: `PIPESTATUS` printf=141 grep=0 at the failure, 4/100 runs here, 200/200
+# false failures with a haystack this size and the match on line 1, 0/200 with the here-string.
 
 # ==================================================================================================
 echo

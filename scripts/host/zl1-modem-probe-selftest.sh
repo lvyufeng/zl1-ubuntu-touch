@@ -128,7 +128,7 @@ sh -n "$RW" || { echo "the rewritten probe does not parse" >&2; exit 2; }
 # A token left behind would be a path that silently cannot exist, so it is a setup failure, not a finding.
 if grep -q -- '__Z' "$RW"; then
   echo "an unexpanded token is left in $RW:" >&2
-  grep -n -- '__Z' "$RW" | head -5 >&2
+  grep -n -- '__Z' "$RW" | sed -n '1,5p' >&2
   exit 2
 fi
 
@@ -360,8 +360,8 @@ PASS=0
 FAIL=0
 ok() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
-want() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | grep -n . | sed 's/^/        | /'; fi; }
-notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+want() { if grep -Eq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; grep -n . <<< "$2" | sed 's/^/        | /'; fi; }
+notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
 # The verdict is the LAST section, so it runs from its own header to the end of the output. Anchored on
 # that header, not on the first `->` line anywhere: the probe prints `->` lines in earlier sections, and a
 # verdict extractor that took the first of those would make every assertion about a different paragraph

@@ -258,9 +258,9 @@ PASS=0
 FAIL=0
 ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
-want()    { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
-notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
-wantl()   { if printf '%s\n' "$2" | grep -qF -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
+want()    { if grep -Eq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; sed 's/^/        | /' <<< "$2"; fi; }
+notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
+wantl()   { if grep -qF -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; sed 's/^/        | /' <<< "$2"; fi; }
 # The rate the script printed for a window, from its own "LABEL jiffies rate" line.
 # The script prints its note on the SAME line ("A 12 1.0   (label jiffies ticks_per_second; ...)"), so
 # this must not test NF==3: it checks the two numeric columns and nothing else.
@@ -416,7 +416,7 @@ run ""
 TABLE="$(printf '%s\n' "$OUT" | sed -n '/the app.s own evidence/,/^== verdict/p')"
 [ -n "$TABLE" ] || bad "the evidence table is not in the output at all"
 # The defect: `grep -c ... || echo 0` gave a two-line value, so every zero row printed a stray "0".
-printf '%s\n' "$TABLE" | grep -qE '^0$' \
+grep -qE '^0$' <<< "$TABLE" \
   && bad "a stray '0' line is in the table (the two-line count is back)" \
   || ok "no stray line: every row is one line with both counts on it"
 rows=$(printf '%s\n' "$TABLE" | grep -cE '^   (Creating a QMirClientScreen|Added camera|Application is now active|ASSERT|caught signal|not found) ')
@@ -484,7 +484,7 @@ echo "== 8. the launch command: uid, namespace, preload, and the app it asks for
 # ==================================================================================================
 env_reset
 run ""
-LAUNCHLINE="$(grep '^ssh .*setsid nohup' "$ACT" 2>/dev/null | head -1)"
+LAUNCHLINE="$(grep '^ssh .*setsid nohup' "$ACT" 2>/dev/null | sed -n '1p')"
 [ -n "$LAUNCHLINE" ] || bad "the launch command is not in the action log at all"
 want 'nsenter -t 700 -p' "$LAUNCHLINE" "the app is started in the container's PID namespace"
 want 'ZL1_AS_UID=32011' "$LAUNCHLINE" "as uid 32011, which the session bus requires (docs 80)"

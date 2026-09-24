@@ -102,7 +102,7 @@ sed -e "s#__ZC__#$FR/proc/cmdline#g" \
 sh -n "$RW" || { echo "the rewritten probe does not parse" >&2; exit 2; }
 if grep -q -- '__Z' "$RW"; then
   echo "an unexpanded token is left in $RW:" >&2
-  grep -n -- '__Z' "$RW" | head -5 >&2
+  grep -n -- '__Z' "$RW" | sed -n '1,5p' >&2
   exit 2
 fi
 
@@ -315,8 +315,8 @@ PASS=0
 FAIL=0
 ok() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
-want() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | grep -n . | sed 's/^/        | /'; fi; }
-notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E -- "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+want() { if grep -Eq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; grep -n . <<< "$2" | sed 's/^/        | /'; fi; }
+notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
 # The verdict is the LAST section, so it is extracted from its own header to the end of the output.
 # Anchored on the numbered header and not on the first `->` line anywhere: this probe prints `->` in
 # earlier sections, and an extractor that took the first of those would make every verdict assertion
@@ -426,7 +426,7 @@ if [ -n "$SNAP_A" ] && [ "$SNAP_A" = "$SNAP_B" ]; then
   ok "a full run left the fake device BYTE-FOR-BYTE identical ($(printf '%s\n' "$SNAP_A" | wc -l | tr -d ' ') lines of manifest)"
 else
   bad "the fake device changed across a run -- the probe writes something:"
-  diff <(printf '%s\n' "$SNAP_A") <(printf '%s\n' "$SNAP_B") | head -10 | sed 's/^/        | /'
+  diff <(printf '%s\n' "$SNAP_A") <(printf '%s\n' "$SNAP_B") | sed -n '1,10p' | sed 's/^/        | /'
 fi
 # And the manifest must be able to SEE a change, or the check above proves nothing. `--quiet` is used so
 # this does not depend on the probe's own behaviour: the fixture is edited between the two snapshots.

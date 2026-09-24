@@ -130,8 +130,8 @@ PASS=0
 FAIL=0
 ok()  { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
-want()    { if printf '%s\n' "$2" | grep -Eq "$1"; then ok "$3"; else bad "$3"; printf '%s\n' "$2" | sed 's/^/        | /'; fi; }
-notwant() { if printf '%s\n' "$2" | grep -Eq "$1"; then bad "$3"; printf '%s\n' "$2" | grep -E "$1" | sed 's/^/        | /'; else ok "$3"; fi; }
+want()    { if grep -Eq "$1" <<< "$2"; then ok "$3"; else bad "$3"; sed 's/^/        | /' <<< "$2"; fi; }
+notwant() { if grep -Eq "$1" <<< "$2"; then bad "$3"; grep -E "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
 
 # run: the subject against the fixture repo and the fixture harnesses. OUT/RC are the results.
 run() { # args...
@@ -357,6 +357,84 @@ if mutate notracked 's#^    TREE_CHANGED=1$#    : #'; then
     || bad "the mutant still exited $MRC"
   want 'the repository is unchanged' "$MOUT" "and the summary claims the tree is unchanged"
 fi
+
+# ==================================================================================================
+echo
+echo "== 7b. no pipeline in a pipefail harness may end in a reader that exits early =="
+# ==================================================================================================
+# The family's harnesses ARE the tree's green/red signal, and thirteen of them share one verdict helper
+# (`want`/`notwant`: `printf '%s\n' "$2" | grep -Eq ...`). Under `set -o pipefail`, which SEVEN of them
+# set, that helper can report a FALSE FAIL: the reader exits at the first match, the writer is killed by
+# SIGPIPE, and pipefail reports the writer's death as the check's answer. Measured while verifying docs
+# 133 in zl1-lpm-ladder-trial-selftest.sh -- `PIPESTATUS` was `printf=141 grep=0` at the failure, 4 red
+# runs in 100, with the pattern present in the haystack that was read back at that moment.
+#
+# This is the invariant that keeps it fixed. Two things about its shape are deliberate:
+#
+#   * It scans the harnesses that SET pipefail, found by a `set` at the start of a line, which is how
+#     every harness in this tree writes it. Without pipefail the writer's death is not the pipeline's
+#     status and the shape is inert -- twelve harnesses carry it today and cannot misbehave. The day one
+#     of them gains `set -o pipefail`, this check reds and lists the sites to change, which is the whole
+#     point: the shape is a trap that springs on an edit nobody would think of as related.
+#   * It bans the SHAPE (`grep -q` / `grep -m` / `head` on the right of a pipe) rather than a use, and
+#     skips comment lines -- the use is not visible in the text (it depends on both callers and options),
+#     and a reader that stops early can only ever save work, never change an answer, so nothing is given
+#     up by not having one. The truncating call sites use `sed -n '1,5p'`, which reads to EOF and prints
+#     the same five lines.
+scan_risky() { # file -> the matching lines, with the file's own line numbers and comments dropped
+  grep -nE '\|[[:space:]]*(grep[[:space:]]+-[A-Za-z]*q|grep[[:space:]]+-[A-Za-z]*-m|head([[:space:]]|$))' "$1" 2>/dev/null \
+    | grep -vE '^[0-9]+:[[:space:]]*#'
+}
+RISKY=""; PF=0; NAMES=""
+for f in "$HERE"/zl1-*selftest.sh; do
+  grep -qE '^set -[a-zA-Z]* *pipefail' "$f" || continue
+  PF=$((PF + 1)); NAMES="$NAMES $(basename "$f")"
+  hit=$(scan_risky "$f")
+  [ -n "$hit" ] && RISKY="$RISKY
+$(basename "$f"):
+$hit"
+done
+[ "$PF" -ge 1 ] \
+  && ok "$PF harness(es) set pipefail and were scanned:$NAMES" \
+  || bad "no harness was found to set pipefail -- the invariant would be vacuous, so it is reported, not assumed"
+[ -z "$RISKY" ] \
+  && ok "and not one of them puts an early-exiting reader on the right of a pipe (the shape that reports the writer's death)" \
+  || { bad "a pipefail harness still has the shape that reports the WRITER's death as a check's answer:"
+       printf '%s\n' "$RISKY" | sed 's/^/        | /'; }
+# Two fixtures, in this order: the scan must CATCH what it forbids (or the check above is vacuous) and
+# must not catch the shape the harnesses now use -- a scan that flags everything would pass the first
+# assertion and fail the second. The risky one is written with `@` in place of the pipe and passed
+# through `tr`: this file sets pipefail too, so its own test data would otherwise trip the guard, and a
+# guard that has to carry an exemption for itself is the shape every check in this tree tries not to be.
+mkdir -p "$W/scan"
+cat > "$W/scan/risky.raw" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+want() { if printf '%s\n' "$2" @ grep -Eq -- "$1"; then :; fi; }
+FIX
+tr '@' '|' < "$W/scan/risky.raw" > "$W/scan/risky.sh"
+cat > "$W/scan/fixed.sh" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+want() { if grep -Eq -- "$1" <<< "$2"; then :; fi; }
+FIX
+[ -n "$(scan_risky "$W/scan/risky.sh")" ] \
+  && ok "the scan CATCHES the shape it forbids, on a fixture (so it is a check, not a statement)" \
+  || bad "the scan did not flag a fixture that HAS the shape -- it cannot be what fails the check above"
+[ -z "$(scan_risky "$W/scan/fixed.sh")" ] \
+  && ok "and it does not flag the shape the harnesses now use, so the fix is not punished by the guard" \
+  || bad "the scan flags the fixed shape too -- then it is not measuring the defect"
+# A comment is prose about the shape, not the shape: the harnesses that document this defect quote it in
+# a comment, and a guard that reds on its own explanation is a guard somebody deletes.
+cat > "$W/scan/commented.raw" <<'FIX'
+#!/usr/bin/env bash
+set -uo pipefail
+# the old helper was: printf '%s\n' "$2" @ grep -Eq -- "$1"
+FIX
+tr '@' '|' < "$W/scan/commented.raw" > "$W/scan/commented.sh"
+[ -z "$(scan_risky "$W/scan/commented.sh")" ] \
+  && ok "and a comment that quotes the shape is not the shape" \
+  || bad "the scan flags a comment -- then every harness that explains this defect would fail this check"
 
 # ==================================================================================================
 echo

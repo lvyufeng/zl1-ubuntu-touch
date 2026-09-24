@@ -387,7 +387,9 @@ grep -q '^SRC="'    "$REPO/scripts/install-netwatch-service.sh" || { echo "the r
 # archives land there. One helper, because the nested substitutions this replaces were both wrong AND
 # unreadable.
 OUTROOT="$W/fake-repo"
-latest_archive() { ls -dt "$OUTROOT"/tmp-one-boot-* 2>/dev/null | head -1; }
+# `sed -n '1p'` and not `head -1`: this file sets pipefail, and a reader that exits at the first match
+# reports the WRITER's death (ls, killed by SIGPIPE) as this function's status. sed reads to EOF.
+latest_archive() { ls -dt "$OUTROOT"/tmp-one-boot-* 2>/dev/null | sed -n '1p'; }
 # `bash` by ABSOLUTE path: PATH is the sandbox below, which deliberately has no shell in it, so a bare
 # `bash` here is 127 -- and 127 from every scenario reads exactly like "the subject refuses everything".
 BASH_BIN=$(command -v bash)
