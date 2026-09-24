@@ -45,7 +45,7 @@
 #   argument; it adds the ORDER and the arithmetic of one boot.
 #
 # Usage: zl1-one-boot-runbook.sh [--status] [--yes] [--apply-trial] [--only STEP] [--skip STEP]
-#                                [--outdir DIR] [--settle SECS]
+#                                [--outdir DIR] [--settle SECS] [--step-limit SECS]
 #   --status       (default) READ-ONLY: which steps are already done on this boot, and which of the
 #                  trial's three prerequisites currently hold. Writes nothing, installs nothing.
 #   --yes          run the sequence. Without it: print the plan for this boot and exit 2.
@@ -58,11 +58,17 @@
 #                  04-fingerprint, 05-trial.
 #   --outdir DIR   where to archive (default: repo tmp-one-boot-<utc timestamp>/)
 #   --settle SECS  passed through to the heat chain (its default is 90)
+#   --step-limit SECS  wall-clock bound on ONE step (default 900). A step that outlasts it is reported
+#                  as DID NOT FINISH -- not as a failure of the step, and not as a success -- because on
+#                  this phone the next move is a physical power hold and nothing else. It has to be
+#                  looser than the heat chain's own total (that chain bounds each of its steps itself);
+#                  if you widen --settle or the chain's --ab-window/--ab-hold, widen this with it.
 #
 # Exit codes:
 #   0  the sequence ran to the end and every step's own verdict was acceptable
-#   1  the sequence stopped short -- a step failed, or a downstream precondition did NOT move -- and
-#      the archive says which. Whatever ran before it is archived.
+#   1  the sequence stopped short -- a step failed, or a step did not finish inside --step-limit, or a
+#      downstream precondition did NOT move -- and the archive says which. Whatever ran before it is
+#      archived.
 #   2  refused: no --yes, or the device is not reachable (NOTHING was run, not even one ssh call)
 #   3  interrupted: what had run is archived and indexed anyway
 #
@@ -88,6 +94,18 @@ SETTLE=""
 ONLY=""
 SKIP=""
 APPLY_TRIAL=0
+# Every step here is one or more ssh calls to a device whose link the heat chain re-enumerates ON PURPOSE,
+# and a hung ssh does not fail -- it hangs. On this phone the resource that spends is a boot that cost a
+# physical 10-20 s power hold, and it spends it SILENTLY: the later steps never run and nothing is
+# archived, so the boot cannot even be read afterwards. Hence a wall-clock bound on every step.
+#
+# The default is deliberately generous (900 s): step 03 is the heat chain, which legitimately waits
+# --settle and then measures two sampling windows, and step 01 is a full read-only capture. The chain
+# bounds EACH OF ITS OWN STEPS too (docs 131), so this is the backstop, not the mechanism -- but the
+# backstop has to be looser than the chain's own total, or it would truncate a run that was working. If
+# you widen --settle (passed through) or the chain's --ab-window/--ab-hold, widen this with it.
+STEP_LIMIT=${ZL1_RB_STEP_LIMIT:-900}
+
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -98,6 +116,7 @@ while [ $# -gt 0 ]; do
   --skip) SKIP="${SKIP:+$SKIP }${2?--skip needs a STEP}"; shift 2 ;;
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --settle) SETTLE="${2?--settle needs SECONDS}"; shift 2 ;;
+  --step-limit) STEP_LIMIT="${2?--step-limit needs SECONDS}"; shift 2 ;;
   --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0"; exit 0 ;;
   *) echo "unknown argument ${1:-} (try --help)" >&2; exit 2 ;;
   esac
@@ -272,6 +291,10 @@ archive() {
     done
     printf '\n# 01 and 05 read; 02, 03 and 04 write, each with its own refusals and read-back.\n'
     printf '# 05 writes ONLY with --apply-trial.\n'
+    # A bare `124` in the rc column reads as "the step said 124", which is not what happened. The steps
+    # that ran out of time are named, in the archive, next to what the codes mean (the same rule the heat
+    # chain's INDEX.txt follows -- docs 131).
+    [ -n "${TIMED_OUT_STEPS:-}" ] && printf '\n# DID NOT FINISH: rc=124 is timeout(1), 137 its -k SIGKILL -- the host gave up at %ss.\n# Neither a failure of the step nor a success, and NOTHING here read the device after it started:%s\n' "$STEP_LIMIT" "$TIMED_OUT_STEPS"
   } > "$OUT/INDEX.txt"
   ( cd "$OUT" && sha256sum ./*.txt 2>/dev/null > SHA256SUMS )
 }
@@ -300,7 +323,24 @@ RB_RC=0
 # command, and an assignment is always 0 -- so a caller that read `$?` after this got 0 for every step.
 # The trial's step did exactly that, which meant the trial's own exit code (REFUTED vs REFUSED vs a
 # failed write) was never reported at all. Found by the harness driving FP_RC_TRIAL.
-run_bg() { "$@" & RB_PID=$!; wait "$RB_PID"; RB_RC=$?; RB_PID=""; return "$RB_RC"; }
+#
+# And every step is bounded in wall-clock time (see STEP_LIMIT above). The bound is applied HERE rather
+# than inside `bound() &` because the background pid has to be `timeout`'s own: the signal handler kills
+# that pid, and a wrapper function's pid would leave the timeout and the device call orphaned -- the
+# interrupt path would report "stopped" while the step kept running.
+HAVE_TIMEOUT=0
+command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=1
+run_bg() {
+  if [ "$HAVE_TIMEOUT" = 1 ]; then
+    timeout -k 5 "$STEP_LIMIT" "$@" &
+  else
+    # Loud, and into the STEP's own file (run_step redirects both streams): an unbounded step is the
+    # difference between "it failed" and "it could have hung forever and nobody would know".
+    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (the limit would have been %ss)\n' "$STEP_LIMIT" >&2
+    "$@" &
+  fi
+  RB_PID=$!; wait "$RB_PID"; RB_RC=$?; RB_PID=""; return "$RB_RC"
+}
 
 # --- the plan --------------------------------------------------------------------------------------
 wanted() { # is this step in the set this run will execute?
@@ -450,7 +490,23 @@ fi
 
 # One step = one archive entry + one note that is a DEVICE READING, not the step's exit code. It also
 # records the step in EXECUTION ORDER, which is checked against STEPS at the end -- see the note there.
-step_done() { STEP_NAMES+=("$1"); STEP_RC+=("$2"); STEP_NOTE+=("$3"); EXECUTED+=("$1"); }
+# ONE place decides what a step's rc means for the record, so the five steps cannot disagree about it --
+# and so the bound added above is explained in all five without five copies of the sentence. 124 is
+# timeout(1)'s own code and 137 is its -k SIGKILL: the step DID NOT FINISH, which is a different claim
+# about the device from "the step failed". It is counted apart from FAIL (see the totals below) because
+# a run that stopped one step short is not the same reading as a run whose step said no.
+N_TIMED_OUT=0; TIMED_OUT_STEPS=""
+step_done() { # name, rc, note
+  local rc="$2" nt="$3"
+  case "$rc" in
+  124|137)
+    N_TIMED_OUT=$((N_TIMED_OUT + 1)); TIMED_OUT_STEPS="$TIMED_OUT_STEPS $1"
+    nt="$nt -- DID NOT FINISH: the host gave up at ${STEP_LIMIT}s (timeout(1) rc=$rc). That is not a failure of the step and not a reading of the device: whatever it was doing may be half-done ON THE PHONE, and nothing here read the state after it."
+    say "   -> DID NOT FINISH: killed at ${STEP_LIMIT}s (rc=$rc, timeout(1)). This is NOT a failure of the"
+    say "      step and NOT a success. Its output so far is $1.txt; anything it was writing may be half-done." ;;
+  esac
+  STEP_NAMES+=("$1"); STEP_RC+=("$rc"); STEP_NOTE+=("$nt"); EXECUTED+=("$1")
+}
 declare -a EXECUTED=()
 run_step() { # name, human sentence, command...
   local name="$1" why="$2"; shift 2
@@ -682,10 +738,18 @@ say "  $OUT"
 say "  INDEX.txt, SHA256SUMS, and one file per step"
 say "  verify with:  ( cd $OUT && sha256sum -c SHA256SUMS )"
 say
-if [ "$FAIL" = 0 ]; then
+# The two numbers have to be two different facts, and they were not: every caller counts a non-zero rc as
+# a failure (it cannot know about the bound -- the classification lives in step_done, one place), so a
+# step that ran out of time would be counted TWICE: once as "failed" and once as "did not finish". It is
+# taken back out of FAIL here rather than in ten caller branches, and the harness pins the resulting line
+# so the two can never silently merge again.
+FAIL=$((FAIL - N_TIMED_OUT))
+if [ "$FAIL" = 0 ] && [ "$N_TIMED_OUT" = 0 ]; then
   say "one-boot runbook complete: $PASS step(s) ran, 0 failed"
 else
-  say "one-boot runbook stopped short: $PASS step(s) ran, $FAIL need your attention"
+  say "one-boot runbook did not complete: $PASS step(s) ran, $FAIL failed, $N_TIMED_OUT did not finish"
+  [ "$N_TIMED_OUT" != 0 ] && say "  the bound was ${STEP_LIMIT}s per step (--step-limit); a step that outlasted it is NOT a"
+  [ "$N_TIMED_OUT" != 0 ] && say "  failure of the step -- but the boot is spent, so read that step's own file and the archive"
 fi
 say
 say "What to do with it:"
@@ -697,4 +761,4 @@ say "    failed or the address proof did not license the keeper kill."
 say "  * 04: the verdict is a log count, not a feeling --"
 say "    journalctl -b -u biometryd | grep -c 'setActiveGroup failed'  should go to 0."
 say "  * 05: its verdict IS the answer to the third heat cause. REFUTED is a result."
-[ "$FAIL" = 0 ]
+[ "$FAIL" = 0 ] && [ "$N_TIMED_OUT" = 0 ]

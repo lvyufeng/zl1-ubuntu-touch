@@ -149,13 +149,22 @@ serial_on
 # and every scenario look like a refusal. `sh` is here because the stubs are shell, and `tee` because the
 # stand-ins record through it.
 MINBIN="$W/minbin"; mkdir -p "$MINBIN"
-for t in cat sed grep awk tr printf cut sort sha256sum md5sum ls date basename dirname mkdir rm find head tail wc tee sh env uniq; do
+# `timeout` is in this list because the subject BOUNDS every step with it: a sandbox without it would
+# silently exercise the other branch (the loud "THIS STEP IS NOT TIME-BOUNDED" note) in every scenario, so
+# the bound itself -- and any mutation of it -- would be invisible to this file. The second sandbox below
+# exists precisely so that branch is a scenario rather than an accident.
+for t in cat sed grep awk tr printf cut sort sha256sum md5sum ls date basename dirname mkdir rm find head tail wc tee sh env uniq timeout; do
   p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$MINBIN/$t"
 done
 # A REAL sleep, not a no-op: the interrupt scenario kills the run while a step is in flight, and a stub
 # that returned instantly would make that kill land after everything had already finished -- a scenario
 # that tests the absence of the thing it set up.
 printf '%s\n' '#!/bin/sh' "exec $(command -v sleep) \"\$@\"" > "$MINBIN/sleep"; chmod +x "$MINBIN/sleep"
+# The same sandbox WITHOUT timeout(1), for the branch that has to SAY it is unbounded: a host without
+# timeout(1) is not a refusal, but an unbounded step is a fact the reader of the archive must be told.
+MINBIN_NT="$W/minbin-notimeout"; rm -rf "$MINBIN_NT"; mkdir -p "$MINBIN_NT"
+for f in "$MINBIN"/*; do b=$(basename "$f"); [ "$b" = timeout ] && continue; ln -sf "$f" "$MINBIN_NT/$b"; done
+[ -e "$MINBIN_NT/timeout" ] && { echo "the no-timeout sandbox still has timeout(1)" >&2; exit 2; }
 
 # ssh: the device. It drops the connection options, maps the runbook's device-side absolute paths into
 # the fake root, and runs the rest FOR REAL -- so the two readings the runbook turns on are measurements
@@ -341,6 +350,9 @@ latest_archive() { ls -dt "$OUTROOT"/tmp-one-boot-* 2>/dev/null | head -1; }
 # `bash` here is 127 -- and 127 from every scenario reads exactly like "the subject refuses everything".
 BASH_BIN=$(command -v bash)
 run()  { : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?; }
+run_no_timeout() { # the same, on a host whose PATH has no timeout(1)
+  : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN_NT" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?
+}
 reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; }
 
 echo "zl1 one-boot runbook -- offline self-test"
@@ -565,6 +577,56 @@ want 'A is NOT met' "$OUT" "a failed panic-guard install leaves A unmet, read fr
 
 # ==================================================================================================
 echo
+echo "== 7b. a step that outlasts --step-limit: its own state, and the run goes ON =="
+# ==================================================================================================
+# Every step here is one or more ssh calls on a link the heat chain re-enumerates ON PURPOSE, and a hung
+# ssh does not fail -- it hangs. The boot that pays for it cost a physical 10-20 s power hold, so the
+# bound is the difference between "the boot is spent" and "the boot is spent and says where".
+#
+# AND THE RUN GOES ON. That is the deliberate difference from the heat chain (docs 131), whose steps are a
+# LICENCE CHAIN and stop it: the five steps here are independent readings, so a step that did not finish
+# must not cost the four that have nothing to do with it -- the same rule section 7 asserts for a step
+# that FAILS. What must not happen is that anybody reads it as one of those two things.
+reset
+FP_SLEEP_FP=5 run --yes --step-limit 2
+[ "$RC" = 1 ] && ok "a step that did not finish: exit 1 (the run did not complete)" || bad "it exited $RC"
+want 'DID NOT FINISH: killed at 2s (rc=124, timeout(1))' "$OUT" "the host-side reason is named, with the bound and the code"
+want 'This is NOT a failure of the' "$OUT" "and it is explicitly NOT filed as a failure of the step"
+want 'NOT a success' "$OUT" "nor as a success -- the device state after it is unread, and that is said"
+want 'CALLEE TRIAL' "$(order | sed -n '5p')" "and the LAST step still ran: a step that ran out of time does not cost the others"
+OD7=$(latest_archive)
+# The two ROWS are read with grep -E and not with `want`: this harness's `want` is a GLOB match (see its
+# definition), where an anchored pattern is the literal `^` and the check would pass for the wrong reason.
+# Written that way first, run, and caught here -- which is the whole reason the patterns are pinned.
+grep -qE '^04-fingerprint +124' "$OD7/INDEX.txt" 2>/dev/null \
+  && ok "the archive carries timeout(1)'s code, not a code the step chose" \
+  || bad "the INDEX does not record 124 for 04-fingerprint"
+grep -qE '^01-capture +0' "$OD7/INDEX.txt" 2>/dev/null \
+  && ok "the steps that DID run are still recorded as having run" \
+  || bad "the INDEX lost the rows of the steps that ran"
+want 'DID NOT FINISH' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "and one line explains what that code means, because a bare 124 reads as 'the step said 124'"
+want 'DID NOT FINISH: the host gave up at 2s' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "the row's own note says which bound was hit, so the next reader does not have to infer it"
+want 'Neither a failure of the step nor a success' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "with the same sentence the reader needs, in the record itself"
+want '1 did not finish' "$OUT" "and the totals count it apart from the failures"
+want 'one-boot runbook did not complete: 4 step(s) ran, 0 failed, 1 did not finish' "$OUT" \
+  "the exact line: four of the five ran, none FAILED, one did not finish -- the same step must not be counted as both"
+( cd "$OD7" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "and the archive still verifies" || bad "the archive fails its own sha256sum -c"
+
+echo
+echo "   -- on a host with no timeout(1), an unbounded step SAYS SO:"
+# Not a refusal -- the run is still worth doing -- but "the step could have hung forever and nobody would
+# know" is exactly the fact the archive has to carry, and a silent fallback would be the "instrument that
+# cannot report" defect in the one place it costs a boot. The note goes into the STEP's own file, because
+# that is where somebody reading about this step will be.
+reset
+run_no_timeout --yes
+[ "$RC" = 0 ] && ok "a host without timeout(1) still runs the whole sequence" || bad "it exited $RC"
+OD7b=$(latest_archive)
+want 'THIS STEP IS NOT TIME-BOUNDED' "$(cat "$OD7b/02-panic-guard.txt" 2>/dev/null)" "and the step's own file says the bound was not applied"
+want 'the limit would have been 900s' "$(cat "$OD7b/02-panic-guard.txt" 2>/dev/null)" "naming the bound that would have applied, not merely being silent"
+
+# ==================================================================================================
+echo
 echo "== 8. the archive: an index of what ran, and checksums that verify =="
 # ==================================================================================================
 reset; run --yes >/dev/null
@@ -745,6 +807,21 @@ if mutate nooutdir 's# --outdir "\$OUT/03-heat-chain"##'; then
     || bad "the reading vanished rather than landing outside the archive -- the two-sided assertion is broken"
   [ "$MRC" = 0 ] && notwant 'CALLEE HEAT args=--yes --outdir' "$(order)" \
     "and the chain was invoked without an outdir, which is the change itself"
+fi
+
+# The other one this section is for: the bound that makes a hung step say so instead of spending a boot in
+# silence. The scenario gives ONE step a real 5 s and a 2 s bound; without the bound the step simply
+# succeeds late and the archive says 0, which is what a hang would also say.
+if mutate notimeout 's#^    timeout -k 5 "\$STEP_LIMIT" "\$@" &$#    "$@" \&#'; then
+  FP_SLEEP_FP=5 mutrun "$MUTDIR/notimeout.sh" --yes --step-limit 2
+  FP_SLEEP_FP=""
+  [ "$MRC" = 0 ] && ok "mutation 'no step bound': the run completes -- a step that outlasted its bound is a pass" \
+                 || bad "the 'no step bound' mutant exited $MRC (it did not land)"
+  MOTD7=$(latest_archive)
+  grep -qE '^04-fingerprint +0' "$MOTD7/INDEX.txt" 2>/dev/null \
+    && ok "and the index says 0 for it, which is exactly what a hang would have said (the check is live)" \
+    || bad "the mutant did not record 04-fingerprint as 0 -- the scenario is not measuring the bound"
+  notwant 'DID NOT FINISH' "$MOUT" "with nothing anywhere telling the operator it took longer than it was allowed to"
 fi
 
 echo

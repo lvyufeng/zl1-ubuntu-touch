@@ -192,9 +192,9 @@ done
 case "\$*" in
 true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;;
 *random/boot_id*) printf 'deadbeef-1111-2222-3333-444444444444\n'; exit 0 ;;
-*netwatch*) cat "$W/state.txt"; exit 0 ;;
+*netwatch*) sl="\${FP_SLEEP_STATE:-}"; [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl" >/dev/null 2>&1; cat "$W/state.txt"; exit 0 ;;
 *zl1-address-owner-proof.sh*) cat "$W/proof.txt"; exit "\${FP_RC_PROOF:-0}" ;;
-*zl1-thermal.sh*) cat "$AB_FIX"; exit "\${FP_RC_AB:-0}" ;;
+*zl1-thermal.sh*) sl="\${FP_SLEEP_AB:-}"; [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl" >/dev/null 2>&1; cat "$AB_FIX"; exit "\${FP_RC_AB:-0}" ;;
 esac
 exit 0
 EOF
@@ -213,7 +213,7 @@ for a in "\$@"; do
 done
 set -- \$args
 cp "\$1" "$FR/tmp/\$(basename "\$2")" || exit 1
-exit 0
+exit "\${FP_RC_SCP:-0}"
 EOF
 chmod +x "$STUB"/*
 
@@ -305,6 +305,7 @@ run() { # outdir, args...
         FP_RC_NW="$FP_RC_NW" FP_RC_RETIRE="$FP_RC_RETIRE" FP_RC_CPUFREQ="$FP_RC_CPUFREQ" \
         ZL1_MISC_OUT="$MISC_OUT" FP_REAL_SLEEP="$FP_REAL_SLEEP" \
         FP_RC_AB="$FP_RC_AB" FP_SLEEP_RETIRE="$FP_SLEEP_RETIRE" FP_SLEEP_CPUFREQ="$FP_SLEEP_CPUFREQ" \
+        FP_SLEEP_AB="$FP_SLEEP_AB" FP_SLEEP_STATE="$FP_SLEEP_STATE" FP_RC_SCP="$FP_RC_SCP" \
         timeout 120 bash "$CHAIN" --outdir "$o" "$@" 2>&1); RC=$?
 }
 run_bg_start() { # outdir, args... -- for the interrupt scenario
@@ -326,6 +327,7 @@ scen() { # name -- a fresh archive dir, and the default device state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
   FP_STATE=present; FP_SSH=yes; FP_RC_PROOF=0; MISC_OUT="$MISC"; FP_REAL_SLEEP=""
   FP_RC_AB=0; FP_SLEEP_RETIRE=0; FP_SLEEP_CPUFREQ=0
+  FP_SLEEP_AB=""; FP_SLEEP_STATE=""; FP_RC_SCP=0
   FP_RC_NW=""; FP_RC_RETIRE=""; FP_RC_CPUFREQ=""
   proof_obtained
 }
@@ -548,6 +550,45 @@ want '^06b-heat-ab *7' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index carries th
 want 'the instrument ran and returned 7' "$OUT" "and the operator is told"
 
 echo
+echo "   -- the measurement the HOST gave up on: its own state, and NOT a failed instrument:"
+# The A/B is a 180-second ssh by default, and every step of this chain runs on a link the chain itself
+# re-enumerates -- so the state that matters most is the one where it never comes back. It must not be
+# filed as `failed`: that reads "the instrument ran and said no", a claim about the phone nobody has
+# evidence for. (FP_REAL_SLEEP makes the fixture's sleeps real -- without it the stubbed `sleep` returns
+# instantly and nothing can outlast a bound.)
+scen ab-timeout
+FP_REAL_SLEEP=1
+FP_SLEEP_AB=30
+run "$S" --yes --settle 0 --ab-limit 2
+FP_SLEEP_AB=""; FP_REAL_SLEEP=""
+[ "$RC" = 0 ] && ok "a measurement the host gave up on does not abort the chain" || bad "it exited $RC"
+want '^06b-heat-ab *124' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the index carries timeout(1)'s own code"
+want 'DID NOT FINISH' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and one line explains what that code means, because a bare 124 reads as 'the instrument said 124'"
+want 'NOT MEASURED, and NOT a refusal by the instrument' "$OUT" "the operator is told the HOST gave up, not that the instrument refused"
+want 'the host gave up on it after 2s' "$OUT" "and the bound it gave up at is printed"
+notwant 'the instrument ran and returned 124' "$OUT" "so it is NOT filed as a failed measurement (a claim about the phone nobody has evidence for)"
+
+echo
+echo "   -- and the instrument could not be put on the device: which rc, in the archive:"
+scen ab-scprc
+FP_RC_SCP=7
+run "$S" --yes
+FP_RC_SCP=0
+want '^06b-heat-ab *unusable' "$(cat "$S/INDEX.txt" 2>/dev/null)" "a failed transfer is recorded as 'unusable', not as a measurement"
+want 'scp of the instrument FAILED \(rc=7;' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" "and the transport's own rc is in the file, so 'scp said 7' and 'scp was killed' are not the same reading"
+
+echo
+echo "   -- the measurement's bound is COMPUTED, so widening the measurement widens it:"
+# A fixed bound would truncate a legitimate long measurement the moment somebody widened --ab-window or
+# --ab-hold, and a bound that cannot be satisfied is the defect this tree records in the camera
+# instrument (docs 104: a gate no run could pass). So what is asserted is the ARITHMETIC, printed.
+scen ab-bound
+run "$S" --yes --ab-window 5 --ab-hold 7
+[ "$RC" = 0 ] && ok "a widened measurement still runs" || bad "it exited $RC"
+want 'bounded at 77s \(2 x 5 \+ 7 \+ 60\)' "$OUT" "window 5 and hold 7 give a 77 s bound, printed as arithmetic"
+notwant 'bounded at 120s' "$OUT" "not a fixed number that a wider measurement would then silently outlast"
+
+echo
 echo "   -- the work outlasted the hold: the deltas are declared CONTAMINATED, not published:"
 # An instant stand-in cannot make the work outlast the hold, so this scenario shortens BOTH knobs and
 # makes one step really take time. Without the alignment check the chain would print a temperature
@@ -630,6 +671,45 @@ run "$S" --yes
 notwant 'install-cpufreq-governor' "$(order)" "the governor was not installed"
 want '^04-proof *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "but the proof DID run, and the archive shows it"
 want 'keeper: gone' "$OUT" "and the read-back after the failure is taken (the fixture says the keeper is gone)"
+
+echo
+echo "   -- a step that never comes back is its OWN state, not a failure of the step:"
+# Every step here is an ssh on a link this chain re-enumerates, and a hung ssh does not fail, it hangs --
+# and a boot bought with a physical power hold is what it spends, silently. So the bound, the state and
+# the archive are the whole point: "did not finish" is a different claim about the device from "failed",
+# and the next reader acts differently on it. The MUST-install half is what makes stopping mandatory here.
+scen step-timeout
+FP_REAL_SLEEP=1
+FP_SLEEP_RETIRE=5
+run "$S" --yes --settle 0 --step-limit 2
+FP_SLEEP_RETIRE=0; FP_REAL_SLEEP=""
+[ "$RC" = 1 ] && ok "a step that ran out of time: exit 1 (a stopped chain, not a crash)" || bad "it exited $RC"
+want 'DID NOT FINISH: killed at 2s \(rc=124, timeout\(1\)\)' "$OUT" "the host-side reason is named, with the bound and the code"
+want 'NOT a failure of the step' "$OUT" "and it is explicitly NOT filed as a failure of the step"
+notwant 'FAILED rc=124' "$OUT" "the failure branch did not claim it, because that is a different claim about the phone"
+want 'State of the device now:' "$OUT" "the device is read back anyway -- that is what the next reader needs"
+want 'may be half-done ON THE DEVICE' "$OUT" "and the operator is warned that the step could have been mid-write"
+want '^05-retire-keeper *124' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the archive carries timeout(1)'s code"
+want 'DID NOT FINISH' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the line above the table explains that 124 is not the step saying 124"
+notwant 'install-cpufreq-governor' "$(order)" "nothing after the step that did not finish was run"
+
+echo
+echo "   -- the read-back is bounded too, and it says UNREADABLE rather than nothing:"
+# A bound on the steps is defeated by an unbounded read-back after them: read_state IS an ssh, and it is
+# the LAST thing every archiving path does. Hung there, the archive -- the thing the boot was spent for --
+# would never be written. And printing nothing would be worse than useless: an empty value in INDEX.txt
+# reads as "the device was asked and said nothing", which a host-side timeout is no evidence for.
+scen state-timeout
+FP_REAL_SLEEP=1
+FP_RC_RETIRE=1
+FP_SLEEP_STATE=5
+run "$S" --yes --settle 0 --state-limit 2
+FP_SLEEP_STATE=""; FP_REAL_SLEEP=""; FP_RC_RETIRE=""
+[ "$RC" = 1 ] && ok "the failed step still stops the chain" || bad "it exited $RC"
+[ -f "$S/INDEX.txt" ] && ok "and the archive is still written -- the read-back did not swallow it" || bad "no INDEX: the read-back swallowed the archive"
+want 'UNREADABLE: the read-back did not answer within 2s' "$(cat "$S/INDEX.txt" 2>/dev/null)" "what could not be read is stated, with the bound"
+want "the ssh was killed and the device was NOT read" "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the silence is explicitly not reported as 'the device said nothing'"
+notwant '^netwatch: file=' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and no device state is invented"
 
 # ==================================================================================================
 echo
@@ -818,6 +898,35 @@ s#.*#    : #}'; then
   notwant 'Read it as a READING' "$OUT" \
     "mutation 'no caveat': the deltas are printed with nothing saying what they are not (the check is live)"
   want 'tsens_tz_sensor8' "$OUT" "and the numbers ARE printed -- the caveat is the only thing missing"
+fi
+
+# (11) the step's wall-clock bound removed: a hung ssh would spend the boot silently
+# What this mutation must NOT do is change the outcome of a run whose steps are fine -- so the scenario
+# gives one step a real 5 s, which the bound cuts at 2. Without the bound the step simply SUCCEEDS late,
+# and that is the defect: from the archive alone, "took five seconds" and "hung for the rest of the boot"
+# are the same reading until somebody widens the bound.
+if mutate stepbound 's#^  bound "\$STEP_LIMIT" "\$@"#  "$@"#'; then
+  scen mut-stepbound
+  : > "$ACT"
+  OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_RC_PROOF=0 ZL1_MISC_OUT="$MISC_OUT" \
+        FP_REAL_SLEEP=1 FP_SLEEP_RETIRE=5 FP_SLEEP_AB="" FP_SLEEP_STATE="" FP_RC_SCP=0 \
+        timeout 120 bash "$CHAIN_DIR/stepbound.sh" --outdir "$S" --yes --settle 0 --step-limit 2 2>&1); RC=$?
+  [ "$RC" = 0 ] && ok "mutation 'no step bound': the chain finishes -- a step that outlasted its bound is recorded as a success" \
+                || bad "the 'no step bound' mutant exited $RC (it did not land)"
+  want '^05-retire-keeper *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the index says 0, which is what a hang would also look like (the check is live)"
+  notwant 'DID NOT FINISH' "$OUT" "with nothing anywhere telling the operator it took longer than it was allowed to"
+fi
+# (12) the read-back's bound removed: the archive's last step can outlast the boot
+if mutate statebound 's#bound "\$STATE_LIMIT" ##'; then
+  scen mut-statebound
+  : > "$ACT"
+  OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_RC_PROOF=0 ZL1_MISC_OUT="$MISC_OUT" \
+        FP_REAL_SLEEP=1 FP_RC_RETIRE=1 FP_SLEEP_RETIRE=0 FP_SLEEP_STATE=5 FP_SLEEP_AB="" FP_RC_SCP=0 \
+        timeout 120 bash "$CHAIN_DIR/statebound.sh" --outdir "$S" --yes --settle 0 --state-limit 2 2>&1); RC=$?
+  FP_SLEEP_STATE=""; FP_REAL_SLEEP=""; FP_RC_RETIRE=""
+  [ "$RC" = 1 ] && ok "mutation 'no read-back bound': the chain still stops" || bad "the 'no read-back bound' mutant exited $RC"
+  notwant 'UNREADABLE' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the read-back that outlasted its bound is NOT declared unreadable (the check is live)"
+  want '^netwatch: file=' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the archive just waits it out and takes the reading -- which is right here and wrong on a stalled link"
 fi
 
 # ==================================================================================================

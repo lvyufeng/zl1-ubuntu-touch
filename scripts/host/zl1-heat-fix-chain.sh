@@ -51,6 +51,15 @@
 #   --ab-hold SECS   how long the measurement's hold lasts (default 120). The chain changes two things
 #                    inside that hold and then reads the before/after differences -- see "the A/B".
 #   --ab-window SECS each sampling window (default 30). The instrument takes two of them.
+#   --step-limit SECS  how long ONE step may run before the host gives up on it (default 300). A step
+#                    that does not come back is not a failure of the step and not a success: it is a
+#                    state nobody has read, and the chain says so and archives before it exits.
+#   --ab-limit SECS  bound on the measurement itself. Default: computed from --ab-window and --ab-hold
+#                    (two windows + the hold + 60 s), so widening the measurement widens its bound.
+#   --state-limit SECS  bound on the READ-BACK, the ssh every archiving path ends with (default 60).
+#                    It is bounded because a bound on the steps is defeated by an unbounded read-back
+#                    after them, and it says "UNREADABLE" rather than printing nothing: an empty value
+#                    in INDEX.txt would read as "the device was asked and said nothing".
 #   --no-ab          do not measure at all. Printed, never silent: an unmeasured run says so.
 #
 # Exit codes: 0 the chain ran to the end; 1 the chain stopped short -- a step failed, or the proof did
@@ -112,6 +121,15 @@ OUT=""
 NO_AB=0
 AB_HOLD=${ZL1_AB_HOLD:-120}
 AB_WINDOW=${ZL1_AB_WINDOW:-30}
+# Every step here runs over ONE ssh, on a link that this chain itself re-enumerates, and a boot bought
+# with a finger is the resource that a hang spends. So each step has a wall-clock bound (see `bound()`).
+STEP_LIMIT=${ZL1_STEP_LIMIT:-300}
+STEP_LIMIT_GIVEN=$([ -n "${ZL1_STEP_LIMIT:-}" ] && echo 1 || echo 0)
+AB_LIMIT=${ZL1_AB_LIMIT:-}
+# The read-back is an ssh too, and it is the LAST thing every archiving path does. A bound on the steps
+# is defeated by an unbounded read-back after them, so this one is short (it is four file reads and a
+# `systemctl is-active`) and it prints what it could not read rather than nothing.
+STATE_LIMIT=${ZL1_STATE_LIMIT:-60}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -121,6 +139,9 @@ while [ $# -gt 0 ]; do
   --settle) SETTLE="${2?--settle needs SECONDS}"; shift 2 ;;
   --ab-hold) AB_HOLD="${2?--ab-hold needs SECONDS}"; shift 2 ;;
   --ab-window) AB_WINDOW="${2?--ab-window needs SECONDS}"; shift 2 ;;
+  --step-limit) STEP_LIMIT="${2?--step-limit needs SECONDS}"; STEP_LIMIT_GIVEN=1; shift 2 ;;
+  --ab-limit) AB_LIMIT="${2?--ab-limit needs SECONDS}"; shift 2 ;;
+  --state-limit) STATE_LIMIT="${2?--state-limit needs SECONDS}"; shift 2 ;;
   --no-ab) NO_AB=1; shift ;;
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
@@ -278,6 +299,19 @@ archive() {
       printf '%-24s %-4s %s\n' "${STEP_NAMES[$i]}" "${STEP_RC[$i]}" "${STEP_FILES[$i]}"
       i=$((i + 1))
     done
+    # `124` in the rc column is timeout(1)'s own code and `137` is its -k SIGKILL, and a reader who
+    # does not know that reads "124" as "the step said 124". So the ones that ran out of time are
+    # named here, because "did not finish" is a different claim about the device from "failed" and
+    # the next reader acts differently on it (the same reason the A/B has a state of its own).
+    nto=""
+    i=0
+    while [ "$i" -lt "${#STEP_RC[@]}" ]; do
+      case "${STEP_RC[$i]}" in
+      124|137) nto="$nto ${STEP_NAMES[$i]}" ;;
+      esac
+      i=$((i + 1))
+    done
+    [ -n "$nto" ] && printf '\n# DID NOT FINISH: rc=124 is timeout(1), 137 its -k SIGKILL -- neither a failure of\n# the step nor a success, and the device was NOT read after it started:%s\n' "$nto"
     printf '\n# what the device said when the chain stopped\n'
     if [ -n "${FINAL_STATE:-}" ]; then printf '%s\n' "$FINAL_STATE"; else printf 'no read-back was taken\n'; fi
   } > "$OUT/INDEX.txt" 2>/dev/null
@@ -301,7 +335,18 @@ say
 # and "step 5 failed and the addresses are still there, so the phone is reachable" -- which is the only
 # question anyone asks after a failure in this chain.
 read_state() {
-  FINAL_STATE=$("${SSH[@]}" '
+  # AND THIS ONE IS BOUNDED TOO, which is not a detail: every path that archives calls read_state
+  # immediately before it -- the failure branch, the DID-NOT-FINISH branch, the keeper-stays branch and
+  # the end of the chain -- and read_state IS an ssh. A link that just stalled (the very situation in
+  # which somebody wants the archive) would hang HERE, after the step that was already given up on, and
+  # the archive would never be written: the bound on the step defeated by the read-back that follows it.
+  #
+  # And when it does not answer it has to SAY SO. FINAL_STATE is written verbatim into INDEX.txt, where
+  # an empty value reads as "the device was asked and said nothing" -- a claim about the phone that a
+  # host-side timeout is not evidence for. So the failure is spelled out, in the one place a reader
+  # looks.
+  local raw rc
+  raw=$(bound "$STATE_LIMIT" "${SSH[@]}" '
     f=/etc/systemd/system/zl1-netwatch.sh
     printf "netwatch: file=%s fn=%s unit=%s\n" \
       "$([ -x "$f" ] && echo present || echo MISSING)" \
@@ -322,7 +367,18 @@ read_state() {
       g="$g$(cat "$c" 2>/dev/null) "
     done
     printf "governors: %s\n" "${g% }"
-  ' 2>/dev/null | tr -d '\r')
+  ' 2>/dev/null)
+  rc=$?
+  # `tr` is applied AFTER the status is read: piping straight into it would hide timeout(1)'s 124 behind
+  # the pipeline's last command (this script runs under `set -o pipefail`, which is what makes that a
+  # silent 0 rather than a silent 0 nobody noticed).
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    FINAL_STATE="UNREADABLE: the read-back did not answer within ${STATE_LIMIT}s (timeout(1) rc=$rc, so
+the ssh was killed and the device was NOT read). This is not 'the device said nothing', and it is not a
+statement about the phone: the fixes above may be installed. --state-limit raises the bound."
+  else
+    FINAL_STATE=$(printf '%s\n' "$raw" | tr -d '\r')
+  fi
   printf '%s\n' "$FINAL_STATE" | sed 's/^/     | /'
 }
 
@@ -337,7 +393,7 @@ read_state() {
 # The alignment check uses HOST clocks on both sides (window A begins when ssh is launched, the work
 # ends when the last fix step returns), because the device's own clock is wrong and its timestamps are
 # not orderable (docs 87).
-AB_STATE=none        # none | started | skipped | unusable | failed | empty | done
+AB_STATE=none        # none | started | skipped | unusable | failed | empty | timeout | done
 AB_PID=""; AB_T0=0
 AB_WORK_T=0; AB_ALIGNED=""
 AB_RC=""
@@ -356,16 +412,31 @@ ab_start() {
     printf 'The measuring instrument is missing ON THIS HOST: %s\n\nSo no A/B was taken and the effect of these two fixes is UNMEASURED on this boot.\n' "$THERMAL" >> "$AB_OUT"
     return 0
   fi
-  if ! "${SCP[@]}" "$THERMAL" "$HOST:/tmp/zl1-thermal.sh" > "$AB_OUT" 2>&1; then
+  # The transfer is an ssh-family call to the same link, so it gets the same bound. `unusable` is the
+  # right state for a transport that never completed -- the instrument is not on the device, so nothing
+  # was measured -- but the rc is printed, because "scp said 1" and "scp was killed at the bound" are
+  # different readings of the link and the archive should carry which one happened.
+  local scprc
+  bound "$STEP_LIMIT" "${SCP[@]}" "$THERMAL" "$HOST:/tmp/zl1-thermal.sh" > "$AB_OUT" 2>&1
+  scprc=$?
+  if [ "$scprc" != 0 ]; then
     AB_STATE=unusable; AB_RC=unusable
-    printf 'scp of the instrument FAILED (the transport is above), so no A/B was taken and the effect\nof these two fixes is UNMEASURED on this boot.\n' >> "$AB_OUT"
+    printf 'scp of the instrument FAILED (rc=%s; the transport is above), so no A/B was taken and the\neffect of these two fixes is UNMEASURED on this boot.\n' "$scprc" >> "$AB_OUT"
     return 0
   fi
   # The device-side process is what holds the windows; the host only holds the ssh open.
-  "${SSH[@]}" "sh /tmp/zl1-thermal.sh --ab --seconds $AB_WINDOW --hold $AB_HOLD" >> "$AB_OUT" 2>&1 &
+  #
+  # AND IT IS BOUNDED, like every step, but the bound is COMPUTED rather than fixed: the measurement
+  # lasts two windows plus the hold by construction, so a fixed number would truncate a legitimate long
+  # measurement the moment somebody widened --ab-window or --ab-hold, and a bound that cannot be
+  # satisfied is the defect this tree records in the camera instrument (docs 104: a gate that no run
+  # could pass). The 60 s of slack is for the scp, the handshake and the device's own start-up.
+  [ -n "$AB_LIMIT" ] || AB_LIMIT=$(( AB_WINDOW * 2 + AB_HOLD + 60 ))
+  bound "$AB_LIMIT" "${SSH[@]}" "sh /tmp/zl1-thermal.sh --ab --seconds $AB_WINDOW --hold $AB_HOLD" >> "$AB_OUT" 2>&1 &
   AB_PID=$!
   AB_STATE=started; AB_RC=0
   note "A/B started: window A ${AB_WINDOW}s, then a ${AB_HOLD}s hold (the two fixes run inside it), then window B"
+  note "  bounded at ${AB_LIMIT}s (2 x ${AB_WINDOW} + ${AB_HOLD} + 60); --ab-limit overrides"
 }
 ab_finish() {
   [ "$AB_STATE" = none ] && return 0
@@ -383,7 +454,12 @@ ab_finish() {
   # nothing is the failure this whole tree keeps recording, and here it would be worst of all: a chain
   # that reports a measurement it did not get. So the diff section has to be IN the output, and its
   # absence is a state of its own.
-  if [ "$AB_RC" != 0 ]; then
+  # A measurement the host gave up on is not a failed measurement: 124 and 137 are timeout(1), and they
+  # mean the instrument never came back. Filed as `failed` it would read as "the instrument ran and said
+  # no", which is a claim about the phone that nobody has evidence for.
+  if [ "$AB_RC" = 124 ] || [ "$AB_RC" = 137 ]; then
+    AB_STATE=timeout
+  elif [ "$AB_RC" != 0 ]; then
     AB_STATE=failed
   elif ! grep -q '^== B minus A per thermal zone' "$AB_OUT" 2>/dev/null; then
     AB_STATE=empty; AB_RC=empty
@@ -413,6 +489,12 @@ ab_finish() {
 # What the A/B can be read for, printed with it and not left to the reader to infer.
 ab_report() {
   case "$AB_STATE" in
+  timeout)
+    say "   NOT MEASURED, and NOT a refusal by the instrument: the host gave up on it after ${AB_LIMIT}s"
+    say "   (timeout(1) rc=$AB_RC). The device-side process may still be sampling, and the link may be"
+    say "   stalled -- on this device the repair for that is re-enumerating the gadget from the host, not"
+    say "   a reboot. The two fixes are installed as far as their own read-backs go; their EFFECT on this"
+    say "   boot is UNMEASURED. --ab-limit raises the bound." ;;
   failed)
     say "   NOT MEASURED: the instrument ran and returned $AB_RC -- the effect is UNMEASURED on this boot."
     say "   Its output, such as it is, is 06b-heat-ab.txt." ;;
@@ -446,15 +528,58 @@ ab_report() {
 # readings, they are a licence chain -- running step 5 after a failed step 4 is the exact thing the
 # whole design forbids. So the runner stops, reads the device back, archives, and exits 1.
 FAILED=0
+
+# Every step in this chain is an ssh (or scp) to a device whose link THIS CHAIN re-enumerates on purpose
+# (step 2's activate stage, docs 115 section 4), and a hung ssh does not fail -- it hangs, indefinitely.
+# On an ordinary host that is an annoyance; here the resource it spends is a boot that cost a physical
+# 10-20 s power hold to get, and it spends it **silently**: no archive, no verdict, nothing to read until
+# a human notices. So every step gets a wall-clock bound, and a step that hits it is reported as its OWN
+# state -- "it did not finish" is neither a failure of the step nor a success, and the device is in a
+# state nobody has read (the family's rule: a state must exist for the instrument that could not report).
+#
+# The bound is HOST-side on purpose, and the device-side `timeout` the proof step already carries is a
+# different thing: that one bounds a program ON the device, this one bounds the SSH SESSION. A stalled
+# RNDIS link (docs: re-enumerating the gadget from the host is the repair) leaves the local ssh blocked in
+# read() with the device-side process still alive, which is exactly the shape nothing else here catches.
+bound() { # SECS, command...
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 5 "$secs" "$@"
+  else
+    # Not silent: an unbounded step is a fact the reader of the archive has to know, because it is the
+    # difference between "the step failed" and "the step could have hung forever and nobody would know".
+    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (limit was %ss)\n' "$secs" >&2
+    "$@"
+  fi
+}
+TIMED_OUT=0
 step() { # name, description, command...
   local name="$1" desc="$2"; shift 2
   local out="$OUT/$name.txt"
   say "-- $desc"
   STEP_NAMES+=("$name")
-  "$@" > "$out" 2>&1
+  bound "$STEP_LIMIT" "$@" > "$out" 2>&1
   local rc=$?
   STEP_RC+=("$rc")
   STEP_FILES+=("$(basename "$out")")
+  # 124 is timeout(1)'s own code and 137 is its -k SIGKILL, and both mean the same thing here: the STEP
+  # DID NOT FINISH. It is deliberately NOT folded into the failure branch below (which says the step
+  # failed), because those are different claims about the device and the next reader acts differently.
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    TIMED_OUT=1
+    note "DID NOT FINISH: killed at ${STEP_LIMIT}s (rc=$rc, timeout(1)) -- this is NOT a failure of the step"
+    note "and NOT a success: nothing here has read the device since it started. Output so far:"
+    grep -av '^[[:space:]]*$' "$out" 2>/dev/null | tail -4 | sed 's/^/        | /'
+    say ""
+    say "  THE CHAIN STOPPED HERE, on a step that ran out of time rather than one that failed. Whatever"
+    say "  $name was doing may be half-done ON THE DEVICE: read its output above, read the state below,"
+    say "  and do not run the next step by hand until you have. --step-limit raises the bound."
+    say "  State of the device now:"
+    read_state
+    archive
+    say "  archive: $OUT"
+    exit 1
+  fi
   if [ "$rc" = 0 ]; then
     note "ok   -> $(basename "$out")"
   else
