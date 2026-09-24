@@ -1,0 +1,44 @@
+Warning: Permanently added '192.168.2.15' (ED25519) to the list of known hosts.
+== the keeper process(es) and who started them
+  pid=817 ppid=1 ppid_comm=systemd
+    ppid_cmd=/sbin/init 
+    cgroup=
+    cpu_ticks=539 (HZ=100)
+
+== the keeper lock (who owns the loop)
+  pid=817
+  ppid=1
+  start_uptime=4.19
+  ppid_comm=zl1-debug-init
+  ppid_cmdline=/bin/sh /tmp/zl1-debug-init 
+  pid1_comm=zl1-debug-init
+  pid1_cmdline=/bin/sh /tmp/zl1-debug-init 
+
+== the unit (systemd's instance is expected to be dead: the ramdisk won the lock)
+  MainPID=0
+  Result=success
+  NRestarts=0
+  ExecMainStartTimestamp=Tue 2026-03-24 09:45:56 EDT
+  ActiveState=inactive
+  SubState=dead
+  is-enabled: enabled
+
+== the two files the boot hook rewrites every boot
+  -rw-r--r--. 1 root root   348 Feb 11 18:43 /etc/systemd/system/zl1-debug-net.service
+  -rwxr-xr-x  1 root root 13262 Feb 11 18:43 /usr/local/sbin/zl1-debug-net.sh
+
+== the addresses (the applier's gate: it refuses to kill without one of these)
+  rndis0: 192.168.2.15/24 10.15.19.82/24 
+  192.168.2.15/24: present
+  10.15.19.82/24: present
+
+== the REPLACEMENT (the gate that can fail: is anything here able to do the keeper job?)
+  /etc/systemd/system/zl1-netwatch.sh: present, 755 27731 bytes
+  ensure_addrs(): MISSING -- this build cannot re-assert an address (the gate would refuse)
+  zl1-netwatch.service: active
+
+== our retirement unit
+  not installed (/etc/systemd/system/zl1-retire-debug-keeper.service absent)
+
+== what the boot-address check last said (the gate for installing this)
+  (nothing installed yet: run scripts/device/zl1-boot-address-check.sh first and require exit 0)

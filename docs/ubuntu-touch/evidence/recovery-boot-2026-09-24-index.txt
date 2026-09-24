@@ -1,0 +1,16 @@
+# zl1 post-recovery capture
+boot_id: 17066df6-ee08-46a8-90f2-2fd97578ccce
+device: root@192.168.2.15 (serial 33e80afe)
+captured: 2026-09-24T01:39:06Z
+with_capture: 0   skip_probes: 0   no_orientation: 0   step_limit: 240s
+INTERRUPTED: yes -- the steps below are all that ran
+
+# step                 rc   file
+01-edl-postmortem      0   01-edl-postmortem.txt
+02-boot-address        1   02-boot-address.txt
+03-keeper-status       0   03-keeper-status.txt
+04-health-check        0   04-health-check.txt
+05-gps-probe           0   05-gps-probe.txt
+06-fingerprint         ?   06-fingerprint.txt (partial: the interrupt landed here)
+
+# every step is read-only except 08-no-edl-capture, which only runs with --with-capture

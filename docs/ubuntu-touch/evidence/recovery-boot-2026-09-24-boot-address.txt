@@ -1,0 +1,59 @@
+zl1 boot-address check :: uptime 95.70 s
+== device: Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+== interface rndis0: 192.168.2.15/24 10.15.19.82/24 
+   192.168.2.15/24: present
+   10.15.19.82/24: present
+
+== the netwatch service (the thing that is supposed to own this now)
+   running, pid 32953 (started 62 s ago), unit: active
+   the INSTALLED build has no ensure_addrs(): it cannot configure the addresses.
+   Re-install with scripts/install-netwatch-service.sh --yes.
+
+== netwatch log: /userdata/zl1-netwatch.log
+   boots in this log: 23   (showing the newest)
+
+   the address line, if there is one:
+   (none -- the netwatch did not configure the addresses on this boot)
+
+   stalls and heals on this boot:
+   (none)
+
+== the keeper (stage 1 expects it to still be running; that is the safety net)
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/65106/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/66506/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68021/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68152/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68271/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68321/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68322/cmdline: No such file
+/tmp/zl1-boot-address-check.sh: 230: cannot open /proc/68323/cmdline: No such file
+   pid 817: state S -- still running its 1 Hz loop
+
+== verdict
+   The addresses are present but the netwatch never logged configuring them, and no heal
+   fired -- so the keeper is what configured them (it is still running, which is what
+   stage 1 expects). This boot says nothing about the netwatch path.
+
+   AND ON A KEEPER-ALIVE BOOT IT GENERALLY CANNOT SAY ANYTHING. The keeper re-adds both
+   addresses every second (its loop calls configure_iface on rndis0), and ensure_addrs()
+   logs 'ADDRS:' ONLY when something was missing -- so the netwatch gets a line only if
+   one of its 2 s samples lands in the gap between an address going missing and the
+   keeper's next 1 Hz tick. That gap is somewhere between tens of milliseconds and one
+   second, and its length has not been measured. So this verdict is a race outcome, not a
+   failed attempt: re-running the boot until it reads 'netwatch-configured' is re-rolling
+   a coin, and each roll is a device boot.
+
+   That race closes the moment the keeper is gone -- which is the case actually being
+   asked about, and the reason it does not bear on the answer. So measure the thing where
+   it is deterministic instead:
+     scripts/device/zl1-address-owner-proof.sh --yes
+   It stops the keeper, takes ONE address away, and requires the netwatch to notice and
+   put it back; then it resumes the keeper, and restores the address itself if the
+   netwatch did not.
+
+   What this does NOT prove: it does not say the address was applied *early enough* to matter
+   (compare ?s against how long the host took to reach the device), it does
+   not prove the host side resolves the pair (the host has its own static routes -- test with
+   a ping from the host), and one boot is one boot: the 2026-09-17 stall work needed a rate,
+   not a sample. Retire the keeper on a boot that reads 'netwatch-configured', and keep the
+   reinstall command to hand in case the next boot disagrees.

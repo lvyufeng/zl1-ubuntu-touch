@@ -42,9 +42,39 @@
 #   inode and finishes the old build, while the new file appears whole. It is NOT restarted -- the new
 #   build takes effect at the next boot, which is the boot that matters.
 #
+#   --ssh --activate MAKES THE DEPLOYED BUILD THE RUNNING ONE, ON THIS BOOT, AND PROVES IT IS.
+#   Replacing a file does not change a process: after `--ssh` alone the deployed build is new and the
+#   process writing the log is still the old one, so the address-ownership proof would measure the OLD
+#   build and the retirement gate would still refuse. Restarting the unit is what closes that, and it
+#   costs one ssh round trip instead of a reboot -- on a device whose every boot can end in EDL and
+#   needs a finger on the power button to leave, that is the difference between one boot and two.
+#
+#   It is a separate mode rather than a flag on the install because replacing a file and restarting a
+#   service are different acts with different failure modes, and because a restart is exactly what the
+#   install path is designed NOT to do on its own (`sh` reading a script as it runs it).
+#
+#   "Restarted" is not evidence, so the mode also CHECKS. It reads `/proc/uptime` immediately before
+#   the restart and then asks systemd for `ExecMainStartTimestampMonotonic` -- microseconds since boot
+#   of when the running main process started -- and requires it to be strictly LATER than the uptime it
+#   read. Both are monotonic, so the device's broken wall clock is not involved. Together with the
+#   check that the DEPLOYED file carries `ensure_addrs()`, that is decisive: the deployed build has the
+#   function, and the running process started after the restart, therefore it read the deployed file.
+#   If the value cannot be read the mode FAILS rather than assuming (the instrument must be able to
+#   report), and if it is earlier the process is a survivor of the old build and the mode exits 1.
+#
+#   What it does NOT prove is that this boot's ARRANGEMENT is right -- that the unit starts early
+#   enough, before the Android container, to own the addresses without the keeper. Only a boot with no
+#   keeper on it can show that (docs 112), and that boot comes last.
+#
+#   NOTE FOR THE OPERATOR: the freshly started netwatch is allowed to heal, and a heal re-enumerates
+#   the USB gadget -- which drops the very ssh session the next step runs over. It never acts before
+#   SETTLE_SECONDS (90) and only after 45 s of a frozen TX counter, so the practical rule is: give it
+#   ~90 s to settle, then run the proof.
+#
 # Usage:
 #   install-netwatch-service.sh --yes              install and enable (adb, needs TWRP)
 #   install-netwatch-service.sh --yes --ssh        install and enable over SSH (device booted)
+#   install-netwatch-service.sh --yes --ssh --activate   make the deployed build live on THIS boot
 #   install-netwatch-service.sh --yes --remove     disable and delete
 #   install-netwatch-service.sh --yes --ssh --remove
 #   install-netwatch-service.sh --yes --noheal     install in record-only mode (either transport)
@@ -70,7 +100,12 @@ shift
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --ssh) TRANSPORT=ssh ;;
-  --remove|--noheal) MODE="$1" ;;
+  --remove|--noheal|--activate)
+    # One mode at a time. The last one used to win silently, which is how `--remove --noheal` would
+    # have read as two harmless flags and acted as one of them; with --activate in the set that stops
+    # being cosmetic, so a second mode is refused rather than overwritten.
+    [[ -z "$MODE" ]] || { echo "refusing: $MODE and $1 are different modes -- give one" >&2; exit 2; }
+    MODE="$1" ;;
   *) echo "unknown argument: $1 (try the header)" >&2; exit 2 ;;
   esac
   shift
@@ -87,6 +122,14 @@ DEST="$BASE/zl1-netwatch.sh"
 UNIT="$BASE/zl1-netwatch.service"
 WANTS_SYSINIT="$BASE/sysinit.target.wants"
 WANTS_MULTI="$BASE/multi-user.target.wants"
+
+if [[ "$MODE" == "--activate" && "$TRANSPORT" != "ssh" ]]; then
+  # Before the device probe, not after it: probing would fail for a reason that has nothing to do with
+  # what is wrong with the invocation ("not visible in adb"), and the real reason is one word long.
+  echo "refusing: --activate needs --ssh. In TWRP there is no systemd to restart, and the unit path" >&2
+  echo "  there is a mount of a filesystem nothing is running from. Activate on the booted device." >&2
+  exit 2
+fi
 
 if [[ "$TRANSPORT" == "ssh" ]]; then
   "${SSH[@]}" 'grep -qa msm8996 /proc/device-tree/compatible' 2>/dev/null \
@@ -110,12 +153,17 @@ if [[ "$MODE" == "--remove" ]]; then
   exit 0
 fi
 
-[[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
+# The local build, and the integrity check on it, are gates on an INSTALL. `--activate` pushes
+# nothing -- it restarts a service and reads it back -- so requiring the source tree to be readable
+# would be a gate on an unrelated fact (docs 114's shape: ask the question that can answer it).
+if [[ "$MODE" != "--activate" ]]; then
+  [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
 
-# Refuse to install a build that lost functions. `sh -n` cannot catch that, and on
-# 2026-09-19 a build missing five of them was installed and used for a cold boot.
-if [[ -x "$(dirname "$SRC")/../check-netwatch-integrity.sh" ]]; then
-  "$(dirname "$SRC")/../check-netwatch-integrity.sh" "$SRC" || { echo "refusing to install: integrity check failed" >&2; exit 1; }
+  # Refuse to install a build that lost functions. `sh -n` cannot catch that, and on
+  # 2026-09-19 a build missing five of them was installed and used for a cold boot.
+  if [[ -x "$(dirname "$SRC")/../check-netwatch-integrity.sh" ]]; then
+    "$(dirname "$SRC")/../check-netwatch-integrity.sh" "$SRC" || { echo "refusing to install: integrity check failed" >&2; exit 1; }
+  fi
 fi
 
 # The watchdog can ask the bootloader for recovery by writing "boot-recovery" into the
@@ -140,6 +188,98 @@ misc_backup_ok() {
     || { echo "existing misc.img FAILS its recorded SHA256 (it is not the image it claims to be)" >&2; return 1; }
   return 0
 }
+
+# --- --activate: make the DEPLOYED build the RUNNING one, and check that it is --------------------
+#
+# Replacing a file does not change a process. After `--ssh` the deployed build carries
+# `ensure_addrs()` while the process writing the log is still the old one -- so the address-ownership
+# proof would measure the OLD build, and the retirement gate (which requires the service to be active
+# AND the deployed file to carry the function) would pass on two facts about two different objects.
+# A restart closes that, and it is one ssh round trip instead of a reboot.
+if [[ "$MODE" == "--activate" ]]; then
+  # The transport guard is above, before the device probe.
+  # The thing being STARTED can write `boot-recovery` into misc the moment it runs, so the same
+  # verified backup the ssh install requires is required here. It is a host-side file check.
+  misc_backup_ok || {
+    echo "refusing: --activate starts a service that can write the misc partition, and the verified" >&2
+    echo "  backup at $MISC_IMG is not usable (above). Take one with the adb/TWRP route:  $0 --yes" >&2
+    exit 1
+  }
+  "${SSH[@]}" "test -f '$DEST'" 2>/dev/null || {
+    echo "refusing: $DEST is not on the device -- there is nothing deployed to activate." >&2
+    echo "  Install it first:  $0 --yes --ssh" >&2
+    exit 1
+  }
+  # Asking the DEPLOYED file, on the device, the same question the retirement gate asks it. Activating
+  # a build without the function would gain nothing: the gate would still refuse, for the same reason.
+  "${SSH[@]}" "grep -q '^ensure_addrs()' '$DEST'" || {
+    echo "refusing: the deployed $DEST has no ensure_addrs(), so activating it changes nothing -- the" >&2
+    echo "  retirement gate asks the file for that function and would refuse either way." >&2
+    exit 1
+  }
+  echo "deployed build: $DEST carries ensure_addrs()"
+
+  # ONE round trip: read the uptime, restart, wait for active, then ask systemd when the running
+  # process started. The uptime is read BEFORE the restart, so "started later than that" is a fact
+  # about this restart and not about the boot. Both values are MONOTONIC, so the device's wrong wall
+  # clock (which journalctl ordering already suffers from) cannot affect the answer.
+  ACT_OUT="$("${SSH[@]}" '
+    u=$(cut -d" " -f1 /proc/uptime)
+    was=$(systemctl is-active zl1-netwatch.service 2>/dev/null || true)
+    systemctl restart zl1-netwatch.service 2>&1 || true
+    i=0; st=""
+    while [ "$i" -lt 30 ]; do
+      st=$(systemctl is-active zl1-netwatch.service 2>/dev/null || true)
+      [ "$st" = active ] && break
+      i=$((i+1)); sleep 1
+    done
+    mono=$(systemctl show -p ExecMainStartTimestampMonotonic --value zl1-netwatch.service 2>/dev/null)
+    pid=$(systemctl show -p MainPID --value zl1-netwatch.service 2>/dev/null)
+    echo "was=$was"
+    echo "state=$st"
+    echo "mono=$mono"
+    echo "pid=$pid"
+    echo "pre_uptime=$u"
+  ' 2>&1 | tr -d '\r')"
+  printf '%s\n' "$ACT_OUT" | sed 's/^/  | /'
+  fld() { printf '%s\n' "$ACT_OUT" | sed -n "s/^$1=//p" | tail -1; }
+  WAS="$(fld was)"; STATE="$(fld state)"; MONO="$(fld mono)"; PRE="$(fld pre_uptime)"
+
+  [[ "$STATE" == "active" ]] || {
+    echo "the service did NOT come back active (state=${STATE:-unknown}). It was '$WAS' before." >&2
+    echo "  A reboot would start the same build, so this is a property of the build, not of the" >&2
+    echo "  restart. Its own output:" >&2
+    "${SSH[@]}" "systemctl status zl1-netwatch.service --no-pager -n 20 2>&1" >&2 || true
+    exit 1
+  }
+
+  # The instrument must be able to report. If systemd will not tell us when the process started, we
+  # cannot say the deployed build is the running one -- and saying nothing while claiming success is
+  # the defect this whole file's checks exist to avoid (docs 99).
+  if ! printf '%s' "$MONO" | grep -qE '^[0-9]+$'; then
+    echo "FAILED: cannot read ExecMainStartTimestampMonotonic (got '${MONO:-nothing}'), so there is no" >&2
+    echo "  way to tell whether the running process is the deployed build. Not claiming it is." >&2
+    exit 1
+  fi
+  if ! awk -v m="$MONO" -v u="$PRE" 'BEGIN{ exit !(m > u * 1000000) }'; then
+    echo "FAILED: the running process started at ${MONO}us, BEFORE the restart (uptime was ${PRE}s)." >&2
+    echo "  It is a survivor of the old build, so the deployed build is NOT what is running." >&2
+    exit 1
+  fi
+
+  echo "activated: zl1-netwatch.service is active, and its main process started AFTER this restart"
+  echo "  (monotonic ${MONO}us > uptime ${PRE}s at the restart), so it read the deployed file."
+  echo "  was '$WAS' before; nothing else on the device was changed."
+  echo
+  echo "What it does NOT prove is that this boot's ARRANGEMENT is right -- that the unit starts early"
+  echo "  enough, before the Android container, to own the addresses without the keeper. Only a boot with"
+  echo "  no keeper on it can show that (docs 112), and that boot comes last."
+  echo
+  echo "NEXT: give it ~90 s to settle (SETTLE_SECONDS), because a heal re-enumerates the USB gadget and"
+  echo "would drop the ssh session the next step runs over. Then measure it, which is also what licenses"
+  echo "the keeper's retirement:   scripts/device/zl1-address-owner-proof.sh --yes"
+  exit 0
+fi
 
 # --- the SSH transport: no TWRP, no partition read, and no window on a running script -------------
 if [[ "$TRANSPORT" == "ssh" ]]; then

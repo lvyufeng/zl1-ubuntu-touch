@@ -22,7 +22,7 @@
 #     a measurement made seconds earlier rather than a memory of having run the boot-address check. A
 #     refusal gate that does not actually refuse is indistinguishable from no gate at all until the day
 #     the network does not come back, which is why sections 2b and 2c exist and why they have teeth
-#     against the pre-fix build (66 failures). It also has a matching function that deliberately is NOT
+#     against the pre-fix build (66 failures, and 375 checks now). It also has a matching function that deliberately is NOT
 #     a substring test, because "killing the wrong process" is the one failure mode worth being
 #     pedantic about.
 #   * `install-no-edl-on-panic.sh` decides whether a kernel panic puts the phone in EDL. It is the one
@@ -244,6 +244,41 @@ printf 'systemctl %s\n' "\$*" >> "$ACT"
 case "\$1" in
 start|restart)
   u="\$2"
+  # A unit whose ExecStart is an INFINITE LOOP cannot be run by a fixture -- zl1-netwatch.sh is a
+  # 'while :; do ensure_addrs; sleep 2; done' loop, and with 'sleep' stubbed that spins at a full core
+  # forever and hangs the harness. So for that one unit the stub models the two facts the installer can
+  # observe on a device instead of executing it: the service is active, and systemd knows when its main
+  # process started (the ExecMainStartTimestampMonotonic arm below). Everything the --activate check
+  # rests on is therefore a fixture, and every way for it to be wrong is a fixture too.
+  #
+  # NO BACKTICKS IN THIS COMMENT, and the same goes for every comment in this heredoc: it is unquoted,
+  # so a backquote is COMMAND SUBSTITUTION. The file already warns about this further up, and this
+  # comment is the second draft of the paragraph above -- the first one put the loop in backticks and
+  # the harness hung here for its full timeout, printing 'ensure_addrs: not found' while it spun.
+  case "\$u" in
+  zl1-netwatch.service)
+    if [ -e "$W/netwatch-inactive" ]; then
+      printf 'netwatch-restart-refused\n' >> "$ACT"
+      exit 1
+    fi
+    if [ -e "$W/netwatch-stale" ]; then
+      # A RESTART THAT DID NOT TAKE: the process is a survivor of the build that was running before the
+      # deployed file was written. On a device this is a restart that silently did nothing, and the
+      # installer must FAIL rather than report the deployed build as live.
+      printf 'netwatch-restart-noop\n' >> "$ACT"
+      printf '5000000\n' > "$W/netwatch-mono"
+      exit 0
+    fi
+    printf 'netwatch-restart\n' >> "$ACT"
+    # Strictly later than the uptime the installer read immediately before the restart (100.0 s).
+    # The awk field is ESCAPED because this heredoc is unquoted: written bare it would be the
+    # HARNESS's own first argument,
+    # and under 'set -u' with no arguments that is not an empty string -- it aborts the whole 'cat', so
+    # the stub is never written and every systemctl call in every section silently returns nothing.
+    # (Measured: that is exactly what happened, and it reddened 57 checks across sections 1-13.)
+    awk '{printf "%d\n", (\$1 + 2) * 1000000}' "$FR/proc/uptime" > "$W/netwatch-mono"
+    exit 0 ;;
+  esac
   ex=\$(sed -n 's/^ExecStart=//p' "$FR/etc/systemd/system/\$u" 2>/dev/null | head -1)
   # The applier's device paths have to point at the fake root, so a harness-prepared copy of the SAME
   # FILE is used when there is one. The landed file's content is asserted separately.
@@ -294,9 +329,9 @@ is-enabled)
   *) echo enabled ;;
   esac ;;
 is-active)
-  # THE EXIT CODE IS PART OF THE ANSWER. Real systemd's `is-active` prints the state AND exits 3 when it
-  # is not `active`; this stub used to print `inactive` and exit 0, and an applier gate written as
-  # `systemctl is-active X >/dev/null 2>&1 || refuse` passed straight through it -- a fixture whose
+  # THE EXIT CODE IS PART OF THE ANSWER. Real systemd's 'is-active' prints the state AND exits 3 when it
+  # is not 'active'; this stub used to print 'inactive' and exit 0, and an applier gate written as
+  # 'systemctl is-active X >/dev/null 2>&1 || refuse' passed straight through it -- a fixture whose
   # answer agreed with the script for no reason. Both halves are real now.
   case "\$*" in
   *zl1-retire-debug-keeper*) [ -e "$W/active-retire" ] && { echo active; exit 0; } || { echo inactive; exit 3; } ;;
@@ -314,6 +349,13 @@ show)
   *-p\ NRestarts*) printf '0\n' ;;
   *-p\ ActiveState*) printf 'inactive\n' ;;
   *-p\ SubState*) printf 'dead\n' ;;
+  # BEFORE the ExecMainStartTimestamp arm, which would otherwise swallow this name too (this stub
+  # matches with shell patterns, and ExecMainStartTimestamp* covers ...Monotonic). --activate
+  # uses this value to decide whether the running process read the deployed file, so it is a fixture
+  # with a writable file behind it rather than a constant: on a device the number changes at every
+  # restart, and a fixture that cannot change cannot test the check that reads it.
+  *-p\ ExecMainStartTimestampMonotonic*)
+    if [ -e "$W/netwatch-nomono" ]; then printf 'n/a\n'; else cat "$W/netwatch-mono" 2>/dev/null || printf '0\n'; fi ;;
   *-p\ ExecMainStartTimestamp*) printf 'n/a\n' ;;
   *-p\ Result\ --value*) printf 'success\n' ;;
   *-p\ ExecMainStatus\ --value*) printf '0\n' ;;
@@ -529,6 +571,12 @@ RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe
 # can take it away and put it back; every scenario starts from the installed state, because that is the
 # only state in which "it kills" is the interesting answer.
 cp "$FR/etc/systemd/system/zl1-netwatch.sh" "$W/netwatch.good"
+# The value `systemctl show -p ExecMainStartTimestampMonotonic` reports, in microseconds since boot.
+# Seeded to a process that started 5 s after boot -- EARLIER than this fake device's uptime (100.0 s) --
+# so it means "the running process is a survivor of the previous build" and the `--activate` check must
+# fail on it. Only a stub restart moves it forward. Defaulting to the passing case would be a fixture
+# that agrees with the check for no reason (docs 114 section 6).
+printf '5000000\n' > "$W/netwatch-mono"
 netwatch_mode() { # installed | absent | no-ensure | inactive
   rm -f "$W/netwatch-inactive"
   case "$1" in
@@ -576,6 +624,13 @@ NMODE=installed
 env_reset() {
   RUN_ADDR=yes; RUN_ADB_SERIAL=33e80afe; RUN_SSH_SHORT=""
   rm -f "$W/restart" "$W/active-retire"
+  # The `--activate` fixtures. `netwatch-mono` is not optional state: a scenario that leaves a LATER
+  # value behind would make the next scenario's "the process started after the restart" check pass for
+  # a reason that has nothing to do with the script. It is reset to the value of a process that started
+  # before this boot's uptime would allow -- i.e. a survivor -- so the default is the FAILING case and
+  # a scenario has to earn the passing one by actually restarting.
+  rm -f "$W/netwatch-stale" "$W/netwatch-nomono"
+  printf '5000000\n' > "$W/netwatch-mono"
   rm -rf "$W/killignore"; mkdir -p "$W/killignore"
   rm -rf "$FR/proc"/9*
   keeper_proc 900
@@ -1703,6 +1758,139 @@ run "$NWC" --ssh
 printf '%s\n' "$OUT" > "$W/out.nwssh.noyes"
 [ "$RC" = 2 ] && ok "and --ssh without --yes is still refused" || bad "it exited $RC"
 want 'refusing without --yes' "$OUT" "by the same gate as the adb route"
+run "$NWC" --yes --noheal --remove
+[ "$RC" = 2 ] && ok "and two MODES at once are refused rather than the last one winning" || bad "it exited $RC"
+want 'are different modes' "$OUT" "saying which two"
+run "$NWC" --yes --remove --activate
+[ "$RC" = 2 ] && ok "the same for --remove --activate (in the other order)" || bad "it exited $RC"
+
+# ==================================================================================================
+echo
+echo "== 14b. --activate: make the DEPLOYED build the RUNNING one, and PROVE it is =="
+# ==================================================================================================
+# Why this mode exists: replacing a file does not change a process. After `--ssh` alone the deployed
+# build carries `ensure_addrs()` while the process appending to the log is still the old one -- so the
+# address-ownership proof would measure the OLD build and the retirement gate would decide on two facts
+# about two different objects. Restarting closes that for one ssh round trip instead of one reboot, and
+# on this device a reboot is not free: every boot can end in EDL, and leaving EDL takes a finger on the
+# power button. The mode is therefore on the critical path of the HEAT fix, which is why it is held to
+# the same standard as the rest of this file: "restarted" is not evidence, so it reads the answer back.
+#
+# The check has to be able to FAIL, and its failure has to mean one thing. It compares the monotonic
+# start time of the running main process against the uptime read immediately BEFORE the restart, so
+# "later" is a fact about this restart and not about the boot. Both are monotonic, so the device's
+# broken wall clock (which already breaks journalctl ordering) is not involved.
+echo "   -- --activate without --ssh is refused BEFORE the device probe:"
+env_reset
+run "$NWC" --yes --activate
+[ "$RC" = 2 ] && ok "--activate without --ssh exits 2" || bad "it exited $RC"
+want 'there is no systemd to restart' "$OUT" "and gives the reason that is actually wrong"
+# The failure mode this avoids: the adb probe runs first and reports "target 33e80afe not visible in
+# adb", which is true and about nothing. A refusal that names the wrong cause sends the operator to
+# TWRP for a step that was never going to work over adb either.
+notwant 'not visible in adb' "$OUT" "and does NOT send the operator to adb for an ssh-only mode"
+[ -z "$(grep '^systemctl restart' "$ACT" 2>/dev/null)" ] && ok "and it restarted nothing" || bad "it restarted something"
+
+echo
+echo "   -- the deployed build must carry ensure_addrs(), or there is nothing worth activating:"
+env_reset
+netwatch_mode no-ensure
+run "$NWC" --yes --ssh --activate
+[ "$RC" = 1 ] && ok "an older build (no ensure_addrs()) -> exit 1" || bad "it exited $RC"
+want 'has no ensure_addrs' "$OUT" "naming the function that is missing"
+want 'retirement gate asks the file for that function' "$OUT" \
+     "and why that is the same question the retirement gate will ask"
+[ -z "$(grep '^systemctl restart' "$ACT" 2>/dev/null)" ] && ok "and it did not restart it" || bad "it restarted an unusable build"
+
+echo
+echo "   -- nothing deployed at all is refused, by name:"
+env_reset
+netwatch_mode absent
+run "$NWC" --yes --ssh --activate
+[ "$RC" = 1 ] && ok "no deployed script -> exit 1" || bad "it exited $RC"
+want 'nothing deployed to activate' "$OUT" "and says so"
+# NOT the script's own name: the harness runs the rewritten COPY ($W/nw.sh), so the command it prints
+# is the copy's path. The flag pair is what identifies the command -- and the pattern deliberately does
+# not START with a dash, because `want` hands it straight to grep, which would read it as an option.
+want 'yes --ssh' "$OUT" "with the command that would deploy one"
+
+echo
+echo "   -- the misc backup is required here too: the thing being STARTED can write that partition:"
+env_reset
+netwatch_mode installed
+mv "$W/misc" "$W/misc.away"
+run "$NWC" --yes --ssh --activate
+[ "$RC" = 1 ] && ok "no verified misc backup -> exit 1" || bad "it exited $RC"
+want 'can write the misc partition' "$OUT" "naming the reason, which is about the service and not the transport"
+mv "$W/misc.away" "$W/misc"
+
+echo
+echo "   -- the happy path: it restarts, it reads the answer back, and it says what it proves:"
+env_reset
+netwatch_mode installed
+run "$NWC" --yes --ssh --activate
+printf '%s\n' "$OUT" > "$W/out.nwssh.activate"
+[ "$RC" = 0 ] && ok "--ssh --activate exits 0" || bad "it exited $RC"
+want '^systemctl restart zl1-netwatch\.service' "$(sysacts)" "it restarted the unit"
+want 'carries ensure_addrs\(\)' "$OUT" "after asking the DEPLOYED file for the function"
+want 'started AFTER this restart' "$OUT" "and reports the monotonic comparison it made"
+want 'would drop the ssh session' "$OUT" "with the warning about a heal re-enumerating the gadget"
+want 'give it ~90 s to settle' "$OUT" "and the settling time, which is SETTLE_SECONDS and not a guess"
+want 'zl1-address-owner-proof\.sh --yes' "$OUT" "and hands off to the measurement, which is the licence for the kill"
+want 'was .* before' "$OUT" "it reports the state the service was in before it touched it"
+# It must not CLAIM more than it measured. The arrangement question -- does the unit start early enough
+# on a boot with no keeper -- is not answerable from a running boot, and the mode says so.
+want "does NOT prove is that this boot's ARRANGEMENT" "$OUT" \
+     "and states what it does not prove, so 'activated' is not read as 'the boot is fixed'"
+
+echo
+echo "   -- and the check CAN fail: a restart that did not take must not be reported as a new build:"
+env_reset
+netwatch_mode installed
+touch "$W/netwatch-stale"      # the process is a survivor: its start predates the restart
+run "$NWC" --yes --ssh --activate
+printf '%s\n' "$OUT" > "$W/out.nwssh.stale"
+[ "$RC" = 1 ] && ok "a restart that did not take -> exit 1" || bad "it exited $RC"
+want 'BEFORE the restart' "$OUT" "naming the comparison that failed"
+want 'survivor of the old build' "$OUT" "and what that means: the deployed build is not what is running"
+notwant 'activated: zl1-netwatch.service is active' "$OUT" "and it does NOT claim success"
+rm -f "$W/netwatch-stale"
+
+echo
+echo "   -- and when the instrument cannot report at all, it must FAIL rather than assume:"
+env_reset
+netwatch_mode installed
+touch "$W/netwatch-nomono"      # `systemctl show -p ExecMainStartTimestampMonotonic` answers nothing
+run "$NWC" --yes --ssh --activate
+printf '%s\n' "$OUT" > "$W/out.nwssh.nomono"
+[ "$RC" = 1 ] && ok "an unreadable start timestamp -> exit 1" || bad "it exited $RC"
+want 'cannot read ExecMainStartTimestampMonotonic' "$OUT" "naming the value it could not read"
+want 'Not claiming it is' "$OUT" "and refusing to claim what it cannot check (docs 99: an instrument must be able to report)"
+notwant 'activated: zl1-netwatch.service is active' "$OUT" "and it does not claim success"
+rm -f "$W/netwatch-nomono"
+
+echo
+echo "   -- a service that does not come back active is reported as the build's problem, not the restart's:"
+env_reset
+netwatch_mode installed
+touch "$W/netwatch-inactive"
+run "$NWC" --yes --ssh --activate
+printf '%s\n' "$OUT" > "$W/out.nwssh.dead"
+[ "$RC" = 1 ] && ok "it did not come back active -> exit 1" || bad "it exited $RC"
+want 'did NOT come back active' "$OUT" "and says what it observed"
+want 'A reboot would start the same build' "$OUT" \
+     "and that a reboot is not a retry, so nobody spends one finding that out"
+rm -f "$W/netwatch-inactive"
+
+echo
+echo "   -- the install path still restarts NOTHING: --activate is a separate act, not a new default:"
+env_reset
+netwatch_mode installed
+run "$NWC" --yes --ssh
+[ "$RC" = 0 ] && ok "a plain --ssh install still exits 0" || bad "it exited $RC"
+notwant '^systemctl (restart|start|stop|enable|disable)' "$ACT" \
+  "and it restarts and enables nothing -- replacing a file and restarting a service stay separate"
+want 'was NOT restarted' "$OUT" "so the operator still has to ask for it, and is told they must"
 
 # ==================================================================================================
 echo
