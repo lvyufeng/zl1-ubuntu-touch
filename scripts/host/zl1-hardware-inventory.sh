@@ -162,7 +162,7 @@ usb	qcom,dwc-usb3-msm|snps,dwc3|qcom,qusb2phy|qcom,android-usb|qcom,usb-bam|qcom
 usb-pd	tusb302l|tusb320|pi5usb|cclogic_dev|cypress,cyccg|analogix,ohio|analogix,anx7816	tusb|typec|usb_pd|cclogic|id_table	HW	scripts/device/zl1-usbpd-probe.sh
 sdcard	qcom,sdhci-msm	sdhci|mmcblk|/dev/mmcblk	HW	scripts/device/zl1-sdcard-probe.sh
 wfd	mdss_fb_wfd|mdss_wb	wfd|miracast|writeback	HW	-
-hdmi	qcom,hdmi-tx|qcom,hdmi-display|qcom,hdmi-tx-8996|mdss_hdmi_pll|hdmi-audio	HDMI|hdmi	HW	-
+hdmi	qcom,hdmi-tx|qcom,hdmi-display|qcom,hdmi-tx-8996|mdss_hdmi_pll|hdmi-audio|qcom,msm-dai-q6-hdmi	HDMI|hdmi|dai-q6-hdmi	HW	scripts/device/zl1-hdmi-probe.sh
 eeprom	atmel,24c32	24c32|at24|nvmem|eeprom	HW	-
 ufs	jedec,ufs-1.1|qcom,ufs-phy|qcom,ice	ufshc|ufs-phy|/sys/block	INFRA	-
 coresight	coresight|etm@|etm0|tpda|tpdm	coresight|stm_|etm|trace	INFRA	-

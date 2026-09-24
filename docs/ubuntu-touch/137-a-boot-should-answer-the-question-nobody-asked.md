@@ -8,14 +8,15 @@
 新增提交的派生数据 `docs/ubuntu-touch/hardware-compatibles.txt`（725 条 path/compatible，附每个源 DTB 的 sha256）。
 家族 **21 个 harness / 2438 检查 / 全绿**（本页之前是 2360；差额 78 = 新增 harness 74 + cli-usage 136 → 140）。
 
-> **后续**：本页列出的 12 个缺口，已有五个被关掉：`thermal-lmh`（与"发烫"最直接相关的那个）见
+> **后续**：本页列出的 12 个缺口，已有六个被关掉：`thermal-lmh`（与"发烫"最直接相关的那个）见
 > [`138`](138-the-hardware-limiter-had-never-been-read.md)，通知灯与手电筒（手指最先碰到的两个）见
 > [`139`](139-the-two-blocks-a-finger-touches-first.md)，`vibrator` 见 [`140`](140-the-block-that-was-another-phones.md)
 （那一行原本点名的仪器属于另一台手机），剩下最大的那个 `video-codec`（十二个节点）见
 > [`141`](141-the-largest-gap-is-two-layers-that-fail-differently.md)，两个存储控制器那个 `sdcard`（其中可插拔
 > 的一半在设备树里是关掉的）见 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，而**另一台手机的 CC 逻辑
-> 冒充这块板的**那个 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)。所以那份清单现在是
-> **5 个**，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 24 / 5（这两个数字是**手改**的：关掉一个缺口必须有人看见，
+> 冒充这块板的**那个 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)，而**两个发射器世代抢同一个寄存器窗口**的
+> `hdmi` 见 [`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md)。所以那份清单现在是
+> **4 个**，而 `zl1-hardware-inventory.sh` 的汇总行也已经改成 25 / 4（这两个数字是**手改**的：关掉一个缺口必须有人看见，
 > 这正是那份清单存在的理由）。本页正文不变，它是当天的读数——唯一一处更正在 §3.2 里，见上方那个引用块。
 
 **接续**: [`124`](124-the-boot-a-finger-bought-is-one-command.md)（一次启动是一个命令——本页回答的是"这一次该测什么"）、

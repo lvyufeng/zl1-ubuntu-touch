@@ -13,7 +13,8 @@
 本页之后又收了一个：两个 SD/eMMC 控制器那个 `sdcard` 缺口，见
 [`142`](142-the-removable-slot-is-switched-off-in-the-tree.md)，以及设备树打开了两个节点、内核却一个驱动都没编的那个
 `usb-pd` 见 [`143`](143-the-tree-enables-two-and-the-kernel-builds-neither.md)（它同时改掉了 [`137`](137-a-boot-should-answer-the-question-nobody-asked.md) §3.2
-把另一台手机的 CC 逻辑当成这台手机的一处错误）。清单现在是 **5 个**缺口，表格在 §8。
+把另一台手机的 CC 逻辑当成这台手机的一处错误），两个发射器世代抢同一个寄存器窗口的 `hdmi` 见
+[`144`](144-the-tree-is-explicit-about-the-one-nothing-can-bind.md)（设备树明确打开的那个反而没人能绑）。清单现在是 **4 个**缺口。
 
 **接续**: [`137`](137-a-boot-should-answer-the-question-nobody-asked.md)（缺口的来源）、
 [`138`](138-the-hardware-limiter-had-never-been-read.md)（前一天收的第三个，硬件限温器）、
@@ -189,7 +190,7 @@ scp scripts/device/zl1-leds-probe.sh root@10.15.19.82:/tmp/ && ssh root@10.15.19
 | `torch`（相机手电筒） | 本页收口 |
 | `notification-led`（通知/充电灯） | 本页收口 |
 | `vibrator`（振动马达） | docs **140** 收口——而且收的过程发现这一行原来的"仪器"是**另一台手机**的芯片 |
-| `nfc`、`fm-radio`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | **8 个仍然没有探针** |
+| `nfc`、`fm-radio`、`video-codec`、`usb-pd`、`sdcard`、`wfd`、`hdmi`、`eeprom` | 当时是 **8 个没有探针**；其中六个此后被收口，只剩 `nfc`、`fm-radio`、`wfd`、`eeprom` |
 
 其中 `sdcard` 已经有一条**离线就能读出来**的结论值得先记下：DTB 里有两个 `qcom,sdhci-msm` 控制器，
 `sdhc1@7464900` 的 `status = "ok"` 且带 `qcom,nonremovable`（HS400/HS200，不可移除 → 内部存储），

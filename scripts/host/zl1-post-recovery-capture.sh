@@ -467,6 +467,21 @@ step 04h-sdcard        device "$HERE/../device/zl1-sdcard-probe.sh"
 # registers a misc device whose fops are a write-class interface. The probe writes neither, opens neither,
 # and its offline harness spends its first mutation on the parameter write.
 step 04i-usbpd         device "$HERE/../device/zl1-usbpd-probe.sh"
+# 04j, same class a ninth time: read-only, write-free, no person. docs 144 closed the next gap on docs 137's
+# list -- `hdmi` -- and this one is a GENERATION question rather than a wiring one. The block is six
+# descriptions and SEVEN nodes: two transmitters (`qcom,hdmi-tx` and `qcom,hdmi-tx-8996`) claiming the SAME
+# MMIO window with a byte-identical `reg`, their two audio codec-rx children, a display child, a PLL and the
+# `qcom,msm-dai-q6-hdmi` DAI the inventory row's own pattern had missed. The node the TREE is explicit about
+# (`status = "ok"`) is the one no driver in this 3.18 kernel can bind; the node with NO `status` property --
+# which the device tree reads as ENABLED -- is the one mdss_hdmi_tx.c matches. And that driver, when it
+# binds, is given ONE of the eight gpios it asks for by name, because the five the other generation's node
+# carries are spelled with a `-gpio` suffix `of_get_named_gpio` never asks for.
+#
+# Its surface is the largest in this file: the transmitter's own sysfs group (`hot_plug`, `hpd`, `edid`,
+# `sim_mode` ...) plus the framebuffer attributes behind it (`dsi_write`, `trigger_reset`, `blank`), and a
+# write to `hpd` or `hot_plug` CHANGES the port's state. The probe writes neither, opens nothing, and its
+# offline harness spends its first mutation on exactly that write.
+step 04j-hdmi           device "$HERE/../device/zl1-hdmi-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -477,8 +492,8 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard and 04i-usbpd: all eight are read-only and write nothing, so they are"
-  say "   not in this group.)"
+  say "   04g-video, 04h-sdcard, 04i-usbpd and 04j-hdmi: all nine are read-only and write nothing, so"
+  say "   they are not in this group.)"
   say
 fi
 
