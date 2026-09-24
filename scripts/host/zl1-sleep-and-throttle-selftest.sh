@@ -85,6 +85,7 @@ sed -e 's#/proc/cmdline#__ZC__#g' \
     -e 's#/proc/device-tree#__ZDT__#g' \
     -e 's#/sys/devices/system/cpu#__ZCPU__#g' \
     -e 's#/sys/module/msm_thermal#__ZMT__#g' \
+    -e 's#/sys/module/lpm_levels#__ZLL__#g' \
     -e 's#/sys/class/thermal#__ZTH__#g' \
     -e 's#/proc/#__ZP__#g' \
     -e 's#/sys/#__ZS__#g' "$SRC" > "$P1"
@@ -94,6 +95,7 @@ sed -e "s#__ZC__#$FR/proc/cmdline#g" \
     -e "s#__ZDT__#$FR/proc/device-tree#g" \
     -e "s#__ZCPU__#$FR/sys/devices/system/cpu#g" \
     -e "s#__ZMT__#$FR/sys/module/msm_thermal#g" \
+    -e "s#__ZLL__#$FR/sys/module/lpm_levels#g" \
     -e "s#__ZTH__#$FR/sys/class/thermal#g" \
     -e "s#__ZP__#$FR/proc/#g" \
     -e "s#__ZS__#$FR/sys/#g" "$P1" > "$RW"
@@ -115,7 +117,8 @@ FRS=$(cnt "$FR" "$RW")
 # And the three paths the whole probe is built around, named individually: a token that expanded by the
 # wrong rule would still satisfy the count above.
 for pair in "__ZC__:$FR/proc/cmdline" "__ZDT__:$FR/proc/device-tree" "__ZCPU__:$FR/sys/devices/system/cpu" \
-            "__ZMT__:$FR/sys/module/msm_thermal" "__ZTH__:$FR/sys/class/thermal"; do
+            "__ZMT__:$FR/sys/module/msm_thermal" "__ZLL__:$FR/sys/module/lpm_levels" \
+            "__ZTH__:$FR/sys/class/thermal"; do
   tok="${pair%%:*}"; path="${pair#*:}"
   [ "$(cnt "$tok" "$P1")" -gt 0 ] || { echo "$tok never appears in pass 1 -- that path is not in the probe" >&2; exit 2; }
   [ "$(cnt "$tok" "$P1")" = "$(cnt "$path" "$RW")" ] \
@@ -127,6 +130,8 @@ grep -qF "LPMDT=$FR/proc/device-tree/soc/qcom,lpm-levels" "$RW" \
   || { echo "the lpm-levels node path was not rewritten -- section 2 is the point of the script" >&2; exit 2; }
 grep -qF "CPU_GLOB=$FR/sys/devices/system/cpu/cpu[0-9]*" "$RW" \
   || { echo "the cpu glob was not rewritten -- the probe would read THIS host's cpus" >&2; exit 2; }
+grep -qF "LPMPAR=$FR/sys/module/lpm_levels/parameters" "$RW" \
+  || { echo "the lpm_levels parameters dir was not rewritten -- section 1 would read THIS host's" >&2; exit 2; }
 
 # --- the static safety guard, and its teeth --------------------------------------------------------
 #
@@ -148,10 +153,11 @@ writes_in() { grep -nE -- "$WRITE_RE" "$1" 2>/dev/null | grep -vE -- "$MOUNT_LIS
 # is the ONLY difference. Three units of state live here and they are deliberately separable:
 #   FAKE_CPUIDLE   clean | no-states | nonnumeric | nodir | zero   (section 3)
 #   FAKE_LPM       full | no-node | empty                          (section 2)
-#   FAKE_CMDLINE   lpm | clean | no-sleep-key | missing            (section 1)
+#   FAKE_CMDLINE   lpm | clean | no-sleep-key | missing            (section 1, the cmdline half)
+#   FAKE_LPMPAR    one | zero | nofile | nodir                     (section 1, the sysfs half)
 # and every switch defaults to the coherent, real-device shape (a full ladder, a cmdline that carries
-# lpm_levels.sleep_disabled=1, counters that move) so that a scenario which forgets to set one is
-# testing the baseline rather than an accident.
+# lpm_levels.sleep_disabled=1, the driver parameter reading 1, counters that move) so that a scenario
+# which forgets to set one is testing the baseline rather than an accident.
 cat > "$W/reset.sh" <<EOF
 #!/bin/sh
 set -u
@@ -159,6 +165,8 @@ rm -rf "$FR"
 mkdir -p "$FR/proc/device-tree/soc" "$FR/proc/sys/kernel/random" \\
          "$FR/sys/devices/system/cpu/cpuidle" "$FR/sys/module/msm_thermal/parameters" \\
          "$FR/sys/class/thermal" 2>/dev/null
+# NOT $FR/sys/module/lpm_levels: FAKE_LPMPAR=nodir has to be able to leave it absent, and a
+# directory created unconditionally here would make that scenario test the wrong thing.
 printf '%s\\0' "\${FAKE_COMPAT:-qcom,msm8996pro}" > "$FR/proc/device-tree/compatible"
 printf '4.9.186-perf+\\n' > "$FR/proc/sys/kernel/osrelease"
 printf 'aaaa-bbbb-cccc\\n' > "$FR/proc/sys/kernel/random/boot_id"
@@ -172,6 +180,26 @@ no-sleep-key)
   printf 'androidboot.hardware=qcom lpm_levels.menu_select=0 cpuidle.off=0 loop.max_part=7\\n' > "$FR/proc/cmdline" ;;
 *)
   printf 'androidboot.hardware=qcom ehci-hcd.park=3 lpm_levels.sleep_disabled=1 lpm_levels.sleep_time_override=0 cma=32M@0-0xffffffff apparmor=1 security=apparmor firmware_class.path=/vendor/firmware_mnt/image loop.max_part=7\\n' > "$FR/proc/cmdline" ;;
+esac
+
+# --- section 1, the other half: what the DRIVER has now -------------------------------------------
+# `/sys/module/lpm_levels/parameters/sleep_disabled` -- the corrected reading (docs 121, and the
+# calibration that establishes the file is mode 0664 is in
+# docs/ubuntu-touch/evidence/lpm-sleep-disabled-param-2026-09-24.txt). Real shape by default: the
+# directory exists and the parameter reads 1, which is what the cmdline asked for. The scenarios where
+# the two halves DISAGREE are the ones worth having, so this switch is deliberately separate from
+# FAKE_CMDLINE -- and it is the file the FIX would write, which is why the guard's next tooth is here.
+case "\${FAKE_LPMPAR:-one}" in
+nodir) : ;;
+nofile) mkdir -p "$FR/sys/module/lpm_levels/parameters" ;;
+zero)
+  mkdir -p "$FR/sys/module/lpm_levels/parameters"
+  printf '0\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+  printf '0\\n' > "$FR/sys/module/lpm_levels/parameters/menu_select" ;;
+*)
+  mkdir -p "$FR/sys/module/lpm_levels/parameters"
+  printf '1\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+  printf '0\\n' > "$FR/sys/module/lpm_levels/parameters/menu_select" ;;
 esac
 
 # --- section 2: the ladder the hardware has -----------------------------------------------------
@@ -295,7 +323,7 @@ notwant() { if printf '%s\n' "$2" | grep -Eq -- "$1"; then bad "$3"; printf '%s\
 # about a different paragraph.
 verdict() { printf '%s\n' "$1" | sed -n '/^== [0-9][0-9]*\. *verdict$/,$p'; }
 
-export FAKE_COMPAT= FAKE_CMDLINE= FAKE_LPM= FAKE_CPUIDLE= FAKE_ZONEDIS= FAKE_COOL= FAKE_GOV=
+export FAKE_COMPAT= FAKE_CMDLINE= FAKE_LPM= FAKE_LPMPAR= FAKE_CPUIDLE= FAKE_ZONEDIS= FAKE_COOL= FAKE_GOV=
 
 run() { # $1 = extra arguments (may be empty)
   : > "$ACT"
@@ -350,6 +378,23 @@ else
     bad "the guard let a cpuidle write through"
   fi
 fi
+# Tooth 2b, and the most tempting write in the whole script: the parameter IS the fix for the question
+# this probe asks. `echo 0 > /sys/module/lpm_levels/parameters/sleep_disabled` is one character away from
+# the read on the line above it, and a "did the ladder come back" experiment is exactly what somebody
+# would be holding in their head while reading this file.
+sed 's#^    SYSFS_SD=$(rd "$LPMPAR/sleep_disabled")$#    SYSFS_SD=$(rd "$LPMPAR/sleep_disabled"); printf "0" > /sys/module/lpm_levels/parameters/sleep_disabled#' "$SRC" > "$W/mut-lpmp.sh"
+if cmp -s "$SRC" "$W/mut-lpmp.sh"; then
+  bad "the sleep_disabled mutation did not land, so that half of the guard proves nothing"
+else
+  L="$(writes_in "$W/mut-lpmp.sh")"
+  if [ -n "$L" ]; then
+    ok "the guard CATCHES a write to the lpm_levels parameter -- the fix this probe must not perform"
+    want 'lpm_levels/parameters/sleep_disabled' "$L" "and names the line it found"
+  else
+    bad "the guard let a write to sleep_disabled through -- and that write IS the fix, which is why it must not be here"
+  fi
+fi
+
 # Tooth 3: the other direction -- an arrow before a path is prose, not a redirect. Without this, the
 # rule could be "widened" until it caught the probe's own readings and then removed.
 printf 'say "     -> /proc/cmdline could not be read"\n' > "$W/mut-arrow.txt"
@@ -411,6 +456,8 @@ run "--explain"
 want "THE CONSEQUENCE, WHICH IS THE ACTUAL EVIDENCE" "$OUT" "it explains that the counters are the evidence"
 want 'a second chance to get it wrong' "$OUT" "and why the temperatures are NOT re-printed here"
 want 'cpuidle/state\*/disable' "$OUT" "and names the files it deliberately does not write"
+want 'lpm_levels/parameters/sleep_disabled' "$OUT" "including the one that IS the fix, by its full path"
+want 'no new boot' "$OUT" "and says why that one matters: the fix is a write, not a boot image"
 notwant 'cpuidle driver:' "$OUT" "--explain reads no device file"
 
 # ==================================================================================================
@@ -491,25 +538,66 @@ FAKE_CPUIDLE=
 
 # ==================================================================================================
 echo
-echo "== 6. the cmdline: three readings that must stay three =="
+echo "== 6. section 1's TWO halves: the cmdline and the live parameter, kept apart =="
 # ==================================================================================================
+# Section 1 reads the same question from two places, and docs 121's correction is why: the cmdline is
+# what the boot was TOLD, `/sys/module/lpm_levels/parameters/sleep_disabled` is what the DRIVER has, and
+# the second one is mode 0664 -- writable -- so it is the half a fix touches. They can disagree, and
+# every disagreement shape has to land on its own reading rather than on the nearest one.
+#
+# (a) The key absent from the cmdline while the driver still reads 1: they DISAGREE, and the verdict
+#     must follow the LIVE reading. Reporting ABSENT here would be the same mistake as reporting a zero
+#     for a counter that could not be read.
 FAKE_CMDLINE=no-sleep-key run ""
 want 'lpm_levels.sleep_disabled is NOT set on this boot' "$OUT" "the key absent is reported as absent"
 want 'lpm_levels.menu_select=0' "$OUT" "while the OTHER power parameters are still printed"
-want 'ABSENT AT THE PARAMETER' "$(verdict "$OUT")" "and the cause is ABSENT, not UNKNOWN"
-notwant 'lpm_levels.sleep_disabled = ' "$OUT" "and it does not print a value it did not read"
-FAKE_CMDLINE=clean run ""
-want 'ABSENT AT THE PARAMETER' "$(verdict "$OUT")" "a cmdline without the key: ABSENT"
-want 'lpm_levels.sleep_time_override=0' "$OUT" "the other lpm parameters are still shown"
+want 'PRESENT AT THE PARAMETER' "$(verdict "$OUT")" "but the verdict follows the LIVE parameter, not the cmdline"
+want 'they DISAGREE' "$OUT" "and section 1 says the two halves disagree"
+notwant 'lpm_levels.sleep_disabled = ' "$OUT" "and it does not print a cmdline value it did not read"
+FAKE_CMDLINE=
+# (b) Both halves agree the ladder is ALLOWED: a cmdline without the key AND the parameter reading 0.
+#     This is the only shape that earns ABSENT, and it has to be reachable.
+FAKE_CMDLINE=clean FAKE_LPMPAR=zero run ""
+want 'ABSENT AT THE PARAMETER' "$(verdict "$OUT")" "cmdline clean and parameter 0: that is ABSENT"
+want 'both agree the ladder is ALLOWED' "$OUT" "section 1 reads the two together and says so"
+[ "$RC" = 0 ] && ok "and it exits 0 (an absent cause is a measurement, not an unknown)" || bad "it exited $RC"
+FAKE_CMDLINE=
+# (c) The reverse disagreement, which is what the FIX LOOKS LIKE: the cmdline still asks for the ladder
+#     off and the driver has it on. The script must name that shape rather than call it a contradiction.
+FAKE_LPMPAR=zero run ""
+want 'sleep_disabled = 0' "$OUT" "the live parameter's value is printed as a value"
+want 'they DISAGREE' "$OUT" "with the cmdline still asking for it off"
+want 'the shape of the fix' "$(verdict "$OUT")" "and the verdict names what wrote to it"
+FAKE_LPMPAR=
+# (d) The directory present and the parameter absent: the driver did not register it on this boot. That
+#     is not the same as "the ladder is allowed", so it must be UNKNOWN and exit 1.
+FAKE_LPMPAR=nofile run ""
+want 'sleep_disabled: MISSING on this boot' "$OUT" "a missing parameter file says so"
+want 'a reading about the DRIVER on this boot' "$OUT" "and says which side of the reading that is"
+want 'UNKNOWN: .*could not be read' "$(verdict "$OUT")" "the verdict carries UNKNOWN for that half"
+[ "$RC" = 1 ] && ok "a missing parameter file exits 1" || bad "it exited $RC"
+FAKE_LPMPAR=
+# (e) The whole lpm_levels module directory absent -- a different fault from (d), same verdict.
+FAKE_LPMPAR=nodir run ""
+want 'MISSING. Either the driver is not in this kernel' "$OUT" "an absent module directory is named"
+want 'UNKNOWN: .*could not be read' "$(verdict "$OUT")" "and is UNKNOWN, not ABSENT"
+[ "$RC" = 1 ] && ok "an absent lpm_levels directory exits 1" || bad "it exited $RC"
+FAKE_LPMPAR=
+# (f) The cmdline unreadable while the driver's value IS readable: the live half answers the question, so
+#     this run exits 0 -- and it must SAY that the other half is unknown rather than stay silent about it.
 FAKE_CMDLINE=missing run ""
 want '/proc/cmdline: UNREADABLE' "$OUT" "an unreadable cmdline says so"
 want 'UNKNOWN rather than ABSENT' "$OUT" "and is not read as 'no parameter was set'"
-want 'UNKNOWN: .*cmdline could not be read' "$(verdict "$OUT")" "the verdict carries the same distinction"
-[ "$RC" = 1 ] && ok "an unreadable cmdline exits 1" || bad "it exited $RC"
+want 'The cmdline half is UNKNOWN' "$(verdict "$OUT")" "the verdict notes which half it could not read"
+want 'it is what a fix would change' "$(verdict "$OUT")" "and says which half decides"
+[ "$RC" = 0 ] && ok "and the readable half is enough to decide, so it exits 0" || bad "it exited $RC"
 FAKE_CMDLINE=
+# (g) Both halves unreadable is the only shape that makes this cause unanswerable from either side.
+FAKE_CMDLINE=missing FAKE_LPMPAR=nodir run ""
+want 'neither half of this question has an answer' "$(verdict "$OUT")" "both halves unreadable says exactly that"
+[ "$RC" = 1 ] && ok "and it exits 1" || bad "it exited $RC"
+FAKE_CMDLINE= FAKE_LPMPAR=
 
-# ==================================================================================================
-echo
 echo "== 7. the kernel's own side: cooling devices, disabled zones, and the governor direction =="
 # ==================================================================================================
 FAKE_COOL=2 run ""

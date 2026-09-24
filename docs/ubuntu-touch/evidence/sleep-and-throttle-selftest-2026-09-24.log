@@ -1,5 +1,6 @@
-scripts/host/zl1-sleep-and-throttle-selftest.sh: line 155: $1: unbound variable
-scripts/host/zl1-sleep-and-throttle-selftest.sh: line 155: $1: unbound variable
+scripts/host/zl1-sleep-and-throttle-selftest.sh: line 161: /sys/module/lpm_levels/parameters/sleep_disabled: No such file or directory
+scripts/host/zl1-sleep-and-throttle-selftest.sh: line 161: $1: unbound variable
+scripts/host/zl1-sleep-and-throttle-selftest.sh: line 161: $1: unbound variable
 mkdir: cannot create directory ‘’: No such file or directory
 zl1 sleep and throttle -- offline self-test
   script under test: /mnt/data/zl1-bb10/scripts/host/../device/zl1-sleep-and-throttle.sh
@@ -11,9 +12,11 @@ PASS  the zone-mode mutation really differs from the shipped file
 PASS  the guard CATCHES a write to a thermal zone's mode
 PASS  and names the line it found
 PASS  the guard CATCHES a write to a cpuidle state's disable flag
+PASS  the guard CATCHES a write to the lpm_levels parameter -- the fix this probe must not perform
+PASS  and names the line it found
 PASS  an arrow before a path is prose, not a write
 PASS  and a real redirect is still caught, spaced and unspaced
-PASS  a full run left the fake device BYTE-FOR-BYTE identical (252 lines of manifest)
+PASS  a full run left the fake device BYTE-FOR-BYTE identical (258 lines of manifest)
 PASS  and the manifest notices a one-byte change to a file the probe reads
 
 == 1. the guard: not the zl1 ==
@@ -26,6 +29,8 @@ PASS  --explain exits 0
 PASS  it explains that the counters are the evidence
 PASS  and why the temperatures are NOT re-printed here
 PASS  and names the files it deliberately does not write
+PASS  including the one that IS the fix, by its full path
+PASS  and says why that one matters: the fix is a write, not a boot image
 PASS  --explain reads no device file
 
 == 3. the baseline: the real device's shape, read end to end ==
@@ -75,18 +80,32 @@ PASS  and no share is invented for a CPU whose counters are all zero
 PASS  and it is not confused with an unreadable counter
 PASS  a fully-read run exits 0 even when the news is bad
 
-== 6. the cmdline: three readings that must stay three ==
+== 6. section 1's TWO halves: the cmdline and the live parameter, kept apart ==
 PASS  the key absent is reported as absent
 PASS  while the OTHER power parameters are still printed
-PASS  and the cause is ABSENT, not UNKNOWN
-PASS  and it does not print a value it did not read
-PASS  a cmdline without the key: ABSENT
-PASS  the other lpm parameters are still shown
+PASS  but the verdict follows the LIVE parameter, not the cmdline
+PASS  and section 1 says the two halves disagree
+PASS  and it does not print a cmdline value it did not read
+PASS  cmdline clean and parameter 0: that is ABSENT
+PASS  section 1 reads the two together and says so
+PASS  and it exits 0 (an absent cause is a measurement, not an unknown)
+PASS  the live parameter's value is printed as a value
+PASS  with the cmdline still asking for it off
+PASS  and the verdict names what wrote to it
+PASS  a missing parameter file says so
+PASS  and says which side of the reading that is
+PASS  the verdict carries UNKNOWN for that half
+PASS  a missing parameter file exits 1
+PASS  an absent module directory is named
+PASS  and is UNKNOWN, not ABSENT
+PASS  an absent lpm_levels directory exits 1
 PASS  an unreadable cmdline says so
 PASS  and is not read as 'no parameter was set'
-PASS  the verdict carries the same distinction
-PASS  an unreadable cmdline exits 1
-
+PASS  the verdict notes which half it could not read
+PASS  and says which half decides
+PASS  and the readable half is enough to decide, so it exits 0
+PASS  both halves unreadable says exactly that
+PASS  and it exits 1
 == 7. the kernel's own side: cooling devices, disabled zones, and the governor direction ==
 PASS  registered cooling devices are counted
 PASS  and listed with their state
@@ -111,6 +130,6 @@ PASS  --quiet still prints the UNANSWERED verdict
 PASS  with its exit code
 
 == 9. the health check cites this harness's count, and that citation cannot drift ==
-PASS  the health check cites 88 checks, and this run has exactly that many
+PASS  the health check cites 107 checks, and this run has exactly that many
 
-pass=88 fail=0
+pass=107 fail=0

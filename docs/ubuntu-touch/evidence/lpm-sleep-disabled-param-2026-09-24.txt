@@ -1,0 +1,179 @@
+lpm_levels.sleep_disabled is a WRITABLE MODULE PARAMETER, not a __setup knob
+==========================================================================
+zl1 / LeEco Pro3 (msm8996pro), serial 33e80afe
+read offline from the SAME boot image the port boots, 2026-09-24
+read-only: nothing was written to any device, and no device was involved at all
+==========================================================================
+
+WHAT THIS CORRECTS
+------------------
+Docs 121 (and the header comment of scripts/device/zl1-sleep-and-throttle.sh) recorded that
+`lpm_levels.sleep_disabled` is a kernel __setup parameter -- a BOOT-time knob -- and therefore that
+the device-side reading of it is /proc/cmdline and NOT /sys/module/lpm_levels/parameters/.
+
+That is wrong, and it is the load-bearing half of the conclusion, because it decides what the FIX is:
+
+  * if it is a __setup knob, the only fix is a different cmdline   -> a new boot image -> a FLASH;
+  * if it is a module parameter, the fix is a RUNTIME write        -> no flash, no reboot, and it is
+                                                                      measurable before and after.
+
+It is a module parameter. Its sysfs file is writable (mode 0664). Below is the byte-level reading, and
+the calibration that makes it a reading rather than a guess.
+
+THE IMAGE AND THE COMMAND
+-------------------------
+$ abootimg -x boot-v63.img /tmp/bootimg.cfg /tmp/zImage /tmp/initrd.img      # the port's own image
+$ python3 - <<'EOF'
+import zlib
+raw = open('/tmp/kernel.bin','rb').read()        # the kernel section split out of boot.img
+z = zlib.decompressobj(31); d = z.decompress(raw)
+open('/tmp/vmlinux.bin','wb').write(d)
+print('kernel:', len(d), 'bytes; appended DTBs:', len(z.unused_data))
+EOF
+kernel: 27529728 bytes; appended DTBs: 2052801
+   # zlib.decompressobj(31) and NOT gzip.decompress(): the kernel stream is followed by the appended
+   # DTBs, so a plain gunzip ends in BadGzipFile(b'\xd0\r') -- the FDT magic of the first tree.
+
+THE LOAD ADDRESS, DERIVED AND NOT ASSUMED
+-----------------------------------------
+The decompressed kernel is a flat arm64 Image with no ELF headers, so section names are not available
+and a pointer has to be related back to a file offset before anything can be located. The base was
+found by consistency rather than by choosing one: collect every 8-byte word in the high VA range,
+and for each candidate base A test whether A + (file offset of each of the five lpm_levels.* strings)
+is itself a word in the image.
+
+    candidate base A = 0xffffffc000080000     score 5 / 5 strings referenced
+    string file offsets: sleep_disabled 16722424, print_parsed_dt 16722456,
+                         sleep_time_override 16722488, menu_select 16722520, tmr_add 16722544
+
+THE FINDING
+-----------
+Every one of those five names is referenced from a table of stride 32 bytes. Decoding that table as
+`struct kernel_param` (kernel 4.4 layout: {name, ops, perm:u16, level:s8, flags:u8, arg}) gives a
+self-consistent picture -- names, ops pointers, permission modes and value pointers all land where
+they should:
+
+    @0x179d980 name=cpuidle.off                     ops=0xffffffc0018ea638 perm=0444 arg=0xffffffc001c45944
+    @0x179d9a0 name=lpm_levels.sleep_disabled       ops=0xffffffc0018ea578 perm=0664 arg=0xffffffc001c45a31
+    @0x179d9c0 name=lpm_levels.print_parsed_dt      ops=0xffffffc0018ea578 perm=0664 arg=0xffffffc001c45a30
+    @0x179d9e0 name=lpm_levels.sleep_time_override  ops=0xffffffc0018ea638 perm=0664 arg=0xffffffc001c45988
+    @0x179da00 name=lpm_levels.menu_select          ops=0xffffffc0018ea578 perm=0664 arg=0xffffffc001c45a32
+    @0x179da20 name=lpm_levels.tmr_add              ops=0xffffffc0018ea618 perm=0664 arg=0xffffffc0019b1ff0
+    @0x179da40 name=lpm_levels.ref_stddev           ops=0xffffffc0018ea618 perm=0664 arg=0xffffffc0019b1fec
+    @0x179da60 name=lpm_levels.lpm_prediction       ops=0xffffffc0018ea578 perm=0664 arg=0xffffffc0019b1fe8
+
+Four things to notice, and none of them is interpretation:
+
+ 1. These are `struct kernel_param` entries, in the kernel's __param section -- NOT __setup entries.
+    A __setup entry is {char *str, int (*fn)(char *)}: 16 bytes, no ops table, no permission word.
+    These are 32 bytes with an ops pointer and a permission mode.
+
+ 2. The permission mode for `sleep_disabled` is 0664 -- owner-writable. So the file
+    /sys/module/lpm_levels/parameters/sleep_disabled exists and can be WRITTEN at runtime.
+    (Compare the entry immediately before it: `cpuidle.off` is 0444, read-only. That asymmetry is
+    real and it is the useful part: `off` can only be set on the command line, `sleep_disabled` cannot.)
+
+ 3. The names carry the `lpm_levels.` prefix, and that is not decoration: for a BUILT-IN driver the
+    kernel prepends KBUILD_MODNAME "." to a module_param's name (MODULE_PARAM_PREFIX). The prefix is
+    evidence that lpm_levels is built in rather than loaded, and it is exactly the prefix sysfs itself
+    strips to build the parameter path -- `<modname>/parameters/<rest>`.
+
+ 4. The value pointers are three ADJACENT BYTES in .data:
+        0xffffffc001c45a30  print_parsed_dt
+        0xffffffc001c45a31  sleep_disabled
+        0xffffffc001c45a32  menu_select
+    which is what adjacent `static bool` variables look like. They also share one ops pointer
+    (0xffffffc0018ea578), so all three are the same type -- bool.
+
+THE CALIBRATION, WITHOUT WHICH NONE OF THE ABOVE IS DECODING AND NOT COINCIDENCE
+--------------------------------------------------------------------------------
+The same table holds parameters whose sysfs paths are famous and whose behaviour is known to be
+writable. If the field offsets or the stride were wrong, these would not come out at the modes the
+kernel's own documentation and every Android device's /sys show:
+
+    @0x179c000 perm=0644 cdc_ncm.prefer_mbim
+    @0x179c020 perm=0444 nousb
+    @0x179c040 perm=0644 usbcore.autosuspend              <- /sys/module/usbcore/parameters/autosuspend
+    @0x179c060 perm=0644 usbcore.use_both_schemes
+    @0x179c080 perm=0644 usbcore.old_scheme_first
+    @0x179c0a0 perm=0644 usbcore.initial_descriptor_timeout
+    @0x179c0c0 perm=0444 usbcore.blinkenlights
+    @0x179c0e0 perm=0644 usbcore.skip_extended_resume_delay
+    @0x179c100 perm=0644 usbcore.authorized_default
+    @0x179c120 perm=0644 usbcore.usbfs_memory_mb          <- /sys/module/usbcore/parameters/usbfs_memory_mb
+    @0x179c140 perm=0644 usbcore.usbfs_snoop
+    @0x179c160 perm=0644 phy_msm_qusb.tune2
+
+`usbcore.autosuspend` and `usbcore.usbfs_memory_mb` are both writable on every Linux system, and both
+come out 0644 here; the two that are read-only by design (`nousb`, `blinkenlights`) come out 0444. The
+decoder reproduces known values on known parameters, which is why its answer for the unknown one is
+worth acting on.
+
+REPRODUCE
+---------
+$ python3 - <<'EOF'
+import struct
+data = open('/tmp/vmlinux.bin','rb').read(); A = 0xffffffc000080000
+def show(name):
+    va = A + data.find(name.encode())
+    p = 0
+    while True:
+        p = data.find(struct.pack('<Q', va), p)
+        if p < 0: break
+        pw = struct.unpack_from('<Q', data, p + 16)[0]
+        print('%-32s @%#x perm=%#06o  arg=%#x' % (name, p, pw & 0xffff,
+              struct.unpack_from('<Q', data, p + 24)[0]))
+        p += 1
+for n in ('usbcore.autosuspend', 'usbcore.usbfs_memory_mb', 'cpuidle.off',
+          'lpm_levels.sleep_disabled', 'lpm_levels.menu_select'):
+    show(n)
+EOF
+usbcore.autosuspend              @0x12666d8 perm=0o126550  arg=0xffffffc00102ad88
+usbcore.autosuspend              @0x179c040 perm=0o0644  arg=0xffffffc00196d6b0
+usbcore.usbfs_memory_mb          @0x1266828 perm=0o131640  arg=0xffffffc00102b980
+usbcore.usbfs_memory_mb          @0x179c120 perm=0o0644  arg=0xffffffc00196e510
+cpuidle.off                      @0x126e018 perm=0o24520  arg=0xffffffc001072960
+cpuidle.off                      @0x179d980 perm=0o0444  arg=0xffffffc001c45944
+lpm_levels.sleep_disabled        @0x126e058 perm=0o25070  arg=0xffffffc001072a58
+lpm_levels.sleep_disabled        @0x179d9a0 perm=0o0664  arg=0xffffffc001c45a31
+lpm_levels.menu_select           @0x126e070 perm=0o25210  arg=0xffffffc001072aa0
+lpm_levels.menu_select           @0x179da00 perm=0o0664  arg=0xffffffc001c45a32
+
+WHY EACH NAME HAS **TWO** HITS, AND WHICH ONE IS THE PARAMETER TABLE
+-------------------------------------------------------------------
+Both hits are real and they are not both a parameter table. The `0x126xxxx` hits are a plain array of
+string pointers, one word apart -- its neighbours are the strings themselves, in order (lpm_probe,
+set_l2_mode, lpm_levels.sleep_disabled, lpm_levels.print_parsed_dt, ...). Read as a 32-byte struct it
+produces garbage in the mode field (`0o126550`), which is what a wrong table looks like.
+
+The `0x179xxxx` hits are 32 bytes apart and decode as {name, ops, mode, arg} with modes that match
+known parameters -- and that region is one contiguous block of them, `cdc_ncm`/`usbcore`/`lpm_levels`/
+`mmc_core` in sequence, which is the kernel's __param section.
+
+The rule that makes this a reading rather than a choice: **a table is identified by decoding, not by
+picking the hit that gives the answer you want.** The calibration block above is printed for exactly
+that reason -- the same decoder, the same offsets, on parameters whose modes are already known, come
+out 0644/0444/0000 where Linux says they should.
+
+WHAT THIS DOES **NOT** PROVE
+----------------------------
+  * It does NOT prove that writing 0 to the parameter re-enables the ladder. A writable sysfs file
+    means the driver accepted a parameter of that name at init; whether its `set` handler has an
+    effect on a running system is a question about the driver's source, and that source is not on
+    this device (and was not consulted here).
+  * It does NOT prove the third heat cause is real. The ladder being off is still a hypothesis with a
+    named mechanism. The consequence -- the cpuidle counters -- is what decides, on the device.
+  * It changes only the FIX's risk, not the finding's status: the fix is now a runtime write rather
+    than a boot image, which means it can be tried, measured and reverted inside one boot without
+    touching a partition.
+
+WHAT IT CHANGES
+---------------
+scripts/device/zl1-sleep-and-throttle.sh reads BOTH now, and prints which is which, because they
+answer different questions:
+
+  /proc/cmdline                                        what this boot was TOLD
+  /sys/module/lpm_levels/parameters/sleep_disabled     what the driver HAS right now
+
+They can disagree -- that is the point of reading both, and it is the reading that tells you whether
+someone has already written to it.

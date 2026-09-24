@@ -22,11 +22,22 @@
 #
 #         lpm_levels.sleep_disabled=1
 #
-#     The kernel's own parameter table (checked in the decompressed boot kernel: the strings
-#     `lpm_levels.sleep_disabled`, `lpm_levels.sleep_time_override`, `lpm_levels.menu_select`,
-#     `lpm_levels.lpm_prediction`, `cpuidle.off` sit together in one __setup table) accepts exactly that
-#     knob. A SoC that is told not to sleep stays warm while it is doing nothing -- which is a different
-#     symptom from "a process is burning a core", and neither of the two fixes above would touch it.
+#     The decompressed boot kernel says what that knob IS, and the answer was corrected on 2026-09-24
+#     after this script's first version had it wrong: it is a MODULE PARAMETER of the built-in
+#     lpm_levels driver, not a __setup boot argument. In the kernel's __param section the entry
+#     decodes as {name, ops, mode, arg} with mode **0664** -- owner-writable -- so its sysfs file
+#     exists and can be changed while the device runs:
+#
+#         /sys/module/lpm_levels/parameters/sleep_disabled
+#
+#     (The entry right beside it, `cpuidle.off`, is 0444: settable on the command line only. The
+#     asymmetry matters, because it is the difference between "this needs a new boot image and a
+#     flash" and "this is a write".) That is why section 1 reads BOTH the cmdline and this file -- one
+#     says what the boot was TOLD, the other says what the driver HAS now, and they can disagree.
+#     The byte-level reading and its calibration are in
+#     docs/ubuntu-touch/evidence/lpm-sleep-disabled-param-2026-09-24.txt. A SoC that is told not to
+#     sleep stays warm while it is doing nothing -- a different symptom from "a process is burning a
+#     core", and neither of the two fixes above would touch it.
 #
 # THAT IS A HYPOTHESIS WITH A NAMED MECHANISM, not a finding. What this script does is measure the
 # CONSEQUENCE rather than the parameter: the parameter's name is only evidence, the cpuidle counters are
@@ -37,10 +48,11 @@
 #
 # THE SAFETY LINE, and it is the same one as its siblings:
 #   * it writes NOTHING -- no sysfs node, no property, no module, no service, no signal;
-#   * it is never even TEMPTED to, and this one needs saying out loud: the cpuidle `disable` files and
-#     the thermal zones' `mode`/`policy` ARE writable, and they are exactly the files a script like this
-#     would normally "fix" while it is there. It reads them. Changing them is a decision, not a reading,
-#     and nothing here takes it;
+#   * it is never even TEMPTED to, and this one needs saying out loud: the cpuidle `disable` files, the
+#     thermal zones' `mode`/`policy` and now `lpm_levels/parameters/sleep_disabled` itself ARE writable,
+#     and they are exactly the files a script like this would normally "fix" while it is there. The
+#     last one is the fix for the very question this script asks. It READS it. Changing it is a
+#     decision, not a reading, and nothing here takes it;
 #   * it opens no block device and unbinds nothing (unbinding cnss on this device is an EDL trip,
 #     docs 49).
 #
@@ -113,10 +125,18 @@ if [ "$MODE" = explain ]; then
   cat <<'EOF'
 zl1 sleep and throttle -- what each reading decides, and why it is this reading
 
-  1. WHAT THIS BOOT WAS TOLD.
-     /proc/cmdline, for the power-related parameters only, and printed as whole lines because the value
-     is the point (`lpm_levels.sleep_disabled=1` is a sentence; "the parameter is present" is not).
-     This is the only place on a running device that records what the boot was given.
+  1. WHAT THIS BOOT WAS TOLD, AND WHAT THE DRIVER HAS NOW.
+     Two readings, because they are two different questions and they can disagree:
+       /proc/cmdline, the power-related parameters only, printed as whole lines because the value is
+       the point (`lpm_levels.sleep_disabled=1` is a sentence; "the parameter is present" is not);
+       and /sys/module/lpm_levels/parameters/sleep_disabled, which is the driver's live value.
+     The first is what the boot was GIVEN. The second is what the driver HAS, and it is the one a fix
+     would write -- it is mode 0664, so it can be changed while the device runs, with no new boot
+     image and no flash (docs 121's correction; the calibration that establishes the mode is in
+     evidence/lpm-sleep-disabled-param-2026-09-24.txt).
+     This script READS both and writes neither. The `parameters/` directory is listed generically --
+     a parameter whose name differs from what this script expects must show up as an extra line, not
+     disappear because nothing matched.
 
   2. THE LADDER THE HARDWARE ACTUALLY HAS.
      /proc/device-tree/soc/qcom,lpm-levels, walked for every level's label and latency. This is read
@@ -167,8 +187,12 @@ always "  boot: $(rd /proc/sys/kernel/random/boot_id)"
 always "  kernel: $(rd /proc/sys/kernel/osrelease)"
 
 # ==================================================================================================
-hdr "1. what this boot was told"
+hdr "1. what this boot was told, and what the driver has now"
 # ==================================================================================================
+# Initialised before the reads rather than inside their branches: with `set -u` a variable that a
+# branch did not reach is a crash, and a crash in the verdict is the worst place for one.
+CMDLINE_OK=0; LPM_PARAM_OK=0
+CAUSE_LPM=unknown; CAUSE_LPM_SYSFS=unknown; SLEEP_DISABLED=; SYSFS_SD=; LPMPAR=/sys/module/lpm_levels/parameters
 # The power-related parameters, by name, as whole lines. `grep -a` because /proc/cmdline is not a text
 # file as far as some tools are concerned, and a read that returns nothing must not read as "no
 # parameters were set" -- so the read is proved first and the none-branch is named.
@@ -198,6 +222,67 @@ else
   say "   /proc/cmdline: UNREADABLE. What this boot was told is therefore UNKNOWN -- which is not the"
   say "   same as 'no parameter was set', and the verdict says UNKNOWN rather than ABSENT (docs 117)."
   CAUSE_LPM="unknown"
+fi
+
+# --------------------------------------------------------------------------------------------------
+# The SAME question from the other side, and the correction this script owes its own first version:
+# `lpm_levels.sleep_disabled` is not a __setup boot argument, it is a module parameter of the built-in
+# lpm_levels driver with mode 0664 -- i.e. this file exists and is WRITABLE on a running device.
+#
+# It is read here and NOT written. It is the most tempting file in the whole script -- it is the fix
+# for the question the script is asking -- which is exactly why the line is drawn here rather than
+# somewhere more convenient. The directory is listed generically so an unexpected parameter name is a
+# line of output instead of a silence.
+# --------------------------------------------------------------------------------------------------
+if [ -d "$LPMPAR" ]; then
+  LPM_PARAM_OK=1
+  say "   /sys/module/lpm_levels/parameters/ (read, not written):"
+  LPMLS=$(ls -1 "$LPMPAR" 2>/dev/null | tr '\n' ' ')
+  if [ -n "$LPMLS" ]; then say "     $LPMLS"
+  else say "     (none: the directory is there and holds no parameters)"; fi
+  if [ -e "$LPMPAR/sleep_disabled" ]; then
+    SYSFS_SD=$(rd "$LPMPAR/sleep_disabled")
+    CAUSE_LPM_SYSFS="read"
+    SYSFS_MODE=$(ls -l "$LPMPAR/sleep_disabled" 2>/dev/null | awk '{print $1}')
+    say "   -> sleep_disabled = $SYSFS_SD  (mode ${SYSFS_MODE:-UNREADABLE})"
+    case "$SYSFS_SD" in
+    0) say "      (0 = the driver's ladder is allowed. Section 3 still decides whether it is used.)";;
+    1) say "      (1 = the driver has it OFF, right now. Non-zero is what the cmdline asks for too.)";;
+    *) say "      (not the 0/1 this script expects -- reported as read, not interpreted)";;
+    esac
+  else
+    say "   -> $LPMPAR/sleep_disabled: MISSING on this boot."
+    say "      The parameter is in the kernel (mode 0664 in the __param section), so its absence here"
+    say "      is a reading about the DRIVER on this boot -- e.g. lpm-levels did not probe -- and NOT"
+    say "      about the knob. The verdict reports UNKNOWN for this half rather than ABSENT."
+    CAUSE_LPM_SYSFS="unknown"
+  fi
+else
+  LPM_PARAM_OK=0
+  say "   $LPMPAR: MISSING. Either the driver is not in this kernel (it is: the __param entry is in"
+  say "   the boot image) or it did not register -- which is itself a reading. UNKNOWN, not ABSENT."
+  CAUSE_LPM_SYSFS="unknown"
+fi
+# The two halves read together, because a disagreement is the interesting case: the cmdline says what
+# the boot was told, the sysfs file says what the driver has, and if they differ then somebody wrote to
+# it (which is what the fix does) or the driver never consumed it.
+if [ "$CMDLINE_OK" = 1 ] && [ "$LPM_PARAM_OK" = 1 ]; then
+  CMD_ASKED=no
+  case "$CAUSE_LPM" in cmdline-asked) CMD_ASKED=yes ;; esac
+  SYS_ON=no
+  [ "${SYSFS_SD:-x}" = 0 ] || SYS_ON=yes
+  if [ "$CMD_ASKED" = yes ] && [ "$SYS_ON" = yes ]; then
+    say "   => both agree the ladder is OFF (cmdline asked for it; the driver has it off)."
+  elif [ "$CMD_ASKED" = no ] && [ "$SYS_ON" = no ]; then
+    say "   => both agree the ladder is ALLOWED. If section 3 still shows no deep-state time, then the"
+    say "      ladder being off is NOT the explanation and this cause is refuted for this boot."
+  elif [ "$CMD_ASKED" = no ] && [ "$SYS_ON" = yes ]; then
+    say "   => they DISAGREE: this boot's cmdline did not ask for sleep to be off, and the driver has"
+    say "      it off anyway. Something wrote to $LPMPAR/sleep_disabled."
+  else
+    say "   => they DISAGREE: the cmdline asked for sleep to be off and the driver has it ON. That is"
+    say "      what a fix that writes to $LPMPAR/sleep_disabled looks like from here."
+  fi
 fi
 
 # ==================================================================================================
@@ -397,20 +482,46 @@ always "     NOT MEASURED HERE, ON PURPOSE: that needs a tick-delta window over 
 always "     zl1-thermal.sh measures exactly that (its --ab mode is the doc 72 A/B). Read it there; a"
 always "     second implementation of the same window is a second chance to get the arithmetic wrong."
 always "   cause 3 -- the SoC is not allowed to use its low-power modes:"
-case "$CAUSE_LPM" in
-unknown) always "     UNKNOWN: /proc/cmdline could not be read, so what this boot was told is not known."; UNK=1 ;;
-cmdline-clean)
-  always "     ABSENT AT THE PARAMETER: this boot was not given lpm_levels.sleep_disabled. Section 3's"
-  always "     counters are what say whether the ladder is being used anyway."
+# The verdict is built on the SYFS reading when there is one, because that is what the driver has NOW --
+# the cmdline reading is what the boot was told, and the two can differ (section 1 says when). This is
+# the correction docs 121 had to make: the parameter is a module parameter with mode 0664, so the file
+# exists on a running device and a fix is a write to it rather than a new boot image.
+case "$CAUSE_LPM_SYSFS" in
+read)
+  if [ "$CMDLINE_OK" != 1 ]; then
+    always "     (The cmdline half is UNKNOWN -- /proc/cmdline could not be read -- so what this boot was"
+    always "      TOLD is not known. The reading below is the driver's live value, and it is the one that"
+    always "      decides this cause: it is what a fix would change.)"
+  fi
+  if [ "${SYSFS_SD:-x}" = 0 ]; then
+    always "     ABSENT AT THE PARAMETER: ${LPMPAR}/sleep_disabled reads 0, so the driver's ladder is"
+    always "     ALLOWED right now. Section 3's counters are what say whether it is then used."
+    if [ "$CAUSE_LPM" = cmdline-asked ]; then
+      always "     (Note the disagreement with section 1: this boot's cmdline asked for it off and the"
+      always "      driver has it on, so SOMETHING WROTE TO IT after boot -- that is the shape of the fix.)"
+    fi
+  else
+    always "     PRESENT AT THE PARAMETER: ${LPMPAR}/sleep_disabled reads ${SYSFS_SD} -- the driver has"
+    always "     the low-power modes OFF right now, and that file is mode 0664, i.e. WRITABLE while the"
+    always "     device runs. So the fix for this cause is a WRITE, not a new boot image: no flash and no"
+    always "     reboot, and it can be measured and reverted inside one boot."
+    case "$CPUIDLE_OK" in
+    1) always "     Section 3's counters say whether it is having its effect. Read the two together: the"
+       always "     parameter is evidence about intent, the counters are evidence about behaviour, and if"
+       always "     the counters are still moving the parameter is not having its effect." ;;
+    0) always "     LIKELY, BUT UNMEASURED: the parameter says the ladder is off and the cpuidle counters"
+       always "     could not be read, so the effect was NOT measured. UNKNOWN, not proven."; UNK=1 ;;
+    esac
+  fi
   ;;
-cmdline-asked)
-  case "$CPUIDLE_OK" in
-  1) always "     THE PARAMETER IS SET (section 1) and section 3 shows whether the deep states are used."
-     always "     Read the two together: the parameter is evidence about intent, the counters are evidence"
-     always "     about behaviour, and if the counters are moving the parameter is not having its effect." ;;
-  0) always "     LIKELY, BUT UNMEASURED: the boot was told lpm_levels.sleep_disabled=<nonzero> and the"
-     always "     cpuidle counters could not be read, so the effect was NOT measured. UNKNOWN, not proven."; UNK=1 ;;
+unknown)
+  always "     UNKNOWN: ${LPMPAR}/sleep_disabled could not be read, so what the driver has NOW is not"
+  always "     known -- and that is the half a fix would touch."
+  case "$CAUSE_LPM" in
+  unknown) always "     (/proc/cmdline was unreadable too, so neither half of this question has an answer.)" ;;
+  *) always "     (/proc/cmdline WAS readable: this boot was given lpm_levels.sleep_disabled=${SLEEP_DISABLED:-<unset>}.)" ;;
   esac
+  UNK=1
   ;;
 esac
 always "   and the kernel's own side, for completeness:"
