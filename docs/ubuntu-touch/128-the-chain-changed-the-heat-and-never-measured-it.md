@@ -29,7 +29,7 @@
 | 怎么会？ | 它把假仓库的 `scripts/device` 做成**指向真目录的符号链接**，然后用 `mkdir -p`（穿过链接，静默成功）+ `>` 往里面"放夹具" —— **写进的是仓库**。而它上面两行的注释还写着"链推的是真的那个脚本" |
 | 修法？ | 每个文件单独链接（真的证明脚本仍然是真文件），夹具是**这个 harness 自己树里的普通文件**；写操作走一个 `wrote()` 守卫（**目标是符号链接就拒绝**）；并且**整轮前后对真文件取一次哈希**，红了就说明夹具又写进仓库了 |
 | 离线验证？ | harness **107 → 159 检查 / 0 失败**，变异 7 → **10** 个；新的一节 **9c** 是"这个 harness 没有改动它测的那棵树"（§5） |
-| 家族全量跑呢？ | **18 个 harness / 2066 检查 / 全绿**（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)/[`127`](127-the-host-can-also-be-the-thing-that-is-missing.md) 之后是 2014；这一轮 heat-chain 107 → 159） |
+| 家族全量跑呢？ | **18 个 harness / 2066 检查 / 全绿**（[`126`](126-the-path-was-decided-by-what-the-stub-omits.md)/[`127`](127-the-host-can-also-be-the-thing-that-is-missing.md) 之后是 2014；这一轮 heat-chain 107 → 159。**这个数字当轮还是手算的**——[`129`](129-the-family-total-was-typed-and-no-harness-can-see-the-tree.md) 之后它是一条命令的输出，19 个 harness / 2155 检查） |
 | 动设备了吗？ | **没有。** |
 
 ---
