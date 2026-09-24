@@ -397,10 +397,18 @@ proof_unclear proof-unclear
 run "$S" --yes
 [ "$RC" = 1 ] && ok "proof-unclear: exit 1 (a stopped chain, not a crash)" || bad "proof-unclear exited $RC"
 notwant 'install-retire-debug-keeper' "$(order)" "the keeper was NOT retired"
-notwant 'install-cpufreq-governor' "$(order)" "and the chain stopped there rather than running the next step anyway"
+# THE LICENCE'S SCOPE, asserted from both sides (docs 118 as amended): step 4 licenses the KILL, and
+# only the kill. The governor changes cpufreq scaling, removes no process and touches no address, so a
+# refusal must NOT lose it -- because the proof's verdict is a race and most boots will refuse.
+want 'install-cpufreq-governor' "$(order)" "and the governor WAS installed anyway (it needs no licence from the proof)"
+want 'other half needs NO licence' "$OUT" "with the reason said out loud, not left to be inferred"
+want 'THE KEEPER IS STILL IN PLACE' "$OUT" "and the half that is MISSING is named as missing"
+want 'governors: interactive' "$OUT" "the read-back was taken after the governor step"
 want 'REFUSING TO RETIRE THE KEEPER' "$OUT" "it says so out loud"
 want 'still owns the' "$OUT" "and says the keeper still owns the addresses, i.e. the phone is reachable"
 want '^01-netwatch-deploy *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and it left an archive that says how far it got"
+want '^06-cpufreq-governor *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "which lists the governor as the step that DID run"
+notwant '^05-retire-keeper' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and does not list a step that was never attempted"
 
 scen noverdict
 printf 'the proof ran but printed no verdict line at all\n' > "$W/proof.txt"
@@ -567,6 +575,34 @@ if mutate noedlrefuse 's#^STATE=\$(edl_state)$#STATE=present#'; then
   [ "$(grep -c '^CALLEE' "$ACT")" != 0 ] && ok "mutation 'no EDL refusal': something ran against a phone in EDL (the check is live)" \
                                         || bad "the 'no EDL refusal' mutation ran nothing (rc=$RC) -- it did not land"
   FP_STATE=present
+fi
+# (6) the governor gated on the proof again: the over-gate docs 118's amendment removed
+# The licence step 4 gives is for the KILL. This mutant puts it back in front of the governor -- the
+# behaviour the chain had until the scope was corrected -- and the observable difference is that a boot
+# whose proof is not clean installs NEITHER half of the heat fix. The sed joins the two lines of the
+# invocation in the refusal branch (the `N`), so both the `step` wrapper and its argument line go.
+if mutate nogovrefuse '/independent of the address proof/{N
+s#.*#  : #}'; then
+  scen mut-nogovrefuse
+  proof_unclear proof-unclear
+  mutant_run "$CHAIN_DIR/nogovrefuse.sh" "$S"
+  [ "$RC" = 1 ] && ok "and it still stops (the refusal itself is untouched)" || bad "the over-gate mutant exited $RC"
+  notwant 'install-cpufreq-governor' "$(order)" "mutation 'governor gated on the proof': half the heat fix is lost to a race"
+  notwant '06-cpufreq-governor' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the archive does not claim it ran"
+  proof_obtained
+fi
+# (7) the kill without the licence: the safety-critical direction of the same branch
+# A mutation that makes the refusal branch fall through to step 5, i.e. a chain that kills the keeper on
+# a proof that did not license it. This is the one that could cost the phone its addresses.
+if mutate killanyway 's#^if \[ "\$PROOF_RC" != 0 \] || \[ "\$VERDICT" != "proof-obtained" \]; then#if false; then #'; then
+  scen mut-killanyway
+  proof_unclear proof-unclear
+  mutant_run "$CHAIN_DIR/killanyway.sh" "$S"
+  [ -n "$(callees)" ] && ok "and the mutant reached the steps, so the licence test is what is being read" \
+                      || bad "the 'kill anyway' mutant never got to step 1 (rc=$RC)"
+  want 'install-retire-debug-keeper args=--install --now --after-proof' "$(callees)" \
+    "mutation 'kill anyway': the keeper is retired on a verdict that did not license it (the check is live)"
+  proof_obtained
 fi
 
 # ==================================================================================================

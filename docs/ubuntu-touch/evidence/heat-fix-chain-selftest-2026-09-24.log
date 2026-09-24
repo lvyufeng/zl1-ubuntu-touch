@@ -69,10 +69,15 @@ PASS  --settle 5 waits 5 s
 == 6. the licence: a verdict that is not exactly 'proof-obtained' does not kill anything ==
 PASS  proof-unclear: exit 1 (a stopped chain, not a crash)
 PASS  the keeper was NOT retired
-PASS  and the chain stopped there rather than running the next step anyway
+PASS  and the governor WAS installed anyway (it needs no licence from the proof)
+PASS  with the reason said out loud, not left to be inferred
+PASS  and the half that is MISSING is named as missing
+PASS  the read-back was taken after the governor step
 PASS  it says so out loud
 PASS  and says the keeper still owns the addresses, i.e. the phone is reachable
 PASS  and it left an archive that says how far it got
+PASS  which lists the governor as the step that DID run
+PASS  and does not list a step that was never attempted
 PASS  no verdict line at all: exit 1
 PASS  and nothing was killed
 PASS  the missing verdict is stated as missing, not as a failed proof
@@ -113,8 +118,15 @@ PASS  mutation 'weakexist': landed (it changes a line of the shipped script, and
 PASS  mutation 'weak preflight': an EMPTY backup no longer stops the chain (the check is live)
 PASS  mutation 'noedlrefuse': landed (it changes a line of the shipped script, and the mutant parses)
 PASS  mutation 'no EDL refusal': something ran against a phone in EDL (the check is live)
+PASS  mutation 'nogovrefuse': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  and it still stops (the refusal itself is untouched)
+PASS  mutation 'governor gated on the proof': half the heat fix is lost to a race
+PASS  and the archive does not claim it ran
+PASS  mutation 'killanyway': landed (it changes a line of the shipped script, and the mutant parses)
+PASS  and the mutant reached the steps, so the licence test is what is being read
+PASS  mutation 'kill anyway': the keeper is retired on a verdict that did not license it (the check is live)
 
 == 10. the citation in the health check is checked by the thing it cites ==
-PASS  the health check cites 95 checks, and this run has exactly that many
+PASS  the health check cites 107 checks, and this run has exactly that many
 
-pass=95 fail=0
+pass=107 fail=0

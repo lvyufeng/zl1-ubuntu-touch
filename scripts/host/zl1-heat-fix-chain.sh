@@ -20,6 +20,19 @@
 #   step here is offline-verified with its own harness, and each one REFUSES on its own terms -- this
 #   script adds no new safety argument, it only adds the ORDER and the ARITHMETIC OF ONE BOOT.
 #
+#   AND THE PROOF LICENSES STEP 5, NOT STEP 6. That distinction is the one place this chain does not
+#   simply stop at the first thing that did not go its way. What step 4 tests is whether something still
+#   owns rndis0's addresses, because the keeper is what owns them today and retiring it is what could
+#   leave them owned by nothing -- so a proof that does not come back `proof-obtained` leaves the keeper
+#   ALONE, and the device in the known-good state the refusal describes. Step 6 has no such dependency:
+#   the governor installer changes cpufreq scaling, removes no process, touches no address and restarts
+#   nothing (its own header says it deliberately does NOT stop the keeper). Gating it on the proof would
+#   therefore lose BOTH halves of the heat fix on every boot whose proof is not clean -- and docs 112
+#   measured that the verdict is a RACE, with `inconclusive` the expected reading on most boots. So the
+#   non-proven branch installs the governor and reports exactly which half is in. A step that RAN and
+#   FAILED is a different case and still stops the chain, because a failure leaves the device in a state
+#   nobody has read; a refusal leaves it in the one this chain just described.
+#
 #   On this device a boot is not free: every boot can end in EDL, and leaving EDL takes 10-20 s of
 #   holding the power button (docs 49 section 6). A chain of five hand-run commands with a 90 s wait in
 #   the middle is exactly the shape that gets half-done and then abandoned -- and half-done, in this
@@ -35,9 +48,10 @@
 #   --status         read-only: where is the chain on this boot? (no --yes needed, writes nothing)
 #   --quiet          print only the verdicts
 #
-# Exit codes: 0 the chain ran to the end; 1 a step failed (the archive says which, and where that left
-#             the device); 2 refused -- no --yes, or the device is not reachable; 3 interrupted (its
-#             own code, and an interrupt still archives what ran).
+# Exit codes: 0 the chain ran to the end; 1 the chain stopped short -- a step failed, or the proof did
+#             not license step 5 -- and the archive says which, and whether the governor half went in;
+#             2 refused -- no --yes, or the device is not reachable; 3 interrupted (its own code, and an
+#             interrupt still archives what ran).
 #
 # What it never does, in any mode: reboot the device, flash anything, run a QDL/firehose tool, write a
 # partition, or touch the forbidden partition set. Step 1's own installer requires a VERIFIED misc
@@ -200,6 +214,9 @@ if [ "$YES" != 1 ]; then
   say "       and kills the keeper on this boot -- the ~1 core of this 4-core SoC (docs 72 section 4b)."
   say "  6. install-cpufreq-governor.sh --install"
   say "       the other half of the heat fix: the image pins all four cores on 'performance'."
+  say "       This one is NOT licensed by step 4 and runs even when step 4 refuses -- it changes cpufreq"
+  say "       scaling, removes no process and touches no address. docs 112 measured the proof verdict as a"
+  say "       race, so a boot whose proof is not clean still gets this half of the fix."
   say
   say "  It reboots nothing, flashes nothing, and writes no partition. Exit 2 (nothing was run)."
   exit 2
@@ -392,10 +409,29 @@ if [ "$PROOF_RC" != 0 ] || [ "$VERDICT" != "proof-obtained" ]; then
   say "  addresses, so the phone is reachable and nothing needs a finger. Read 04-proof.txt, and use"
   say "  docs 112 (the verdict is a race, and 'inconclusive' is the expected reading on most boots)."
   say ""
+  # AND THE OTHER HALF STILL GOES IN. What step 4 licenses is RETIRING THE KEEPER -- it tests whether
+  # something still owns rndis0's addresses, and the keeper is what owns them. The governor has no such
+  # dependency: it changes cpufreq scaling, removes no process, touches no address and restarts nothing
+  # (its own header says it deliberately does not stop the keeper). Since docs 112 measured the verdict
+  # as a RACE whose expected reading is `inconclusive`, gating step 6 on step 4 would mean most boots
+  # install NEITHER heat fix when only one of them needs a licence. So it runs here, on the branch that
+  # refuses the kill, and the output says plainly which half is in.
+  #
+  # This is NOT the same as the rule that a failing step stops the chain, and the difference is the
+  # state the device is left in: a step that RAN and FAILED leaves a state nobody has read, and stopping
+  # is right; a refusal leaves the state this branch just described -- keeper alive, addresses owned,
+  # phone reachable.
+  say "== 6/6  the heat fix's other half needs NO licence from the proof -- installing it anyway"
+  step 06-cpufreq-governor "install the governor unit and apply it (independent of the address proof)" \
+    "$CPUFREQ" --install
+  say ""
   say "  State of the device now:"
   read_state
   archive
   say "  archive: $OUT"
+  say "  THE KEEPER IS STILL IN PLACE: ~1 core of this 4-core SoC is still going to it, and retiring it"
+  say "  needs a boot whose proof prints exactly '== verdict: proof-obtained'. The governor half IS in."
+  say "  Exit 1: the chain did not finish, and this archive says which half did."
   exit 1
 fi
 
