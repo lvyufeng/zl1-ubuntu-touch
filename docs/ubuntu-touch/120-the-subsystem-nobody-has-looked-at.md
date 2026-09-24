@@ -261,12 +261,18 @@ Android 自己的 `vendor.img:/etc/fstab.qcom` 里写得一字不差：
 
 ```
 # 0. 先出 EDL：物理长按 POWER 10–20 秒，等 RNDIS 和 ssh
-scripts/host/zl1-post-recovery-capture.sh             # 0 系列读数；探针默认跳过
+scripts/host/zl1-post-recovery-capture.sh             # 0 系列读数；MODEM 探针现在是默认集里的 04b
 scripts/host/zl1-heat-fix-chain.sh --yes              # 发烫：部署 → 激活 → 90 s → 证明 → 退役 keeper → governor
 scripts/host/zl1-gps-first-client.sh --seconds 180    # 需要手边有人：把 "detect current location" 打开
-scp scripts/device/zl1-modem-probe.sh root@<ip>:/tmp/ && \
-  ssh root@<ip> 'sh /tmp/zl1-modem-probe.sh'          # 这一轮的新仪器，第一次真机运行
 ```
 
-最后一条是这一轮的全部意义：**它读什么都可以，但它什么都不写**，所以它可以和别的读数放在同一次 boot 里、
-在同一个 `zl1-health-check.sh` 的运行中一起做（见那里的第 5 项）。
+**这一轮把探针接进了 `zl1-post-recovery-capture.sh` 的默认集（第 04b 步）**，而不是让它留成一条要手打的
+`scp`。理由是它和 01/02 是同一类：**只读、从不打开块设备、不需要人**，而 05/06 被默认跳过有它们自己的理由
+（其中一件有写模式，而且两次 EDL 前最后跑着的都是指纹那件）。boot 是**用一根手指换来的**，所以
+telephony —— 唯一一个**真机读数一次都没取过**的子系统 —— 应该由那次 boot 顺带带上。
+
+接线时抓到第二个同族缺陷，而且它在**上一层**：capture 自己的 harness 把"它认识的 callee 标记"写死在一张
+表里，于是**真的跑了六步**的一次运行被读成"exactly five steps"——新那一步对下面每一条断言都是不可见的。
+现在那个提取器**从一个具名的表里导出**，并且**看到自己不认识的标记就拒绝运行**：往被测脚本里加一步而忘了
+加进这张表，会变成一次 setup failure，而不是一次安静的少数。这正是这个仓库记过的
+"an extractor that drops an item" 形状。

@@ -37,7 +37,10 @@
 #                       ever produced a fix, they are the slowest steps, and the last two boots that
 #                       ended in EDL both had the fingerprint probe as the last thing running (a
 #                       correlation of two, not a cause -- see the note at the steps below)
-#   --skip-probes       the old name for the default, kept because four documents spell it out
+#   --skip-probes       the old name for the default, kept because four documents spell it out. It does
+#                       NOT skip the modem probe (step 04b), which is read-only and never opens a block
+#                       device -- see the note at that step. The name is misleading and this line is
+#                       the correction: it selects the DEFAULT set, and the default set now contains it.
 #   --no-orientation    skip the orientation-axes probe (it needs a person holding the phone still)
 #   --step-limit SECS   kill a DEVICE-side step that runs longer than this (default 240). See the note
 #                       in the step runner: a device-side script that runs away is not a hypothetical,
@@ -356,6 +359,16 @@ step 01-edl-postmortem   device "$HERE/../device/zl1-edl-postmortem.sh"
 step 02-boot-address     device "$HERE/../device/zl1-boot-address-check.sh"
 step 03-keeper-status    host   "$HERE/../install-retire-debug-keeper.sh" --status
 step 04-health-check     host   "$HERE/zl1-health-check.sh"
+# 04b, and it is deliberately NOT in the 05/06 probe group below. The reason 05/06 are off by default is
+# specific to them: one of the two has a write mode, both are the slowest steps, and the EDL correlation
+# is with the fingerprint one. The modem probe (docs 120) has no write mode at all, never opens a block
+# device -- it reads MOUNT POINTS, because modemst1/modemst2/fsg/fsc/persist hold the calibration and the
+# IMEI -- and needs no person. That puts it in the same class as 01 and 02, which always run.
+#
+# It is here rather than in the health check's prose because THIS is the script a human runs after paying
+# a finger for a boot, and telephony is the one subsystem whose device reading has never been taken. Its
+# own bound comes from the step runner's timeout(1), like every other device step.
+step 04b-modem          device "$HERE/../device/zl1-modem-probe.sh"
 
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
@@ -365,6 +378,7 @@ else
   say "   fix, and the last two boots that ended in EDL both had 06 as the last thing running. That is"
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
+  say "   (04b-modem DID run: it is read-only and opens no block device, so it is not in this group.)"
   say
 fi
 

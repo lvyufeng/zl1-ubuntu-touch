@@ -338,12 +338,16 @@ always "   captures the keeper's pid and CPU ticks BEFORE anything can retire it
 always "   exit 2 -- running nothing at all -- when the device is still in EDL. Everything in its"
 always "   default set is read-only; the one step that writes (install-no-edl-on-panic.sh"
 always "   --capture-only) needs --with-capture. The two probes are SKIPPED BY DEFAULT (docs 116);"
-always "   --with-probes runs them, --skip-probes is the old name for the default. Every DEVICE-side step is bounded on the device"
+always "   --with-probes runs them, --skip-probes is the old name for the default. That name is misleading"
+always "   and this line is the correction: it selects the DEFAULT set, which now contains the MODEM probe"
+always "   (04b, docs 120). The modem probe is read-only and never opens a block device, so it is in the"
+always "   same class as 01/02, not in the 05/06 pair -- a boot bought with a finger should carry it."
+always "   Every DEVICE-side step is bounded on the device"
 always "   by timeout(1) -- itself a fix (docs 108): step 02's log scan was quadratic and ran 12 minutes"
 always "   at 94% of a core on the first real run, which ended in EDL. --step-limit changes that bound."
 always "   An interrupt now archives what has run and exits 3, so a stopped run still leaves its index."
 always "   Behaviour pre-verified offline:"
-always "   scripts/host/zl1-post-recovery-capture-selftest.sh, 128 checks, and five mutations each"
+always "   scripts/host/zl1-post-recovery-capture-selftest.sh, 136 checks, and five mutations each"
 always "   make it fail (order swapped, refusal removed, the writing step in the default set, no"
 always "   archive, a failing step aborting the chain). The steps below are what it runs, in order --"
 always "   read them here for what each one decides, not as a manual to retype."
@@ -682,6 +686,8 @@ always "   79 checks, and it found three defects on the way: a search-path secti
 always "      firmware is NOT on the kernel's path' after asking no directory for any file (the name was"
 always "      unknown), an nsenter whose 'matched nothing' printed nothing at all instead of its named"
 always "      line, and a --quiet that printed readings it documented itself as dropping)"
+always "      IT IS IN THE CAPTURE'S DEFAULT SET (04b, above): read-only and block-device-free, it belongs"
+always "      with 01/02 rather than with the 05/06 pair, so the boot bought with a finger carries it."
 
 if [ "${failed:-0}" != 0 ]; then exit 1; fi
 exit 0
