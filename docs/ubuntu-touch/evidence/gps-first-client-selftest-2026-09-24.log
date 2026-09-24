@@ -1,0 +1,87 @@
+zl1 GPS first client -- offline self-test
+  script under test: /mnt/data/zl1-bb10/scripts/host/zl1-gps-first-client.sh
+  fake device:       /tmp/zl1-gps-first-client-selftest/dev
+
+== 1. the guards: not the zl1, and a wait nobody could use ==
+PASS  a different device-tree model exits 1
+PASS  and says which model it saw
+PASS  it turns no display on for a device it just refused
+PASS  and launches nothing on it
+PASS  --seconds 10 is refused with exit 2
+PASS  and says why the number is too short (a person has to tap a toggle inside it)
+PASS  and it refuses before touching the device at all (not one ssh)
+
+== 2. the app never started: no reading about the door may be printed ==
+PASS  it reports that the launcher did not leave a process
+PASS  the verdict is that the APP never started
+PASS  and NOT 'the app asked nothing' -- that would be a reading of a protocol nobody ran
+PASS  it says so in as many words, so a reader does not do it either
+PASS  and it does not sit out the --seconds wait with no app to tap
+PASS  and it says the wait was skipped because there is nothing to tap
+
+== 3. the healthy run: the app starts, asks nothing, and the device is put back ==
+PASS  the run exits 0
+PASS  the app is reported launched
+PASS  the verdict is that the app asked nothing
+PASS  and NOT that the door opened
+PASS  and it points at the toggle as the likely reason
+PASS  the launch runs the app's MIGRATE WRAPPER, not the bare binary (docs 105 section 6)
+PASS  inside the container's PID namespace
+PASS  as the session's own uid
+PASS  the app is stopped at the end
+PASS  and the display is turned back off (it was found off)
+PASS  and the display state it restored to is printed
+PASS  --keep-app leaves the app running
+PASS  --keep-display leaves the display on
+
+== 4. the door OPENED: a session and the QMI client, and neither alone is enough ==
+PASS  a new CreatingSession plus locClientOpen: the verdict is that the door opened
+PASS  and not that the app asked nothing
+PASS  and not that a gate refused
+PASS  it says this is the first time anything asked the GPS for a position
+PASS  and it says an opened door is not a fix
+PASS  daemon log lines ALONE do not license 'the door opened'
+PASS  they come out as 'something was logged, read the delta' instead
+PASS  and it points at the file rather than guessing what the lines mean
+PASS  the QMI client opening IS the licence, on its own (docs 82)
+
+== 5. a gate said NO, and the count that could not be taken ==
+PASS  'Client lacks permissions' in the delta: the verdict is that a gate refused
+PASS  and it names WHICH gates that message can come from
+PASS  and not that the door opened
+PASS  and it points at the agent's own unit as the thing to read next
+PASS  an unreadable journal: the verdict is UNANSWERED
+PASS  and NOT 'the app asked nothing' (a command that could not run is not a zero)
+PASS  it says explicitly that this is not 'the door is shut'
+PASS  a journal that shrank: the verdict is UNANSWERED
+PASS  and it says the line offset is not a valid mark
+PASS  and it does not read the old lines as this run's evidence
+
+== 6. the logcat half failing is not 'the client stayed shut' ==
+PASS  a logcat that could not run says so
+PASS  and says the 0 below it is for THAT reason
+PASS  the verdict still reports what the journal said (it was readable)
+
+== 7. the app's toggle is READ, never written, and its three answers are distinct ==
+PASS  the toggle reads true when the database says so
+PASS  and nothing WRITES it -- there is no write mode to test
+PASS  the toggle reads false when the database says so
+PASS  no sqlite3 on the device reads as 'could not look', not as false
+PASS  no database reads as 'could not look', not as false
+PASS  and the output says a cannot-read is not a false
+
+== 8. --quiet, and the prompt it must not silence ==
+PASS  --quiet drops the evidence tables
+PASS  --quiet still prints the hand-off prompt, on stderr
+PASS  and still prints the verdict
+
+== 9. the archive ==
+PASS  every evidence file is written into --outdir
+PASS  the delta holds the NEW lines, and only those
+PASS  and NOT the pre-run lines (the offset is what makes it a delta)
+PASS  the app's own stderr was pulled into the archive
+
+== 10. the health check cites this harness's count, and that citation cannot drift ==
+PASS  the health check cites 62 checks, and this run has exactly that many
+
+pass=62 fail=0
