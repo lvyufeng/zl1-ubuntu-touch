@@ -42,7 +42,7 @@
 | **摄像头** | **两部分要分开读：栈证明过，app 没有** | **栈**：`test_camera`（Halium/Android 的测试二进制，**不是 UT 的相机 app**）渲染预览时合成器 20–26 ticks/s 对空转 2 ticks/s，并且抓到一张和参照图 NCC 0.944 的截图（doc 77）。**app**：只到"起得来"——`Added camera "0"/"1"` + `Application is now active` + 30 s 不退出（doc 80），而**那几趟的显示器全程是关的**（`ActiveOutputs 0 0`），因为 app 是从主机经 `nsenter` + 一个 Python 启动器手工起的 | **app 这个程序在人手里能不能用，一次都没量过**：屏上有没有它、预览出不出帧（doc 80 §6 的头两条），以及**人真正走的那条路——点图标 → `lomiri-app-launch`——从来没成功过**，doc 84 §5 明说不证明那条路一样。仪器 `zl1-camera-app-test.sh --keep-display`（health check 第 1 项，79 条离线检查）就是量这个的，**它从来没在设备上跑过**。三个会表现成"app 起来了、屏上空的"的已知缺口：`/system/lib64/libui_compat_layer.so` 被按**绝对路径**要、而 `/android/system` 是 ro ext4（只有基名能被 `HYBRIS_LD_LIBRARY_PATH` 找到）；media-hub 的会话路径不存在；`lomiri-app-launch` 没成功过。**注意**：`file` 会把截断的 PNG 报成合法 PNG |
 | **GPS** | **只量过离线** | 仪器 `zl1-gps-probe.sh`（只读）；**第一个客户端有名字了**：预装的天气 app 的 QML 里 `PositionSource { active: settings.detectCurrentLocation }`，它自己的 AppArmor profile 带 `location` | **从来没有拿到过一次定位。**`u_hardware_gps_start` **一次都没被调用过**。文档 82 的两根杠杆都是死的（v63 的 boot hook 把 `/usr/bin/getprop` 换成没有 `custom.*` 分支的 stub）。**2026-09-25 又量了一条：它在内核这一层什么都没有**——`drivers/` 里没有 GNSS 驱动、`msm8996.dtsi` 里没有 GNSS 节点、配置里没有 `CONFIG_*GNSS*`，整个 `--dump-compatibles`（1499 行）里 `gnss`/`gps` **一条都不匹配**。GNSS 引擎在调制解调器（MSS）里，而固件从来没被挂上（doc 120/154）。**所以它不可能出现在任何从设备树派生的覆盖率报告里**——见 §1.1 |
 | **指纹** | **只量过离线** | 两个仪器：`zl1-fingerprint-probe.sh`（**驱动以上的层**：存目录、HAL、信任库）和 `zl1-fp-kernel-probe.sh`（docs 157，**驱动这一层**）。**根因之一找到了（离线，doc 83）：是一个缺失的目录**，不是坏的 HAL。修法存在（`install-fingerprint-store-dir.sh`，doc 106） | **两个读数都一次都没在设备上跑过。**存目录的判据是 `journalctl -b -u biometryd | grep -c "setActiveGroup failed"` **变成 0**。**2026-09-25 又量了一条（离线，doc 157）：这块板的设备树声明两个指纹块，而内核只为其中一个编了驱动**——HAL 开的那一个（`/dev/goodix_fp`）**没有驱动**（`# CONFIG_INPUT_GP5XX8 is not set`，从**镜像自己嵌的那份配置**里读出来的），板上另一个块有（`CONFIG_MSM_QBT1000=y`）。**所以"指纹不工作"必须按块说**，而补上那个驱动 = 重新编译 + 刷 boot，**还没做**。**离那一行有多远也量过了（离线，doc 158）**：`host/zl1-fp-driver-build-check.sh` 把从"选项是关的"到"驱动绑上"的每一个环节都读了一遍，判定 **`one-config-line-away`**——选项在、依赖满足、源码在、`of_match_table` 与节点逐字节相同、**这次构建产出的五棵树每一棵都带节点且每一个驱动要的属性都在**、**镜像里附着的那五棵逐字节相同**、两个 `.c` 用**这次构建自己的命令行**编得过且 51 个未定义符号全部能在 `vmlinux` 里找到。**这条链只差配置里那一行**，而"那一行改在哪、要不要刷"仍然是设备的决定。**而那一行已经改了，驱动已经进了镜像（2026-09-25，doc 159）**：`lineage_zl1_defconfig:1871` 改成 `CONFIG_INPUT_GP5XX8=y`（`diff` 的全部输出就是这一行），重新编译内核，再拼进 v63 那份 initramfs，得到 `halium-boot-zl1-v63-fpdriver.img`。**而"只差一行"是从两张镜像里算出来的**：`host/zl1-boot-image-kernel.sh --diff` 读它们**各自嵌的那份配置**，答案是 **`1 option(s) differ`**（`CONFIG_INPUT_GP5XX8 y -> not set`），而两者的 initramfs（`ebb281ff5537d99a`）与五棵附着的设备树（`5b280099e84e773c`）**逐字节相同**——所以唯一的变量是内核。**但这一行改在内核树里，不在这个仓库里**，所以"改了"这件事**只由镜像证明**；而镜像**一次都没有在设备上跑过**，驱动绑不绑得上、绑上之后 HAL 开不开得了节点、节点开得了之后存目录在不在（doc 126）**全是运行时的事，一件都没量过**。**2026-09-24 之前的探针输出不要信**：它的存在性测试是 `nsenter -m -- test`，在这台设备上跑不起来，每次都答"missing" |
-| **modem / telephony** | **只量过离线** | 仪器 `zl1-modem-probe.sh`（只读、从不打开块设备，已经在 capture 的默认集里当 04b） | **一次真机读数都没取过。**离线结论是：cmdline **一直**带着 `firmware_class.path=/vendor/firmware_mnt/image`（指对了），而 UT 的 `/vendor` 是**指向 `/android/vendor` 的软链**，所以问题从"路径"变成了"**那个挂载**"。要做的是读四行（doc 120 §7.1） |
+| **modem / telephony** | **两个 modem 已经在跑了**（2026-09-25，doc 168） | 仪器 `zl1-modem-probe.sh`（只读、从不打开块设备，04b）+ 修法的安装器 `hybris-shims/install-ofono-binder.sh --install\|--remove\|--status`。**它从来不是"没有 modem"**：子系统 `ONLINE`、固件在 `/vendor/firmware_mnt/image`、`rild` 三个进程在跑、Android 的 radio HAL 在 `lshal` **第一张表**里是活的（`Y android.hardware.radio@1.1::IRadio/slot1` 和 `/slot2`）。缺的是 ofono 走到它的**三件事，每件单独致命**：① **插件选错了**——跑着的 ofonod 命令行里写着 `-P …,binder`，因为 `ofonod-wrapper` 用 `device-info get OfonoPlugin` 选插件，而这条命令在这台机器上**对每个键都 segfault（rc=139，崩在 `DeviceInfo::DeviceInfo` 构造里）**，于是永远走 `else` 关掉 binder、留 ril；而 ril 要的 `/dev/socket/rild` 这个 Android **根本不创建**（vendor 镜像里唯一提到 rild 的 `rild.legacy.rc` **没有 `socket rild` 指令**），设备自己的 journal 里旧 ofono 说了 11 次 `Can't connect to RILD`。② **命名空间**——同一条命令行换命名空间：宿主 `registerForNotifications(…IRadioConfig) failed`，容器 `Connected to …IRadio/slot1`、`/slot2`（同一堵墙的第五次）。③ **`/etc/ofono/binder.conf`**——插件的 `path` 必须逐 slot 给，`radioInterface` **默认 1.2** 而这台只注册到 **1.1**。**装上之后**（一个 drop-in + `/userdata/zl1-ofono/etc/`，`BindPaths=` 给 ofonod 私有 `/etc/ofono`，**不用重启**）：`GetModems` 从有史以来的 `a(oa{sv}) 0` 变成 **`a(oa{sv}) 2`**，两个都带真固件版本 `MPSS.TH.2.0.c1.9.1-00044` 和真 IMEI（`…648` / `…655`） | **SIM**：`SimManager.GetProperties` 答 `"Present" b false`——**是空卡槽还是"有卡没认出来"，这一页没有判定**；唯一没动的旋钮是 `extPlugin`（QTI 扩展，已装且已被加载），确认插了卡的话它是下一个该试的。**跨重启的持久性也没量过**：写的东西都在持久分区上，但装完之后没有冷启动过 |
 | **发热** | **三个原因都装上了，第三个的效果也量出来了**（2026-09-25；docs 164 / 166 / 167） | ① v63 debug keeper 每秒 `systemctl` 一次（约一个核）——退休 unit 每次开机解掉；② 镜像把四个核**全钉在 `performance`**——`install-cpufreq-governor.sh`；③ **SoC 被禁止用自己低功耗阶梯**（每条 cmdline 都带 `lpm_levels.sleep_disabled=1`）——`install-lpm-sleep-fix.sh`，参数读回 `N`。**③ 的价钱量出来了**：`zl1-ladder-temp-ab.sh` 三窗口 A/B/C 在设备上跑过一次，**挡住阶梯让最热的 tsens zone 高 5.5 °C**，控制窗口回到 0.0 °C、而且比第一个窗口还低 0.7–1.3 °C（效应大过这一趟的漂移，方向还相反） | **"这台机器不发烫了"还没有被说过，也不该说**：那是**一趟、一个负载（0.80 核忙）、环境温度和充电状态都没控制**的读数；脚本自己把限定印在判词里（一个正好在窗口 B 里冲高、到 C 消失的漂移，和这个效应在这套设计里**无法区分**）。而且**②的效果一次都没单独量过**（那一趟的 A/B 只覆盖①和②，且当时③还没装）。 |
 | **网络（RNDIS）** | **已证明，而且原因是宿主侧的** | 宿主手动 bind `rndis_host` + 设 IP（**Option C**，`V63-OPTIONC-CONFIRMED-WORKING.md`）。35 s 失联是**宿主侧**的，设备一直没问题 | 无。**链路卡住时从宿主侧重新枚举 gadget**（`authorized` 0→1）：不用重启、不用插拔、不用按键 |
 
@@ -122,22 +122,29 @@ GPS 就是那个例子（§1 那行）：它在**内核这一层什么都没有*
   这一页把两者分开写就是为了这个。**这一条在摄像头上已经咬过一次**：这一页原来那一行写「预览上过屏」，
   而这句里的"预览"是 `test_camera` —— Halium/Android 的测试二进制，**不是 UT 的相机 app** 放的。
   一句话把"栈能动"读成"app 能用"是最容易犯的一次误读，所以那一行现在把两个主语分开写。
-* **不声称离线结论在真机上成立。**"只量过离线"那一栏的三项（GPS、指纹、modem）
-  **设备上一次都没跑过**，这正是它们被单独标出来的原因。
+* **不声称离线结论在真机上成立。**"只量过离线"那一栏的两项（GPS、指纹）
+  **设备上一次都没跑过**，这正是它们被单独标出来的原因。**modem 2026-09-25 从这一栏里出去了**
+  ——不是因为它离线结论对了，而是因为它在真机上被读到了两个 modem（doc 168），
+  而且那个读数**推翻了**这一栏原来给它的那句"要做的是读四行"：要读的不是挂载，是三道门，
+  而三道门里没有一道是"那个挂载"。
 
 ---
 
 ## 4. 如果只做一件事
 
-**把三个"只量过离线"变成"跑过了"。**它们各有一条一行命令的判据：
+**把两个"只量过离线"变成"跑过了"。**它们各有一条一行命令的判据：
 
 ```
 指纹   --install 之后 journalctl -b -u biometryd | grep -c "setActiveGroup failed"   -> 0
-modem  zl1-modem-probe.sh 的四行读数（doc 120 §7.1）
 GPS    让天气 app 的 "detect current location" 打开（zl1-gps-first-client.sh）
 ```
 
-三条都不需要 flash、不需要写分区，而且**前两条各有一个已经写好的、离线验证过的修法**在等着。
+**第三条（modem）2026-09-25 已经不在这个清单里了**：它的判据不是"读四行"，
+而是三道门，三道门都关着，而三道的修法都装上了（doc 168）——`GetModems` 从 `a(oa{sv}) 0`
+变成 `a(oa{sv}) 2`。它留下的是**两道还没有答案的问题**：卡槽里有没有 SIM
+（`"Present" b false`），和这个修法跨不跨得过一次冷启动。
+
+两条都**不需要 flash、不需要写分区**，而且**前两条各有一个已经写好的、离线验证过的修法**在等着。
 
 **但那需要设备回来**，而设备现在**在跑**（`33e80afe`，`18d1:d001`，RNDIS，见 §5）——
 它自己在出了 EDL 之后回来了，而**同一天更早**它还在 fastboot 和 EDL 里各待过一段——而**一次按键只买回一次开机**，所以那一次开机的证据必须

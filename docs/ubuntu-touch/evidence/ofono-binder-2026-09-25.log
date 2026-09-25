@@ -1,0 +1,320 @@
+zl1 -- the modem's door: readings and the fix, 2026-09-25
+=========================================================
+
+One boot throughout: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5 (read before and after every
+step below; it did not change). No partition was written, no block device was opened, nothing was
+rebooted, and the Android container was never stopped.
+
+Everything here was read from the device over ssh (root@10.15.19.82, the rndis0 address), except
+where a line is marked otherwise.
+
+--------------------------------------------------------------------------------
+A. THE MODEM WAS NEVER MISSING
+--------------------------------------------------------------------------------
+
+  /sys/class/remoteproc does not exist (3.18 kernel)
+  msm_subsys modem: state=ONLINE   crash_count=0   error=(empty)
+  /vendor/firmware_mnt/image: modem.mdt=present modem.b00=present mba.mbn=present
+  no firmware-load failure line in this boot's kernel log
+  pil-q6v5-mss 2080000.qcom,mss: Failed to find the pas_id.     (dev_warn, optional property,
+                                                                 non-fatal -- see docs 120)
+
+  ANDROID'S RADIO HAL IS REGISTERED AND LIVE, in lshal's FIRST table (the table whose `R` column
+  is the one that means anything; doc 149). `nsenter -t 35320 -p -m -- lshal`, line 43 of 246:
+
+    Y android.hardware.radio@1.1::IRadio/slot1
+    Y android.hardware.radio@1.1::IRadio/slot2
+
+  Every radio HAL version this device registers, and only these:
+
+    android.hardware.radio@1.0::IRadio/slot1, /slot2
+    android.hardware.radio@1.0::ISap/slot1, /slot2
+    android.hardware.radio@1.1::IRadio/slot1, /slot2
+    android.hardware.radio@1.1::ISap/slot1, /slot2
+    android.hardware.radio.deprecated@1.0::IOemHook/slot1, /slot2
+
+  rild is running: container pids 372, 466 and 815 (`/vendor/bin/hw/rild`, `rild -c 2`), and
+  /dev/subsys_modem is held by /vendor/bin/pm-service.
+
+--------------------------------------------------------------------------------
+B. DOOR 1 -- THE PLUGIN WAS THE WRONG ONE, AND THE CHOICE WAS MADE BY A CRASH
+--------------------------------------------------------------------------------
+
+The running ofonod before the fix, from its own cmdline:
+
+  /usr/sbin/ofonod -P stktest,sap,udev,dun,smart,hfp,hfp_bluez5,provision,binder --nodetach
+
+`-P` disables, and `binder` is in the list -- so the binder plugin is off and the ril plugin is on.
+Confirmed from /proc/<pid>/maps of the running ofonod (the four .so files it had mapped):
+
+  apndbplugin.so
+  mtkbinderpluginext.so
+  qtibinderpluginext.so
+  rilbinderplugin.so
+  rilplugin.so
+  (binderplugin.so: NOT mapped)
+
+Why the wrapper picks ril: /etc/systemd/system/ofono.service.d/lxc-android-config.conf replaces
+ExecStart with /usr/libexec/lxc-android-config/ofonod-wrapper, whose plugin choice is
+
+  if [ "$(device-info get OfonoPlugin)" = "binder" ]; then ... else "disable binder, use ril"
+
+and on this port that command does not answer, it dies:
+
+  $ device-info get OfonoPlugin
+  Segmentation fault   (rc=139)
+
+  $ for k in DeviceName DeviceType OfonoPlugin SensorfwConfig NoSuchKeyAtAll; do
+      device-info get "$k"; echo "rc=$?"
+    done
+  DeviceName       rc=139
+  PrettyName       rc=139
+  DeviceType       rc=139
+  OfonoPlugin      rc=139
+  SensorfwConfig   rc=139
+  NoSuchKeyAtAll   rc=139
+
+Every key, every environment (`env -i`, `HOME=`, `QT_QPA_PLATFORM=offscreen`): rc=139.
+
+Where it dies -- `strace -f device-info get DeviceType`, last seven syscalls:
+
+  newfstatat(AT_FDCWD, "/dev/__properties__", {st_mode=S_IFDIR|0711, st_size=3340, ...}, 0) = 0
+  faccessat(AT_FDCWD, "/dev/__properties__/property_info", R_OK) = 0
+  openat(AT_FDCWD, "/dev/__properties__/property_info", O_RDONLY|O_NOFOLLOW|O_CLOEXEC) = 3
+  mmap(NULL, 26812, PROT_READ, MAP_SHARED, 3, 0) = 0x6fdcb68000
+  openat(AT_FDCWD, "/dev/__properties__/properties_serial", O_RDONLY|O_NOFOLLOW|O_CLOEXEC) = 3
+  mmap(NULL, 131072, PROT_READ, MAP_SHARED, 3, 0) = 0x6fdc450000
+  --- SIGSEGV {si_signo=SIGSEGV, si_code=SEGV_MAPERR, si_addr=0xb00} ---
+  +++ killed by SIGSEGV +++
+
+  `ltrace -f` puts the same crash inside `DeviceInfo::DeviceInfo(PrintMode)` -- the constructor,
+  before any answer is printed. The binary itself is intact (`dpkg -V deviceinfo-tools` checksums
+  it clean; only its man page is missing), and the property area it maps is real and shared: the
+  host's /dev/__properties__ is the container's (same directory inode 46277, same 165 files, and
+  the container's mountinfo shows it as `master:72` of the host's `shared:72`).
+
+  So the property area is not the problem; **a host process simply cannot complete an Android
+  property read here**. The same crash, from a different program, with the same shape:
+
+    python3 -c "import ctypes; lib=ctypes.CDLL('/lib/aarch64-linux-gnu/libandroid-properties.so.1');
+                lib.property_get(b'ro.product.device', buf, None)"
+    Segmentation fault
+
+  while inside the container the same question has a real answer:
+
+    nsenter -t 35320 -p -m -- /system/bin/getprop ro.product.device   ->  le_zl1
+    nsenter -t 35320 -p -m -- sh -c '/system/bin/getprop | wc -l'     ->  695
+
+Why the ril plugin cannot be the answer, even if it were chosen correctly:
+
+  /etc/ofono/ril_subscription.conf's only active keys:
+      [Settings]
+      [ril_0]
+      socket=/dev/socket/rild
+
+  $ ls -l /dev/socket/rild
+  ls: cannot access '/dev/socket/rild': No such file or directory
+
+  $ ls /dev/socket/qmux_radio/
+  qcril_radio_config0  qcril_radio_config1  rild_sync_0  rild_sync_1
+
+  $ cat /var/lib/lxc/android/rootfs/vendor/etc/init/rild.legacy.rc
+  service ril-daemon /vendor/bin/hw/rild
+      class main
+      user radio
+      group radio cache inet misc audio log readproc wakelock
+      capabilities BLOCK_SUSPEND NET_ADMIN NET_RAW
+
+  That is the whole file, and it is the ONLY file in the vendor image that mentions rild. There is
+  no `socket rild` directive anywhere, so Android never creates /dev/socket/rild and ofono's ril
+  plugin can never connect. The device's own journal says so, 11 times in this boot, in the words
+  of the old ofono:
+
+    ofonod-wrapper[37946]: [grilio-socket] ERROR: Can't connect to RILD: No such file or directory
+
+--------------------------------------------------------------------------------
+C. DOOR 2 -- THE NAMESPACE (the fifth service behind the same wall)
+--------------------------------------------------------------------------------
+
+The identical ofonod command line, run twice, changing only the namespace:
+
+  host namespace:
+    ofonod[1950681]: Initializing RIL binder transport plugin.
+    ofonod[1950681]: Terminating
+    [gbinder] WARNING: registerForNotifications(android.hardware.radio.config@1.0::IRadioConfig) failed
+
+  container PID namespace (`zl1-ns-exec`):
+    ofonod[11762]: Initializing RIL binder transport plugin.
+    ofonod[11762]: Missing path for slot slot1
+    ofonod[11762]: Missing path for slot slot2
+
+  Same binary, same config, same arguments. In the container the plugin got as far as enumerating
+  the slots from hwservicemanager; from the host it could not register for anything.
+
+  For completeness, the device nodes are not the difference -- both namespaces open the same ones:
+
+    host:      /dev/binder 15430  /dev/hwbinder 15431  /dev/vndbinder 15432
+    container: /dev/binder 15430  /dev/hwbinder 15431  /dev/vndbinder 15432
+
+--------------------------------------------------------------------------------
+D. DOOR 3 -- THE CONFIG
+--------------------------------------------------------------------------------
+
+With the plugin and the namespace right, the plugin still refused:
+
+  ofonod[...]: Missing path for slot slot1
+  ofonod[...]: Missing path for slot slot2
+
+`binderplugin.so` reads /etc/ofono/binder.conf (its strings: `binder.conf`, `[slotN]`, `path`,
+`radioInterface`, `extPlugin`, `ExpectSlots`, `IgnoreSlots`, `Device`, `InterfaceType`), and
+upstream (mer-hybris/ofono-binder-plugin, © Jolla Ltd. 2021-2022, the same copyright as the
+installed package) documents the two things that matter here:
+
+  * "For reliable startup, /etc/ofono/binder.conf has to list all expected slots"
+  * "The exceptions are "path" and "slot" values which must be unique and therefore must appear in
+     the section(s) for the respective slot(s)"
+  * `radioInterface` -- "Default 1.2 (android.hardware.radio@1.2::IRadio)"
+
+and this device registers only 1.0 and 1.1 (section A above).
+
+The file does not exist on this port, and /etc/ofono is on the read-only image: it is NOT among
+the paths /etc/fstab binds from /userdata (`grep ofono /etc/fstab` matches only
+`/var/lib/ofono`, which is ofono's storage, not its config).
+
+--------------------------------------------------------------------------------
+E. THE EXPERIMENT -- a private bus, a tmpfs overlay, and two modems
+--------------------------------------------------------------------------------
+
+Run before anything was installed, with /etc/ofono overlaid by a tmpfs (umounted afterwards, the
+image's three files copied back first) so that nothing persisted:
+
+  [Settings]
+  ExpectSlots=slot1,slot2
+
+  [slot1]
+  path=/ril_0
+  radioInterface=1.1
+
+  [slot2]
+  path=/ril_1
+  radioInterface=1.1
+
+  DBUS_SYSTEM_BUS_ADDRESS=unix:path=$B /userdata/zl1-hybris/bin/zl1-ns-exec \
+      /usr/sbin/ofonod -n -P stktest,sap,udev,dun,smart,hfp,hfp_bluez5,provision,ril,rilbinder
+  ...
+  [gbinder-radio] Connected to android.hardware.radio@1.1::IRadio/slot1
+  [gbinder-radio] Connected to android.hardware.radio@1.1::IRadio/slot2
+  ... (the "Missing path" lines are gone)
+
+  busctl --address=unix:path=$B call org.ofono / org.ofono.Manager GetModems
+  a(oa{sv}) 2
+    "/ril_0" 10 "Online" b false "Powered" b true "Lockdown" b false "Emergency" b false
+             "Revision" s "MPSS.TH.2.0.c1.9.1-00044" "Serial" s "861579037654648"
+             "SoftwareVersionNumber" s "00"
+             "Interfaces" as 4 org.ofono.VoiceCallManager org.ofono.SimManager
+                               org.nemomobile.ofono.CellInfo org.nemomobile.ofono.SimInfo
+             "Features" as 1 "sim"  "Type" s "hardware"
+    "/ril_1" ... "Serial" s "861579037654655" ...
+
+Before this, on every boot of this port, the same call answered `a(oa{sv}) 0`.
+
+  $ umount /etc/ofono && ls /etc/ofono/
+  main.conf  phonesim.conf  ril_subscription.conf          (the image's own files, back)
+
+--------------------------------------------------------------------------------
+F. THE INSTALL (scripts/hybris-shims/install-ofono-binder.sh --install)
+--------------------------------------------------------------------------------
+
+Everything it wrote, and nothing else:
+
+  /userdata/zl1-ofono/etc/{main.conf,phonesim.conf,ril_subscription.conf,binder.conf}
+  /etc/systemd/system/ofono.service.d/zz-zl1-ofono.conf
+
+The drop-in:
+
+  [Service]
+  BindPaths=/userdata/zl1-ofono/etc:/etc/ofono
+  Environment=OFONO_SYSTEM_APNDB_PATH=/usr/share/lineageos-apndb/apns-conf.xml
+  ExecStart=
+  ExecStart=/userdata/zl1-hybris/bin/zl1-ns-exec /usr/sbin/ofonod -P stktest,sap,udev,dun,smart,hfp,hfp_bluez5,provision,ril,rilplugin,rilbinder,rilbinderplugin --nodetach
+
+`BindPaths=` gives ofonod a private mount namespace in which /etc/ofono is the writable copy --
+nothing is mounted globally and no other process sees a different /etc/ofono. The namespace is
+inherited by zl1-ns-exec's child, because that wrapper enters the PID namespace and never the
+mount one.
+
+Its verification, 12 s after `systemctl restart ofono` on the REAL system bus:
+
+  unit:     active  (1973204)
+  cmdline:  /userdata/zl1-hybris/bin/zl1-ns-exec /usr/sbin/ofonod -P ...ril,rilplugin,rilbinder,rilbinderplugin --nodetach
+  GetModems: a(oa{sv}) 2 "/ril_0" 10 "Online" b false "Powered" b true ... "Serial" s "861579037654648"
+
+and the journal for this boot, in order -- the old ofono's last words, then the new one:
+
+  ofonod-wrapper[37946]: [grilio-socket] ERROR: Can't connect to RILD: No such file or directory
+  systemd[1]: Stopping ofono.service - oFono Mobile telephony stack...
+  ofonod[37946]: Exit
+  systemd[1]: Starting ofono.service - oFono Mobile telephony stack...
+  zl1-ns-exec[1973208]: ofonod[12816]: Initializing RIL binder transport plugin.
+  systemd[1]: Started ofono.service - oFono Mobile telephony stack.
+
+--------------------------------------------------------------------------------
+G. AFTER (scripts/hybris-shims/install-ofono-binder.sh --status)
+--------------------------------------------------------------------------------
+
+  boot_id: 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5      (unchanged; uptime 10930 s)
+
+  == 1. the plugin ofono is actually running
+     mapped: apndbplugin.so
+     mapped: binderplugin.so
+     mapped: mtkbinderpluginext.so
+     mapped: qtibinderpluginext.so
+     mapped: rilbinderplugin.so
+     -> binderplugin.so IS loaded.
+     running: /usr/sbin/ofonod -P ...,ril,rilplugin,rilbinder,rilbinderplugin --nodetach
+
+  == 2. the namespace it runs in
+     ofonod pid ns: [4026533532]   container pid ns: [4026533532]
+     -> same PID namespace: HAL lookups can complete.
+     the socket the ril plugin would need: ls: cannot access '/dev/socket/rild': No such file or directory
+     what /dev/socket/qmux_radio/ really holds: qcril_radio_config0 qcril_radio_config1 rild_sync_0 rild_sync_1
+
+  == the answer that matters
+     GetModems: a(oa{sv}) 2
+       "/ril_0" ... "Online" b true "Powered" b true "Revision" s "MPSS.TH.2.0.c1.9.1-00044"
+                  "Serial" s "861579037654648"
+       "/ril_1" ... "Online" b true ...
+
+  Note the change from the experiment in section E: `Online` was false 12 s in, and is true on the
+  production instance, which has been up longer. `Powered` is true throughout.
+
+  system state: running       failed units: 0
+  ofono active, bluebinder active, sensorfwd active
+  /run/mir_socket present, lomiri-system-compositor running (pids 49388, 49777)
+
+--------------------------------------------------------------------------------
+H. WHAT IS NOT ESTABLISHED
+--------------------------------------------------------------------------------
+
+  * NO SIM. `org.ofono.SimManager.GetProperties` on /ril_0 answers
+
+        a{sv} 1 "Present" b false
+
+    Whether that is an empty tray or a detection gap is NOT established here. The one knob that
+    was deliberately left unset is `extPlugin` (the QTI extension, `qtibinderpluginext.so` is
+    installed and currently loaded standalone); on Qualcomm devices it is what carries IMS/VoLTE
+    specifics and it is the obvious next thing to try if a SIM is known to be inserted.
+    The Android side could not be asked either way: `getprop` inside the container answers 695
+    properties, but none of them match gsm.sim.* / gsm.operator.*, and an absent key is not an
+    answer about the SIM.
+
+  * `Power request failed`, once, 30 s after ofono started (binder plugin). "Online b true" came
+    anyway, and "Powered" never went false.
+
+  * PERSISTENCE ACROSS A REBOOT IS NOT MEASURED. Both files it writes are on the persistent ext4
+    (/etc/systemd/system is a bind of /userdata/system-data/etc/systemd/system, and /userdata is
+    /dev/sda10), and ofono's drop-in is the same mechanism a dozen zl1-* units already use at
+    boot -- but no cold boot has been done since the install.
+
+  * Nothing else was re-read while this was being done: camera, GPS and fingerprint are where
+    the previous reading left them (docs 123, 166, 167).
