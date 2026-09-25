@@ -271,15 +271,17 @@ printf 'lxc-info %s\n' "\$*" >> "$ACT"
 [ -n "\${FAKE_CONTAINER:-}" ] && printf '%s\n' "\$FAKE_CONTAINER"
 exit 0
 EOF
-# nsenter: the container's view of the firmware mount point. It must not enter anything, and its ANSWER is
-# switchable, because "the namespace said nothing" and "the path is absent" are different readings.
+# nsenter: NO LONGER STUBBED AS A WORKING COMMAND (docs 162). The probe used to read the container's view
+# by entering its mount namespace, and that is the call that hung it -- on 2026-09-25 the step outlived
+# its device-side `timeout` and the phone reset a minute later. The replacement reads the same fact out of
+# /proc/<pid>/mountinfo (fixtured in reset.sh above), so this stub is now a TRIPWIRE rather than a device:
+# if any future edit puts a namespace entry back, the run does not quietly "pass" with a faked answer, it
+# fails loudly and names itself.
 cat > "$STUB/nsenter" <<EOF
 #!/bin/sh
 printf 'nsenter %s\n' "\$(printf '%s' "\$*" | tr '\n' ' ')" >> "$ACT"
-case "\${FAKE_CONTAINER_FWMNT:-}" in
-present) printf '%s\n' "/vendor/firmware_mnt" ;;
-esac
-exit 0
+printf 'THE HARNESS TRIPWIRE: this probe ran nsenter. The container is read via /proc/<pid>/mountinfo\n' >&2
+exit 99
 EOF
 cat > "$STUB/systemctl" <<EOF
 #!/bin/sh
@@ -378,6 +380,21 @@ if [ "\${FAKE_NO_FSTAB:-0}" != 1 ]; then
     printf '/dev/block/bootdevice/by-name/system /system ext4 ro wait\n' > "$FR/var/lib/lxc/android/rootfs/fstab.qcom"
   else
     printf '/dev/block/bootdevice/by-name/system /system ext4 ro wait\n/dev/block/bootdevice/by-name/modem /vendor/firmware_mnt vfat ro,shortname=lower,uid=0,gid=1000,dmask=227,fmask=337 wait\n#endhalium\n' > "$FR/var/lib/lxc/android/rootfs/fstab.qcom"
+  fi
+fi
+# THE CONTAINER'S OWN MOUNT TABLE (docs 162), read as a FILE rather than by entering the namespace. The
+# probe used to run \`nsenter -t 700 -m -- ls -d\`; that call is where it HUNG on 2026-09-25 and the device
+# reset about a minute later, so the fixture is now what the replacement reads: the kernel's own
+# /proc/<pid>/mountinfo, whose field 5 is the mount point AS THAT PROCESS SEES IT. \`present\` puts the
+# modem's line in it; the default is a table that exists and does not mention it (which is the reading
+# "the container does not have this mounted", NOT "the table could not be read"); and
+# \`FAKE_NO_CONTAINER_MOUNTINFO=1\` is the third state, where the table is absent altogether.
+mkdir -p "$FR/proc/700/root/vendor"
+if [ "\${FAKE_NO_CONTAINER_MOUNTINFO:-0}" != 1 ]; then
+  printf '179 35 179:48 / / rw,relatime shared:1 - ext4 /dev/block/bootdevice/by-name/system rw\\n' > "$FR/proc/700/mountinfo"
+  if [ "\${FAKE_CONTAINER_FWMNT:-}" = present ]; then
+    printf '180 35 179:49 / /vendor/firmware_mnt rw,relatime shared:1 - vfat /dev/block/bootdevice/by-name/modem rw\\n' >> "$FR/proc/700/mountinfo"
+    mkdir -p "$FR/proc/700/root/vendor/firmware_mnt"
   fi
 fi
 # The mount TABLE, and its text is the DEVICE's rather than the fixture's: on the device the line really
@@ -486,7 +503,7 @@ verdict() { printf '%s\n' "$1" | sed -n '/^== [0-9][0-9]*\. *verdict$/,$p'; }
 # Which FAKE_* the probe's stubs must see (they are inherited by the stubbed commands the probe runs).
 export FAKE_KLOG_RC=0 FAKE_DMESG_RC=0 FAKE_RING= FAKE_DRAIN= FAKE_CONTAINER=700 FAKE_OFONO= \
        FAKE_MODEMANAGER= FAKE_OFONO_OWNER= \
-       FAKE_CONTAINER_FWMNT= FAKE_COMPAT= FAKE_FWNAME= FAKE_NO_FWNODE= FAKE_NO_SELFAUTH= \
+       FAKE_CONTAINER_FWMNT= FAKE_NO_CONTAINER_MOUNTINFO= FAKE_COMPAT= FAKE_FWNAME= FAKE_NO_FWNODE= FAKE_NO_SELFAUTH= \
        FAKE_FW= FAKE_KLOG_QUIET= FAKE_NO_CMDLINE= FAKE_CMDLINE_NO_FWPATH= FAKE_FWPATH_SYSFS= \
        FAKE_NO_FSTAB= FAKE_FSTAB_NO_MODEM=
 
@@ -852,13 +869,20 @@ want 'none: no firmware-load failure line in this boot' "$OUT" "and for the firm
 FAKE_KLOG_QUIET=0 run ""
 notwant 'none: the PIL driver logged nothing' "$OUT" "with a matching line, its own (none) line is gone"
 want 'none: no firmware-load failure line in this boot' "$OUT" "while the OTHER pattern keeps its own (none) line"
-# The third such site: the container's mount namespace answering nothing.
+# The third such site, and the shape changed in docs 162: the container's view is now read OUT OF THE
+# KERNEL'S MOUNT TABLE rather than by entering the namespace. The two readings stay separable -- "the
+# table was read and has no such entry" and "the table could not be read" are different sentences.
 FAKE_CONTAINER_FWMNT= run ""
-want "the container's mount namespace answered nothing" "$OUT" "an nsenter that answered nothing says so"
-notwant '^   \| /vendor/firmware_mnt$' "$OUT" "and does not read as a clean listing of no mount"
+want 'no entry for .*/firmware_mnt in the container.s mount table' "$OUT" \
+  "a container whose table does not mention the path says exactly that"
+notwant '^   \| mounted: /vendor/firmware_mnt' "$OUT" "and does not read as a clean listing of a mount"
 FAKE_CONTAINER_FWMNT=present run ""
-want '^   \| /vendor/firmware_mnt$' "$OUT" "when the namespace does answer, the path is printed"
+want '^   \| mounted: /vendor/firmware_mnt' "$OUT" "when the table does have it, the mount is printed"
 FAKE_CONTAINER_FWMNT=
+FAKE_NO_CONTAINER_MOUNTINFO=1 run ""
+want 'mountinfo could not be read' "$OUT" "and a table that cannot be read at all is its own third reading"
+notwant 'no entry for /vendor/firmware_mnt' "$OUT" "which must not be worded as an empty table"
+FAKE_NO_CONTAINER_MOUNTINFO=
 
 # ==================================================================================================
 echo
@@ -917,11 +941,22 @@ notwant 'dmesg .*(-[cC]|--clear|--read-clear)' "$(cat "$ACT")" \
   "and it never CLEARS the ring (the initramfs's report has no other copy)"
 want 'dmesg $' "$(cat "$ACT")" \
   "the ring is read with no arguments at all -- which is the only form that cannot clear it"
-want 'nsenter -t 700 -m -- ls -d' "$(cat "$ACT")" "the container is entered for its MOUNT TABLE only"
-# `-p` as a FLAG, not as a substring: the fake root's own path contains "-probe", which a loose pattern
-# reads as the PID-namespace flag and would make this assertion fail on a correct script.
-notwant 'nsenter[^|]*-p([[:space:]]|$)' "$(cat "$ACT")" \
-  "and NOT with -p (nothing here needs binder, and -p is the namespace that reaches it)"
+# THE CONTAINER IS READ, AND NOT ENTERED (docs 162). This assertion used to be `want 'nsenter -t 700 -m -- ls -d'`
+# with a companion `notwant` for `-p`. Both are replaced by the stronger pair: the mount table must be read,
+# and no nsenter may appear in the actions AT ALL. A `-p`-shaped exception is no longer needed because there
+# is no longer a namespace to enter.
+want 'its own mount table, read from' "$OUT" "the container's view is read as its own mount table"
+notwant '(^|/)nsenter( |$)' "$(cat "$ACT")" \
+  "and NOT by entering a namespace: that call is what hung this probe and reset the phone (docs 162)"
+# The strongest form of the same claim, and the one that survives a future edit: the SOURCE contains no
+# namespace entry at all. The ACT check above only sees what ran, and a probe that took a branch it did not
+# take this run would still be carrying the call.
+# The guard is on the CODE, not on the file: this probe's own header QUOTES the call it used to make
+# (that is how a reader learns why it is gone), and this tree has already been bitten once by a grep that
+# matched the prose naming a defect instead of the defect. So comments are stripped first, and the claim is
+# about what would RUN.
+notwant 'nsenter' "$(grep -v '^[[:space:]]*#' "$SRC")" \
+  "and no EXECUTABLE line of the shipped probe mentions nsenter (comments may -- they explain the removal)"
 
 # ==================================================================================================
 echo

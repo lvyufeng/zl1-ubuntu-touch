@@ -429,8 +429,20 @@ STUBEOF
   chmod +x "$STUB/dmesg" "$STUB/journalctl"
   export LOGMODE LOGFILE="$W/kernel.log"
 
-  # The container, whose mount namespace the probe reads for the firmware's path -- because the loader
-  # resolves it in the CALLER's. `container-up` is the only scenario where it answers.
+  # The container, whose OWN ROOT the probe reads for the firmware's path -- because the loader resolves
+  # it in the CALLER's. `container-up` is the only scenario where it exists.
+  #
+  # WHAT THE CONTAINER'S ROOT IS, IN THIS FIXTURE (docs 162). The probe reads `/proc/<pid>/root` + the
+  # candidate path, and the candidate has already been rewritten into the fake root -- so the only shape
+  # that resolves is a `/proc/<pid>/root` that is a symlink to `/`. That is also the honest fixture for
+  # what `container-up` MEANS here: the container sees the same tree, which is why the same .mdt is a hit
+  # in both readings. `ln -s` and not a copy: `/proc/<pid>/root` IS a symlink on a real system, and
+  # `rm -rf` does not follow one, so the fake root stays removable.
+  #
+  # The nsenter stub that used to live here is GONE, and what replaced it is a TRIPWIRE rather than a
+  # device: entering the container's mount namespace is the call that hung zl1-modem-probe.sh on
+  # 2026-09-25 (and the phone reset a minute later). If a future edit puts a namespace entry back, this
+  # must fail loudly, not quietly pass against a faked answer.
   cat > "$STUB/lxc-info" <<'STUBEOF'
 #!/bin/sh
 [ -n "${CONTAINER_PID:-}" ] || exit 1
@@ -438,14 +450,17 @@ printf '%s\n' "$CONTAINER_PID"
 STUBEOF
   cat > "$STUB/nsenter" <<'STUBEOF'
 #!/bin/sh
-# nsenter -t PID -m -- ls -d PATH  ->  print PATH when the fake device has it
-p=""
-for a in "$@"; do case "$a" in /*) p="$a" ;; esac; done
-[ -n "$p" ] && [ -e "$p" ] && { printf '%s\n' "$p"; exit 0; }
-exit 1
+printf 'THE HARNESS TRIPWIRE: this probe ran nsenter. The container is read via /proc/<pid>/root now.\n' >&2
+exit 99
 STUBEOF
   chmod +x "$STUB/lxc-info" "$STUB/nsenter"
-  if [ "$SCEN" = container-up ]; then export CONTAINER_PID=4242; else unset CONTAINER_PID; fi
+  if [ "$SCEN" = container-up ]; then
+    export CONTAINER_PID=4242
+    mkdir -p "$FR/proc/$CONTAINER_PID"
+    ln -sfn / "$FR/proc/$CONTAINER_PID/root"
+  else
+    unset CONTAINER_PID
+  fi
 }
 
 # `run` executes the rewritten probe as the fake device sees it. PATH is the sandbox FIRST, so a tool the
@@ -659,7 +674,13 @@ want 'the android container is not running' "$OUT" "a container that is not runn
 want 'NOT the same as the path being absent there' "$OUT" "and the distinction is stated rather than implied"
 scen container-up
 OUT=$(run)
-want "the container's mount namespace .android pid 4242." "$OUT" "when the container IS up, its namespace is read too"
+want "through the container.s own root .android pid 4242." "$OUT" "when the container IS up, its OWN ROOT is read too -- by path, not by entering it"
+notwant 'TRIPWIRE' "$OUT" "and nothing entered a namespace to get there"
+# The strongest form of the same claim, and the one that survives a future edit: no EXECUTABLE line of the
+# shipped probe mentions nsenter. Comments may -- the header quotes the call it used to make, and this tree
+# has already been bitten by a grep that matched the prose naming a defect instead of the defect.
+notwant 'nsenter' "$(grep -v '^[[:space:]]*#' "$SRC")" \
+  "and no executable line of the shipped probe mentions nsenter anywhere"
 count_is "$OUT" 'HIT   .*venus\.mdt' 2 "and the same path is then a hit in BOTH namespaces"
 
 # ==================================================================================================

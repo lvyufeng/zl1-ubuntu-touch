@@ -495,14 +495,33 @@ done
 # caller that loads this firmware is whichever process first opens a video instance.
 A=$(lxc-info -n android -pH 2>/dev/null | head -1)
 if [ -n "$A" ]; then
-  always "   the same candidates in the container's mount namespace (android pid $A):"
+  always "   the same candidates through the container's own root (android pid $A):"
+  # WALKED BY THE HOST, NOT ENTERED (docs 162). This loop used to be
+  #   v=$(nsenter -t "$A" -m -- ls -d "$c/$FW_NAME.mdt" 2>/dev/null)
+  # and its sibling in zl1-modem-probe.sh is where both probes HUNG on 2026-09-25 -- twice, with the
+  # device resetting itself 2m08s and 3m05s later (both instants read off the NEXT step's own `uptime`)
+  # and with the step's device-side `timeout -k 5 240` never firing, because the reset came first and
+  # the socket then went dark until the host's own backstop collected it. What that does NOT establish
+  # is that the process was unkillable -- a bound that never got to fire and a signal that could not be
+  # delivered print the same absence. The replacement removes the question: there is no call here that
+  # can hang. `/proc/<pid>/root/<path>` is THAT path resolved in that process's mount namespace, walked
+  # by the reading process: no setns, no fork into the container, and no container binary -- which is
+  # exactly what the old note here was reaching for ("the container has no test(1) this project can rely
+  # on", docs 117), because the test below is the HOST's own.
   for c in $CANDS; do
-    v=$(nsenter -t "$A" -m -- ls -d "$c/$FW_NAME.mdt" 2>/dev/null)
-    if [ -n "$v" ]; then always "     HIT   ${v%% *}"; else say "     --    $c  (no $FW_NAME.mdt there)"; fi
+    if [ -e "/proc/$A/root$c/$FW_NAME.mdt" ]; then
+      always "     HIT   $c/$FW_NAME.mdt"
+    elif [ -e "/proc/$A/root$c" ]; then
+      say "     dir   $c  (exists, no $FW_NAME.mdt in it)"
+    else
+      say "     --    $c  (does not exist)"
+    fi
   done
-  say "   (ls, not test: the container has no test(1) this project can rely on -- measured, docs 117.)"
+  say "   (each line is about ${A}'s OWN root, so it is the container's view and not the host's -- but it"
+  say "    is a PATH WALK, not a mount table: a file behind a mount that never happened and a file that is"
+  say "    not there at all look the SAME in it. The mount list below is what separates those two.)"
 else
-  always "   the android container is not running (lxc-info answered nothing), so its mount namespace could"
+  always "   the android container is not running (lxc-info answered nothing), so its own root could"
   always "   not be read -- which is NOT the same as the path being absent there."
 fi
 # Where the partition that holds it is mounted, if it is mounted at all. This is the reading that turns

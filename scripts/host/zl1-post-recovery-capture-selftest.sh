@@ -207,6 +207,14 @@ callee() { # relative path, marker name
 #!/bin/sh
 printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
 [ -n "\${FP_SLEEP_$2:-}" ] && sleep "\${FP_SLEEP_$2}"
+# THE DEVICE RESETS DURING THIS STEP (docs 162). The hook has to live on a CALLEE, not on the stub:
+# what is being modelled is the phone going down in the middle of the step, and the fixture's boot_id
+# file is the only thing the capture's re-read can see. Writing a different id there is exactly what
+# the next step's re-read would find on hardware -- a rebooted phone.
+[ -n "\${FP_FLIP_BOOT_$2:-}" ] && printf '%s\n' "\${FP_FLIP_BOOT_$2}" > "$FR/proc/sys/kernel/random/boot_id"
+# The other half of the same question: the re-read comes back with NOTHING (the device answered, and
+# the answer was empty). That must land on the unreadable state and never on same-boot.
+[ -n "\${FP_UNLINK_BOOT_$2:-}" ] && rm -f "$FR/proc/sys/kernel/random/boot_id"
 rc=\$(printf '%s' "\${FP_RC_$2:-0}")
 [ -n "\$rc" ] || rc=0
 echo "CALLEE $2: done rc=\$rc"
@@ -545,7 +553,11 @@ for f in 05-gps-probe 06-fingerprint; do
 done
 want '^boot_id: deadbeef-1111-2222-3333-444444444444$' "$(cat "$OD/INDEX.txt")" "the index names the boot it describes"
 want '^with_capture: 0' "$(cat "$OD/INDEX.txt")" "and whether the writing step was included"
-want '^01-edl-postmortem +0 +01-edl-postmortem\.txt$' "$(cat "$OD/INDEX.txt")" "and lists each step with its exit code and its file"
+want '^01-edl-postmortem +0 +same-boot +01-edl-postmortem\.txt$' "$(cat "$OD/INDEX.txt")" "and lists each step with its exit code, its BOOT MARK and its file"
+want '^boot_check: 19 of 19 steps re-read the identity   changed: 0   unreadable: 0$' "$(cat "$OD/INDEX.txt")" "and the header says the device was one boot throughout"
+grep -q '^boot_switch:' "$OD/INDEX.txt" && bad "a boot_switch line is printed on a run where nothing switched" \
+  || ok "and no boot_switch line is invented on a run that did not need one"
+want 'and the device was the SAME BOOT at every step' "$OUT" "and the closing verdict says so rather than staying silent"
 ( cd "$OD" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "the checksums verify" || bad "SHA256SUMS does not verify"
 # The archive must contain what the callee SAID, not a summary of it: that is the whole point.
 want 'CALLEE EDLPM: done rc=0' "$(cat "$OD/01-edl-postmortem.txt")" "a step's own output is what is archived"
@@ -851,7 +863,71 @@ want 'ZL1STEP-TIMEOUT device' "$(cat "$CAP")" "the marker is written by the ship
 
 # ==================================================================================================
 echo
-echo "== 8. what this harness does NOT test, and says so =="
+echo "== 8. the device resets mid-capture: the identity is re-read, and every reading is marked =="
+# ==================================================================================================
+# docs 162. THIS IS NOT A CRASH TEST. The failure it reproduces is a false negative that reads as data:
+# on 2026-09-25 the phone reset itself twice during a real capture, the run continued, and the nine
+# readings taken on the boot that came back -- a boot that had been up for 98 SECONDS -- came back with
+# eight `rc=1` between them, because on this device "the node has not been created yet" and "the node
+# does not exist" are the same words. The archive's header still named the ORIGINAL boot, so nothing in
+# it said which readings belonged to which phone state. (Fourteen readings in all ran under an identity
+# the archive is not named for: `04c` through `04o`, plus `07`.)
+#
+# The reset is modelled where it really happens -- inside a step, in the device's own callee -- because
+# a harness that flips the id from the outside would not prove the capture notices a change IT cannot
+# schedule.
+FP_STATE=present; reset_rc
+ODR="$W/out/reset"
+rm -rf "$ODR"
+OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes \
+      FP_FLIP_BOOT_LMH=feedface-5555-6666-7777-888888888888 \
+      timeout 120 bash "$CAP" --outdir "$ODR" --skip-probes --no-orientation 2>&1); RC=$?
+printf '%s\n' "$OUT" > "$W/out.reset"
+want 'THE DEVICE IS A DIFFERENT BOOT NOW' "$OUT" "a reset during a step is said out loud, not absorbed"
+want 'feedface-5555-6666-7777-888888888888' "$OUT" "and it names the boot the device came back as"
+want 'is still coming up' "$OUT" \
+  "and the warning says why it matters: a young boot answers 'missing' in the words absent hardware does"
+[ "$RC" = 0 ] && ok "a reset is a READING, not a script failure -- the run still exits 0" \
+  || bad "the run exited $RC; a reset that the capture handled is not a failed capture"
+# The first switch, with BOTH ids: "which boot was it before and after" is what makes the boundary
+# usable instead of merely known.
+want '^boot_switch: 04d-lmh: deadbeef-1111-2222-3333-444444444444 -> feedface-5555-6666-7777-888888888888' \
+  "$(cat "$ODR/INDEX.txt")" "the index records the first switch, naming both boots and the step that saw it"
+want '^04c-sleep-throttle +0 +same-boot' "$(cat "$ODR/INDEX.txt")" \
+  "the step BEFORE the reset is still marked same-boot -- the boundary is per step, not per run"
+want '^04d-lmh +0 +CHANGED-BOOT' "$(cat "$ODR/INDEX.txt")" "the step that saw it is marked"
+want '^04o-fp-kernel +0 +CHANGED-BOOT' "$(cat "$ODR/INDEX.txt")" \
+  "and so is every step after it -- the ones whose rc=1 is a young boot, not a missing chip"
+want '^boot_check: 18 of 18 steps re-read the identity   changed: 12   unreadable: 0$' "$(cat "$ODR/INDEX.txt")" \
+  "and the header counts them instead of leaving the count to a reader"
+notwant 'the device was the SAME BOOT at every step' "$OUT" \
+  "the closing verdict does not claim a same-boot run when the boot moved under it"
+
+echo
+echo "   -- and an identity that could NOT be re-read is 'unreadable', never 'the same boot':"
+# The alternative is the shape this repo keeps finding: a check whose failure mode IS its passing value.
+# Here the re-read answers with NOTHING (the device answered; the answer was empty), and if that were
+# counted as `same-boot` the closing verdict would say "the device was the SAME BOOT at every step" on a
+# run where the identity was never established after step 04d -- a sentence that reads like evidence.
+FP_STATE=present; reset_rc
+ODU="$W/out/unreadable"
+rm -rf "$ODU"
+OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_UNLINK_BOOT_LMH=1 \
+      timeout 120 bash "$CAP" --outdir "$ODU" --skip-probes --no-orientation 2>&1); RC=$?
+printf '%s\n' "$OUT" > "$W/out.unreadable"
+want 'could not be re-read' "$OUT" "an empty answer is reported as unreadable"
+want "That is UNREADABLE, which is not the same as the same boot" "$OUT" "and it says which of the two it is not"
+want '^04d-lmh +0 +unreadable' "$(cat "$ODU/INDEX.txt")" "the step is marked unreadable -- a third value, not a blank"
+want '^boot_check: 18 of 18 steps re-read the identity   changed: 0   unreadable: 12$' "$(cat "$ODU/INDEX.txt")" \
+  "and the header counts them apart from the changes"
+notwant 'the device was the SAME BOOT at every step' "$OUT" \
+  "the verdict does NOT claim a same-boot run it never established"
+want 'so .the same boot throughout. is NOT established' "$OUT" "and it says so in its own words instead"
+want 'BOOT_CHECK_LIMIT=20' "$(cat "$CAP")" "the re-read has a bound of its own, so it cannot inherit the step's"
+
+# ==================================================================================================
+echo
+echo "== 9. what this harness does NOT test, and says so =="
 # ==================================================================================================
 printf 'SKIP  what the steps themselves decide. Their callees here are recording stand-ins: the\n'
 printf '      post-mortem, the boot-address verdict, the probes and the health check each have their own\n'

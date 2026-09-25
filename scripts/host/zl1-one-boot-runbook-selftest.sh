@@ -239,6 +239,16 @@ callee() { # relative path, marker
 #!/bin/sh
 printf 'CALLEE $2 args=%s\n' "\$*" | tee -a "$ACT"
 [ -n "\${FP_SLEEP_$2:-}" ] && sleep "\${FP_SLEEP_$2}"
+# THE DEVICE RESETS DURING THIS STEP (docs 162). The hook lives on a CALLEE and not on the ssh stub,
+# because what is being modelled is the phone going down in the middle of a step: the fixture's boot_id
+# file is the only thing the runbook's re-read can see, and writing a different id there is exactly what
+# the next step's re-read would find on hardware. It is here rather than in the scenario because a
+# harness that flipped the id from the outside would not prove the runbook notices a change IT cannot
+# schedule -- the same reason the capture's harness puts it in the same place.
+[ -n "\${FP_FLIP_BOOT_$2:-}" ] && printf '%s\n' "\${FP_FLIP_BOOT_$2}" > "$FR/boot_id"
+# The other half of the same question: the re-read comes back with NOTHING (the device answered, and the
+# answer was empty). That must land on the unreadable state and never on the same-boot one.
+[ -n "\${FP_UNLINK_BOOT_$2:-}" ] && rm -f "$FR/boot_id"
 rc=\$(printf '%s' "\${FP_RC_$2:-0}"); [ -n "\$rc" ] || rc=0
 # Outdir-aware, and it models the REAL scripts instead of a convenient fiction. Only TWO of the five
 # make an archive of their own -- the capture and the heat chain -- so only those two are given this
@@ -435,7 +445,11 @@ run()  { : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MI
 run_no_timeout() { # the same, on a host whose PATH has no timeout(1)
   : > "$ACT"; rm -rf "$OUTROOT"/tmp-one-boot-*; OUT=$(env PATH="$STUB:$MINBIN_NT" "$BASH_BIN" "$RB" "$@" 2>&1); RC=$?
 }
-reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; FP_SSH_HANG_ON=""; }
+# The fake device's identity is part of the fixture, so `reset` restores it like every other reading:
+# a scenario that deliberately changes it (docs 162's reset and unreadable cases) would otherwise leave
+# every LATER scenario starting from a device with no boot id at all -- which those scenarios would not
+# notice, because none of them read it except through a subject that only prints it in the header.
+reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; FP_SSH_HANG_ON=""; }
 # A run whose device NEVER ANSWERS, under the harness's OWN hard kill. This is how a bound is tested
 # behaviourally rather than by grepping for `timeout`: with the bound the subject returns, without it the
 # subject hangs and this `timeout` is what ends the experiment -- and the hang is the observable, because
@@ -835,23 +849,27 @@ echo "   -- and the invariant is pinned, so a new call site cannot appear unboun
 # The scenarios above are BEHAVIOURAL -- they hang the device and see whether the run comes back. This is
 # the static half, and it is here because behaviour can only show a path that a scenario happens to take:
 # a fifth direct ssh call added next year would not be covered by anything above unless a scenario drove
-# it. So the ARRAY ITSELF is the thing constrained: `${SSH[@]}` may appear in exactly two places -- the
-# definition of `devssh`, which bounds it, and the one call that hands it to `run_bg`, which also bounds
-# it. The count is asserted rather than the list, so an added occurrence is a red and not a silent pass.
+# it. So the ARRAY ITSELF is the thing constrained: `${SSH[@]}` may appear in exactly THREE places --
+# the definition of `devssh`, which bounds it; the one call that hands it to `run_bg`, which also bounds
+# it; and the per-step identity re-read (docs 162), which goes through `run_bg --bound` with a bound of
+# its OWN, because it must not inherit a step's 240s -- a dead link has to cost 20s here, once per step.
+# The count is asserted rather than the list, so an added occurrence is a red and not a silent pass.
 # (This is doc 131 section 6's "the other harnesses were hand-scanned, and that is not a mechanism",
 # one file over: the scan is now a check that runs every time this harness does.)
 SSHSITES=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null)
 NSITES=$(printf '%s\n' "$SSHSITES" | grep -c . )
-[ "$NSITES" = 2 ] && ok "the subject uses \${SSH[@]} in exactly 2 places, both of them bounded" \
+[ "$NSITES" = 3 ] && ok "the subject uses \${SSH[@]} in exactly 3 places, all of them bounded" \
                   || bad "\${SSH[@]} appears $NSITES times in the shipped runbook -- a new direct call site must be routed through devssh"
 want 'devssh() { bound "$STATE_LIMIT" "${SSH[@]}" "$@"; }' "$SSHSITES" "one is devssh, which bounds it"
-want 'run_bg "${SSH[@]}"' "$SSHSITES" "the other is handed to run_bg, which bounds it too"
+want 'run_bg "${SSH[@]}"' "$SSHSITES" "the second is handed to run_bg, which bounds it too"
+want 'run_bg --bound "$BOOT_CHECK_LIMIT" "${SSH[@]}"' "$SSHSITES" \
+  "the third is the identity re-read, handed to run_bg with a bound of its own so it cannot inherit the step's"
 # And the same fact the other way round, which is the one that actually protects: REMOVE the two bounded
 # occurrences and NOTHING may be left. A count alone would pass on a file where the count is right and the
 # lines are different; here the survivor set has to be empty, and it is compared with grep -E rather than
 # with this harness's glob-matching `want` (an anchored or bracketed pattern there matches as a glob).
-LEFT=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null | grep -vE 'devssh\(\)|run_bg "\$\{SSH' || true)
-[ -z "$LEFT" ] && ok "and with those two removed, no \${SSH[@]} call site is left unbounded" \
+LEFT=$(grep -n '\${SSH\[@\]}' "$SRC" 2>/dev/null | grep -vE 'devssh\(\)|run_bg "\$\{SSH|run_bg --bound "\$BOOT_CHECK_LIMIT" "\$\{SSH' || true)
+[ -z "$LEFT" ] && ok "and with those three removed, no \${SSH[@]} call site is left unbounded" \
               || { bad "these \${SSH[@]} uses are neither devssh nor run_bg -- route them through devssh:"; printf '%s\n' "$LEFT" | sed 's/^/        | /'; }
 
 # ==================================================================================================
@@ -955,6 +973,79 @@ n=0; for f in 01-capture 02-panic-guard 03-heat-chain 04-fingerprint 05-trial; d
 # The archive is written by a function that is ALSO the signal handler, so a second call must be a
 # no-op rather than a rewrite -- otherwise a late signal could truncate a good index.
 want '01 and 05 read' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "and it says which steps read and which write"
+# A run where the boot did NOT move still says so, in its own words: the same-boot claim is one of the
+# three verdicts and it is the one that has to be earned rather than assumed (docs 162).
+want 'the SAME BOOT at every step' "$OUT" "and a run the device stayed up through SAYS the boot was the same"
+notwant 'NOT ONE BOOT' "$OUT" "while claiming nothing of the sort when it did not happen"
+# And every row was actually checked. A run where one step's runner bypasses the re-read would print
+# "5 of 6" and a gap line naming it -- which is a defect in the subject, not a property of the device,
+# so it is asserted here on a run where nothing else is wrong.
+notwant 'boot_check_gap' "$(cat "$OD/INDEX.txt" 2>/dev/null)" "and no row was left without an identity re-read"
+
+# ==================================================================================================
+echo
+echo "== 8b. the runbook's own name is a claim: the device reset under it (docs 162) =="
+# ==================================================================================================
+# THIS IS WHAT ACTUALLY HAPPENED ON 2026-09-25. The real run took 18m23s and the phone reset itself
+# twice inside it; steps 02 to 06 were carried out on a boot that had been up for four minutes, and the
+# archive named the boot the run STARTED on. The evidence was in the archive all along -- each probe
+# prints its own boot id, and those files said 61c4abf0, c3ba7730 and 693b2eed -- and nothing joined
+# them up, because the identity was read once at the top and carried.
+#
+# The failure this reproduces is a false negative that reads as data: with five of the six steps having
+# done their work on the wrong phone state, the run still called itself complete, and its name says
+# "one boot". A reset is modelled where it really happens -- inside a step, in the device's own callee.
+reset; rm -f "$FR/boot_id"; printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"
+rm -rf "$W/bootcheck/flip"
+FP_FLIP_BOOT_HEAT=feedface-5555-6666-7777-888888888888 run --yes --outdir "$W/bootcheck/flip"
+ODR="$W/bootcheck/flip"
+want 'THE DEVICE IS A DIFFERENT BOOT NOW' "$OUT" "a reset during a step is said out loud, not absorbed"
+want 'feedface-5555-6666-7777-888888888888' "$OUT" "and it names the boot the device came back as"
+want 'read its own file and' "$OUT" \
+  "and it says why a WRITING step is worse than a reading one here: the write may be half-done"
+# The rows are pulled out with grep and then matched LITERALLY, because this harness's `want` is a
+# substring test and not a regex -- `want '^03-heat-chain +0 +CHANGED-BOOT'` is a pattern that can never
+# match a line, so it would report a red for a file that is right. (The capture's harness has the other
+# `want`, and copying an assertion between the two files is how that was found.)
+FLIP03=$(grep '^03-heat-chain'  "$ODR/INDEX.txt" 2>/dev/null)
+FLIP02=$(grep '^02-panic-guard' "$ODR/INDEX.txt" 2>/dev/null)
+FLIP06=$(grep '^06-lpm-fix'     "$ODR/INDEX.txt" 2>/dev/null)
+want 'CHANGED-BOOT' "$FLIP03" "the step the reset landed in is marked"
+want 'same-boot' "$FLIP02" "the step BEFORE it is still marked same-boot -- the boundary is per row, not per run"
+want 'CHANGED-BOOT' "$FLIP06" "and every step after it inherits the mark, including the last"
+want 'boot_switch: 03-heat-chain: aaaaaaaa-1111-2222-3333-444444444444 -> feedface-5555-6666-7777-888888888888' \
+  "$(cat "$ODR/INDEX.txt" 2>/dev/null)" "the index records the first switch with BOTH ids and the step that saw it"
+want 'boot_check: 6 of 6 steps re-read the identity   changed: 4   unreadable: 0' "$(cat "$ODR/INDEX.txt" 2>/dev/null)" \
+  "and the header counts them instead of leaving the count to a reader"
+notwant 'boot_check_gap' "$(cat "$ODR/INDEX.txt" 2>/dev/null)" \
+  "and 6 of 6 means 6 of 6: no row -- step 05 included -- was left without a re-read"
+want 'BUT THIS WAS NOT ONE BOOT' "$OUT" "and the closing verdict refuses the name of the script"
+want 'do NOT compose' "$OUT" "in the terms that matter: the two halves are not one run"
+notwant 'the SAME BOOT at every step' "$OUT" "while NOT also claiming a same-boot run in the same breath"
+want 'BOOT_CHECK_LIMIT=20' "$(cat "$RB")" \
+  "and the re-read has a bound of its OWN -- it must not inherit the step's 240s"
+
+echo
+echo "   -- and an identity that could NOT be re-read is 'unreadable', never 'the same boot':"
+# The alternative is the shape this repo keeps finding: a check whose failure mode IS its passing value.
+# Here the re-read answers with NOTHING, and if that were counted as same-boot the verdict would say the
+# device was the same boot at every step on a run where the identity was never established after step 03.
+reset; printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"
+rm -rf "$W/bootcheck/unreadable"
+FP_UNLINK_BOOT_HEAT=1 run --yes --outdir "$W/bootcheck/unreadable"
+ODU="$W/bootcheck/unreadable"
+want 'could not be re-read' "$OUT" "an empty answer is reported as unreadable"
+want "That is UNREADABLE, which is not the same as the same boot" "$OUT" "and it says which of the two it is not"
+want 'unreadable' "$(grep '^03-heat-chain' "$ODU/INDEX.txt" 2>/dev/null)" \
+  "the row is marked unreadable -- a third value, not a blank"
+want 'boot_check: 6 of 6 steps re-read the identity   changed: 0   unreadable: 4' "$(cat "$ODU/INDEX.txt" 2>/dev/null)" \
+  "and the header counts them apart from the changes"
+want "'one boot' is NOT" "$OUT" "and the verdict refuses the claim it could not establish"
+notwant 'the SAME BOOT at every step' "$OUT" "and does NOT fall back to the passing value"
+# Every row went through the check, so not one of them may read as `not-checked` -- that word is for a
+# row the check never ran after (an interrupt between the step and the re-read), and a row that DID run
+# it must not be able to borrow it.
+notwant 'not-checked' "$(cat "$ODU/INDEX.txt" 2>/dev/null)" "and no row claims the check never ran when it did"
 
 # ==================================================================================================
 echo
@@ -1163,6 +1254,9 @@ for c in '2  refused' '1  the sequence stopped short' '3  interrupted'; do
   want "$c" "$(cat "$SRC")" "the header declares: $c"
 done
 want 'THE TRIAL WRITES TO THE' "$(cat "$SRC")" "and it says out loud that --apply-trial is the write"
+# The header is the contract, so a behaviour this file pins in six places has to be IN it: a reader who
+# only reads `--help` has to be able to learn that the run can refuse its own name (docs 162).
+want 'IT CHECKS THE CLAIM IN ITS OWN NAME' "$(cat "$SRC")" "and the header declares the one-boot claim it now measures"
 
 # ==================================================================================================
 # ==================================================================================================
@@ -1316,6 +1410,24 @@ if mutate nocallees 's#echo "UNUSABLE .*$#: #'; then
   cp "$CHAIN_BAK2" "$CAL/host/zl1-heat-fix-chain.sh"; chmod +x "$CAL/host/zl1-heat-fix-chain.sh"
   [ "$MRC" != 2 ] && ok "mutation 'no extraction': the run proceeds" || bad "the mutant exited $MRC"
   notwant 'NOT verified against it' "$MOUT" "mutation 'no extraction': a check that could not be made is SILENT -- the run reports itself ready on a chain it never read (the check is live)"
+fi
+
+# And the mutation this section exists for NOW: the identity re-read is taken out of STEP 05 only. That
+# is not a hypothesis -- it is the defect the first version of this fix shipped, because step 05 does not
+# go through `run_step` (it pushes a script and bounds the run itself), so the re-read that lives in
+# run_step never reached its row. The subject now names such rows in its own archive, and the mutation is
+# what keeps that instrument honest: without it, "6 of 6" would be a sentence nothing could falsify.
+if mutate nobootcheck05 's#^ *boot_check_after 05-trial$##'; then
+  reset
+  rm -rf "$W/bootcheck/mut"; FP_FLIP_BOOT_HEAT=feedface-5555-6666-7777-888888888888 \
+    mutrun "$MUTDIR/nobootcheck05.sh" --yes --outdir "$W/bootcheck/mut"
+  [ "$MRC" = 0 ] && ok "mutation 'step 05 is not re-checked': the run still exits 0" || bad "the mutant exited $MRC"
+  want 'not-checked' "$(grep '^05-trial' "$W/bootcheck/mut/INDEX.txt" 2>/dev/null)" \
+    "mutation 'step 05 is not re-checked': the row has no boot mark"
+  want 'boot_check_gap: 05-trial' "$(cat "$W/bootcheck/mut/INDEX.txt" 2>/dev/null)" \
+    "mutation 'step 05 is not re-checked': and the archive NAMES the row instead of leaving the gap to a reader (the check is live)"
+  want 'boot_check: 5 of 6 steps re-read the identity' "$(cat "$W/bootcheck/mut/INDEX.txt" 2>/dev/null)" \
+    "mutation 'step 05 is not re-checked': while the count says 5 of 6 rather than rounding up"
 fi
 
 echo "== 11. the health check cites this harness's count, and that citation cannot drift =="

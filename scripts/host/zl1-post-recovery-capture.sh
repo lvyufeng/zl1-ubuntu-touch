@@ -99,7 +99,13 @@ esac
 
 PASS=0
 FAIL=0
-declare -a STEP_NAMES=() STEP_RC=() STEP_FILES=()
+declare -a STEP_NAMES=() STEP_RC=() STEP_FILES=() STEP_BOOT=()
+# The boot's identity is read ONCE at the top, and until 2026-09-25 nothing ever asked whether it was
+# still that boot. These four are what that question needs to be answerable (docs 162).
+BOOT_SWITCH=""          # "<step name>: <old id> -> <new id>" on the FIRST step that saw a change
+BOOT_SWITCH_N=0         # how many steps ran under an identity that is NOT the one this archive is named for
+BOOT_CHECKS=0
+BOOT_CHECK_UNREADABLE=0
 
 say()  { printf '%s\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -197,6 +203,13 @@ archive() {
     printf 'captured: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'with_capture: %s   skip_probes: %s   no_orientation: %s   step_limit: %ss\n' \
       "$WITH_CAPTURE" "$SKIP_PROBES" "$NO_ORIENTATION" "$STEP_LIMIT"
+    # The identity is a READING, not a label (docs 162). The header keeps the id the archive is NAMED
+    # for, and these two lines say whether the device was still that boot when the steps ran. A reader
+    # who sees `boot_switch:` knows the bottom of this file describes a DIFFERENT phone state than the
+    # top, which is the whole reason the step column below carries a boot mark per step.
+    printf 'boot_check: %s of %s steps re-read the identity   changed: %s   unreadable: %s\n' \
+      "$BOOT_CHECKS" "${#STEP_NAMES[@]}" "$BOOT_SWITCH_N" "$BOOT_CHECK_UNREADABLE"
+    [ -n "$BOOT_SWITCH" ] && printf 'boot_switch: %s   <- every step marked CHANGED-BOOT ran under the second id\n' "$BOOT_SWITCH"
     [ "$INTERRUPTED" = 1 ] && printf 'INTERRUPTED: yes -- the steps below are all that ran\n'
     printf '\n# step                 rc   file\n'
     i=0
@@ -209,7 +222,14 @@ archive() {
       # thing that runs this function in that state.
       local rc_i="${STEP_RC[$i]:-?}"
       local f_i="${STEP_FILES[$i]:-${STEP_NAMES[$i]}.txt (partial: the interrupt landed here)}"
-      printf '%-20s %3s   %s\n' "${STEP_NAMES[$i]}" "$rc_i" "$f_i"
+      # The boot mark, and `not-checked` is its own value rather than `same`: a step the check never
+      # ran after (a signal between the step and the check) is not evidence of an unchanged boot.
+      local b_i="${STEP_BOOT[$i]:-not-checked}"
+      case "$b_i" in
+      CHANGED) b_i="CHANGED-BOOT" ;;
+      same)    b_i="same-boot" ;;
+      esac
+      printf '%-20s %3s   %-12s %s\n' "${STEP_NAMES[$i]}" "$rc_i" "$b_i" "$f_i"
       i=$((i + 1))
     done
     printf '\n# every step is read-only except 08-no-edl-capture, which only runs with --with-capture\n'
@@ -268,6 +288,12 @@ HOST_BACKSTOP=$((STEP_LIMIT + 30))
 # The bound for a PUSH, which is a small script over a link that is up: the same size the heat chain uses
 # for its own read-backs. A step is not retried, so a slow-but-working link must not be cut off.
 IO_LIMIT=60
+# The bound on the ONE call that is not a step and not a push: the boot-identity re-read the step runner
+# makes after every step (docs 162). It is short because it is one `cat` of a kernel file -- but NOT zero,
+# because the whole reason it exists is a step that left the link wedged, and an unbounded check would
+# hang exactly where the step did. It does not count toward the callee-derived bound in _cap_shape()
+# below: that number exists to keep ONE STEP from being cut off mid-flight, and this call is not a step.
+BOOT_CHECK_LIMIT=20
 # AND THE UNBOUNDED RUNNER IS GONE, not merely avoided. It had five call sites and every one of them was a
 # place a hung ssh could spend the boot; leaving it in the file as a thing somebody may call again is how
 # docs 132's fix stopped at the runbook and never reached the callee it invokes. So there is exactly ONE
@@ -385,6 +411,54 @@ step() { # name, kind, localpath, remote-args...
     # difference between "something failed" and knowing what without opening a file.
     grep -av '^[[:space:]]*$' "$out" 2>/dev/null | tail -3 | sed 's/^/        | /'
   fi
+  # ================================================================================================
+  # DID THE PHONE COME BACK AS A DIFFERENT BOOT? (docs 162 -- the defect this capture was carrying)
+  # ================================================================================================
+  # On 2026-09-25 this capture ran while the device reset itself TWICE, and every reading after the
+  # first reset was taken on a phone that was still coming up. It did not notice, and there was no
+  # way for it to notice: the identity was read once, at the top, put in a variable, and then carried
+  # -- so FOURTEEN readings (`04c` through `04o`, plus `07`) went into a directory named for a boot
+  # that no longer existed, and the last nine of them were taken on a boot that had been up for 98
+  # SECONDS. Eight of those nine answered `rc=1`, because a node that a boot has not yet created and a
+  # node that does not exist print THE SAME WORDS. The archive says "boot_id: <the old one>".
+  #
+  # So the identity is now RE-READ after every step, bounded, and a change is a first-class reading:
+  #   * the step that saw it is marked in INDEX.txt, and so is every step after it;
+  #   * the first change is recorded with both ids, because "which boot was it before and which after"
+  #     is what makes the boundary usable rather than merely known;
+  #   * and an identity that could NOT be read is `unreadable`, which is not `same`. A check whose
+  #     failure mode is the passing value is not a check (the shape docs 106/107 section 6 is made of).
+  #
+  # It runs on BOTH kinds of step, not just the device ones: a host step here is an installer's
+  # --status, and the reason to ask after it is that it is the step whose ssh could have been the last
+  # thing to see the old boot.
+  local bid="" bstate="same" _bf
+  _bf="/tmp/.zl1-bootid.$$"
+  run_bg_bound "$BOOT_CHECK_LIMIT" "${SSH[@]}" \
+    'cat /proc/sys/kernel/random/boot_id 2>/dev/null' > "$_bf" 2>/dev/null
+  bid=$(tr -d '\r\n' < "$_bf" 2>/dev/null); rm -f "$_bf"
+  BOOT_CHECKS=$((BOOT_CHECKS + 1))
+  if [ -z "$bid" ]; then
+    bstate="unreadable"; BOOT_CHECK_UNREADABLE=$((BOOT_CHECK_UNREADABLE + 1))
+  elif [ "$bid" != "$BOOT_ID" ]; then
+    bstate="CHANGED"; BOOT_SWITCH_N=$((BOOT_SWITCH_N + 1))
+    [ -z "$BOOT_SWITCH" ] && BOOT_SWITCH="$name: $BOOT_ID -> $bid"
+  fi
+  STEP_BOOT+=("$bstate")
+  case "$bstate" in
+  CHANGED)
+    say "   !! THE DEVICE IS A DIFFERENT BOOT NOW (boot_id $bid). It reset itself during this step."
+    say "      Every reading from here on describes THAT boot -- and the earlier readings describe"
+    say "      $BOOT_ID. A probe run against a phone that is still coming up answers \"the node is"
+    say "      missing\" in exactly the words a genuinely absent piece of hardware produces, so nothing"
+    say "      below this line may be read as inventory until the reset is accounted for."
+    ;;
+  unreadable)
+    say "   ?? the boot's identity could not be re-read after this step (no answer within"
+    say "      ${BOOT_CHECK_LIMIT}s). That is UNREADABLE, which is not the same as the same boot, and"
+    say "      the steps below it are now of unknown attribution."
+    ;;
+  esac
   say
   return 0
 }
@@ -707,10 +781,39 @@ say "  INDEX.txt, SHA256SUMS, and one file per step"
 say "  verify with:  ( cd $OUT && sha256sum -c SHA256SUMS )"
 say
 if [ "$FAIL" = 0 ]; then
-  say "capture complete: $PASS steps ran, 0 failed"
+  # THREE outcomes, not two. `unreadable` must not fall into the same-boot sentence: an identity that
+  # did not come back is not evidence that the boot stayed the same, and a verdict that says "SAME
+  # BOOT" because nothing *reported* a change is the failure mode this whole section exists to avoid.
+  if [ "$BOOT_SWITCH_N" = 0 ] && [ "$BOOT_CHECK_UNREADABLE" = 0 ]; then
+    say "capture complete: $PASS steps ran, 0 failed, and the device was the SAME BOOT at every step"
+  elif [ "$BOOT_SWITCH_N" -gt 0 ]; then
+    say "capture complete: $PASS steps ran, 0 failed -- BUT THE DEVICE RESET DURING THE RUN, so the"
+    say "  steps below the switch describe a DIFFERENT boot from the one this archive is named for."
+  else
+    say "capture complete: $PASS steps ran, 0 failed -- but $BOOT_CHECK_UNREADABLE step(s) could not"
+    say "  have their identity re-read, so 'the same boot throughout' is NOT established."
+  fi
 else
   say "capture complete: $PASS steps ran, $FAIL FAILED (their output is archived -- read the FAIL lines above)"
 fi
+# The reset gets its own paragraph, because it is the one reading here that changes how EVERY OTHER
+# reading is to be read, and because the failure it causes is a false negative that looks like data:
+# a probe run against a boot that is still coming up says "the node is missing" (docs 162).
+if [ "$BOOT_SWITCH_N" -gt 0 ]; then
+  say
+  say "=== THE BOOT CHANGED UNDER THIS CAPTURE ==="
+  say "  first seen at:  $BOOT_SWITCH"
+  say "  steps affected: $BOOT_SWITCH_N of ${#STEP_NAMES[@]} (INDEX.txt marks each one CHANGED-BOOT)"
+  say "  What it means:  those steps are readings of a boot that had just started, not of $BOOT_ID."
+  say "  What it does NOT mean: that anything in them says a piece of hardware is absent. On the boot"
+  say "  that produced this feature, eight probes answered rc=1 after the reset and every one of them"
+  say "  was reading a node the new boot had not created yet."
+fi
+[ "$BOOT_CHECK_UNREADABLE" -gt 0 ] && {
+  say
+  say "  and $BOOT_CHECK_UNREADABLE step(s) could not have their identity re-read at all (no answer in"
+  say "  ${BOOT_CHECK_LIMIT}s). UNREADABLE is not 'the same boot' -- INDEX.txt says so per step."
+}
 say
 say "What to do with it:"
 say "  * 01: whether the previous boot's death is now explained (pstore), and which of the two"

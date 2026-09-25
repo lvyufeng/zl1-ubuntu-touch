@@ -412,25 +412,69 @@ else
   say "      can carry an fstab of its own, and its files are gone by the time anything on this system"
   say "      could list them. Section 4 reads what the initramfs SAID it did, which is the difference."
 fi
-# The container's view, which is where Android's own mount point for this partition lives. Read with
-# nsenter -m because that is the mount table the path means in; the probe does not assume the container
-# is up (docs: an absent container is a reading, not a crash).
+# The container's view, which is where Android's own mount point for this partition lives.
+#
+# READ OUT OF THE KERNEL'S TEXT, NOT BY ENTERING THE NAMESPACE (docs 162). This section used to be
+#   CVIEW=$(nsenter -t "$A" -m -- ls -d /vendor/firmware_mnt 2>/dev/null)
+# and that call is where this probe HUNG -- twice on 2026-09-25, at this exact line, and each hang was
+# followed by the device resetting itself (2m08s and 3m05s later; both reset instants are read off the
+# NEXT step's own `uptime`, so they do not depend on this script's clock). The step's device-side
+# `timeout -k 5 240` NEVER FIRED -- the capture looks for its `ZL1STEP-TIMEOUT device` marker and there
+# was none -- because the reset arrived BEFORE the bound could (2m08s < 240s), after which the gadget
+# re-enumerated and the ssh socket went dark until the host's own backstop collected it at 4m30s.
+#
+# WHAT THAT DOES NOT SAY: that the hung process was in uninterruptible sleep and unkillable. It is
+# consistent with these two runs and it is NOT established by them -- a bound that never got to fire and
+# a signal that could not be delivered print the same absence. The replacement below removes the
+# question rather than answering it: there is no longer a call that could hang here at all.
+#
+# /proc/<pid>/mountinfo IS that container's mount table: the kernel formats it for any reader, out of
+# the target's own mount namespace, with the paths written AS THAT PROCESS SEES THEM. So it answers
+# this section's actual question -- is the firmware path MOUNTED in the container -- without entering
+# a namespace, without forking anything into one, and without opening one path inside the container.
+# What it does NOT answer is whether the directory exists under a mount that never happened; that is a
+# different reading, and section 3's second half (the initramfs's own report) is the one that speaks
+# to it. The probe does not assume the container is up: an absent container is a reading, not a crash.
+#
+# /proc/<pid>/mountinfo IS that container's mount table: the kernel formats it for any reader, out of
+# the target's own mount namespace, with the paths written AS THAT PROCESS SEES THEM. So it answers
+# this section's actual question -- is the firmware path MOUNTED in the container -- without entering
+# a namespace, without forking anything into one, and without opening one path inside the container.
+# What it does NOT answer is whether the directory exists under a mount that never happened; that is a
+# different reading, and section 3's second half (the initramfs's own report) is the one that speaks
+# to it. The probe does not assume the container is up: an absent container is a reading, not a crash.
 A=$(lxc-info -n android -pH 2>/dev/null | head -1)
 if [ -n "$A" ]; then
-  say "   container pid ${A}; its own view of the firmware mount:"
-  # Same pipeline trap once more, and this one was live in the first draft: `nsenter ... | sed || say ...`
-  # never fires its right-hand side, because the `||` applies to sed and sed succeeds on empty input. An
-  # nsenter that could not run would then print NOTHING, which reads exactly like a clean listing of no
-  # mount -- the "a command that could not run is not a zero" shape (docs 117), in the one section where
-  # the answer lives in another mount namespace.
-  CVIEW=$(nsenter -t "$A" -m -- ls -d /vendor/firmware_mnt 2>/dev/null)
-  if [ -n "$CVIEW" ]; then printf '%s\n' "$CVIEW" | sed 's/^/   | /'
+  MI=/proc/$A/mountinfo
+  say "   container pid ${A}; its own mount table, read from ${MI}:"
+  if [ -r "$MI" ]; then
+    # One awk over the table, and the `||` trap the old version had is gone with the pipeline: this
+    # prints either the matching line or a sentence that says the table was read and holds no such
+    # mount. "The table was read and it is not there" and "the table could not be read" are two
+    # different sentences, and neither of them is silence (docs 117).
+    CVIEW=$(awk -v p=/vendor/firmware_mnt '$5 == p { print "mounted: " $5 "   (device " $3 ")" }' "$MI" 2>/dev/null)
+    if [ -n "$CVIEW" ]; then printf '%s\n' "$CVIEW" | sed 's/^/   | /'
+    else
+      say "   | no entry for /vendor/firmware_mnt in the container's mount table: the container does"
+      say "   |  not see the modem partition at that path. THAT IS A READING ABOUT WHAT IS MOUNTED --"
+      say "   |  it is not a statement about what the directory would hold if it were."
+    fi
+    # And the same path as a DIRECTORY, walked from the host THROUGH the target's own root. This is a
+    # plain path resolution on the host -- no namespace entered, no container binary run (which is also
+    # what makes it work, docs 117: the container's applet set has no test(1) this project can rely
+    # on). It is printed beside the table because together they separate "not mounted" from "not there
+    # at all", and either one alone would be read as the other.
+    if [ -d "/proc/$A/root/vendor/firmware_mnt" ]; then
+      say "   | and /proc/${A}/root/vendor/firmware_mnt IS a directory"
+    else
+      say "   | and /proc/${A}/root/vendor/firmware_mnt is not a directory either"
+    fi
   else
-    say "   | (the container's mount namespace answered nothing for /vendor/firmware_mnt -- that is not"
-    say "   |  the same as the path being absent there)"
+    say "   | /proc/$A/mountinfo could not be read: the container pid answered but its table did not."
+    say "   |  That is NOT the same as an empty table, and nothing here may be read as one."
   fi
 else
-  say "   the android container is not running (lxc-info answered nothing), so its mount namespace"
+  say "   the android container is not running (lxc-info answered nothing), so its mount table"
   say "   could not be read -- that is NOT the same as the path being absent."
 fi
 
