@@ -61,8 +61,9 @@
 # Usage: zl1-one-boot-runbook.sh [--status] [--yes] [--apply-trial] [--only STEP] [--skip STEP]
 #                                [--outdir DIR] [--settle SECS] [--step-limit SECS]
 #                                [--state-limit SECS]
-#   --status       (default) READ-ONLY: which steps are already done on this boot, and which of the
-#                  trial's three prerequisites currently hold. Writes nothing, installs nothing.
+#   --status       (default) READ-ONLY: which steps are already done on this boot, and the state of the
+#                  trial's prerequisites (its own, plus the baseline D that docs 163 added) as the
+#                  device reads them. Writes nothing, installs nothing.
 #   --yes          run the sequence. Without it: print the plan for this boot and exit 2.
 #   --apply-trial  at step 05, run the trial's --apply instead of --status. THE TRIAL WRITES TO THE
 #                  SOC'S POWER PARAMETER (`lpm_levels.sleep_disabled`), it is the only write in this
@@ -351,6 +352,39 @@ read_keeper() {
   # ONLY branch that says C is MET, so a host-side timeout arriving as an empty string fell into the last
   # branch and was printed as "C is NOT met (step 03 retires it)" -- an instruction to re-run a step that
   # may have already worked, on the strength of a reading that never happened.
+  gave_up "$rc" && { printf 'TIMEOUT'; return 0; }
+  printf '%s' "$raw" | tr -d '\r\n'
+}
+
+# `sleep_disabled` -- the baseline the trial's step 05 needs, and the one prerequisite that a person can
+# only fix by REBOOTING. docs 163: the trial's verdict asks "had the deep state EVER been entered before
+# the write", and cpuidle's counters are cumulative since boot. So if this parameter is already OFF, the
+# counters hold entries made while the ladder was ALLOWED and the verdict answers about whoever wrote 0
+# last. Measured 2026-09-25: that exact state produced a REFUTED verdict that inverted its own data.
+#
+# It belongs in `--status` and not only in step 05 because the remedy is a reboot, i.e. it is the one
+# prerequisite that cannot be repaired inside the boot it is discovered on. Step 05 is the LAST step, so
+# discovering it there costs the whole boot's other five readings. (The trial itself refuses; this is the
+# reading that lets somebody decide to reboot BEFORE spending one.)
+#
+# The value is the DEVICE's, which for this parameter means sysfs' rendering of a `bool`: 0 reads `N`.
+# The case below accepts either spelling, because the fixture shape and the device shape have to land on
+# the same branch -- an alphabet-dependent reader would report the fix as absent.
+#
+# And OFF is not only "somebody wrote it": once `install-lpm-sleep-fix.sh` is installed, the unit writes
+# 0 on EVERY boot, so OFF-at-boot is exactly what an installed heat fix looks like -- in which case step
+# 05 has nothing left to measure on this device and that is the correct reading, not a fault.
+read_lpm_param() {
+  local raw rc
+  raw=$(devssh 'n=0; bad=""
+    for p in /sys/module/*/parameters/sleep_disabled; do
+      [ -e "$p" ] || continue
+      v=$(cat "$p" 2>/dev/null); n=$((n + 1))
+      case "$v" in 1|Y|y|on) ;; *) bad="${bad}${bad:+ }${p}=${v:-<unreadable>}" ;; esac
+    done
+    if [ "$n" = 0 ]; then printf "NOT-FOUND"; exit 0; fi
+    if [ -n "$bad" ]; then printf "OFF %s" "$bad"; exit 0; fi
+    printf "ON (%s parameter(s))" "$n"' 2>/dev/null); rc=$?
   gave_up "$rc" && { printf 'TIMEOUT'; return 0; }
   printf '%s' "$raw" | tr -d '\r\n'
 }
@@ -843,7 +877,7 @@ EOF2
   [ "$bad" = 0 ]
 }
 
-# --- --status: the plan AND the live state of the three prerequisites ------------------------------
+# --- --status: the plan AND the live state of the trial's prerequisites ----------------------------
 # Read-only, and it answers the one question a person with a booted phone actually has: what is left to
 # do on THIS boot? An installer already installed reads as installed, so re-running the sequence is
 # safe and this is how you tell that it is safe.
@@ -869,7 +903,7 @@ if [ "$MODE" = status ]; then
   say "  03-heat-chain  $(step_bound_line 03-heat-chain)"
   say "  a step that outlasts its bound is DID NOT FINISH -- not a failure, and not a success"
   say
-  say "the trial's two hard prerequisites, as the DEVICE reads them right now:"
+  say "the trial's own prerequisites, as the DEVICE reads them right now:"
   DM=$(read_download_mode)
   KP=$(read_keeper)
   # The `case` is on the reader's own token, and there is deliberately NO fall-through that could read a
@@ -893,6 +927,23 @@ if [ "$MODE" = status ]; then
   *) say "  C. debug keeper: $KP   <- a CPU that is never idle does not enter a deep idle state, so C is NOT met (step 03 retires it)";;
   esac
   say "  B. cpuidle counters: not checked here -- the trial reads them itself, and UNREADABLE IS NOT ZERO."
+  say
+  # D is the one prerequisite whose remedy is a REBOOT, so it is printed with the instruction and not just
+  # as a state: --status is read by somebody deciding whether to spend this boot on the sequence at all.
+  LP=$(read_lpm_param)
+  case "$LP" in
+  ON*) say "  D. sleep_disabled: $LP   <- the ladder is OFF at boot, so step 05's before-window IS a baseline (D is MET)";;
+  OFF*) say "  D. sleep_disabled: $LP   <- something wrote it. Either the heat fix is INSTALLED (its unit writes"
+    say "     0 every boot) or a previous write was never reverted. Step 05 would REFUSE on this boot: the"
+    say "     cpuidle counters already hold entries made while the ladder was allowed, so its verdict would"
+    say "     answer about whoever wrote 0 last. docs 163. The remedy is a reboot -- the cmdline sets 1 again"
+    say "     and the counters restart at zero -- so reboot BEFORE spending this boot if you want 05's verdict.";;
+  NOT-FOUND) say "  D. sleep_disabled: NOT FOUND under /sys/module/*/parameters/ -- the trial cannot run at all on this boot (it refuses before D is even asked)";;
+  TIMEOUT) say "  D. sleep_disabled: NOT READ -- the host gave up on the ssh at ${STATE_LIMIT}s, so this says";
+    say "     NOTHING about the phone. Treat it as not met for step 05 (which will refuse), but the thing to";
+    say "     fix is the LINK, not the driver: docs 76.";;
+  *) say "  D. sleep_disabled: $LP   <- the reading is not a shape this script knows, so D is treated as NOT met";;
+  esac
   say
   HOST_BAD=$(host_ready)
   CASE_HARD=$(printf '%s\n' "$HOST_BAD" | grep '^HARD ' || true)
@@ -1246,7 +1297,7 @@ if wanted 05-trial; then
       1) say "   -> rc=1 (INCONCLUSIVE or CONFOUNDED -- a statement about the run, not about the phone)"
          step_done 05-trial 1 "inconclusive/confounded -- read 05-trial.txt before concluding anything"
          FAIL=$((FAIL + 1)) ;;
-      3) say "   -> rc=3 (REFUSED: one of its three prerequisites is not met -- its text names which, and"
+      3) say "   -> rc=3 (REFUSED: a prerequisite or the baseline is not met -- its text names which, and"
          say "      the readings above say whether that is about THIS boot or about the driver)"
          step_done 05-trial 3 "REFUSED -- its own output names which prerequisite, and nothing was written"
          FAIL=$((FAIL + 1)) ;;

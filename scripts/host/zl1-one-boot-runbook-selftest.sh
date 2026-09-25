@@ -103,6 +103,21 @@ dm_set()   { printf '%s\n' "$1" > "$DM_PRIMARY/download_mode"; rm -rf "$FR/sys/m
 dm_decoy() { mkdir -p "$DM_DECOY"; printf '%s\n' "$1" > "$DM_DECOY/download_mode"; }
 dm_set 1
 
+# `sleep_disabled` -- the trial's BASELINE (docs 163), which the runbook's --status now reads. The default
+# is the shape a HEALTHY boot has: `/proc/cmdline` carries `lpm_levels.sleep_disabled=1`, so the parameter
+# is ON and that boot's cpuidle counters start at zero. OFF means somebody wrote 0 -- either the heat fix's
+# own unit (which writes it on EVERY boot) or a write nobody reverted -- and on such a boot the trial's
+# before-window is not a baseline, which is exactly the kind of fact this mode exists to surface BEFORE a
+# boot is spent on the sequence.
+#
+# The fixture holds `Y`/`N`, not `1`/`0`: this reader runs on the DEVICE side of the ssh and uses `cat`,
+# so its input IS the device's answer, and sysfs renders this `bool` (the file stores 0 and a reader sees
+# N). A reader -- unlike a writer -- needs no round-trip shim, which is docs 163 section 5's rule.
+LP="$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+mkdir -p "$FR/sys/module/lpm_levels/parameters"
+lp_set() { printf '%s\n' "$1" > "$LP"; }
+lp_set Y
+
 keeper_dir="$FR/proc/900"
 mkdir -p "$keeper_dir"
 keep_on()  { mkdir -p "$keeper_dir"; printf '/bin/sh\0/usr/local/sbin/zl1-debug-net.sh\0' > "$keeper_dir/cmdline"; }
@@ -172,6 +187,12 @@ for f in "$MINBIN"/*; do b=$(basename "$f"); [ "$b" = timeout ] && continue; ln 
 : > "$W/paths.sed"
 emit() { printf '%s\n' "$1" >> "$W/paths.sed"; }
 emit "s#/sys/module/\*/parameters/download_mode#$FR/sys/module/*/parameters/download_mode#g"
+# The same glob, for the OTHER parameter the runbook reads (--status's baseline D, docs 163). It is a
+# separate rule and not a general `/sys/module/*/parameters/` rewrite, for the reason the whole file keeps
+# giving: a rewrite broad enough to catch both would also map any future module path a step's own text
+# mentions onto this fixture's, i.e. it would hand a script this directory's answer to a question about a
+# different knob -- and a fixture that answers the wrong question cannot fail.
+emit "s#/sys/module/\*/parameters/sleep_disabled#$FR/sys/module/*/parameters/sleep_disabled#g"
 emit "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g"
 emit "s|\${d#/proc/}|\${d#$FR/proc/}|g"
 emit "s#/proc/sys/kernel/random/boot_id#$FR/boot_id#g"
@@ -449,7 +470,7 @@ run_no_timeout() { # the same, on a host whose PATH has no timeout(1)
 # a scenario that deliberately changes it (docs 162's reset and unreadable cases) would otherwise leave
 # every LATER scenario starting from a device with no boot id at all -- which those scenarios would not
 # notice, because none of them read it except through a subject that only prints it in the header.
-reset() { : > "$ACT"; dm_set 1; keep_on; serial_on; printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; FP_SSH_HANG_ON=""; }
+reset() { : > "$ACT"; dm_set 1; lp_set Y; keep_on; serial_on; printf 'aaaaaaaa-1111-2222-3333-444444444444\n' > "$FR/boot_id"; rm -rf "$W/out"; mkdir -p "$W/out"; rm -rf "$FALLBACK"; FP_SSH_HANG_ON=""; }
 # A run whose device NEVER ANSWERS, under the harness's OWN hard kill. This is how a bound is tested
 # behaviourally rather than by grepping for `timeout`: with the bound the subject returns, without it the
 # subject hangs and this `timeout` is what ends the experiment -- and the hang is the observable, because
@@ -525,6 +546,27 @@ notwant 'CALLEE' "$(order)" "and no callee ran in --status"
 dm_set 1
 run --status
 want 'A is NOT met' "$OUT" "and with the flag back at 1 it says A is not met -- the note follows the device"
+
+# And the BASELINE (docs 163) is read on the same terms -- the note follows the device -- with one
+# difference that is the reason it is in this mode at all: OFF is reported together with its REMEDY,
+# because it is the one item here whose fix is a REBOOT and not a script. Step 05 is the LAST step, so a
+# person who learns this there has already spent the boot's other five readings learning it.
+want 'D. sleep_disabled: ON' "$OUT" "it reads sleep_disabled, reporting the baseline as MET on a boot its cmdline set to 1"
+lp_set N
+run --status
+want 'D. sleep_disabled: OFF' "$OUT" "with the device's own spelling of OFF (N) it reports the baseline as NOT met"
+want 'REFUSE on this boot' "$OUT" "and says step 05 would refuse -- the fact this mode exists to surface"
+want 'reboot BEFORE spending this boot' "$OUT" "and names the remedy, which is a reboot rather than a command"
+lp_set Y
+run --status
+want 'D. sleep_disabled: ON' "$OUT" "and with it back ON the note follows the device, not the fixture's default"
+# An absent parameter is its own reading and not a near-miss of "met": with no such file the trial refuses
+# before it asks about the baseline at all, so this says THAT rather than reporting a baseline.
+rm -f "$LP"
+run --status
+want 'NOT FOUND' "$OUT" "with no such parameter it says so, and not that the baseline is met"
+[ "$RC" = 0 ] && ok "and --status still exits 0 -- an unreadable device is not a refusal of the read-only mode" || bad "it exited $RC"
+lp_set Y
 
 run --not-a-flag
 [ "$RC" = 2 ] && ok "an unknown argument exits 2" || bad "it exited $RC"
@@ -1380,6 +1422,19 @@ if mutate notimeouttoken 's#^  gave_up "\$rc" && { printf .TIMEOUT.; return 0; }
                     || bad "the mutant hung -- the wrong thing was mutated"
   want 'A is treated as NOT met' "$MOUT" "mutation 'no timeout token': a host-side timeout is printed as 'A is treated as NOT met' -- a verdict about the phone (the check is live)"
   notwant 'NOT READ' "$MOUT" "with nothing anywhere saying the phone was never read"
+fi
+# The BASELINE reader's alphabet, which is the same defect docs 163 found in three other readers -- and the
+# reason it is a mutation here rather than a paragraph: `0` is what a WRITER puts in the file, `N` is what
+# a READER gets back (sysfs renders the `bool`), and a reader written as "is the value 0?" reports the
+# baseline as MET on exactly the boots where the trial will refuse. The section-2 reading above uses `N`
+# for that reason, and this mutant is what proves that choice was load-bearing.
+if mutate lponly0 's#in 1|Y|y|on) ;; .) bad=#in 0) bad=#'; then
+  reset; lp_set N
+  mutrun "$MUTDIR/lponly0.sh" --status
+  [ "$MRC" = 0 ] && ok "mutation 'a reader that knows only the writer's spelling': the run comes back" || bad "the mutant exited $MRC"
+  want 'D. sleep_disabled: ON' "$MOUT" "mutation 'only 0 counts as off': on a device reading N it reports the baseline as MET -- so a reader keyed on the writer's 0 is blind to the device (the check is live)"
+  notwant 'D. sleep_disabled: OFF' "$MOUT" "with nothing anywhere reporting the state the trial will refuse on"
+  lp_set Y
 fi
 
 # The SOFT branch: make the missing instrument a REFUSAL, and see the boot get thrown away for it. The

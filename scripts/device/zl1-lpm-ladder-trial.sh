@@ -42,8 +42,17 @@
 #        deep idle state -- so with the keeper running, "no deep-state time" would be a reading about
 #        the KEEPER, not about `sleep_disabled`. That confounding is the whole reason this is a refusal
 #        and not a warning; `--allow-keeper` overrides it and the verdict says the reading is confounded.
+#     D. THE PARAMETER IS ON, i.e. the before-window is a BASELINE (docs 163). If it is already off,
+#        somebody wrote it -- possibly a previous run of this script whose revert did not happen -- and
+#        cpuidle's counters are cumulative since boot, so they already hold entries made while the ladder
+#        was ALLOWED. The verdict's test is whether the deep state had EVER been entered before the write,
+#        so on a boot like that the test answers about the previous writer. Measured 2026-09-25: this
+#        state produced a REFUTED verdict that inverted its own data (0 entries in 4h42m with the
+#        parameter on; 162874 in the 31 minutes after a previous run left it off). Nothing in this script
+#        can clear a cumulative counter, so the remedy is `--revert` and a REBOOT -- the cmdline sets 1
+#        again and the counters start at zero.
 #
-#   Every refusal leaves the device EXACTLY as it was: nothing is written before all three are checked.
+#   Every refusal leaves the device EXACTLY as it was: nothing is written before all of them are checked.
 #
 # THE SAFETY ARGUMENTS, and they are structural rather than promises:
 #
@@ -55,9 +64,17 @@
 #     on INT/TERM/HUP, and a revert one-liner is written to a file ON THE DEVICE (/tmp) before the write,
 #     so the usual way to lose this session -- the netwatch re-enumerating the USB gadget, docs 118 --
 #     leaves the undo where the device can reach it and not only where the session could.
+#     AND THE TRAP IS ARMED BY THE WRITE'S OWN REDIRECT, not by a read-back: the flag it gates on used to
+#     be set AFTER the read-back check, so the path that leaves the file changed without knowing it is
+#     exactly the path that left the trap disarmed. Measured on the device on 2026-09-25 -- the parameter
+#     sat at N with this script's exit already behind it. See the comment at the write in section 6.
 #   * The write path is PROVED before it is used to change anything: the current value is written back
 #     to itself and read, and if the read-back does not match, this script stops having changed nothing.
 #     A sysfs file that cannot be written is a fact to discover BEFORE the experiment, not after.
+#     THAT PROOF IS NOT ABOUT THE ALPHABET, and it cannot be: writing back what was just read passes on a
+#     file of any type. The one write whose value CHANGES is section 6, and it is compared as a STATE
+#     (0/N/off versus 1/Y/on) rather than as a string -- `sleep_disabled` is a bool module parameter
+#     (lpm-levels.c), so sysfs renders 0 as N and this script demanded the string it wrote instead.
 #   * There is deliberately NO background timer, and the reason is the same fact: a value that does not
 #     survive a reboot does not need one. Losing the session is not a state that needs undoing -- the
 #     next boot is the undo -- and a timer that fires on its own is one more thing that can write to
@@ -71,10 +88,11 @@
 #
 # Usage (on the device, as root):
 #   zl1-lpm-ladder-trial.sh [--status] [--apply] [--revert] [--settle SECS] [--keep] [--allow-keeper]
-#     --status   (default) read everything, write nothing: the three prerequisites, the parameter, the
-#                counters, and what a trial would do
-#     --apply    run the trial: prerequisites, same-value write proof, write 0, settle, read the
-#                counters, revert, verdict
+#     --status   (default) read everything, write nothing: the three prerequisites, whether the
+#                before-window is a BASELINE (baseline D), the parameter, the counters, and what a trial
+#                would do
+#     --apply    run the trial: prerequisites + baseline, same-value write proof, write 0, settle, read
+#                the counters, revert, verdict
 #     --revert   put the parameter back to 1 and verify it (the one command to run if anything is odd)
 #     --settle S seconds to wait between the write and the second reading (default 120)
 #     --keep     do NOT revert at the end -- for a longer observation. The exact revert command is printed
@@ -84,7 +102,7 @@
 # Exit codes: 0 the trial ran and the verdict is a measurement about the ladder -- including REFUTED, which is a measurement and comes out against the thing this script was built to test;
 #             1 the verdict is INCONCLUSIVE or CONFOUNDED -- the run cannot be used as the answer (a statement about the trial, not about the phone);
 #             2 not the zl1;
-#             3 REFUSED -- a prerequisite is not met and nothing was written;
+#             3 REFUSED -- a prerequisite or the baseline (D) is not met and nothing was written;
 #             4 the write happened and something went wrong after it (the state and the revert are printed, and the trap has already tried to undo it).
 
 set -u
@@ -128,6 +146,30 @@ rdn() { # a number, or the word that says why there is no number -- never a bare
   case "$v" in ''|*[!0-9]*) printf 'NOT-A-NUMBER' ;; *) printf '%s' "$v" ;; esac
 }
 
+# THE PARAMETER'S OWN ALPHABET. `sleep_disabled` is declared as
+#
+#     static bool sleep_disabled;
+#     module_param_named(sleep_disabled, sleep_disabled, bool, S_IRUGO | S_IWUSR | S_IWGRP);
+#
+# in `drivers/cpuidle/lpm-levels.c` of the tree that built this kernel (lines 125-127), so the sysfs
+# `show` renders the stored value THROUGH THE PARAMETER'S TYPE: the file stores 0/1 and reads back Y/N.
+# Writing `0` and reading `N` is therefore a write that HELD, and nothing here may compare a value with
+# its own rendering -- that comparison can only ever pass on a file with no type.
+#
+# This is measured, not reasoned. Until 2026-09-25 this script compared the read-back to the string it
+# had written, so on the device it refused its own successful write (`read-back is 'N' (wanted 0)`),
+# exited 4, and the third heat cause stayed uninstalled while the parameter sat at N for 13 minutes with
+# nothing owning it. `scripts/host/zl1-lpm-sleep-semantics.sh` has quoted that module_param statement
+# verbatim as "the one statement that carries the type" since docs 153 -- the tree knew, and its two
+# writers did not ask.
+#
+# AND THE SAME-VALUE PROOF IN SECTION 5 CANNOT CATCH THIS, which is why it is the wrong place to look:
+# writing back what was just read is alphabet-independent by construction, so it passes on any file. The
+# alphabet only ever bites on the one write whose value CHANGES -- the write this whole script exists to
+# make. `scripts/install-lpm-sleep-fix.sh` carries the same two readings for the same reason.
+is_off() { case "$1" in 0|N|n|off) return 0 ;; *) return 1 ;; esac; }
+is_on()  { case "$1" in 1|Y|y|on)  return 0 ;; *) return 1 ;; esac; }
+
 # --------------------------------------------------------------------------------------------------
 # The revert, and the trap that makes it happen on every exit path.
 #
@@ -146,11 +188,12 @@ do_revert() {
   [ "$WROTE" = 1 ] || return 0
   [ "$KEEP" = 1 ] && return 0
   printf '1' > "$PARAM" 2>/dev/null
-  if [ "$(rd "$PARAM")" = 1 ]; then
-    say "   [trap] $PARAM put back to 1, verified by read-back."
+  P_REVERT=$(rd "$PARAM")
+  if is_on "$P_REVERT"; then
+    say "   [trap] $PARAM put back to 1 (it reads '$P_REVERT'), verified by read-back."
   else
-    bad "   [trap] THE REVERT DID NOT HOLD: $PARAM reads '$(rd "$PARAM")'. Run --revert, and note that"
-    bad "   the next boot sets it to 1 from the cmdline anyway."
+    bad "   [trap] THE REVERT DID NOT HOLD: $PARAM reads '$P_REVERT', which is not ON. Run --revert, and"
+    bad "   note that the next boot sets it to 1 from the cmdline anyway."
   fi
 }
 trap 'do_revert' EXIT INT TERM HUP
@@ -159,13 +202,19 @@ if [ "$MODE" = explain ]; then
   cat <<'EOF'
 zl1 LPM ladder trial -- what each reading decides, and why it is this reading
 
-  1. THE THREE PREREQUISITES, checked before anything is written. Each one is a way this experiment
+  1. THE PREREQUISITES, checked before anything is written. Each one is a way this experiment
      could produce a reading that MEANS SOMETHING ELSE:
        download_mode = 0        otherwise a hang is an EDL trip and not a reboot.
        cpuidle readable         otherwise "no deep-state time" is indistinguishable from an unread file.
        no debug keeper          otherwise a CPU that is never idle reports "the ladder was not entered"
                                 for a reason that has nothing to do with the parameter being tested.
-     A fourth thing is reported and not gated: whether the deepest state is `disable`d. A state that is
+       the parameter is ON      otherwise the counters already hold entries made while the ladder was
+                                ALLOWED, and "were the deep states entered before the write" answers
+                                about whoever wrote 0 last instead of about this parameter. Measured
+                                2026-09-25: that state produced a REFUTED verdict that inverted its
+                                own data. The remedy is --revert and a reboot, because the counters are
+                                cumulative since boot and nothing in this script can clear them.
+     A fifth thing is reported and not gated: whether the deepest state is `disable`d. A state that is
      disabled by that separate mechanism cannot be expected to move whatever this script writes, so the
      verdict calls that case confounded instead of concluding anything from it.
 
@@ -329,14 +378,36 @@ PARAM_OK=1
 P_BEFORE=$(rd "$PARAM")
 P_MODE=$(ls -l "$PARAM" 2>/dev/null | awk '{print $1}')
 say "   path:  $PARAM"
-say "   value: $P_BEFORE        (1 = the ladder is off; 0 = it is allowed)"
+say "   value: $P_BEFORE        (Y/1 = the ladder is OFF; N/0 = it is ALLOWED -- this parameter is a"
+say "                           BOOL, so sysfs renders what the file stores, and Y/N is what a reader"
+say "                           sees on a device where 0/1 was written)"
 say "   mode:  ${P_MODE:-UNREADABLE}   (0664 = writable while the device runs -- docs 121 section 5.5)"
 REVERT_CMD="printf 1 > $PARAM"
-W_ASKED=1
-case "$P_BEFORE" in
-0) W_ASKED=0; say "   -> it is ALREADY 0. Either the fix is in, or somebody wrote it." ;;
-esac
-[ "$P_MODE" = "UNREADABLE" ] && W_ASKED=0
+# "IS THE BEFORE-WINDOW A BASELINE?" -- and this is the question the flag this line used to set was
+# always meant to answer, except that it was ASSIGNED, PRINTED and then NEVER READ. Measured on the
+# device on 2026-09-25, and the measurement is why it is now a refusal:
+#
+#   a previous run of this script wrote 0 and its refusal path (see section 6) did not revert, so this
+#   boot had the ladder ALLOWED for 31 minutes before the next trial took its before-snapshot. cpuidle's
+#   counters are CUMULATIVE since boot, so that snapshot read `state2 usage=162874` -- and the verdict's
+#   whole test is "had the deep state EVER been entered before the write". It answered REFUTED, from a
+#   window in which the parameter under test had not been 1 at all. The same boot's earlier reading (with
+#   the parameter at 1 since boot, 4h42m) was `state1 usage=0 state2 usage=0`, and 127 seconds with the
+#   ladder OFF after the revert moved neither counter -- so the verdict INVERTED its own data.
+#
+# `is_off` rather than a value comparison, for the reason at the top of this file. The mode check that
+# used to sit here set the same dead flag; it is gone, because an unreadable mode is what section 5's
+# same-value proof exists to catch and it catches it more precisely.
+BASE_OK=1
+if is_off "$P_BEFORE"; then
+  BASE_OK=0
+  say "   -> it is ALREADY off ('$P_BEFORE'). Either a fix is in, or somebody wrote it -- including a"
+  say "      previous run of this script. THAT MAKES THIS BOOT'S COUNTERS UNUSABLE AS A BASELINE:"
+  say "      cpuidle's counters are cumulative since boot, so they now hold entries made while the ladder"
+  say "      was allowed, and the verdict's test is whether the deep state had EVER been entered before"
+  say "      the write. Put it back with --revert and REBOOT: a boot whose cmdline reaches a driver that"
+  say "      has never been written to is the clean one, and the counters start at zero there."
+fi
 
 # ==================================================================================================
 hdr "3. the counters BEFORE"
@@ -407,11 +478,11 @@ if [ "$MODE" = status ]; then
   say "   wait ${SETTLE}s, read the counters again, then put it back to 1"
   say "   the value does NOT survive a reboot: the next boot sets it from the cmdline again, so the"
   say "   experiment is scoped to this boot and a reboot is both the escape hatch and the undo."
-  if [ "$A_OK" = 1 ] && [ "$B_OK" = 1 ] && [ "$C_OK" = 1 ]; then
-    say "   -> all three prerequisites are satisfied. --apply would run it."
+  if [ "$A_OK" = 1 ] && [ "$B_OK" = 1 ] && [ "$C_OK" = 1 ] && [ "$BASE_OK" = 1 ]; then
+    say "   -> all three prerequisites are satisfied and the before-window is a baseline, so --apply would run it."
     exit 0
   fi
-  say "   -> NOT all three prerequisites are satisfied (above). --apply would REFUSE, writing nothing."
+  say "   -> NOT all of them are satisfied (above). --apply would REFUSE, writing nothing."
   exit 0
 fi
 
@@ -420,18 +491,19 @@ fi
 # ==================================================================================================
 if [ "$MODE" = revert ]; then
   hdr "revert"
-  if [ "$P_BEFORE" = 1 ]; then
-    say "   it already reads 1 -- nothing to do."
+  if is_on "$P_BEFORE"; then
+    say "   it already reads '$P_BEFORE', which is ON -- nothing to do."
     exit 0
   fi
   printf '1' > "$PARAM" || { bad "the write failed: $PARAM"; exit 4; }
   P_NOW=$(rd "$PARAM")
-  if [ "$P_NOW" = 1 ]; then
-    say "   -> $PARAM put back to 1, verified by read-back."
+  if is_on "$P_NOW"; then
+    say "   -> $PARAM put back to 1 (it reads '$P_NOW'), verified by read-back."
     exit 0
   fi
-  bad "   -> the write did NOT hold: read-back is '$P_NOW'. docs 121's calibration says this file is"
-  bad "      writable; a value that will not change here is a finding about this boot's driver."
+  bad "   -> the write did NOT hold: read-back is '$P_NOW', which is not ON (1/Y/on). docs 121's"
+  bad "      calibration says this file is writable; a value that will not change here is a finding"
+  bad "      about this boot's driver."
   exit 4
 fi
 
@@ -456,6 +528,16 @@ if [ "$C_OK" != 1 ] && [ "$ALLOW_KEEPER" != 1 ]; then
   bad "   ladder was not entered' would be a reading about the keeper. Nothing was written."
   REFUSED=1
 fi
+if [ "$BASE_OK" != 1 ]; then
+  bad "   REFUSED (baseline D): $PARAM is ALREADY off, so this boot's cpuidle counters hold entries made"
+  bad "   while the ladder was allowed. The verdict's test is whether the deep state had EVER been"
+  bad "   entered before the write, and on a boot like this that test answers about the PREVIOUS writer"
+  bad "   rather than about the parameter. Nothing was written. Measured 2026-09-25: this exact state"
+  bad "   produced a REFUTED verdict that inverted its own data -- 0 entries in 4h42m with the parameter"
+  bad "   on, and 162874 in the 31 minutes since a previous run wrote 0 and did not revert. --revert,"
+  bad "   then reboot, then run this on a boot whose cmdline is the first thing to touch the driver."
+  REFUSED=1
+fi
 if [ "$REFUSED" = 1 ]; then
   say ""
   say "   Nothing was written and nothing was changed. Fix the item(s) above and re-run --apply."
@@ -469,12 +551,19 @@ case "$DEEP_DIS" in
    say "   (cpuidle/state$DEEPEST/disable=1). Nothing this script writes can make it be entered, so if it"
    say "   does not move that is not evidence about sleep_disabled. The verdict will say so." ;;
 esac
-say "   all three prerequisites are satisfied; proceeding$([ "$CONFOUNDED" = 1 ] && printf ' (with a confounder recorded)')"
+say "   all three prerequisites are satisfied and the before-window is a baseline, so this is a clean"
+say "   measurement; proceeding$([ "$CONFOUNDED" = 1 ] && printf ' (with a confounder recorded)')"
 
 # --- 5. the same-value write proof ------------------------------------------------------------------
 hdr "5. the write path, proved BEFORE anything is changed"
 # The current value, written back to itself. If the file cannot be written, or cannot be read back, this
 # is where that is discovered -- with the device in the state it was already in.
+#
+# WHAT THIS PROOF CANNOT DO, said here so nobody looks for the alphabet in it: writing back what was just
+# read is alphabet-independent by construction, so this line passes on a file with no type and on this
+# bool alike. It proves writability and readability, which is what it says, and nothing about what the
+# file will accept as a CHANGE -- that is section 6, and a reader who wants the type should look at the
+# module_param declaration quoted at `is_off`.
 printf '%s' "$P_BEFORE" > "$PARAM" 2>/dev/null
 P_PROOF=$(rd "$PARAM")
 if [ "$P_PROOF" != "$P_BEFORE" ]; then
@@ -484,6 +573,7 @@ if [ "$P_PROOF" != "$P_BEFORE" ]; then
   exit 3
 fi
 say "   wrote '$P_BEFORE' back to itself and read '$P_PROOF' -- the file is writable AND readable."
+say "   (this says nothing about the ALPHABET a changed value is rendered in -- see section 6)"
 
 # --- 6. the undo, put where the DEVICE can reach it, and then the write -----------------------------
 hdr "6. the write, with the undo on the device rather than in this session"
@@ -499,14 +589,25 @@ else
   say "   could not write $REVERT_SH -- the undo is: $REVERT_CMD"
 fi
 printf '0' > "$PARAM" || { bad "   the write failed"; exit 4; }
+# WROTE IS SET FROM THE REDIRECT'S OWN SUCCESS, NOT FROM THE READ-BACK. It used to be set after the
+# read-back check, which made the one path that most needs the trap -- a write that LANDED and read back
+# as something other than the string that was written -- the one path that disarmed it: the script
+# reported "the write did not hold", left the parameter changed, and its own undo declined to fire
+# because the flag was still 0. Measured on the device on 2026-09-25: `sleep_disabled` read `N` thirteen
+# minutes after that exit, with nothing owning the change. A guard keyed on the same comparison it is
+# guarding is not a guard, and a redirect that returned means the file MAY hold something else now.
+WROTE=1
 P_AFTER_WRITE=$(rd "$PARAM")
-if [ "$P_AFTER_WRITE" != 0 ]; then
-  bad "   the write did not hold: read-back is '$P_AFTER_WRITE' (wanted 0). The trap reverts and this"
-  bad "   run stops -- a file that will not take the value is a finding about this boot's driver."
+if ! is_off "$P_AFTER_WRITE"; then
+  bad "   the write did not hold: read-back is '$P_AFTER_WRITE', which is not OFF (0/N/off). The trap"
+  bad "   reverts and this run stops -- a file that will not take the value is a finding about this"
+  bad "   boot's driver. (A file with a TYPE renders what it stores: 0 is shown as N for a bool. This"
+  bad "   branch is about a value that did not move, not about a spelling that surprised the reader.)"
   exit 4
 fi
-WROTE=1
-say "   wrote 0 and read 0 back: the ladder is ALLOWED from this moment until the revert."
+say "   wrote 0 and read '$P_AFTER_WRITE' back: the ladder is ALLOWED from this moment until the revert."
+say "   ('$P_AFTER_WRITE' is this file's rendering of 0. The parameter is a bool, so sysfs shows Y/N"
+say "    whatever spelling was written -- comparing against '0' here is what refused a good write before.)"
 say "   revert now:            sh $0 --revert"
 say "   or by hand:            $REVERT_CMD"
 
@@ -565,16 +666,18 @@ WFI_DU=$(awk '$2=="state0" {print $4; exit}' "$DELTAS"); WFI_DU=${WFI_DU:-UNKNOW
 # --- 9. the revert ----------------------------------------------------------------------------------
 hdr "9. the revert"
 if [ "$KEEP" = 1 ]; then
-  say "   --keep was given: $PARAM is LEFT at 0, and the trap will not put it back either."
+  say "   --keep was given: $PARAM is LEFT at 0 (it reads '$P_AFTER_WRITE'), and the trap will not put it"
+  say "   back either."
   say "   Put it back with:  $REVERT_CMD"
   say "   (it is not persistent anyway: the next boot sets it to 1 from the cmdline.)"
 else
   do_revert
   WROTE=0        # so the trap at exit does not repeat it and cannot report a second time
-  if [ "$(rd "$PARAM")" = 1 ]; then
-    say "   -> $PARAM is back to 1, verified by read-back."
+  P_BACK=$(rd "$PARAM")
+  if is_on "$P_BACK"; then
+    say "   -> $PARAM is back to 1 (it reads '$P_BACK'), verified by read-back."
   else
-    bad "   -> the revert did not hold: read-back is '$(rd "$PARAM")'. Run: sh $0 --revert"
+    bad "   -> the revert did not hold: read-back is '$P_BACK', which is not ON. Run: sh $0 --revert"
     exit 4
   fi
 fi

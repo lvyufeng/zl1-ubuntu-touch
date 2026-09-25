@@ -105,6 +105,17 @@ rd() { # $1 = path
   fi
 }
 ex() { [ -e "$1" ] && printf 'present' || printf 'MISSING'; }
+# THE PARAMETER'S OWN ALPHABET, and this probe reads it for the same reason the two writers write it:
+# `sleep_disabled` is declared `static bool` with a `module_param_named(..., bool, ...)` in
+# drivers/cpuidle/lpm-levels.c, so the sysfs `show` renders the stored value through the parameter's
+# TYPE. The file stores 0 and this file's `rd` returns Y/N, so a reader that asks "is it 0?" asks the
+# wrong question and gets a confident wrong answer -- here it would have called a ladder that is ALLOWED
+# "OFF", which is the exact inversion of the reading this probe exists to publish. (docs 163: the same
+# comparison made the fix's trial refuse a write that had worked, and made the installer report it as
+# not installed.) OFF is the three spellings a bool accepts for false; ON is the four for true; anything
+# else is a value that is not a state and is reported as such rather than folded into either.
+is_off() { case "$1" in 0|N|n|off) return 0 ;; *) return 1 ;; esac; }
+is_on()  { case "$1" in 1|Y|y|on)  return 0 ;; *) return 1 ;; esac; }
 # A number, or the word that says why there is no number. Never a bare 0 for "could not read" -- that is
 # the defect this whole family of scripts keeps recording, and here it would read as "the counters say
 # the SoC never slept", which is the very conclusion the script exists to test.
@@ -252,9 +263,11 @@ if [ -d "$LPMPAR" ]; then
     SYSFS_MODE=$(ls -l "$LPMPAR/sleep_disabled" 2>/dev/null | awk '{print $1}')
     say "   -> sleep_disabled = $SYSFS_SD  (mode ${SYSFS_MODE:-UNREADABLE})"
     case "$SYSFS_SD" in
-    0) say "      (0 = the driver's ladder is allowed. Section 3 still decides whether it is used.)";;
-    1) say "      (1 = the driver has it OFF, right now. Non-zero is what the cmdline asks for too.)";;
-    *) say "      (not the 0/1 this script expects -- reported as read, not interpreted)";;
+    0|N|n|off) say "      (this is this file's rendering of 0: the driver's ladder is ALLOWED. Section 3"
+               say "       still decides whether it is used.)";;
+    1|Y|y|on)  say "      (this is this file's rendering of 1: the driver has it OFF, right now. Non-zero"
+               say "       is what the cmdline asks for too.)";;
+    *) say "      (neither OFF (0/N/off) nor ON (1/Y/on) -- reported as read, not interpreted)";;
     esac
   else
     say "   -> $LPMPAR/sleep_disabled: MISSING on this boot."
@@ -275,9 +288,14 @@ fi
 if [ "$CMDLINE_OK" = 1 ] && [ "$LPM_PARAM_OK" = 1 ]; then
   CMD_ASKED=no
   case "$CAUSE_LPM" in cmdline-asked) CMD_ASKED=yes ;; esac
-  SYS_ON=no
-  [ "${SYSFS_SD:-x}" = 0 ] || SYS_ON=yes
-  if [ "$CMD_ASKED" = yes ] && [ "$SYS_ON" = yes ]; then
+  SYS_ON=other
+  if is_off "$SYSFS_SD"; then SYS_ON=no
+  elif is_on "$SYSFS_SD"; then SYS_ON=yes
+  fi
+  if [ "$SYS_ON" = other ]; then
+    say "   => the driver's value ('$SYSFS_SD') is not one this script can read as a state, so the two"
+    say "      halves are NOT compared -- they are reported side by side above and left as they are."
+  elif [ "$CMD_ASKED" = yes ] && [ "$SYS_ON" = yes ]; then
     say "   => both agree the ladder is OFF (cmdline asked for it; the driver has it off)."
   elif [ "$CMD_ASKED" = no ] && [ "$SYS_ON" = no ]; then
     say "   => both agree the ladder is ALLOWED. If section 3 still shows no deep-state time, then the"
@@ -499,9 +517,10 @@ read)
     always "      TOLD is not known. The reading below is the driver's live value, and it is the one that"
     always "      decides this cause: it is what a fix would change.)"
   fi
-  if [ "${SYSFS_SD:-x}" = 0 ]; then
-    always "     ABSENT AT THE PARAMETER: ${LPMPAR}/sleep_disabled reads 0, so the driver's ladder is"
-    always "     ALLOWED right now. Section 3's counters are what say whether it is then used."
+  if is_off "$SYSFS_SD"; then
+    always "     ABSENT AT THE PARAMETER: ${LPMPAR}/sleep_disabled reads ${SYSFS_SD}, which is this file's"
+    always "     rendering of 0 -- so the driver's ladder is ALLOWED right now. Section 3's counters are"
+    always "     what say whether it is then used."
     if [ "$CAUSE_LPM" = cmdline-asked ]; then
       always "     (Note the disagreement with section 1: this boot's cmdline asked for it off and the"
       always "      driver has it on, so SOMETHING WROTE TO IT after boot -- that is the shape of the fix.)"

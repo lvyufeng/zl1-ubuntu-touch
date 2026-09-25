@@ -406,6 +406,14 @@ want "module_param_named(sleep_disabled," "$OUT" "the module_param statement is 
 notwant "tab" "$(printf '%s' "$OUT" | grep -F 'sleep_disabled, bool' || true)" \
      "(sanity) the continuation line is quoted only where it belongs"
 want "type, the default VALUE and the sysfs BEHAVIOUR" "$OUT" "the parameter's three parts are named"
+# docs 163: the statement is quoted BECAUSE it carries the type, so the type is then DERIVED from it and
+# turned into what a reader actually sees. Three scripts in this tree read this same parameter and
+# compared the read-back against the string they wrote; the declaration that says not to is right here.
+want "what that TYPE does to a READER: it is \`bool\`, so sysfs renders" "$OUT" \
+     "and the TYPE is derived from that statement and turned into what a READER sees"
+want "the file holds 0 and a reader SEES N" "$OUT" "which is the rendering a bool parameter applies"
+want "OFF is 0/N/n/off, ON is 1/Y/y/on" "$OUT" \
+     "with both STATES named, because comparing a string is the defect docs 163 records"
 want "__setup arm:      none in this driver" "$OUT" "the absence of a __setup arm is reported"
 want "cpu_power_select(struct cpuidle_device *dev," "$OUT" "the enclosing function is quoted, not described"
 
@@ -657,6 +665,20 @@ mut() { # mut NAME SEDSCRIPT... ; runs the mutated copy on the current fixture
          --config "$W/fx/.config" 2>&1); MRC=$?
 }
 build normal normal
+# (a0) THE TYPE READING ITSELF (docs 163). A source it cannot extract a type from must SAY so rather than
+# default to the alphabet that happens to be right today -- and the mutation empties PTYPE, which is
+# exactly the state a later edit of that one line would leave behind.
+mut ptype 's#^PTYPE=.*$#PTYPE=#'
+if printf '%s' "$MOUT" | grep -qF 'NOT EXTRACTED'; then
+  ok "emptying the type extraction makes it report that it could not read the type"
+else
+  bad "the type reading silently defaulted -- a source it cannot read would be reported as a bool"
+fi
+if printf '%s' "$MOUT" | grep -qF 'so sysfs renders'; then
+  bad "and it still claimed an alphabet it did not derive"
+else
+  ok "and it claims no alphabet at all in that state"
+fi
 # (a) the argument order of find_fn -- `awk -v fn="$2"` hands the awk its FILE as the function name
 mut findfn 's/awk -v fn="\$1"/awk -v fn="$2"/'
 if printf '%s' "$MOUT" | grep -qF 'NOT FOUND'; then

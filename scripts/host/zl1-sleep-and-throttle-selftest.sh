@@ -154,7 +154,7 @@ writes_in() { grep -nE -- "$WRITE_RE" "$1" 2>/dev/null | grep -vE -- "$MOUNT_LIS
 #   FAKE_CPUIDLE   clean | no-states | nonnumeric | nodir | zero   (section 3)
 #   FAKE_LPM       full | no-node | empty                          (section 2)
 #   FAKE_CMDLINE   lpm | clean | no-sleep-key | missing            (section 1, the cmdline half)
-#   FAKE_LPMPAR    one | zero | nofile | nodir                     (section 1, the sysfs half)
+#   FAKE_LPMPAR    one | zero | rendered-on | rendered-off | nofile | nodir   (section 1, the sysfs half)
 # and every switch defaults to the coherent, real-device shape (a full ladder, a cmdline that carries
 # lpm_levels.sleep_disabled=1, the driver parameter reading 1, counters that move) so that a scenario
 # which forgets to set one is testing the baseline rather than an accident.
@@ -196,6 +196,19 @@ zero)
   mkdir -p "$FR/sys/module/lpm_levels/parameters"
   printf '0\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
   printf '0\\n' > "$FR/sys/module/lpm_levels/parameters/menu_select" ;;
+# THE TWO RENDERED SPELLINGS, and there is deliberately NO rendering shim in this harness: the probe is
+# READ-ONLY, so what the device hands it IS the input. A writer's harness has to model the round trip (a
+# fixture that stores 0 and shows N) or it cannot make two behaviours differ; a reader's does not. These
+# two cases are what a real device answered on 2026-09-25: the file stores 1 and reads Y, and after the
+# fix it stores 0 and reads N.
+rendered-off)
+  mkdir -p "$FR/sys/module/lpm_levels/parameters"
+  printf 'N\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+  printf 'N\\n' > "$FR/sys/module/lpm_levels/parameters/menu_select" ;;
+rendered-on)
+  mkdir -p "$FR/sys/module/lpm_levels/parameters"
+  printf 'Y\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+  printf 'N\\n' > "$FR/sys/module/lpm_levels/parameters/menu_select" ;;
 *)
   mkdir -p "$FR/sys/module/lpm_levels/parameters"
   printf '1\\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
@@ -562,6 +575,21 @@ want 'ABSENT AT THE PARAMETER' "$(verdict "$OUT")" "cmdline clean and parameter 
 want 'both agree the ladder is ALLOWED' "$OUT" "section 1 reads the two together and says so"
 [ "$RC" = 0 ] && ok "and it exits 0 (an absent cause is a measurement, not an unknown)" || bad "it exited $RC"
 FAKE_CMDLINE=
+# (b2) The SAME reading as (b), in the spelling the device actually returns. `sleep_disabled` is a bool
+#      module parameter, so the file storing 0 shows N -- a probe that asked "is it 0?" would call this
+#      ladder OFF and invert its own verdict (docs 163). Both spells must land on the same answer.
+FAKE_CMDLINE=clean FAKE_LPMPAR=rendered-off run ""
+want 'sleep_disabled = N' "$OUT" "the rendered N is printed as the value it read"
+want 'both agree the ladder is ALLOWED' "$OUT" "and it is read as OFF, not as 'not the 0/1 I expect'"
+want 'ABSENT AT THE PARAMETER' "$(verdict "$OUT")" "the verdict is the same ABSENT as for a literal 0"
+[ "$RC" = 0 ] && ok "and it exits 0, exactly as the literal-0 spelling does" || bad "it exited $RC"
+FAKE_CMDLINE=
+# (b3) And the other direction, which is the BOOT state on every zl1: the file stores 1 and reads Y.
+FAKE_LPMPAR=rendered-on run ""
+want 'sleep_disabled = Y' "$OUT" "the rendered Y is printed as the value it read"
+want 'both agree the ladder is OFF' "$OUT" "and it is read as ON (the driver has the ladder off)"
+want 'PRESENT AT THE PARAMETER' "$(verdict "$OUT")" "so the verdict is PRESENT, as for a literal 1"
+FAKE_LPMPAR=
 # (c) The reverse disagreement, which is what the FIX LOOKS LIKE: the cmdline still asks for the ladder
 #     off and the driver has it on. The script must name that shape rather than call it a contradiction.
 FAKE_LPMPAR=zero run ""

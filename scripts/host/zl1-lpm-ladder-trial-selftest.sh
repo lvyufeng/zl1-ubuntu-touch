@@ -67,35 +67,50 @@ rm -rf "$W"
 mkdir -p "$STUB" "$MINBIN" || exit 2
 
 # --- the sandbox PATH ------------------------------------------------------------------------------
-for t in awk basename cat cut head ls sed sort tail tr uniq wc grep chmod printf mkdir rm; do
+# `readlink` is here for the ONE stub that needs to know which file it was handed: `tr` (below) does the
+# device's type rendering, and it can only do it for the parameter. A curated PATH that lacks a tool
+# silently disables any behaviour that needs it, which is the shape this repository has already recorded
+# -- so the tool is added AND the stub is asserted to be able to tell the two files apart.
+for t in awk basename cat cut head ls sed sort tail tr uniq wc grep chmod printf mkdir rm readlink; do
   p="$(type -P "$t" 2>/dev/null)" || continue
   [ -n "$p" ] && ln -sf "$p" "$MINBIN/$t"
 done
-for t in awk grep ls sed tail tr wc; do
+for t in awk grep ls sed tail tr wc readlink; do
   [ -x "$MINBIN/$t" ] || { echo "the sandbox bin is missing $t -- the harness cannot run the trial honestly" >&2; exit 2; }
 done
 SH_BIN="$(type -P sh 2>/dev/null)"; [ -n "$SH_BIN" ] || SH_BIN=/bin/sh
 [ -x "$SH_BIN" ] || { echo "no /bin/sh to run the trial with" >&2; exit 2; }
+# The stubs delegate to the REAL binaries by absolute path, because inside the sandbox PATH is the
+# sandbox and a bare name would find the stub again.
+REAL_TR="$(type -P tr)"; [ -n "$REAL_TR" ] || { echo "no real tr on this host" >&2; exit 2; }
 
 # --- the script under test, rewritten into the fake device -----------------------------------------
 # TWO PASSES through tokens, for the reason its siblings record: a one-pass rewrite is a cascade, and a
 # cascaded path is a script reading something that cannot exist while every scenario still passes.
-P1="$W/pass1.sh"
-sed -e 's#/proc/device-tree#__ZDT__#g' \
-    -e 's#/proc/\[0-9\]\*#__ZGLOB__#g' \
-    -e 's|\${d#/proc/}|\${d#__ZPROC__}|g' \
-    -e 's#/sys/devices/system/cpu#__ZCPU__#g' \
-    -e 's#/sys/module#__ZMOD__#g' \
-    -e 's#/proc/#__ZPROC__#g' \
-    -e 's#/tmp/zl1-lpm-trial#__ZTMP__#g' "$SRC" > "$P1"
-
+#
+# IT IS A FUNCTION because a MUTATION has to be rewritten the same way before it can be run: a section
+# that edits the shipped source and then runs the UNREWRITTEN copy would read THIS HOST's /sys, and a
+# section that asserts on a mutation without running it asserts about a file rather than about a
+# behaviour. Every mutation this harness now runs goes through here.
+rewrite() { # $1 = a trial source (shipped or mutated), $2 = where to write the fake-device copy
+  sed -e 's#/proc/device-tree#__ZDT__#g' \
+      -e 's#/proc/\[0-9\]\*#__ZGLOB__#g' \
+      -e 's|\${d#/proc/}|\${d#__ZPROC__}|g' \
+      -e 's#/sys/devices/system/cpu#__ZCPU__#g' \
+      -e 's#/sys/module#__ZMOD__#g' \
+      -e 's#/proc/#__ZPROC__#g' \
+      -e 's#/tmp/zl1-lpm-trial#__ZTMP__#g' "$1" > "$W/.pass1.sh"
+  sed -e "s#__ZDT__#$FR/proc/device-tree#g" \
+      -e "s#__ZGLOB__#$FR/proc/[0-9]*#g" \
+      -e "s#__ZPROC__#$FR/proc/#g" \
+      -e "s#__ZCPU__#$FR/sys/devices/system/cpu#g" \
+      -e "s#__ZMOD__#$FR/sys/module#g" \
+      -e "s#__ZTMP__#$FR/tmp/zl1-lpm-trial#g" "$W/.pass1.sh" > "$2"
+}
 RW="$W/lpm-ladder-trial.sh"
-sed -e "s#__ZDT__#$FR/proc/device-tree#g" \
-    -e "s#__ZGLOB__#$FR/proc/[0-9]*#g" \
-    -e "s#__ZPROC__#$FR/proc/#g" \
-    -e "s#__ZCPU__#$FR/sys/devices/system/cpu#g" \
-    -e "s#__ZMOD__#$FR/sys/module#g" \
-    -e "s#__ZTMP__#$FR/tmp/zl1-lpm-trial#g" "$P1" > "$RW"
+P1="$W/pass1.sh"
+rewrite "$SRC" "$RW"
+cp "$W/.pass1.sh" "$P1"
 sh -n "$RW" || { echo "the rewritten trial does not parse" >&2; exit 2; }
 if grep -q -- '__Z' "$RW"; then
   echo "an unexpanded token is left in $RW:" >&2
@@ -423,9 +438,62 @@ exit 0
 EOF
 chmod +x "$STUB/sleep"
 
+# --- the `tr` stub, which IS the parameter's type --------------------------------------------------
+# The second load-bearing stub, and it exists because a fixture has to have the shape of the thing it
+# stands for. `sleep_disabled` is declared `static bool` with a `module_param_named(..., bool, ...)` in
+# drivers/cpuidle/lpm-levels.c, so the sysfs `show` renders what the file stores: the file holds 0 and a
+# reader sees N. Every read the trial makes of that file goes through `rd()`, which is `tr -d '\n' < f`,
+# so the rendering belongs on `tr` -- and putting it THERE rather than in the fixture is what keeps the
+# two facts separable: the harness's own `param()` reads the same file with this shell's real `cat`, so a
+# scenario can assert what the FILE holds while the script sees what the DEVICE says.
+#
+# THIS STUB IS WHY THE SECTION-6 DEFECT IS TESTABLE AT ALL. Until 2026-09-25 the fixture was a plain
+# text file, which made the shipped script's `wanted 0` comparison and the fixed one's `is_off`
+# behave IDENTICALLY -- a fixture that cannot make two behaviours differ cannot test either, and this
+# harness reported 147 passes over a script that refused every good write on the real device.
+#
+# FAKE_STUCK is the second thing a plain text file cannot express: a write that LANDS and whose value
+# does not take. That is what the device did on 2026-09-25 (for a different reason: the script misread a
+# value that had taken), and it is the path whose comment in the trial used to say it was unreachable
+# here. It renders Y whatever the file holds.
+cat > "$STUB/tr" <<EOF
+#!/bin/sh
+in=\$(readlink /proc/self/fd/0 2>/dev/null)
+case "\$in" in
+*/parameters/sleep_disabled)
+  case "\${FAKE_BOOL:-1}" in
+  1)
+    if [ "\${FAKE_STUCK:-0}" = 1 ]; then printf 'Y'; exit 0; fi
+    v=\$(cat "\$in" 2>/dev/null | sed 's/[[:space:]]*\$//')
+    case "\$v" in
+    0) printf 'N' ;;
+    1) printf 'Y' ;;
+    *) printf '%s' "\$v" ;;
+    esac
+    exit 0 ;;
+  esac ;;
+esac
+exec $REAL_TR "\$@"
+EOF
+chmod +x "$STUB/tr"
+# The stub must be able to SEE the difference, and a `readlink` that resolved to nothing would make it
+# delegate silently -- i.e. every alphabet scenario would pass while testing the plain-text fixture.
+[ -x "$MINBIN/readlink" ] || { echo "the tr stub cannot tell the parameter from any other file" >&2; exit 2; }
+printf 'N' > "$W/.stubprobe"
+[ "$( "$STUB/tr" -d '\n' < "$W/.stubprobe" )" = 'N' ] \
+  || { echo "the tr stub does not delegate for a file that is not the parameter" >&2; exit 2; }
+printf '0' > "$W/.stubparam"
+[ "$( "$STUB/tr" -d '\n' < "$W/.stubparam" )" = '0' ] \
+  || { echo "the tr stub rendered a file that is not the parameter" >&2; exit 2; }
+mkdir -p "$W/sys/module/lpm_levels/parameters"
+printf '0' > "$W/sys/module/lpm_levels/parameters/sleep_disabled"
+[ "$( "$STUB/tr" -d '\n' < "$W/sys/module/lpm_levels/parameters/sleep_disabled" )" = 'N' ] \
+  || { echo "the tr stub does NOT render the parameter -- the alphabet scenarios would be vacuous" >&2; exit 2; }
+rm -rf "$W/sys" "$W/.stubparam" "$W/.stubprobe"
+
 
 export FAKE_COMPAT= FAKE_DL= FAKE_DL2= FAKE_CPUIDLE= FAKE_KEEPER= FAKE_PARAM= FAKE_DEEP_BEFORE= \
-       FAKE_DEEP_DIS= FAKE_IDLE= FAKE_AFTERFAIL=
+       FAKE_DEEP_DIS= FAKE_IDLE= FAKE_AFTERFAIL= FAKE_BOOL= FAKE_STUCK=
 
 # For the scenarios that are about state a previous run left behind (the --keep then --revert pair),
 # `run` would reset the fake device first and destroy exactly the state under test.
@@ -443,6 +511,15 @@ run() { # $1 = extra arguments (may be empty)
   # way the real one is written -- NUL terminated -- and a NUL left in OUT would make grep treat the
   # capture as binary. That is a fact about the harness's string handling, not about the trial.
   OUT="$( env PATH="$STUB:$MINBIN" "$SH_BIN" "$RW" $1 2>&1 | tr -d '\000' )"
+  RC=${PIPESTATUS[0]}
+}
+# The same, for a DIFFERENT script -- a mutation of the shipped one, rewritten into the same fake device.
+# A mutation that is only grep'd is a statement about a file; a mutation that is RUN is a statement about
+# a behaviour, and the sections below need the behaviour.
+runscript() { # $1 = a rewritten script, $2 = extra arguments (may be empty)
+  : > "$ACT"
+  "$W/reset.sh"
+  OUT="$( env PATH="$STUB:$MINBIN" "$SH_BIN" "$1" $2 2>&1 | tr -d '\000' )"
   RC=${PIPESTATUS[0]}
 }
 
@@ -463,7 +540,7 @@ run "--status"
 want 'A. A panic will NOT arm EDL' "$OUT" "--status reports the escalation as disarmed"
 want 'B. cpuidle: 4 cpu' "$OUT" "--status counts the cpus that expose counters"
 want 'C. no v63 debug keeper is running' "$OUT" "--status reports the keeper as absent"
-want 'value: 1' "$OUT" "and reads the parameter's value"
+want 'value: Y' "$OUT" "and reads the parameter's value -- Y, because the file holds 1 and it is a bool"
 want 'mode:' "$OUT" "and its mode, which is the whole reason the experiment exists"
 want 'what a trial would do' "$OUT" "and says what a trial would do"
 want '--apply would run it' "$OUT" "and that it would proceed on this device"
@@ -471,7 +548,7 @@ run "--explain"
 [ "$RC" = 0 ] && ok "--explain exits 0" || bad "--explain exited $RC"
 want 'WHITELIST|4\.' "$OUT" "it explains the readings it takes"
 want 'REFUTED / SUPPORTED' "$OUT" "and names the verdicts, including the one against the hypothesis"
-notwant 'value: 1' "$OUT" "--explain reads no device file"
+notwant 'value: Y' "$OUT" "--explain reads no device file"
 
 # ==================================================================================================
 echo
@@ -571,6 +648,60 @@ FAKE_KEEPER= FAKE_IDLE=
 
 # ==================================================================================================
 echo
+echo "== 5b. the baseline: a parameter that is ALREADY off is a REFUSAL, because the counters are cumulative =="
+# ==================================================================================================
+# docs 163's second measurement, and the one the authorized run of 2026-09-25 produced: the verdict's test
+# is "had the deep state EVER been entered before the write", cpuidle's counters are CUMULATIVE since boot,
+# and so a boot on which something had already written 0 has counters holding entries made while the ladder
+# was ALLOWED -- the verdict then answers about whoever wrote 0 last. On the device that read as REFUTED
+# while the same boot's earlier reading (parameter at 1 since boot, 4h42m) was `state1 usage=0
+# state2 usage=0`; 127 seconds with the ladder OFF moved neither counter. The verdict had inverted its data.
+#
+# The two `--apply` scenarios below are a PAIR, and the pair is the whole point: `0` is what a WRITER puts
+# in the file, `N` is what a READER gets back (the tr stub renders it), and a guard keyed on the first is
+# blind to a device that only ever shows the second. So the mutant is the guard as it would be written by
+# somebody reading docs 121 rather than the source, and it must NOT refuse.
+FAKE_PARAM=0 run "--apply"
+[ "$RC" = 3 ] && ok "a parameter that is already 0 refuses with exit 3" || bad "it exited $RC"
+want 'REFUSED \(baseline D\)' "$OUT" "and names the baseline as what refused"
+want 'ALREADY off' "$OUT" "and says the state it found"
+want 'cumulative since boot' "$OUT" "and why that makes the counters unusable rather than merely odd"
+want 'REBOOT' "$OUT" "and the remedy -- the only one of these refusals whose fix is not a script"
+want 'Nothing was written' "$OUT" "and says the device was left alone"
+[ "$(param)" = 0 ] && ok "the parameter still reads 0 -- the refusal wrote nothing" || bad "the parameter reads $(param)"
+# The same state SPELLED THE WAY THE DEVICE SPELLS IT. The fixture file holds `N`, which is what a device
+# shows after a successful `printf 0`; `rd()` passes it through, so the trial reads `N`.
+FAKE_PARAM=N run "--apply"
+[ "$RC" = 3 ] && ok "the same state, in the device's own alphabet (N), refuses too" || bad "an N did not refuse: it exited $RC"
+want 'REFUSED \(baseline D\)' "$OUT" "and it is the same refusal"
+sed 's#^if is_off "$P_BEFORE"; then$#if [ "$P_BEFORE" = 0 ]; then#' "$SRC" > "$W/mut-baseline.sh"
+if cmp -s "$SRC" "$W/mut-baseline.sh"; then
+  bad "the baseline mutation did not land (its sed matches no line), so the pair above is not a measurement"
+else
+  ok "the baseline mutation really differs from the shipped file"
+  rewrite "$W/mut-baseline.sh" "$W/mut-baseline.rw.sh"
+  FAKE_PARAM=N runscript "$W/mut-baseline.rw.sh" "--apply --settle 3"
+  [ "$RC" = 0 ] && ok "a guard written as \`= 0\` does NOT refuse on an N -- which is what makes the shipped one an alphabet" \
+    || bad "the mutant exited $RC instead of running, so the pair above tested something else"
+  [ "$(param)" = 1 ] && ok "and it ran the write and the revert, which is what 'not refused' means here" \
+    || bad "the mutant's parameter reads $(param) -- it did not complete a write"
+fi
+FAKE_PARAM=
+# --status reports it and does not refuse, exactly as it does for A and C: the refusal belongs to the write,
+# and --status is the mode somebody runs while deciding whether to spend a boot on the sequence.
+FAKE_PARAM=0 run "--status"
+[ "$RC" = 0 ] && ok "--status on the same device exits 0" || bad "--status exited $RC"
+want 'ALREADY off' "$OUT" "it reports the baseline as not met"
+want 'NOT all of them are satisfied' "$OUT" "and says --apply would refuse, without refusing itself"
+# And the remedy the refusal NAMES, exercised. A refusal that names a command nothing checks is a sentence.
+FAKE_PARAM=0 run "--revert"
+[ "$RC" = 0 ] && ok "--revert on that device exits 0" || bad "--revert exited $RC"
+[ "$(param)" = 1 ] && ok "and puts the parameter back to 1" || bad "the parameter reads $(param)"
+want 'is back to 1|put back to 1' "$OUT" "and says so, verified by read-back"
+FAKE_PARAM=
+
+# ==================================================================================================
+echo
 echo "== 6. the parameter absent is not a refusal to explain away -- it is the answer =="
 # ==================================================================================================
 FAKE_PARAM=missing run "--apply"
@@ -592,9 +723,9 @@ run "--apply --settle 3"
 printf '%s\n' "$OUT" > "$W/out.apply"
 [ "$RC" = 0 ] && ok "--apply exits 0" || bad "--apply exited $RC"
 want 'all three prerequisites are satisfied' "$OUT" "it says all three prerequisites hold"
-want 'wrote .1. back to itself and read .1.' "$OUT" "it PROVES the write path with a same-value write first"
-want 'wrote 0 and read 0 back' "$OUT" "then writes 0 and verifies the read-back"
-want 'is back to 1, verified by read-back' "$OUT" "and reverts, verified by read-back"
+want 'wrote .Y. back to itself and read .Y.' "$OUT" "it PROVES the write path with a same-value write first"
+want "wrote 0 and read 'N' back" "$OUT" "then writes 0 and reads the N the device renders for it"
+want "is back to 1 .it reads 'Y'., verified by read-back" "$OUT" "and reverts, verified by read-back"
 [ "$(param)" = 1 ] && ok "the parameter reads 1 again at the end" || bad "the parameter reads $(param)"
 # The only trace left in the fake device is the undo file the trial wrote on purpose: the whitelist is
 # checked against the actual after-state, not against the source text.
@@ -636,6 +767,49 @@ want '' "$(cat "$FR/sys/devices/system/cpu/cpu0/cpuidle/state2/disable" 2>/dev/n
   "and no cpuidle state was disabled or re-enabled by the run"
 # The window really happened: the stub sleep was called with the settle value the trial was given.
 grep -q '^sleep 3$' "$ACT" && ok "the settle window used the --settle value it was given" || bad "the settle value did not reach sleep"
+
+# ==================================================================================================
+echo
+echo "== 7a. the parameter has a TYPE: the file stores 0 and the device renders it N =="
+# ==================================================================================================
+# The section that would have caught the 2026-09-25 defect, and it is built as a PAIR so that it is a
+# measurement rather than a demonstration of the thing it just set up:
+#
+#   * WITH THE TYPE (FAKE_BOOL=1, the default and the real shape) the shipped script must pass, and the
+#     MUTATION that puts the old comparison back -- `!= 0` in place of `is_off` -- must exit 4 and say
+#     `read-back is 'N'`, which is word-for-word what the device said;
+#   * WITHOUT THE TYPE (FAKE_BOOL=0, a plain text file -- the shape this fixture used to have) BOTH must
+#     pass, which is what makes the type the only difference between them.
+#
+# The second half is the control, and it is the point: a fixture that cannot make the two behaviours
+# differ cannot test either one. On 2026-09-25 this harness reported 147 passes over a script that
+# refused every good write on the real device, because its parameter file had no type.
+"$W/reset.sh"
+run "--apply --settle 3"
+[ "$RC" = 0 ] && ok "with the type on, --apply exits 0 (a bool parameter is not a failure)" || bad "--apply exited $RC"
+want "wrote 0 and read 'N' back" "$OUT" "and it treats the rendered N as OFF, which is what it means"
+notwant 'the write did not hold' "$OUT" "and never reports its own good write as one that did not hold"
+[ "$(param)" = 1 ] && ok "and the file is back to the raw 1 the trap wrote" || bad "the file reads $(param)"
+
+sed 's#^if ! is_off "\$P_AFTER_WRITE"; then$#if [ "$P_AFTER_WRITE" != 0 ]; then#' "$SRC" > "$W/mut-wanted0.sh"
+if cmp -s "$SRC" "$W/mut-wanted0.sh"; then
+  bad "the alphabet mutation did not land (its sed matches no line), so nothing below is pinned"
+else
+  ok "the alphabet mutation really differs from the shipped trial"
+  rewrite "$W/mut-wanted0.sh" "$W/mut-wanted0.rw.sh"
+  sh -n "$W/mut-wanted0.rw.sh" || bad "the mutated trial does not parse -- the mutation is malformed"
+  runscript "$W/mut-wanted0.rw.sh" "--apply --settle 3"
+  [ "$RC" = 4 ] && ok "the OLD comparison refuses the same good write, with exit 4" || bad "it exited $RC"
+  want "read-back is 'N'" "$OUT" "and names the rendering as the reason -- exactly what the device said"
+  # The control. Same fixture, same two scripts, type removed: now there is nothing to disagree about.
+  FAKE_BOOL=0 run "--apply --settle 3"
+  [ "$RC" = 0 ] && ok "with NO type (the old fixture) the shipped script still passes -- the control" || bad "it exited $RC"
+  want "wrote 0 and read '0' back" "$OUT" "and reads back the string it wrote, as a text file would"
+  FAKE_BOOL=0 runscript "$W/mut-wanted0.rw.sh" "--apply --settle 3"
+  [ "$RC" = 0 ] && ok "and the MUTATION passes there too -- so the TYPE is the only difference" \
+    || bad "the mutation exited $RC without a type, so the pair proves nothing"
+fi
+FAKE_BOOL=
 
 # ==================================================================================================
 echo
@@ -746,12 +920,56 @@ FAKE_DL=
 
 # ==================================================================================================
 echo
+echo "== 9b. what ARMS the trap: the write's own redirect, not the read-back it guards =="
+# ==================================================================================================
+# This section exists because the two halves of the 2026-09-25 defect are independent, and fixing either
+# one alone leaves a hazard:
+#
+#   * the ALPHABET (section 7a) made the script refuse a write that had held;
+#   * the FLAG made that refusal abandon the change. `WROTE=1` used to sit AFTER the read-back check, so
+#     the one path that leaves the parameter changed without knowing it -- the read-back that says "did
+#     not hold" while the write DID land -- was the one path that left the trap disarmed. Measured on the
+#     device: `sleep_disabled` read N with the script's exit long behind it and nothing owning it.
+#
+# FAKE_STUCK is the fixture for it: the write LANDS (the file really holds 0) and the value that comes
+# back is not OFF. A plain text file cannot express that, which is why the trial's own comment used to
+# say this branch was unreachable here and pinned it in the source text instead. It is reachable now.
+FAKE_BOOL=1 FAKE_STUCK=1 run "--apply --settle 3"
+[ "$RC" = 4 ] && ok "a write that lands and does not take exits 4" || bad "it exited $RC"
+want 'the write did not hold' "$OUT" "and says so"
+want '\[trap\].*put back to 1' "$OUT" "and the TRAP puts it back, on the refusal path"
+[ "$(param)" = 1 ] && ok "and the file is back to 1 -- the refusal did not abandon the change" \
+  || bad "the file reads $(param): the refusal left the parameter changed"
+FAKE_BOOL= FAKE_STUCK=
+
+# The tooth, and it is the old arrangement: `WROTE=1` deleted, so the flag is only ever set where it used
+# to be. Same fixture, same failure -- and this time the change is abandoned.
+sed 's#^WROTE=1$##' "$SRC" > "$W/mut-noarm.sh"
+if cmp -s "$SRC" "$W/mut-noarm.sh"; then
+  bad "the WROTE mutation did not land (its sed matches no line), so the trap's arming is not pinned"
+else
+  ok "the WROTE mutation really differs from the shipped trial"
+  # The shipped file has exactly one `^WROTE=1$`; if a later edit adds a second, deleting both would make
+  # the mutation mean something else and this count is where that shows up.
+  [ "$(grep -c '^WROTE=1$' "$SRC")" = 1 ] \
+    && ok "and the shipped trial sets WROTE=1 in exactly one place" \
+    || bad "the trial has $(grep -c '^WROTE=1$' "$SRC") 'WROTE=1' lines -- the mutation is not surgical"
+  rewrite "$W/mut-noarm.sh" "$W/mut-noarm.rw.sh"
+  FAKE_BOOL=1 FAKE_STUCK=1 runscript "$W/mut-noarm.rw.sh" "--apply --settle 3"
+  [ "$RC" = 4 ] && ok "the UNARMED trap still reports the failure" || bad "it exited $RC"
+  [ "$(param)" = 0 ] && ok "and it LEAVES the parameter changed -- which is what the flag's position buys" \
+    || bad "the file reads $(param): the mutation did not reproduce the hazard"
+  FAKE_BOOL= FAKE_STUCK=
+fi
+
+# ==================================================================================================
+echo
 echo "== 10. --keep is the ONLY way to leave it changed, and it says so =="
 # ==================================================================================================
 run "--apply --settle 3 --keep"
 [ "$(param)" = 0 ] && ok "--keep leaves the parameter at 0" || bad "the parameter reads $(param)"
 want 'is LEFT at 0' "$OUT" "and says it was left deliberately"
-want 'trap will not put it back either' "$OUT" "including by the trap"
+want 'will not put it' "$OUT" "including by the trap"
 want 'not persistent anyway' "$OUT" "and reminds the operator it does not survive a reboot"
 want 'printf 1 > ' "$OUT" "and prints the exact revert command"
 # The state --keep left behind IS the state under test here, so these do not reset first.
@@ -759,20 +977,21 @@ runraw "--revert"
 [ "$(param)" = 1 ] && ok "--revert puts the 0 that --keep left back to 1" || bad "the parameter reads $(param)"
 want 'verified by read-back' "$OUT" "and verifies the read-back"
 runraw "--revert"
-want 'already reads 1' "$OUT" "--revert on a device already at 1 says there is nothing to do"
+want "already reads 'Y', which is ON" "$OUT" "--revert on a device already ON says there is nothing to do"
 # A value that will not take the write is a finding, not a silent success -- and it is the one path in
 # this script that must not report a revert it did not perform.
 #
-# There are TWO such paths next to each other and only one of them can be built here:
+# There are TWO such paths next to each other, and they are now BOTH built here:
 #
-#   (i)  the write is REFUSED  -- `printf 1 > "$PARAM"` fails, line 403. Reachable: a 0444 file is the
-#        same shape to the script as a driver that will not take the value. This is the one that runs.
-#   (ii) the write SUCCEEDS and does not STICK -- the read-back is not 1, line 409. NOT reachable here:
-#        making a write land and then vanish needs a mount or a driver, and no permission bit does it.
-#        It is pinned in the SOURCE instead (below), on every host, so a later edit that deletes the
-#        branch is still caught. That is stated as a SKIP and counted out loud, not left silent.
+#   (i)  the write is REFUSED  -- `printf 1 > "$PARAM"` fails. A 0444 file is the same shape to the
+#        script as a driver that will not take the value. This is the one that runs, unless the harness
+#        is root (a root user can still write a 0444 file), in which case it is pinned in the source.
+#   (ii) the write SUCCEEDS and does not STICK -- the read-back is not ON. This needed a MOUNT or a
+#        driver to build until section 9b, and the comment here used to say so; FAKE_STUCK is that, in
+#        the stub that owns the rendering, and section 9b runs it against the shipped `--apply` and
+#        against the mutation that disarms the trap.
 want 'the write did NOT hold' "$(cat "$SRC")" \
-  "the branch for a write that succeeds and vanishes is pinned in the source (it cannot be built here)"
+  "the branch for a write that succeeds and does not stick is in the source AND run in section 9b"
 F="$FR/sys/module/lpm_levels/parameters/sleep_disabled"
 printf '0\n' > "$F"; chmod a-w "$F" 2>/dev/null
 if [ "$(param)" = 0 ] && ! printf '' > "$F" 2>/dev/null; then
@@ -787,7 +1006,7 @@ else
   SKIPPED=$((SKIPPED + 1))
   want 'the write failed' "$(cat "$SRC")" "the refused-write branch's message is in the source"
   want 'exit 4' "$(sed -n '400,412p' "$SRC")" "and it exits 4 rather than report a revert it did not perform"
-  want 'if [ "$P_NOW" = 1 ]' "$(cat "$SRC")" "and the write is followed by a read-back, not an assumption"
+  want 'if is_on "$P_NOW"' "$(cat "$SRC")" "and the write is followed by a read-back, not an assumption"
 fi
 chmod u+w "$F" 2>/dev/null
 

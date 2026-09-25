@@ -74,11 +74,16 @@
 #   /etc/systemd/system/zl1-lpm-sleep-fix.service oneshot, RemainAfterExit, WantedBy=multi-user.target
 #
 # The applier loops EVERY `/sys/module/*/parameters/sleep_disabled`, not the first one, and it FAILS if a
-# write does not read back as 0, or if the parameter does not exist at all. Those two rules are not
+# write does not read back as OFF or if the parameter does not exist at all. Those two rules are not
 # decoration: the same shape in `install-no-edl-on-panic.sh` is the reason that policy clears every
 # `download_mode` parameter rather than one, and the read-back rule is the defect
 # `install-cpufreq-governor.sh` records -- an applier that counted a write as done when `echo` returned
 # reported the heat fix as armed while nothing had changed and the unit showed `active`.
+#
+# "OFF", AND NOT "0": `sleep_disabled` is a `bool` module parameter (drivers/cpuidle/lpm-levels.c), so the
+# sysfs `show` renders 0 as `N`. Reading it back as the string `0` is a comparison between a value and its
+# own rendering, and on 2026-09-25 it made this applier refuse a write that had worked -- see the comment
+# inside it. The verdict block below reads the same way, for the same reason (docs 163).
 #
 # WHAT THIS DOES NOT DO, and the applier says it too: it does not touch the ladder's own nodes, does not
 # enable or disable any cpuidle state, writes no thermal trip point, sets no frequency, and does not
@@ -294,6 +299,14 @@ say "== installing the applier and the unit"
 #   * IT READS EVERY WRITE BACK, AND IT FAILS IF THERE IS NOTHING TO WRITE. An applier that counts
 #     `echo` returning as success reported the heat fix as armed while nothing had changed and the unit
 #     showed `active` (install-cpufreq-governor.sh). "No such file" is not "already off".
+#   * AND IT READS THE WRITE BACK AS A STATE, NOT AS THE STRING IT WROTE. `sleep_disabled` is declared
+#     `static bool` with `module_param_named(sleep_disabled, sleep_disabled, bool, ...)` in
+#     drivers/cpuidle/lpm-levels.c, so the sysfs `show` renders the stored value through the parameter's
+#     TYPE: writing 0 and reading back N is a write that HELD. Until 2026-09-25 this applier compared the
+#     read-back to `0`, so on the device it reported "did NOT take 0 (reads 'N')", counted the write as
+#     failed, exited 1 and made the unit FAIL -- while the parameter had in fact been turned off. The
+#     same defect refused the trial's own good write (docs 163), and both are the shape of "a comparison
+#     between a value and its own rendering": it can only ever pass on a file with no type.
 #
 # It deliberately does not touch the ladder's own nodes, any cpuidle state's `disable`, any thermal trip
 # point, any frequency, or the keeper and the governor -- those are the other two heat fixes and they
@@ -304,12 +317,13 @@ for p in /sys/module/*/parameters/sleep_disabled; do
     [ -e "$p" ] || continue
     printf 0 > "$p" 2>/dev/null
     got=$(cat "$p" 2>/dev/null)
-    if [ "$got" = 0 ]; then
-        n=$((n + 1))
-    else
+    case "$got" in
+    0|N|n|off) n=$((n + 1)) ;;
+    *)
         bad=$((bad + 1))
-        echo "zl1-lpm-sleep: $p did NOT take 0 (reads '$got')"
-    fi
+        echo "zl1-lpm-sleep: $p did NOT take 0 (reads '$got', which is not OFF)"
+        ;;
+    esac
 done
 if [ "$n" = 0 ] && [ "$bad" = 0 ]; then
     logger -t zl1-lpm-sleep "no sleep_disabled parameter on this boot -- the heat fix is NOT armed"
@@ -317,7 +331,7 @@ if [ "$n" = 0 ] && [ "$bad" = 0 ]; then
     exit 1
 fi
 logger -t zl1-lpm-sleep "wrote 0 to $n sleep_disabled parameter(s), $bad did not take it (read back)"
-echo "zl1-lpm-sleep: 0 on $n parameter(s) ($bad did not take it)"
+echo "zl1-lpm-sleep: OFF on $n parameter(s) ($bad did not take it)"
 [ "$bad" = 0 ] || { echo "zl1-lpm-sleep: the heat fix is NOT armed on $bad parameter(s)"; exit 1; }
 exit 0
 APPLIER_EOF
@@ -381,13 +395,17 @@ say "     the parameter  = $(printf '%s' "${VALUES:-<unreadable>}" | tr '\n' ' '
 # Four questions, in order, each of which can come back wrong -- and `elif`, not four independent
 # assignments, so the FIRST failure is the one that is reported rather than the last one evaluated.
 # (An empty value fails every one of them, which is the point: unreadable is not installed.)
+#
+# THE FIRST QUESTION IS ASKED AS A STATE, NOT AS A NUMBER, for the reason the applier's own comment
+# gives: the parameter is a `bool`, so a value of 0 comes back as `N` and `awk '$1 != 0'` would report
+# the fix as not-installed on a device where it had worked. Three spellings mean OFF and the rest do not.
 WHY=""
 if [ -z "$VALUES" ]; then
-  WHY="the parameter could not be read back at all -- no value came back, so there is nothing that says 0"
-elif ! printf '%s\n' "$VALUES" | awk '$1 != 0 {f=1} END {exit f ? 1 : 0}'; then
-  # EVERY value must be 0. A device that exposed two parameters and had one of them refuse is NOT a
+  WHY="the parameter could not be read back at all -- no value came back, so there is nothing that says OFF"
+elif ! printf '%s\n' "$VALUES" | awk '{v = tolower($1); if (v != "0" && v != "n" && v != "off") f = 1} END {exit f ? 1 : 0}'; then
+  # EVERY value must be OFF. A device that exposed two parameters and had one of them refuse is NOT a
   # success -- the same rule the applier applies per file, checked here independently of its exit status.
-  WHY="at least one parameter did not read back as 0: $(printf '%s' "$VALUES" | tr '\n' ' ')"
+  WHY="at least one parameter did not read back as OFF (0/N/off): $(printf '%s' "$VALUES" | tr '\n' ' ')"
 elif [ "$EXEC" != 0 ]; then
   WHY="the unit ran and ExecMainStatus is '${EXEC:-<unreadable>}', not 0 -- the applier did not confirm its own writes"
 elif [ "$ACT" != active ]; then
@@ -396,11 +414,12 @@ fi
 
 if [ -z "$WHY" ]; then
   always "== verdict: installed"
-  say "   The writer is installed, enabled, applied now, and the parameter READS BACK as 0 on every"
-  say "   parameter this boot exposes. WHAT THIS IS NOT: a statement that the phone runs cooler. The ladder"
-  say "   is reachable now on every boot; whether the SoC USES the deep rungs is the cpuidle counters above,"
-  say "   and a temperature change is a separate reading (zl1-thermal.sh --ab) with ambient, the battery and"
-  say "   this boot's own history all in it."
+  say "   The writer is installed, enabled, applied now, and the parameter READS BACK as OFF (the value"
+  say "   shown above) on every parameter this boot exposes. It shows N and not 0 because the parameter is"
+  say "   a bool module parameter: 0 is what was WRITTEN, N is what a reader SEES. WHAT THIS IS NOT: a"
+  say "   statement that the phone runs cooler. The ladder is reachable now on every boot; whether the SoC"
+  say "   USES the deep rungs is the cpuidle counters above, and a temperature change is a separate"
+  say "   reading (zl1-thermal.sh --ab) with ambient, the battery and this boot's own history all in it."
   exit 0
 fi
 always "== verdict: not-installed"

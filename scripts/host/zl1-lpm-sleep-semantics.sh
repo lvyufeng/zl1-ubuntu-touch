@@ -162,6 +162,33 @@ say "  declaration:      line $DECL_L"
 say "  the module parameter, verbatim (lines $PARAM_L-$PARAM_E) -- this one statement carries the"
 say "  type, the default VALUE and the sysfs BEHAVIOUR, which is why it is quoted and not summarised:"
 sed -n "${PARAM_L},${PARAM_E}p" "$LPM" | nl -ba -v "$PARAM_L" | sed 's/^/    /' | quiet
+# AND WHAT THAT TYPE MEANS TO A READER, which is the half this instrument used to leave on the table: the
+# statement above is quoted BECAUSE it carries the type, and then nothing said what the type does. For a
+# `bool` the sysfs `show` RENDERS the stored value -- writing 0 and reading back N is a write that HELD --
+# so a reader that compares a read-back against the string it wrote reports a fix that worked as one that
+# did not, and a reader that asks "is it 0?" gets a confident wrong answer. Three scripts in this tree did
+# exactly that with this parameter until 2026-09-25 (docs 163: the trial refused its own successful write,
+# the installer's applier would have failed its unit on a phone where the fix was working, and the
+# read-only probe inverted its own verdict). The extraction is a `sed` on the joined statement and NOT a
+# memory of what the type is: a source that declared it `int` would be reported as `int`.
+PTYPE=$(sed -n "${PARAM_L},${PARAM_E}p" "$LPM" | tr -d '\n' | sed -n 's/.*,[[:space:]]*\([a-zA-Z_][a-zA-Z_0-9]*\)[[:space:]]*,[[:space:]]*S_I[A-Z_| ]*.*/\1/p')
+case "$PTYPE" in
+bool)
+  say "  what that TYPE does to a READER: it is \`bool\`, so sysfs renders the stored value --"
+  say "    the file holds 0 and a reader SEES N (and holds 1, sees Y). So compare STATES and never the"
+  say "    string that was written: OFF is 0/N/n/off, ON is 1/Y/y/on, and anything else is neither."
+  say "    A read-back compared against the literal \`0\` reports a write that WORKED as one that did not." ;;
+int|uint|long|ulong|short|ushort|byte)
+  say "  what that TYPE does to a READER: it is \`$PTYPE\`, so the file reads back the number written to"
+  say "    it -- no rendering, and comparing a read-back against what was written is sound here." ;;
+'')
+  say "  what that TYPE does to a READER: NOT EXTRACTED from that statement -- which is a reading about"
+  say "    this source and not about the parameter. Nothing is claimed about how it reads back." ;;
+*)
+  say "  what that TYPE does to a READER: the statement declares \`$PTYPE\`, which this instrument does not"
+  say "    know the sysfs rendering of. Read that type's \`show\` before comparing a read-back against the"
+  say "    string that was written (docs 163)." ;;
+esac
 # A __setup() arm would make it a BOOT-ONLY argument, which is the difference between "write 0 at
 # runtime" and "rebuild the boot image". The absence is the reading that licenses the runtime fix.
 if grep -qE '__setup\("lpm_levels' "$LPM" "$LPM_OF"; then

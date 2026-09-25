@@ -491,7 +491,50 @@ for a in "\$@"; do
   printf '%s\n' "\${a#$NWR}"
 done
 EOF
+# --- the parameter's TYPE, in the one tool the applier reads it with ---------------------------------
+# `cat` is the applier's reader (`got=$(cat "$p")`), so the type belongs here for the same reason the
+# trial's belongs on `tr`: `sleep_disabled` is a `bool` module parameter (drivers/cpuidle/lpm-levels.c),
+# so sysfs renders the stored 0 as N, and the applier's read-back has to compare STATES rather than the
+# string it wrote. Everything that is not that one file is delegated, so this changes nothing else.
+#
+# THE DEFAULT IS THE REAL SHAPE (FAKE_LPM_BOOL=1). A fixture whose parameter is a plain text file cannot
+# make the shipped applier and its pre-fix version behave differently, and that is not a hypothetical:
+# until 2026-09-25 this harness's fixture was exactly that, and it reported "the parameter reads 0" over
+# an applier that on the real device reported its own good write as a failure and exited 1 (docs 163).
+# THE SWITCH IS A FILE AND NOT AN ENVIRONMENT VARIABLE, and that is deliberate: this stub is a
+# GRANDCHILD of the harness (harness -> installer -> systemctl stub -> applier -> cat), and an env
+# variable has to be propagated through three shells to reach it. A file cannot be lost on the way, and
+# a control that silently fails to arrive is a control that proves nothing while looking green.
+REAL_CAT="$(type -P cat)" || { echo "no real cat on this host" >&2; exit 2; }
+cat > "$STUB/cat" <<EOF
+#!/bin/sh
+case "\${1:-}" in
+*/parameters/sleep_disabled)
+  if [ ! -e "$W/lpm-plain-parameter" ]; then
+    v=\$($REAL_CAT "\$1" 2>/dev/null | sed 's/[[:space:]]*\$//')
+    case "\$v" in
+    0) printf 'N' ;;
+    1) printf 'Y' ;;
+    *) printf '%s' "\$v" ;;
+    esac
+    exit 0
+  fi ;;
+esac
+exec $REAL_CAT "\$@"
+EOF
 chmod +x "$STUB"/*
+
+mkdir -p "$W/probe/parameters"
+printf '0' > "$W/.catprobe"
+printf '0' > "$W/probe/parameters/sleep_disabled"
+[ "$( PATH="$STUB:$PATH" cat "$W/.catprobe" )" = 0 ] \
+  || { echo "the cat stub rendered a file that is not the parameter" >&2; exit 2; }
+[ "$( PATH="$STUB:$PATH" cat "$W/probe/parameters/sleep_disabled" )" = N ] \
+  || { echo "the cat stub does NOT render the parameter -- the alphabet scenarios would be vacuous" >&2; exit 2; }
+: > "$W/lpm-plain-parameter"
+[ "$( PATH="$STUB:$PATH" cat "$W/probe/parameters/sleep_disabled" )" = 0 ] \
+  || { echo "the plain-parameter switch does not reach the stub -- the control would not be a control" >&2; exit 2; }
+rm -rf "$W/.catprobe" "$W/probe" "$W/lpm-plain-parameter"
 
 # ssh: this is the DEVICE, and it is the whole reason these two scripts are testable offline. It drops
 # the connection options, then RUNS the remote command locally with the device's absolute paths turned
@@ -2117,7 +2160,53 @@ grep -q '^    : ' "$W/applier/lpm.mut.sh" || { echo "the lpm applier mutation di
 cp "$W/applier/lpm.mut.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
 run "$LPM" --install --after-trial "$L"
 [ "$RC" = 1 ] && ok "a write that does not take -> exit 1 (the applier's own read-back is not enough)" || bad "it exited $RC"
-want 'did not read back as 0' "$OUT" "  and the verdict names the parameter that did not take it"
+want 'did not read back as OFF' "$OUT" "  and the verdict names the parameter that did not take it"
+cp "$W/applier/lpm.good.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+
+# --- the parameter's TYPE: the applier reads back a STATE, not the string it wrote ------------------
+# Three readings of the SAME applier and the SAME fixture, and the middle one is the control:
+#
+#   1. with the type on (the real shape), the shipped applier succeeds and its message says OFF;
+#   2. the PRE-FIX comparison -- `[ "$got" = 0 ]` in place of the `case` -- fails on that same fixture,
+#      with the message the device printed on 2026-09-25: "did NOT take 0 (reads 'N')", exit 1;
+#   3. with the type OFF (a plain text file, the shape this fixture used to have) the pre-fix applier
+#      succeeds -- so the type, and nothing else, is what separates them.
+#
+# Without (3) this section would be a demonstration of its own setup: a fixture that cannot make two
+# behaviours differ cannot test either.
+lpm_reset
+: > "$ACT"
+runsh "$W/applier/zl1-lpm-sleep-fix.sh"
+[ "$RC" = 0 ] && ok "with the type on, the applier exits 0 (a bool read-back is not a failure)" || bad "it exited $RC"
+want 'OFF on 1 parameter' "$OUT" "  and reports the parameter as OFF, which is what N means"
+notwant 'did NOT take' "$OUT" "  and never calls its own good write a failure"
+[ "$($REAL_CAT "$FR/sys/module/lpm_levels/parameters/sleep_disabled")" = 0 ] \
+  && ok "  and the file holds the raw 0 the applier wrote" \
+  || bad "  the file holds $($REAL_CAT "$FR/sys/module/lpm_levels/parameters/sleep_disabled")"
+
+sed 's#^    0|N|n|off) n=\$((n + 1)) ;;$#    0) n=$((n + 1)) ;;#' "$W/applier/lpm.good.sh" > "$W/applier/lpm.prefix.sh"
+if cmp -s "$W/applier/lpm.good.sh" "$W/applier/lpm.prefix.sh"; then
+  bad "the applier's alphabet mutation did not land (its sed matches no line), so nothing below is pinned"
+else
+  ok "the applier's alphabet mutation really differs from the shipped applier"
+  # THE ORDER IS NOT COSMETIC: `lpm_reset` restores the GOOD applier into $W/applier, so a mutation
+  # copied in before it is silently swapped back and the scenario then measures the shipped file while
+  # reporting on the mutant. The first version of this block did exactly that and read `it exited 0`.
+  lpm_reset
+  cp "$W/applier/lpm.prefix.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+  runsh "$W/applier/zl1-lpm-sleep-fix.sh"
+  [ "$RC" = 1 ] && ok "the OLD comparison fails the same good write, with exit 1" || bad "it exited $RC"
+  want "did NOT take 0 .reads 'N'." "$OUT" "  and says exactly what the device said -- the rendering, named as the fault"
+  want 'the heat fix is NOT armed' "$OUT" "  and its exit code makes the unit FAIL on a phone that is fine"
+  # The control: no type, and the old comparison is right again.
+  lpm_reset
+  cp "$W/applier/lpm.prefix.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+  : > "$W/lpm-plain-parameter"
+  runsh "$W/applier/zl1-lpm-sleep-fix.sh"
+  [ "$RC" = 0 ] && ok "with NO type (a plain text file) the OLD comparison passes too -- the control" \
+    || bad "the pre-fix applier exited $RC without a type, so the trio proves nothing"
+  rm -f "$W/lpm-plain-parameter"
+fi
 cp "$W/applier/lpm.good.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
 
 # --- the applier on its own, and --remove -----------------------------------------------------------
