@@ -5,7 +5,7 @@
 # port has never looked at (telephony/modem), and it is the instrument with the worst failure mode if it
 # is wrong in the usual way: a probe that reads an unreadable kernel log as "the driver said nothing"
 # would report a dead modem as a quiet boot, which is how a whole subsystem stays unexamined for months.
-# So the harness holds it to four things, in this order of importance:
+# So the harness holds it to five things, in this order of importance:
 #
 #   1. IT WRITES NOTHING, AND THAT IS CHECKED STATICALLY AND WITH TEETH. The modem is not a driver you
 #      can poke: the partitions beside it (`modemst1`/`modemst2`/`fsg`/`fsc`/`persist`) hold the
@@ -24,6 +24,12 @@
 #      none-branch -- in a pipeline the status is the LAST command's, and sed succeeds on empty input --
 #      so a pattern that matched nothing would print nothing at all. Two of the probe's three such sites
 #      were live defects found here (docs 120 §5); the harness asserts the named line appears.
+#   5. THE STRINGS IT MATCHES ARE THE STRINGS THE IMAGE PRINTS. The probe reads the boot's own report by
+#      matching text, and that text is printed by boot/patches/0200-halium-modem-firmware-mount.patch -- a
+#      different file. One reworded report would turn its mount reading into "the initramfs said nothing",
+#      which is docs 117's false negative arriving through the back door. Section 10 therefore takes every
+#      `tell_kmsg` string OUT OF THE PATCH, classifies it (mount report / not), and makes the probe read the
+#      patch's own wording -- so the typed fixtures elsewhere cannot drift from the shipped image unnoticed.
 #
 # How it works: **the stub directory IS the device.** The probe runs as itself, with a fake root and the
 # device's tools stubbed. PATH for the child is `$STUB:$MINBIN`, and MINBIN is a sandbox of symlinks to
@@ -104,6 +110,7 @@ sed -e 's# /android/vendor/firmware_mnt# __ZA1__#g' \
     -e 's# /lib/firmware# __ZL1__#g' \
     -e 's# /firmware# __ZF1__#g' \
     -e 's#/var/lib/lxc#__ZLV__#g' \
+    -e 's#/userdata/zl1-kmsg#__ZU__#g' \
     -e 's# /vendor# __ZV1__#g' \
     -e 's# /android# __ZA2__#g' \
     -e 's#/tmp/zl1-modem-klog.txt#__ZK__#g' \
@@ -117,6 +124,7 @@ sed -e "s#__ZA1__#$FR/android/vendor/firmware_mnt#g" \
     -e "s#__ZL1__#$FR/lib/firmware#g" \
     -e "s#__ZF1__#$FR/firmware#g" \
     -e "s#__ZLV__#$FR/var/lib/lxc#g" \
+    -e "s#__ZU__#$FR/userdata/zl1-kmsg#g" \
     -e "s#__ZV1__#$FR/vendor#g" \
     -e "s#__ZA2__#$FR/android#g" \
     -e "s#__ZK__#$W/klog-out.txt#g" \
@@ -165,6 +173,12 @@ grep -o -- '/proc/sys/' "$SRC" | wc -l >/dev/null
 # is not -- so the total must be the two together, and a rule that stopped firing would show up here.
 [ "$(cnt '/var/lib/lxc' "$SRC")" = "$(cnt '__ZLV__' "$P1")" ] \
   || { echo "the /var/lib/lxc rewrite did not cover every occurrence (halium's fstab glob)" >&2; exit 2; }
+# The kmsg drain's snapshot directory, added when the probe learned to read the boot's own initramfs report
+# out of the snapshot the drain takes while the boot is young. A miss here would have the probe read THIS
+# HOST's /userdata, which does not exist -- so it would answer "the drain is not installed" on a device
+# where it is.
+[ "$(cnt '/userdata/zl1-kmsg' "$SRC")" = "$(cnt '__ZU__' "$P1")" ] \
+  || { echo "the /userdata/zl1-kmsg rewrite did not cover every occurrence (the kmsg drain's snapshots)" >&2; exit 2; }
 [ "$(cnt ' /firmware' "$SRC")" = "$(cnt '__ZF1__' "$P1")" ] \
   || { echo "the /firmware list-element rewrite did not cover every occurrence" >&2; exit 2; }
 # This one caught a real leak the first time it ran: the built-in search list was written as
@@ -189,6 +203,8 @@ grep -qF "$FR/lib/firmware" "$RW" || { echo "the firmware search path was not re
 grep -qF "$FR/var/lib/lxc/android/rootfs/fstab*" "$RW" \
   || { echo "the halium fstab glob was not rewritten -- the probe would read this host's /var/lib/lxc" >&2; exit 2; }
 grep -qF "$W/klog-out.txt" "$RW" || { echo "the kernel-log scratch path was not rewritten" >&2; exit 2; }
+grep -qF "$FR/userdata/zl1-kmsg" "$RW" \
+  || { echo "the kmsg drain's directory was not rewritten -- the probe would read this host's /userdata" >&2; exit 2; }
 
 # --- the static safety guard, and its teeth --------------------------------------------------------
 #
@@ -197,6 +213,18 @@ grep -qF "$W/klog-out.txt" "$RW" || { echo "the kernel-log scratch path was not 
 # is required because the probe's own `--explain` text is prose about mounting, and a guard that trips on
 # the words "mount point" in a sentence is a guard nobody would keep.
 #
+# A CLEARED RING IS A WRITE, and it is the one write this probe could make that destroys something with no
+# other copy. The initramfs's report is written ONCE into the kernel ring, and the ring is the only place
+# it lands -- so `dmesg -c` (or `-C`, `--clear`, `--read-clear`) is a write to the one piece of evidence
+# the whole section exists to read. That is why it is in the same list as `dd`.
+#
+# It is in COMMAND POSITION for the same reason the verbs above are, and with ONE deliberate exclusion: the
+# boundary for this rule is the start of a line or `;`/`&`/`|` or `$(`, and NOT a backtick or `(`. The
+# probe's own header forbids the shape in a sentence, and the sentence writes it in backticks -- so a class
+# that included a backtick would fire on the sentence forbidding the write, and that is the rule somebody
+# deletes rather than fixes (the arrow rule's story, one line up). The teeth below prove both halves: a real
+# `dmesg -c` is caught, and the sentence that forbids it is not read as one.
+WRITE_RE='(^|[;&|(`]|\$\()[[:space:]]*(dd|mkfs(\.ext4)?|mount|umount|fstrim|modprobe|insmod|rmmod|setprop|tee)[[:space:]]|(^|[;&|]|\$\()[[:space:]]*dmesg[[:space:]]+(-[cC]|--clear|--read-clear)|(^|[^-])>>?[[:space:]]*/(sys|proc|dev/block)|systemctl[[:space:]]+(start|stop|restart|enable|disable|mask|daemon-reload)'
 # `mount` needs one more rule, because it is two commands with one name: bare `mount` LISTS the mounts (a
 # read, and the probe greps its output), while `mount -o bind A B` changes the system. The allowlist below
 # is exactly the read form the probe uses -- a `mount` whose output is piped -- and the teeth section
@@ -210,20 +238,31 @@ grep -qF "$W/klog-out.txt" "$RW" || { echo "the kernel-log scratch path was not 
 # and the teeth below prove the redirect shape is still caught.
 #
 # Reading is the job. Anything that changes state is out of scope BY DESIGN, not by omission.
-WRITE_RE='(^|[;&|(`]|\$\()[[:space:]]*(dd|mkfs(\.ext4)?|mount|umount|fstrim|modprobe|insmod|rmmod|setprop|tee)[[:space:]]|(^|[^-])>>?[[:space:]]*/(sys|proc|dev/block)|systemctl[[:space:]]+(start|stop|restart|enable|disable|mask|daemon-reload)'
 MOUNT_LIST_RE='\$\(mount([[:space:]]+2>/dev/null)?[[:space:]]*\|'
 writes_in() { grep -nE -- "$WRITE_RE" "$1" 2>/dev/null | grep -vE -- "$MOUNT_LIST_RE"; }
 # The teeth need to prove the guard is not simply "any mention of mount": a bind mount has to be caught.
 bindmount_in() { grep -nE -- 'mount[[:space:]]+-o[[:space:]]+bind' "$1" 2>/dev/null; }
 
 # --- the stubs -------------------------------------------------------------------------------------
-# The kernel log. FAKE_KLOG_RC non-zero is the scenario that matters: `journalctl` failing prints nothing,
-# and the verdict must not read that as a boot in which the driver was silent.
+# The kernel log, THREE stubs for three sources, because the probe now reads the boot's own initramfs
+# report out of whichever of them really carries the boot phase. Two properties matter for each:
+#   * the content is the HARNESS's (`$W/klog.txt`, `$W/dmesg.txt`), never this laptop's ring -- a probe
+#     reading the host's dmesg would answer about the wrong machine while every scenario "passed";
+#   * a source CAN FAIL to answer, because "could not read" and "read and empty" must stay different.
+# The old drain snapshot is what the probe reads FIRST, so its directory exists and holds one snapshot by
+# default -- a device with the drain installed, which is the state the capture chain's other steps assume.
 cat > "$STUB/journalctl" <<EOF
 #!/bin/sh
 printf 'journalctl %s\n' "\$(printf '%s' "\$*" | tr '\n' ' ')" >> "$ACT"
 [ "\${FAKE_KLOG_RC:-0}" != 0 ] && exit "\${FAKE_KLOG_RC}"
 cat "$W/klog.txt" 2>/dev/null
+exit 0
+EOF
+cat > "$STUB/dmesg" <<EOF
+#!/bin/sh
+printf 'dmesg %s\n' "\$(printf '%s' "\$*" | tr '\n' ' ')" >> "$ACT"
+[ "\${FAKE_DMESG_RC:-0}" != 0 ] && exit "\${FAKE_DMESG_RC}"
+cat "$W/dmesg.txt" 2>/dev/null
 exit 0
 EOF
 cat > "$STUB/lxc-info" <<EOF
@@ -347,10 +386,78 @@ fi
 case "\${FAKE_FW:-}" in
 cmdfw|mnt|both) printf '/dev/block/bootdevice/by-name/modem on /vendor/firmware_mnt type vfat (ro,shortname=lower)\n' > "$W/mount.txt" ;;
 esac
-# The kernel log. The baseline mentions the modem but shows no failure, and is deliberately NOT empty: an
-# all-empty baseline would make "the (none) line prints" untestable.
-printf 'msm_pil: pil-q6v55-mss: modem subsystem probe started\n' > "$W/klog.txt"
-[ "\${FAKE_KLOG_QUIET:-0}" = 1 ] && printf 'random early boot noise\n' > "$W/klog.txt"
+# The TWO logs the probe can read the boot's own report out of, and they are different sources answering
+# the same question, so the fixture keeps them apart.
+#
+#  * \`$W/dmesg.txt\` IS THE KERNEL RING, and it is the source the initramfs's report is really in (the
+#    initramfs writes it to /dev/kmsg). The default is THE DEVICE AS IT IS TODAY: a boot whose initramfs
+#    reported the fstab it was looking for and then said nothing more, because an empty glob is silent in
+#    an image without the docs-154 patch. That default is what makes the two readings separable -- the
+#    "the glob matched, OR this image has no report" state is exactly this boot.
+#    The other shapes are the patched initramfs's own lines, written here with the patch's OWN wording
+#    (\`initrd: \` is the prefix halium's tell_kmsg adds).
+#  * \`$W/klog.txt\` IS WHAT \`journalctl -b -k\` ANSWERS. It is THIN by default -- one line that carries no
+#    boot-phase marker -- because that is what this device was measured to do (the kmsg drain's header,
+#    2026-09-21: the journal is not capturing /dev/kmsg at all). Keeping the default faithful is what makes
+#    the guard testable: a source this thin must NOT be accepted as the boot's log.
+RING_BOOT='Linux version 4.9.186-perf+ (android@build) #1 SMP PREEMPT
+initrd: Halium rootfs is /tmpmnt/rootfs.img
+initrd: mounting android system image from userdata partition
+initrd: checking fstab /var/lib/lxc/android/rootfs/fstab* for additional mount points'
+RING_PIL='msm_pil: pil-q6v55-mss: modem subsystem probe started'
+case "\${FAKE_RING:-}" in
+fallback_mounted)
+  printf '%s\n%s\n%s\n%s\n%s\n' "\$RING_BOOT" \
+    'initrd: fstab /var/lib/lxc/android/rootfs/fstab* matched NO file; using the one this initramfs carries: /zl1-android-fstab' \
+    'initrd: checking mount label modem' \
+    'initrd: mounting /dev/disk/by-partlabel/modem as /android/vendor/firmware_mnt -t vfat -o ro,shortname=lower' \
+    "\$RING_PIL" > "$W/dmesg.txt" ;;
+no_fallback)
+  printf '%s\n%s\n%s\n' "\$RING_BOOT" \
+    'initrd: fstab /var/lib/lxc/android/rootfs/fstab* matched NO file and no fallback is present: NOTHING WILL BE MOUNTED' \
+    "\$RING_PIL" > "$W/dmesg.txt" ;;
+fallback_nodevice)
+  printf '%s\n%s\n%s\n' "\$RING_BOOT" \
+    'initrd: fstab /var/lib/lxc/android/rootfs/fstab* matched NO file; using the one this initramfs carries: /zl1-android-fstab' \
+    'initrd: no device for label modem: tried /dev/disk/by-partlabel/modem and /dev/disk/* -- this line is skipped' > "$W/dmesg.txt" ;;
+fallback_mountfailed)
+  printf '%s\n%s\n%s\n' "\$RING_BOOT" \
+    'initrd: fstab /var/lib/lxc/android/rootfs/fstab* matched NO file; using the one this initramfs carries: /zl1-android-fstab' \
+    'initrd: MOUNT FAILED: /dev/disk/by-partlabel/modem as /android/vendor/firmware_mnt -t vfat -o ro,shortname=lower' > "$W/dmesg.txt" ;;
+fallback_nomount)
+  printf '%s\n%s\n%s\n' "\$RING_BOOT" \
+    'initrd: fstab /var/lib/lxc/android/rootfs/fstab* matched NO file; using the one this initramfs carries: /zl1-android-fstab' \
+    "\$RING_PIL" > "$W/dmesg.txt" ;;
+noinitrd)
+  printf 'Linux version 4.9.186-perf+ (android@build) #1 SMP PREEMPT\n%s\nrandom early boot noise\n' "\$RING_PIL" > "$W/dmesg.txt" ;;
+label_only)
+  # THE REPORT WITHOUT ITS FIRST LINE. \`RING_BOOT\` carries the "checking fstab ..." line, so this shape has
+  # to be built from the boot phase alone -- and it is a real one: the snapshot the drain takes WHILE THE LOOP
+  # IS STILL RUNNING ends at the line it had reached, and that is what the uptime in its name is for. The
+  # state chain asked only about the \`checking fstab\` line, so it called this "the initramfs said NOTHING".
+  printf 'Linux version 4.9.186-perf+ (android@build) #1 SMP PREEMPT\ninitrd: checking mount label modem\n' > "$W/dmesg.txt" ;;
+thin)
+  # A source with content but NO boot-phase marker: exactly the shape the old guard accepted, because "the
+  # file is not empty" is satisfied by one line of anything.
+  printf 'random early boot noise\n' > "$W/dmesg.txt" ;;
+*)
+  printf '%s\n%s\n' "\$RING_BOOT" "\$RING_PIL" > "$W/dmesg.txt" ;;
+esac
+# FAKE_KLOG_QUIET keeps its old meaning -- "a boot in which the modem was silent" -- and it is expressed as
+# a ring that still HAS the boot phase and no longer has the modem's line. A fixture that dropped the boot
+# phase instead would test a different thing entirely: a source the probe must refuse to read (see
+# FAKE_DMESG_RC below, which is that scenario).
+[ "\${FAKE_KLOG_QUIET:-0}" = 1 ] && printf '%s\n' "\$RING_BOOT" > "$W/dmesg.txt"
+printf 'systemd-journald: one line the journal happened to keep\n' > "$W/klog.txt"
+# The kmsg drain. ABSENT by default, so the ring is the source the scenarios above drive; \`FAKE_DRAIN=early\`
+# installs the snapshot the probe prefers -- which is the whole point of that unit, since it is taken while
+# the boot is young and the ring is a buffer that wraps. Two snapshots, so the EARLIEST has to be chosen by
+# the uptime in the name rather than by directory order or a lexical sort (boot-2s must beat boot-160s).
+if [ "\${FAKE_DRAIN:-0}" = early ]; then
+  mkdir -p "$FR/userdata/zl1-kmsg"
+  printf 'Linux version 4.9.186-perf+ (android@build) #1 SMP PREEMPT\ninitrd: checking fstab /snapshot-taken-at-2s for additional mount points\n' > "$FR/userdata/zl1-kmsg/boot-2s.log"
+  printf 'nothing here but the tail of the ring\n' > "$FR/userdata/zl1-kmsg/boot-160s.log"
+fi
 exit 0
 EOF
 chmod +x "$W/reset.sh"
@@ -362,6 +469,12 @@ ok() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n' "$1"; }
 want() { if grep -Eq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; grep -n . <<< "$2" | sed 's/^/        | /'; fi; }
 notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2" | sed 's/^/        | /'; else ok "$3"; fi; }
+# The LITERAL pair, for text that is not a pattern: `grep -F` on a here-string, and NOT `printf ... | grep -q`.
+# The pipe would be the shape this tree has a guard for (host/zl1-selftest-family-selftest.sh): a harness that
+# sets `pipefail` and puts an early-exiting reader on the right of a pipe reports the WRITER's death as the
+# check's answer. A here-string has no writer process to die.
+wantF() { if grep -Fq -- "$1" <<< "$2"; then ok "$3"; else bad "$3"; printf '        | wanted: %s\n' "$1"; fi; }
+notwantF() { if grep -Fq -- "$1" <<< "$2"; then bad "$3"; printf '        | %s\n' "$1"; else ok "$3"; fi; }
 # The verdict is the LAST section, so it runs from its own header to the end of the output. Anchored on
 # that header, not on the first `->` line anywhere: the probe prints `->` lines in earlier sections, and a
 # verdict extractor that took the first of those would make every assertion about a different paragraph
@@ -371,7 +484,8 @@ notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2
 verdict() { printf '%s\n' "$1" | sed -n '/^== [0-9][0-9]*\. *verdict$/,$p'; }
 
 # Which FAKE_* the probe's stubs must see (they are inherited by the stubbed commands the probe runs).
-export FAKE_KLOG_RC=0 FAKE_CONTAINER=700 FAKE_OFONO= FAKE_MODEMANAGER= FAKE_OFONO_OWNER= \
+export FAKE_KLOG_RC=0 FAKE_DMESG_RC=0 FAKE_RING= FAKE_DRAIN= FAKE_CONTAINER=700 FAKE_OFONO= \
+       FAKE_MODEMANAGER= FAKE_OFONO_OWNER= \
        FAKE_CONTAINER_FWMNT= FAKE_COMPAT= FAKE_FWNAME= FAKE_NO_FWNODE= FAKE_NO_SELFAUTH= \
        FAKE_FW= FAKE_KLOG_QUIET= FAKE_NO_CMDLINE= FAKE_CMDLINE_NO_FWPATH= FAKE_FWPATH_SYSFS= \
        FAKE_NO_FSTAB= FAKE_FSTAB_NO_MODEM=
@@ -448,6 +562,22 @@ printf 'say "     -> /proc/cmdline could not be read"\n' > "$W/mut-arrow.txt"
 [ -z "$(writes_in "$W/mut-arrow.txt")" ] \
   && ok "and an arrow before a path is prose, not a write" \
   || bad "an arrow before a path is still read as a redirect, so the probe's own readings fail the guard"
+
+# The fourth tooth, for the write with no other copy: a CLEARED RING. The variant that matters is `-c`,
+# because it is both the shortest spelling and the one an author reaches for while debugging ("start from a
+# clean ring") -- on an instrument whose whole purpose is to read what the initramfs wrote there once.
+printf 'dmesg -c > /dev/null\n' > "$W/mut-ringclear.txt"
+if [ -n "$(writes_in "$W/mut-ringclear.txt")" ]; then
+  ok "the guard CATCHES a cleared kernel ring (dmesg -c) -- the evidence with no other copy"
+else
+  bad "the guard let 'dmesg -c' through: the one write that destroys the report this section reads"
+fi
+# ...and the other half, which is the reason the rule needs command position at all: the probe's header
+# forbids the shape in prose, and a rule that fired on that sentence is one somebody would delete.
+printf '# NEVER CLEARS THE RING. `dmesg -c`/`-C`/`--clear` destroys the only copy\n' > "$W/mut-ringprose.txt"
+[ -z "$(writes_in "$W/mut-ringprose.txt")" ] \
+  && ok "and the sentence forbidding it is prose, not a write" \
+  || bad "the guard reads the probe's own prose as a cleared ring"
 
 # ==================================================================================================
 echo
@@ -598,18 +728,102 @@ want 'halium.s mount loop reading an fstab that is not on this' "$(verdict "$OUT
 
 # ==================================================================================================
 echo
-echo "== 5. the two UNANSWERED branches, which must never read as a negative =="
+echo "== 4c. the initramfs's OWN report -- the only witness to what the boot's mount loop did =="
 # ==================================================================================================
-# (a) the kernel log could not be read. This is docs 117's case, and here it would otherwise say "the PIL
-# driver logged nothing" about a log nobody read.
-FAKE_KLOG_RC=1 run ""
-[ "$RC" = 1 ] && ok "an unreadable kernel log exits 1" || bad "it exited $RC"
-want 'COULD NOT READ THE KERNEL LOG' "$OUT" "it says the log could not be read"
-want 'is 0 for THAT reason' "$OUT" "and says the zeroes below are for that reason"
+# The change docs 154 shipped (boot/patches/0200-...) is invisible from the booted system: the UT rootfs
+# image has no /scripts and no /zl1-android-fstab, and the initramfs is gone after switch_root. So the ONLY
+# evidence that it ran is the initramfs's own kmsg report, and these scenarios are that evidence, in the
+# states the shipped halium can produce. Each string below is the patch's OWN wording.
+run ""
+want 'source dmesg \(the live kernel ring' "$OUT" "the ring is read as a source, and named as one"
+want 'CONTAINS THE BOOT PHASE' "$OUT" "and a source is only used when it really carries the boot phase"
+want 'STATE: GLOB MATCHED, OR THIS IMAGE HAS NO REPORT' "$OUT" \
+  "TODAY'S DEVICE: the loop reported the fstab it looked for and then said nothing -- which is an empty glob in an image without the report, OR a matched glob. The log cannot tell them apart, and it says so"
+want 'THAT AMBIGUITY IS WHY THE REPORT WAS ADDED' "$OUT" "and names the ambiguity docs 154 removed"
+
+# MOUNTED: the state the shipped image is built to produce.
+FAKE_RING=fallback_mounted run ""
+want 'STATE: MOUNTED' "$OUT" "the patched initramfs mounting the partition is recognised"
+want 'matched NO file; using the one this initramfs carries' "$OUT" "and its own report line is shown, not summarised"
+want 'as /android/vendor/firmware_mnt -t vfat' "$OUT" "including the mount line naming the device and the point"
+want 'This is the reading that makes$' "$OUT" \
+  "and it says what that does to section 3's listing of a CANDIDATE fstab"
+notwant 'STATE: MOUNT FAILED' "$OUT" "and it is not confused with a failure"
+
+# The three ways the mount can fail, and they are different next moves.
+FAKE_RING=fallback_mountfailed run ""
+want 'STATE: MOUNT FAILED' "$OUT" "a failed mount is its own state"
+want 'It TRIED and the mount failed' "$OUT" "described as an attempt that failed, not as a missing file"
+FAKE_RING=fallback_nodevice run ""
+want 'STATE: DEVICE ABSENT' "$OUT" "a line whose device did not exist is its own state"
+want 'points at the initramfs.s device population' "$OUT" "and points at udev, not at the partition"
+FAKE_RING=no_fallback run ""
+want 'STATE: NO FALLBACK -- the pre-fix silence, now audible' "$OUT" \
+  "the report without a fallback is its own state, and it is the OLD behaviour made audible"
+want 'That is the OLD behaviour made audible, not a device fault' "$OUT" "said in those words"
+FAKE_RING=fallback_nomount run ""
+want 'STATE: FALLBACK USED, NO MOUNT FOLLOWED' "$OUT" \
+  "a fallback read with no mount after it is its own state -- a configuration answer, not a hardware one"
+
+# NO INITRAMFS REPORT AT ALL: a usable log that simply has no initrd: line about a mount. It must NOT be
+# read as "it mounted nothing".
+FAKE_RING=noinitrd run ""
+want 'STATE: NO INITRAMFS REPORT IN THIS LOG' "$OUT" "a boot log with no mount report says exactly that"
+want 'It is not .it mounted nothing.' "$OUT" "and refuses the conclusion the absence would otherwise support"
+notwant 'STATE: MOUNTED' "$OUT" "and claims no mount"
+
+# THE REPORT PRESENT BUT INCOMPLETE. This is a state the probe was MISSING, and the defect was found here --
+# by section 10, which drives each of the patch's report lines through the probe on its own: a log whose
+# report starts at the mount label (a snapshot taken mid-loop, or a ring that wrapped) is not a boot whose
+# initramfs said nothing, and the state chain -- which asked only about the `checking fstab` line -- said it
+# was. It is asserted here as a scenario of its own, because a state added without one is a state nothing
+# checks.
+FAKE_RING=label_only run ""
+want 'STATE: REPORT PRESENT, AND IT STOPS BEFORE THE MOUNT' "$OUT" \
+  "a report that stops at the mount label is its own state"
+notwant 'STATE: NO INITRAMFS REPORT IN THIS LOG' "$OUT" \
+  "so it is NOT reported as a boot whose initramfs said nothing -- the false negative the old chain produced"
+want 'checking mount label modem' "$OUT" "and the line the report does have is shown, not summarised"
+want 'report IS in this log' "$OUT" "and the paragraph for that state explains what the shape means"
+
+# THE DRAIN WINS WHEN IT EXISTS. It is a copy of the ring taken while the boot was young, so it is better
+# evidence than the live ring -- and the EARLIEST snapshot is chosen by the uptime in its name, which is
+# what the second half of this scenario proves (`boot-2s.log` must beat `boot-160s.log`).
+FAKE_DRAIN=early run ""
+want "source the kmsg drain's earliest snapshot \(.*boot-2s\.log\), taken while this boot was young" "$OUT" \
+  "with the drain installed, the SNAPSHOT is the source, and the earliest one is picked by its uptime"
+want 'snapshot-taken-at-2s' "$OUT" "and its CONTENT is what the rest of the section reads"
+notwant 'source dmesg \(the live kernel ring' "$OUT" "and the live ring is not what was read"
+notwant 'boot-160s.log' "$OUT" "with the LATER snapshot not chosen"
+
+# ==================================================================================================
+echo
+echo "== 5. the UNANSWERED branches, which must never read as a negative =="
+# ==================================================================================================
+# (a) NO SOURCE CARRIED THIS BOOT. Every read of the log fails, so the load question has no answer. This is
+# docs 117's case, and here it would otherwise say "the PIL driver logged nothing" about a log nobody read.
+FAKE_KLOG_RC=1 FAKE_DMESG_RC=1 run ""
+[ "$RC" = 1 ] && ok "with no readable source it exits 1" || bad "it exited $RC"
+want 'NO SOURCE CARRIED THIS BOOT' "$OUT" "it says no source carried the boot"
+want 'Every count below would be 0$' "$OUT" "and says the zeroes below are for that reason"
 want 'UNANSWERED' "$(verdict "$OUT")" "the verdict is UNANSWERED"
 notwant 'the PIL driver logged nothing' "$OUT" "and it does NOT claim the driver was silent"
 notwant 'THE FIRMWARE IS NOT REACHABLE' "$(verdict "$OUT")" "and does not reach the port-problem conclusion either"
-FAKE_KLOG_RC=0
+FAKE_KLOG_RC=0 FAKE_DMESG_RC=0
+
+# (a2) THE GUARD THAT COULD NOT FAIL, which is the defect this section was fixed for. A source that answers
+# with one line and no boot-phase marker satisfies "the file is not empty", so the OLD probe read it as a
+# log, found nothing in it, and printed its reassurance -- about a boot it had never read. Both sources are
+# thin here, and the reading must be UNANSWERED with the thinness NAMED. This is the assertion the previous
+# version of the probe fails.
+FAKE_RING=thin FAKE_KLOG_RC=0 run ""
+[ "$RC" = 1 ] && ok "two thin sources: it exits 1 rather than answering" || bad "it exited $RC"
+want 'NO boot-phase line' "$OUT" "a source with no boot phase is reported as thin"
+want 'so it did NOT capture this boot' "$OUT" "and the reason is spelled out"
+want 'NO SOURCE CARRIED THIS BOOT' "$OUT" "so no log is read at all"
+notwant 'none: no firmware-load failure line' "$OUT" \
+  "and it does NOT print the reassurance -- the false negative the old guard allowed"
+want 'UNANSWERED' "$(verdict "$OUT")" "and the verdict is UNANSWERED"
 
 # (b) the device tree did not name the firmware. Then every later comparison would be against a guess --
 # and the draft DID compare against one: it printed "the firmware is NOT on the kernel's search path"
@@ -683,9 +897,9 @@ notwant 'none: the PIL driver logged nothing' "$OUT" "and the (none) lines, whic
 want '== 7\. verdict' "$OUT" "--quiet still prints the verdict's header"
 want 'THE FIRMWARE IS NOT REACHABLE' "$(verdict "$OUT")" "and the verdict itself"
 # The UNANSWERED branches are the ones a reader must never miss, so --quiet must keep them too.
-FAKE_KLOG_RC=1 run "--quiet"
+FAKE_KLOG_RC=1 FAKE_DMESG_RC=1 run "--quiet"
 want 'UNANSWERED' "$(verdict "$OUT")" "--quiet still prints the UNANSWERED verdict"
-FAKE_KLOG_RC=0
+FAKE_KLOG_RC=0 FAKE_DMESG_RC=0
 
 # ==================================================================================================
 echo
@@ -696,6 +910,13 @@ notwant '(^| )(dd|mkfs|modprobe|insmod|rmmod) ' "$(cat "$ACT")" \
   "the actions taken name no block-device writer and no module operation"
 notwant 'systemctl (start|stop|restart|enable|disable|mask)' "$(cat "$ACT")" \
   "and no systemctl verb that changes state"
+# The ring-clear, asserted the SECOND way: not from the source text but from what the probe RAN. A `dmesg`
+# whose arguments are recorded can be checked exactly, and this catches a clearing call however it is
+# spelled in the script -- including one the static guard's command-position rule would not see.
+notwant 'dmesg .*(-[cC]|--clear|--read-clear)' "$(cat "$ACT")" \
+  "and it never CLEARS the ring (the initramfs's report has no other copy)"
+want 'dmesg $' "$(cat "$ACT")" \
+  "the ring is read with no arguments at all -- which is the only form that cannot clear it"
 want 'nsenter -t 700 -m -- ls -d' "$(cat "$ACT")" "the container is entered for its MOUNT TABLE only"
 # `-p` as a FLAG, not as a substring: the fake root's own path contains "-probe", which a loose pattern
 # reads as the PID-namespace flag and would make this assertion fail on a correct script.
@@ -704,7 +925,115 @@ notwant 'nsenter[^|]*-p([[:space:]]|$)' "$(cat "$ACT")" \
 
 # ==================================================================================================
 echo
-echo "== 10. the health check cites this harness's count, and that citation cannot drift =="
+echo "== 10. the report strings the probe reads are the ones the patch PRINTS -- derived, not typed =="
+# ==================================================================================================
+# The probe answers "what did the initramfs actually do" by MATCHING TEXT, and the text it matches is
+# printed by boot/patches/0200-halium-modem-firmware-mount.patch. Those two halves live in different files,
+# so a reworded report -- one word changed in the patch -- would turn the probe's mount reading into "the
+# initramfs said nothing", which is exactly the false negative docs 117 is about, and NOTHING in this tree
+# would notice. The scenarios above type those strings BY HAND; this section takes them out of the patch
+# instead and makes the probe read the patch's own wording.
+#
+# It is a CENSUS as well as a comparison: every `tell_kmsg` string in the patch must fall in one of the two
+# buckets named below or the section fails -- so a report ADDED to the patch has to be classified here
+# deliberately rather than being silently unasserted.
+ZPATCH="$HERE/../../boot/patches/0200-halium-modem-firmware-mount.patch"
+if [ ! -r "$ZPATCH" ]; then
+  bad "cannot read boot/patches/0200-halium-modem-firmware-mount.patch -- the report strings this section derives are unchecked"
+else
+  # EVERY `tell_kmsg` argument in the patch, added lines and context lines alike: the report is the union of
+  # what halium already said and what the patch adds, and the probe matches both (its "checking fstab" line
+  # is a context line). The diff marker is stripped first, so a tab-indented context line is found too.
+  ZSTR="$W/derived-strings.txt"
+  sed -n 's/^.//; s/^[[:space:]]*tell_kmsg "\(.*\)"$/\1/p' "$ZPATCH" > "$ZSTR"
+  ZN=$(grep -c . "$ZSTR" || true)
+  # A floor, so an extractor that matched nothing cannot pass: the patch prints EIGHT today, and the number
+  # is stated here rather than hidden in the assertion below.
+  if [ "${ZN:-0}" -lt 8 ]; then
+    bad "the patch yielded ${ZN:-0} tell_kmsg strings (8 today), so this section is not comparing what it thinks it is"
+  else
+    ok "the patch PRINTS $ZN report strings, and the checks below are driven by THESE -- not by strings typed here"
+  fi
+  # The two buckets, NAMED. `mount` strings are the ones the probe must print (they are its §4/§7 evidence
+  # about the boot's own mount decisions); everything else the patch can print must NOT be printed by it.
+  ZMOUNT_RE='checking fstab|matched NO file|checking mount label|no device for label|mounting |MOUNT FAILED'
+  ZOTHER_RE='moving Android system to'
+  # The device's own wording: the patch prints `$fstab`, the device prints the path. A variable that
+  # survives this substitution would make the fixture a GUESS, so one that survives is a failure, not a skip.
+  zexpand() {
+    printf '%s\n' "$1" | sed \
+      -e 's#\${mount_root}#/android#g' -e 's#\$mount_root#/android#g' \
+      -e 's#\$zl1_fstab_fallback#/zl1-android-fstab#g' \
+      -e 's#\$fstab#/var/lib/lxc/android/rootfs/fstab*#g' \
+      -e 's#\$label#modem#g' \
+      -e 's#\$path#/dev/disk/by-partlabel/modem#g' \
+      -e 's#\$1#/dev/disk/by-partlabel/modem#g' \
+      -e 's#\$2#vendor/firmware_mnt#g' -e 's#\$3#vfat#g' \
+      -e 's#\$4#ro,shortname=lower#g'
+  }
+  zhdr='Linux version 4.9.186-perf+ (android@build) #1 SMP PREEMPT'
+  ZRUN="$W/derived-ring.txt"
+  ZSEEN_MOUNT=0
+  ZSEEN_OTHER=0
+  # Input redirection, not a pipe: a `while ... done < f` loop runs in THIS shell, so the counters and the
+  # PASS/FAIL of each assertion are not lost in a subshell.
+  while IFS= read -r zraw; do
+    [ -n "$zraw" ] || continue
+    zdev="initrd: $(zexpand "$zraw")"
+    case "$zdev" in
+    *'$'*) bad "a variable survived the substitution, so this fixture is a guess: $zdev" ; continue ;;
+    esac
+    if grep -Eq -- "$ZMOUNT_RE" <<< "$zraw"; then
+      zbucket=mount
+      ZSEEN_MOUNT=$((ZSEEN_MOUNT + 1))
+    elif grep -Eq -- "$ZOTHER_RE" <<< "$zraw"; then
+      zbucket=other
+      ZSEEN_OTHER=$((ZSEEN_OTHER + 1))
+    else
+      bad "the patch prints a report this harness has not classified, so nothing asserts it: $zraw"
+      continue
+    fi
+    printf '%s\n%s\n' "$zhdr" "$zdev" > "$ZRUN"
+    : > "$ACT"
+    "$W/reset.sh"
+    cp "$ZRUN" "$W/dmesg.txt"
+    OUT="$( env PATH="$STUB:$MINBIN" "$SH_BIN" "$RW" 2>&1 )"
+    RC=$?
+    if [ "$zbucket" = mount ]; then
+      wantF "$zdev" "$OUT" "the probe prints the patch's own mount report, verbatim: $zdev"
+      notwant 'STATE: NO INITRAMFS REPORT IN THIS LOG' "$OUT" \
+        "and it is not reported as a boot whose initramfs said nothing"
+    else
+      notwantF "$zdev" "$OUT" \
+        "a line the patch prints that is NOT about the mount is not read as one: $zdev"
+    fi
+  done < "$ZSTR"
+  # The census is only a census if both buckets were actually filled; a `while` that read nothing, or one
+  # whose bucket rule matched nothing, would otherwise leave every assertion above unrun.
+  if [ "$ZSEEN_MOUNT" -ge 6 ] && [ "$ZSEEN_OTHER" -ge 1 ]; then
+    ok "every one of the $ZN reports was classified: $ZSEEN_MOUNT about the mount (all asserted) and $ZSEEN_OTHER not"
+  else
+    bad "the buckets are empty or short (mount=$ZSEEN_MOUNT other=$ZSEEN_OTHER), so the loop above proved little"
+  fi
+  # The tooth, and it is the reason the checks above are a comparison rather than agreement with themselves:
+  # reword ONE word of the patch's wording and the probe must stop reading that line -- if it still printed
+  # it, then "it printed the line" would be true of any text at all and would mean nothing.
+  ZMUT="initrd: MOUNT-FAILED: /dev/disk/by-partlabel/modem as /android/vendor/firmware_mnt -t vfat -o ro,shortname=lower"
+  printf '%s\n%s\n' "$zhdr" "$ZMUT" > "$ZRUN"
+  : > "$ACT"
+  "$W/reset.sh"
+  cp "$ZRUN" "$W/dmesg.txt"
+  OUT="$( env PATH="$STUB:$MINBIN" "$SH_BIN" "$RW" 2>&1 )"
+  RC=$?
+  notwantF "$ZMUT" "$OUT" \
+    "a reworded report ('MOUNT-FAILED') is NOT read as one -- so the checks above compare, they do not accept anything"
+  want 'STATE: NO INITRAMFS REPORT IN THIS LOG' "$OUT" \
+    "and a ring whose only report was reworded is honestly reported as having no report at all"
+fi
+
+# ==================================================================================================
+echo
+echo "== 11. the health check cites this harness's count, and that citation cannot drift =="
 # ==================================================================================================
 # `host/zl1-health-check.sh` is the first thing a human reads and it names each harness WITH A CHECK COUNT,
 # typed by hand -- so every time a harness gains an assertion its citation goes stale and nothing notices.

@@ -40,6 +40,15 @@
 #     entry under `/android`. `cat ${fstab}` with an unexpanded glob FAILS, so an absent fstab is not an
 #     error message -- it is a mount loop that mounts nothing, silently. Whether that file exists on this
 #     device is one `ls` away, and section 3 takes it.
+#   * THE HALF THAT WAS MISSING UNTIL DOCS 154, and it is why section 4 was rebuilt. The kernel has no
+#     in-kernel client loading this modem (`qcom,pil-label` is absent on the glink node and
+#     `qcom,not-loadable` is set on the SMD edge), so the firmware is requested by a USERSPACE `open` of
+#     /dev/subsys_modem -- which makes the partition's presence at boot the whole precondition. And an
+#     initramfs can now carry an fstab OF ITS OWN (boot/patches/0200-halium-modem-firmware-mount.patch),
+#     which is invisible from the booted system: the UT rootfs image has no /scripts and no
+#     /zl1-android-fstab, and the initramfs is gone after switch_root. So what the loop DID cannot be read
+#     from any file here. The only witness is the initramfs's own `initrd:` report in the kernel ring --
+#     which nothing in this tree read before, and which section 4 now classifies.
 #
 # That is a hypothesis with a named mechanism, not a finding: the mount may be made by halium's loop, by
 # the Android container's own init (a different mount namespace, which would NOT help the kernel), or by
@@ -54,7 +63,11 @@
 #     them, because `modemst1`/`modemst2`/`fsg`/`fsc`/`persist` hold the device's calibration and IMEI,
 #     and the difference between "read the modem partition to inspect it" and "write it" is one typo;
 #   * does not unbind, reset or restart anything: unbinding the cnss driver on this device drops it
-#     straight into EDL (docs 49), and the same class of move must never be scripted.
+#     straight into EDL (docs 49), and the same class of move must never be scripted;
+#   * NEVER CLEARS THE RING. `dmesg -c`/`-C`/`--clear`/`--read-clear` destroys the copy this probe came
+#     for -- the initramfs's report is written once and the ring is the only place it lands, so clearing
+#     it is a write that cannot be undone, on the one piece of evidence that has no other copy. Bare
+#     `dmesg`, always.
 # A probe that could brick the phone to answer a question is not a probe worth having.
 #
 # Usage (on the device, as root):
@@ -152,10 +165,28 @@ zl1 modem probe -- what each reading decides, and why it is this reading
      its `cat` fail silently, so the loop mounts nothing and the boot continues. That file's presence and
      its modem line are printed, because they are the difference between "the port does not mount this"
      and "the port mounts it and something else is wrong".
+     WHAT THIS CANNOT SAY, and docs 154 is why it is written down: an initramfs can carry an fstab of its
+     own, and the initramfs's files are GONE after switch_root (the UT rootfs image has no /scripts), so
+     "the candidate fstab is not here" is a statement about an image and not about what the loop did this
+     boot. Section 4 reads what the initramfs said it did.
 
-  4. DID IT LOAD. The kernel log for this boot, for the PIL and the modem subsystem. Counted per
-     pattern, and the counts say which log they came from. A pattern whose owner cannot write it is
-     not evidence (docs 102) -- so these are all kernel lines, read from one log.
+  4. DID IT LOAD, AND WHAT DID THE INITRAMFS SAY IT DID. Two readings of the boot's own log, from three
+     sources, because on this device the obvious one carries nothing:
+       * the kernel RING (`dmesg`) -- where the initramfs's `initrd:` report actually lands, since it
+         writes to /dev/kmsg;
+       * the KMSG DRAIN's earliest snapshot (/userdata/zl1-kmsg/boot-<N>s.log), which exists precisely
+         because the ring is ~3470 lines and wraps -- read oldest-first, by the uptime in the filename;
+       * `journalctl -b -k`, reported with its line count because it was measured on this device NOT to be
+         capturing /dev/kmsg at all (one line).
+     A source has to CONTAIN THE BOOT PHASE to be used: a one-line answer satisfies "the file is not
+     empty", and the previous version of this section could therefore count nothing and then print its
+     reassurance about a boot it had never read. That is the defect docs 117 names, in this instrument.
+     The initramfs's report is classified into ONE state (mounted / mount failed / device absent / fallback
+     read but no mount / no fallback / the glob matched or this image has no report / the report present
+     but stopped before the mount / no report at all), and the failure list
+     includes the PIL LOADER'S OWN LINE, `Failed to locate <name>.mdt` -- read out of peripheral-loader.c
+     (`pil_err` at :45, the `"%s.mdt"` at :794, the message at :798) after the older list was found not to
+     match it at all.
 
   5. THE PLUMBING THAT ONLY EXISTS IF IT LOADED. /sys/bus/msm_subsys (the Qualcomm subsystem-restart
      view) and /dev/qmi*, plus rmnet netdevs. These are downstream of a successful load: their absence
@@ -166,9 +197,11 @@ zl1 modem probe -- what each reading decides, and why it is this reading
      "active" is what the peripheral note could say and no more: it says a daemon started, not that it
      has a modem to talk to.
 
-  7. THE VERDICT names the rung the evidence stops at. The interesting one is the third and fourth:
-     firmware present but not loaded points at TZ/signature (qcom,pil-self-auth is set), and load
-     attempted but failing points at the loader path.
+  7. THE VERDICT names the rung the evidence stops at, and now names the CAUSE the initramfs measured
+     rather than sending the reader to look for it: a mount that failed, a device that did not exist, a
+     fallback that was read and not mounted, or an image with no fallback in it. The interesting rungs
+     are still the third and fourth: firmware present but not loaded points at TZ/signature
+     (qcom,pil-self-auth is set), and load attempted but failing points at the loader path.
 EOF
   exit 0
 fi
@@ -361,10 +394,23 @@ else
   # output (measured on 2026-09-24: with a pipe carrying data the sentence came out with the pipe's
   # contents in the middle of it, and the word `cat` gone). Found by sweeping the whole tree for the
   # shape after the health check was caught executing its own prose (docs 122).
-  say "   and an unexpanded glob makes its \`cat\` fail silently, so THAT LOOP MOUNTED NOTHING THIS BOOT."
+  say "   and an unexpanded glob makes its \`cat\` fail silently, so with an UNPATCHED initramfs THAT LOOP"
+  say "   MOUNTED NOTHING THIS BOOT."
   say "   -> if section 2 says the boot was given a firmware path, that path is a directory nothing"
   say "      created, which is a complete explanation for a modem that never loads. It is a MOUNT, not"
   say "      hardware, and not the modem partition's contents -- which must never be written."
+  # THE PART THAT MAKES THE PARAGRAPH ABOVE AN INFERENCE RATHER THAN A READING (docs 154). An initramfs
+  # carrying a fallback fstab of its own (boot/patches/0200-halium-modem-firmware-mount.patch) makes this
+  # loop mount the modem partition on exactly this device, from a file that is NOT here -- the initramfs's
+  # own files are gone after switch_root (checked: the UT rootfs image has no /scripts and no
+  # /zl1-android-fstab, so neither the patched script nor the fstab it adds is on the booted system).
+  # What that loop DID is therefore not visible from any file on this device; the only witness is the
+  # initramfs's own kmsg report, which section 4 reads. Saying "nothing was mounted this boot" from a
+  # listing of the CANDIDATE fstab is a claim about an image, and this probe is not entitled to it.
+  say "   -> WHAT THIS SAYS AND WHAT IT DOES NOT: a missing file here rules out ONE mechanism (Android's"
+  say "      fstab on the extracted ramdisk). It does not say the loop mounted nothing -- an initramfs"
+  say "      can carry an fstab of its own, and its files are gone by the time anything on this system"
+  say "      could list them. Section 4 reads what the initramfs SAID it did, which is the difference."
 fi
 # The container's view, which is where Android's own mount point for this partition lives. Read with
 # nsenter -m because that is the mount table the path means in; the probe does not assume the container
@@ -389,28 +435,221 @@ else
 fi
 
 # ==================================================================================================
-hdr "4. did the kernel load it -- the log for THIS boot"
+hdr "4. the log for THIS boot -- the initramfs's own report, and whether the kernel loaded it"
 # ==================================================================================================
-# One log, read once, and the read is proved before it is counted: `journalctl -k` that fails prints
-# nothing, which is exactly what a quiet boot prints, and the counts below would then read as "the
-# driver said nothing" (docs 117). So the read has a success test of its own.
+# THREE SOURCES, and the reason is that on this device the obvious one is empty. The initramfs writes its
+# report with `echo "initrd: ..." > /dev/kmsg`, so it lands in the KERNEL RING and nowhere else:
+#
+#   * THE KMSG DRAIN'S EARLIEST SNAPSHOT, read FIRST because it is the best evidence there can be: that
+#     unit exists to snapshot the ring as early as systemd will run it, so `/userdata/zl1-kmsg/boot-<N>s.log`
+#     is a COPY OF THE RING TAKEN WHILE THIS BOOT WAS YOUNG. The ring is ~3470 lines and wraps -- measured
+#     on this device, fastest while the host is talking to it (scripts/install-kmsg-drain.sh's header has
+#     the numbers) -- and this probe runs long after that. So the snapshot is strictly better than the live
+#     ring whenever it exists, and "earliest" is a fact and not a guess because the drain names these by
+#     uptime in seconds (see the scan below).
+#     The files read are `$D/boot-*.log`, which are THIS boot's: the drain wipes them at its start and
+#     carries the previous boot's set into `keep/boot-<id>/`. The archive is deliberately NOT read -- it is
+#     another boot's log, and a probe that read it would attribute one boot's failure to another.
+#   * `dmesg` is the live ring. Read second, and it is still worth reading: a boot whose snapshot never
+#     happened (the drain not installed) has its whole report here, and a ring that has not wrapped has
+#     everything the snapshot has.
+#   * `journalctl -b -k` is kept because a probe should ask the journal too, AND it is reported with its
+#     line count because on this device it was measured NOT to be capturing /dev/kmsg at all (the drain's
+#     header, 2026-09-21: "`journalctl -k` returns 1 line"). It is therefore a source to REPORT rather than
+#     one to rely on -- and that measurement is not assumed here: whichever source really carries the boot
+#     phase is decided below, by looking.
+#
+# THE GUARD, and this is the defect this section was fixed for. The previous version proved its read with
+# `[ -s "$KLOG" ]`, which a ONE-LINE answer satisfies -- so a journal that captured nothing but a stray
+# line would pass the guard, every count below would be 0, and the failure list would print its
+# reassurance ("(none: no firmware-load failure line in this boot's kernel log)") about a boot it had
+# never read. That is the same shape three instruments in this repo were fixed for (docs 117): "could not
+# read" must not read as "no". So a source now has to CONTAIN THE BOOT PHASE to count -- the kernel's own
+# banner, or an `initrd:` line -- and a source that does not is printed as thin rather than counted,
+# whichever source it is.
 KLOG=/tmp/zl1-modem-klog.txt
-if journalctl -b -k --no-pager -o cat > "$KLOG" 2>/dev/null && [ -s "$KLOG" ]; then
-  say "   journalctl -b -k: $(wc -l < "$KLOG") lines (saved to $KLOG)"
+: > "$KLOG"
+KLOG_OK=0
+DRAIN_DIR=/userdata/zl1-kmsg
+DRAIN_EARLY=""
+DRAIN_MIN=""
+# Chosen by the NUMBER in the filename, and not by a sort: the drain names these `boot-<uptime>s.log`, so
+# any lexical order puts `boot-9s.log` after `boot-160s.log` -- and `sort -t- -k2 -n` on the whole path
+# splits on the hyphen INSIDE `/userdata/zl1-kmsg` instead, giving every line the key 0 and an order that
+# is really just the directory's. A minimum scan over the parsed number is the version that cannot be
+# wrong about which snapshot is the earliest, and the earliest is the one the ring's beginning survives in.
+for f in "$DRAIN_DIR"/boot-*.log; do
+  [ -e "$f" ] || continue
+  n=$(basename "$f" 2>/dev/null | sed -n 's/^boot-\([0-9][0-9]*\)s\.log$/\1/p')
+  [ -n "$n" ] || continue
+  if [ -z "$DRAIN_EARLY" ] || [ "$n" -lt "$DRAIN_MIN" ]; then DRAIN_EARLY="$f"; DRAIN_MIN="$n"; fi
+done
+# The sources, in the order they are tried. One file is filled and everything below reads THAT file, so
+# the counts and the lines shown cannot come from different samples of a ring that is still moving.
+src_try() { # src_try LABEL COMMAND...
+  label=$1; shift
+  [ "$KLOG_OK" = 1 ] && return 0
+  out=$("$@" 2>/dev/null) || out=""
+  if [ -z "$out" ]; then
+    say "   source ${label}: NOTHING (the command ran and printed nothing, or could not run)"
+    return 0
+  fi
+  n=$(printf '%s\n' "$out" | grep -ac . 2>/dev/null || true)
+  if printf '%s\n' "$out" | grep -aqE 'initrd:|Linux version|Booting Linux|Initializing cgroup'; then
+    printf '%s\n' "$out" > "$KLOG"
+    KLOG_OK=1
+    say "   source ${label}: ${n} lines, and it CONTAINS THE BOOT PHASE -- this is the log read below"
+  else
+    say "   source ${label}: ${n} lines but NO boot-phase line (no 'Linux version', no 'initrd:') --"
+    say "     so it did NOT capture this boot, and every answer that could be read from it would be a"
+    say "     false negative. It is reported and NOT used as the log."
+  fi
+}
+# A `dmesg` that is not on PATH is a reading, not a crash: so is a drain that was never installed. These
+# are written as `if` blocks rather than `A && B || C`, because that idiom runs C when B fails for any
+# reason -- including B's own non-zero exit -- and a source that could not be read would then be reported
+# as one that does not exist.
+if [ -n "$DRAIN_EARLY" ]; then
+  src_try "the kmsg drain's earliest snapshot (${DRAIN_EARLY}), taken while this boot was young" cat "$DRAIN_EARLY"
+else
+  say "   source ${DRAIN_DIR}/boot-*.log: no snapshot from ANY boot is on this device, so the ring's"
+  say "     beginning was not preserved by anything -- ${DRAIN_DIR} is empty or absent."
+fi
+if command -v dmesg >/dev/null 2>&1; then
+  src_try "dmesg (the live kernel ring, where the initramfs writes its report)" dmesg
+else
+  say "   source dmesg: NOT PRESENT on this device, so the ring could not be read here"
+fi
+if command -v journalctl >/dev/null 2>&1; then
+  src_try "journalctl -b -k (the journal's kernel messages)" journalctl -b -k --no-pager -o cat
+else
+  say "   source journalctl: NOT PRESENT on this device"
+fi
+
+# --- 4a. what the INITRAMFS said it did -- the only witness to the boot's own mount decisions ---------
+#
+# The strings below are the ones the shipped halium can print, and the three `zl1 (docs 154)` additions
+# are the whole evidence for whether the modem-firmware mount happened. Their provenance is the patch
+# itself (boot/patches/0200-halium-modem-firmware-mount.patch), whose text is diffed against the
+# `scripts/halium` that is inside the boot image the device runs -- so the pattern and the string it
+# looks for cannot drift apart unnoticed. They are matched as SUBSTRINGS of `initrd:` lines, and the
+# states are exclusive, tested in the order the evidence descends.
+if [ "$KLOG_OK" = 1 ]; then
+  IN_FSTAB=$(grep -acE 'initrd:.*checking fstab' "$KLOG" 2>/dev/null || true)
+  IN_NOMATCH=$(grep -acE 'initrd: fstab .*matched NO file' "$KLOG" 2>/dev/null || true)
+  IN_FALLBACK=$(grep -acE 'initrd: fstab .*matched NO file; using the one this initramfs carries' "$KLOG" 2>/dev/null || true)
+  IN_NOFALLBACK=$(grep -acE 'initrd: fstab .*matched NO file and no fallback is present' "$KLOG" 2>/dev/null || true)
+  IN_LABEL=$(grep -acE 'initrd: checking mount label' "$KLOG" 2>/dev/null || true)
+  IN_NODEV=$(grep -acE 'initrd: no device for label' "$KLOG" 2>/dev/null || true)
+  IN_MOUNTED=$(grep -acE 'initrd: mounting .*as .*vendor/firmware_mnt' "$KLOG" 2>/dev/null || true)
+  IN_FAILED=$(grep -acE 'initrd: MOUNT FAILED:.*vendor/firmware_mnt' "$KLOG" 2>/dev/null || true)
+  # "IS THERE A REPORT AT ALL" IS NOT THE SAME QUESTION AS "DID THE GLOB MATCH", and it was written as if
+  # it were: the last branch asked only about the `checking fstab` line, so a log holding a LATER report
+  # line and not that one -- a snapshot taken mid-mount, which is what a ring that wraps leaves -- was
+  # reported as a boot whose initramfs said NOTHING. The count below is the whole report, so the two
+  # readings can no longer be confused. (Found by the harness's docs-154 section, which drives each of the
+  # patch's report lines through the probe on its own.)
+  IN_ANY=$(( ${IN_FSTAB:-0} + ${IN_NOMATCH:-0} + ${IN_LABEL:-0} + ${IN_NODEV:-0} + ${IN_MOUNTED:-0} + ${IN_FAILED:-0} ))
+  INITRD_STATE=""
+  if [ "${IN_FAILED:-0}" -gt 0 ]; then
+    INITRD_STATE="MOUNT FAILED"
+  elif [ "${IN_NODEV:-0}" -gt 0 ]; then
+    INITRD_STATE="DEVICE ABSENT"
+  elif [ "${IN_MOUNTED:-0}" -gt 0 ]; then
+    INITRD_STATE="MOUNTED"
+  elif [ "${IN_FALLBACK:-0}" -gt 0 ]; then
+    INITRD_STATE="FALLBACK USED, NO MOUNT FOLLOWED"
+  elif [ "${IN_NOFALLBACK:-0}" -gt 0 ]; then
+    INITRD_STATE="NO FALLBACK -- the pre-fix silence, now audible"
+  elif [ -n "$IN_FSTAB" ] && [ "${IN_FSTAB:-0}" -gt 0 ]; then
+    INITRD_STATE="GLOB MATCHED, OR THIS IMAGE HAS NO REPORT"
+  elif [ "$IN_ANY" -gt 0 ]; then
+    INITRD_STATE="REPORT PRESENT, AND IT STOPS BEFORE THE MOUNT"
+  else
+    INITRD_STATE="NO INITRAMFS REPORT IN THIS LOG"
+  fi
+  say "   initrd: lines in the log: checking-fstab=${IN_FSTAB:-0} matched-no-file=${IN_NOMATCH:-0} label=${IN_LABEL:-0} mounting-firmware_mnt=${IN_MOUNTED:-0}"
+  say "   the initramfs's own lines about the Android partitions and the firmware mount:"
+  # The pattern is written so that no alternative begins with a write verb at an alternation bar: the
+  # offline harness's static guard reads the probe's own source, and an alternative that starts with the
+  # word the guard watches for is a command in command position to any grep that does not know it is
+  # looking at a regex. It really was flagged, and the fix is here rather than a hole in the guard.
+  # The two spellings it needs are both covered: the pre-existing "checking" line, and the patched
+  # "mounting" one -- neither of which is the bare verb at a bar.
+  show "$KLOG" 'initrd:.*(fstab|MOUNT FAILED|no device for label|mounting|checking mount label)' \
+    "(none: this log has no initrd: line about a mount -- the initramfs's report is not in it)" 12
+  say "   -> STATE: ${INITRD_STATE}"
+  case "$INITRD_STATE" in
+  "MOUNTED")
+    say "      The initramfs mounted the modem partition itself this boot. This is the reading that makes"
+    say "      the earlier 'NO SUCH FILE' paragraphs about a CANDIDATE fstab, not about this boot." ;;
+  "MOUNT FAILED")
+    say "      It TRIED and the mount failed, and the line above names the device and the mount point. The"
+    say "      firmware cannot be there: this is a mount failure, with a named cause, and not hardware." ;;
+  "DEVICE ABSENT")
+    say "      It read the fstab's line and the DEVICE it names did not exist at that moment (the line above"
+    say "      names what it tried). On this device the candidates are /dev/disk/by-partlabel/modem and"
+    say "      /dev/block/bootdevice/by-name/modem, both of which need udev to have made them -- so this"
+    say "      points at the initramfs's device population, not at the partition's contents." ;;
+  "FALLBACK USED, NO MOUNT FOLLOWED")
+    say "      The fallback fstab was read and NO mount for the modem followed it. Two readings fit: the"
+    say "      fallback's line was skipped for a missing device (then there is a 'no device for label' line"
+    say "      above too), or the label in it did not match its source. Read the lines, then re-read the"
+    say "      file the patch ships -- the label and the device in it are the two things it must agree on." ;;
+  "NO FALLBACK -- the pre-fix silence, now audible")
+    say "      This image HAS the report and has NO fallback fstab, so nothing was mounted for the modem and"
+    say "      the boot said so in words. That is the OLD behaviour made audible, not a device fault." ;;
+  "GLOB MATCHED, OR THIS IMAGE HAS NO REPORT")
+    say "      The loop ran and did not report an unmatched glob. Two readings fit and this log cannot tell"
+    say "      them apart: the glob MATCHED a real fstab (so the patched code took its unchanged branch), or"
+    say "      this is an image WITHOUT the report at all -- in which case an empty glob is silent, exactly"
+    say "      as it was before. THAT AMBIGUITY IS WHY THE REPORT WAS ADDED: with the patch, an empty glob"
+    say "      always says so. Compare the boot identity above with the image that was flashed." ;;
+  "REPORT PRESENT, AND IT STOPS BEFORE THE MOUNT")
+    say "      The initramfs's report IS in this log, and the last thing it says about the Android"
+    say "      partitions is the mount label -- no 'mounting', no 'no device', no 'MOUNT FAILED'. For an"
+    say "      image carrying the docs-154 report that is the shape of a source that ENDS there: a snapshot"
+    say "      taken while the loop was still running, which is exactly what the drain's uptime in its name"
+    say "      is for. A source that lost its BEGINNING is a different reading and not this one -- the ring"
+    say "      drops the OLDEST lines first, so that shape shows the TAIL of the loop instead. The source"
+    say "      line above says which source this is and how young it was when it was copied." ;;
+  *)
+    say "      This log has the boot phase but NO initrd: line about a mount at all, so nothing is claimed"
+    say "      about what the initramfs did. It is not 'it mounted nothing' -- the report is either absent"
+    say "      from this image or was already out of the ring when the log was taken (section 4's sources"
+    say "      are what say which, and the drain's snapshot is what makes the second case avoidable)." ;;
+  esac
+else
+  INITRD_STATE="UNREADABLE"
+  say "   NO SOURCE ABOVE CARRIED THIS BOOT, so the initramfs's own report was not read. Nothing below"
+  say "   claims what it did. This is not 'it mounted nothing' (docs 117)."
+fi
+
+# --- 4b. did the kernel load it -------------------------------------------------------------------
+if [ "$KLOG_OK" = 1 ]; then
+  say "   the log read: $(wc -l < "$KLOG") lines (saved to $KLOG)"
   for pat in 'pil-q6v5' 'pil-q6v55' 'q6v5' 'mss' 'subsys' 'MBA' 'firmware' 'modem'; do
     say "$(printf '   %-16s %4s' "$pat" "$(grep -aci -- "$pat" "$KLOG" 2>/dev/null)")"
   done
   say "   the lines themselves (modem/mss/pil only, capped):"
   show "$KLOG" 'pil-q6v5|q6v55|mss|subsys-pil' \
     "(none: the PIL driver logged nothing about the modem on this boot)"
+  # `Failed to locate` IS the PIL loader's own failure line and it was MISSING from this list until it was
+  # read out of the loader: `pil_err` is `dev_err(desc->dev, "%s: " fmt, desc->name, ...)`
+  # (peripheral-loader.c:45) and the failure it prints when the firmware file cannot be found is
+  # `pil_err(desc, "Failed to locate %s\n", fw_name)` (`:798`, after
+  # `snprintf(fw_name, sizeof(fw_name), "%s.mdt", desc->fw_name)` at `:794`). So the line is
+  # `<name>: Failed to locate modem.mdt` -- and NOTHING in the old list matched it: 'request_firmware',
+  # 'Direct firmware load' and 'failed to (load|get) firmware' are all other subsystems' wording, and
+  # 'firmware.*(timed out|not found)' needs the word "firmware" before "not found", which this line does
+  # not have. The verdict below asks the reader to CONFIRM a failure against this list, so the list had
+  # to contain the line the loader actually prints.
   say "   any firmware-load FAILURE, named:"
-  show "$KLOG" 'request_firmware|Direct firmware load|failed to (load|get) firmware|firmware.*(timed out|not found)' \
+  show "$KLOG" 'request_firmware|Direct firmware load|failed to (load|get) firmware|Failed to locate .*\.(mdt|mbn)|firmware.*(timed out|not found)' \
     "(none: no firmware-load failure line in this boot's kernel log)" 10
-  KLOG_OK=1
 else
-  say "   COULD NOT READ THE KERNEL LOG. Every count below is 0 for THAT reason and is not printed."
-  say "   -> the load question is UNANSWERED, not answered 'no' (docs 117)."
-  KLOG_OK=0
+  say "   NO SOURCE CARRIED THIS BOOT, so the load question has no answer. Every count below would be 0"
+  say "   for THAT reason, so none of them is printed (docs 117)."
 fi
 
 # ==================================================================================================
@@ -472,17 +711,21 @@ if [ -z "$FW_NAME" ]; then
   always "      says the modem is broken. Re-run on a boot whose device tree has the mss node."
   exit 1
 elif [ "$KLOG_OK" = 0 ]; then
-  always "   -> UNANSWERED: the kernel log could not be read, so the load question has no answer. The"
-  always "      static readings above (sections 1-3) are still valid; the verdict is not."
+  always "   -> UNANSWERED: no log on this device carried the boot phase, so the load question has no"
+  always "      answer. The static readings above (sections 1-3) are still valid; the verdict is not."
+  always "      Note what this is NOT: it is not 'the driver was silent'. A source that carried nothing"
+  always "      is a source that cannot report the driver's silence either (docs 117)."
   exit 1
 elif [ -n "$FOUND_AT" ]; then
-  always "   -> THE FIRMWARE IS REACHABLE at ${FOUND_AT}, and the kernel log above says what happened"
-  always "      next. Read the pil/mss lines: if the load is failing, the reason is there and the"
-  always "      firmware would be the wrong thing to suspect; qcom,pil-self-auth is set on this node, so"
-  always "      a signature/TZ failure is the first candidate and it logs."
+  always "   -> THE FIRMWARE IS REACHABLE at ${FOUND_AT}, and the log above says what happened next."
+  always "      The initramfs's own report this boot: ${INITRD_STATE}."
+  always "      Read the pil/mss lines: if the load is failing, the reason is there and the firmware would"
+  always "      be the wrong thing to suspect; qcom,pil-self-auth is set on this node, so a signature/TZ"
+  always "      failure is the first candidate and it logs."
   exit 0
 elif [ "$MOUNTED" -gt 0 ]; then
   always "   -> THE PARTITION IS MOUNTED somewhere but the firmware is not on the kernel's search path."
+  always "      The initramfs's own report this boot: ${INITRD_STATE}."
   always "      This is the shape to expect when a mount WAS made but the path this boot was TOLD is a"
   always "      different one -- and section 2's two headings are what tell those apart: the cmdline's"
   always "      path is what was in force at probe time, the sysfs parameter is what the kernel has now."
@@ -494,10 +737,50 @@ elif [ "$MOUNTED" -gt 0 ]; then
 else
   always "   -> THE FIRMWARE IS NOT REACHABLE AND NOTHING HAS MOUNTED THE MODEM PARTITION on this boot."
   always "      That is a complete explanation for a modem that never comes up, and it is a port"
-  always "      problem (a mount), not a hardware one. Confirm against the log: a request_firmware"
-  always "      failure naming ${FW_NAME} is the corroboration, and ${FW_NAME}.mdt is on the modem"
-  always "      partition as IMAGE/MODEM.MDT (the FAT root holds IMAGE/, so the mounted path has one"
-  always "      more component than the partition root)."
+  always "      problem (a mount), not a hardware one."
+  # WHAT THE INITRAMFS ITSELF SAID, which is the difference between a cause and a corollary. Sections 1-3
+  # say the firmware is not reachable; only the boot's own log can say WHY, and since docs 154 changed
+  # what the initramfs reports, that log now separates the cases that used to look identical.
+  case "$INITRD_STATE" in
+  "MOUNT FAILED")
+    always "      THE CAUSE IS MEASURED, not inferred: the initramfs TRIED to mount the modem partition and"
+    always "      the mount failed. The line naming the device and the mount point is in section 4." ;;
+  "DEVICE ABSENT")
+    always "      THE CAUSE IS MEASURED: the initramfs read an fstab line for this partition and the DEVICE"
+    always "      it names did not exist at that moment. That is udev in the initramfs, not the partition." ;;
+  "FALLBACK USED, NO MOUNT FOLLOWED")
+    always "      THE CAUSE IS MEASURED AND IS A CONFIGURATION ONE: the initramfs read its own fallback fstab"
+    always "      and no mount followed it. Read the lines in section 4 -- a label and a device that do not"
+    always "      agree are the two things to check in the shipped file." ;;
+  "NO FALLBACK -- the pre-fix silence, now audible")
+    always "      THE CAUSE IS MEASURED: this image carries the report and NO fallback fstab, so the loop"
+    always "      found nothing to mount and said so. Flash the image that carries the fallback rather than"
+    always "      looking for a hardware fault." ;;
+  "MOUNTED")
+    always "      THE INITRAMFS SAYS IT MOUNTED THE MODEM PARTITION, yet nothing here shows a mount. That"
+    always "      disagreement IS the finding: the two readings were taken in different mount namespaces, or"
+    always "      the mount was made and later lost. Do not read this as either one of them being wrong." ;;
+  "GLOB MATCHED, OR THIS IMAGE HAS NO REPORT")
+    always "      The initramfs's report neither confirms nor denies a mount attempt: the loop ran and did"
+    always "      not report an unmatched glob, which is either a matched glob (a real fstab on the Android"
+    always "      ramdisk) or an image carrying no report at all. The TWO cannot be told apart from this"
+    always "      log, and that ambiguity is exactly what docs 154's report removes." ;;
+  "REPORT PRESENT, AND IT STOPS BEFORE THE MOUNT")
+    always "      The initramfs's report is in this log and it stops at the mount label, so this boot's own"
+    always "      words neither confirm nor deny a mount attempt -- read section 4's source line to see how"
+    always "      young the log was when it was copied. 'It said nothing' is a different reading and is not"
+    always "      this one." ;;
+  *)
+    always "      The initramfs's own report is NOT in this log, so no cause is claimed from it. The drain"
+    always "      (scripts/install-kmsg-drain.sh) is what preserves a boot's beginning; if it is not"
+    always "      installed, this is the reading it exists for." ;;
+  esac
+  always "      Corroboration, and where to look for it: a firmware-load failure naming ${FW_NAME} is in"
+  always "      section 4's failure list, whose patterns now include the PIL loader's own line"
+  always "      ('Failed to locate ${FW_NAME}.mdt'). Its ABSENCE says the kernel never got as far as asking"
+  always "      for the file, which is what an unmounted firmware partition produces."
+  always "      ${FW_NAME}.mdt is on the modem partition as IMAGE/MODEM.MDT (the FAT root holds IMAGE/, so"
+  always "      the mounted path has one more component than the partition root)."
   case "$CMDPATH" in
   UNREADABLE)
     always "      What this boot was told is UNKNOWN (/proc/cmdline could not be read), so the probe does"
