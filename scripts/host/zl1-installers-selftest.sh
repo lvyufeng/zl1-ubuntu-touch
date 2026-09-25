@@ -10,6 +10,12 @@
 #                                            cores on `performance` (docs 95, 96)
 #   scripts/install-netwatch-service.sh      the TWRP-side installer, and the only script in this
 #                                            directory that READS A PARTITION (misc)
+#   scripts/install-lpm-sleep-fix.sh         the THIRD heat fix (docs 160): every zl1 cmdline carries
+#                                            `lpm_levels.sleep_disabled=1`, which removes the SoC's
+#                                            whole low-power ladder, and the value does not survive a
+#                                            reboot -- so the fix is a boot-time writer. It is the first
+#                                            installer here whose LICENCE is a verdict line read out of
+#                                            another instrument's archived output.
 #
 # Why they need one:
 #
@@ -90,6 +96,7 @@ RK="$HERE/../install-retire-debug-keeper.sh"
 NE="$HERE/../install-no-edl-on-panic.sh"
 CP="$HERE/../install-cpufreq-governor.sh"
 NW="$HERE/../install-netwatch-service.sh"
+LPM="$HERE/../install-lpm-sleep-fix.sh"
 for f in "$RK" "$NE" "$CP" "$NW"; do [ -r "$f" ] || { echo "cannot read $f" >&2; exit 2; }; done
 command -v bash >/dev/null 2>&1 || { echo "the installers are bash scripts; bash is required" >&2; exit 2; }
 
@@ -130,6 +137,27 @@ keeper_proc() { # $1 = pid. The stat line has the 15 fields a real one has, with
 }
 keeper_proc 900
 printf '1\n' > "$FR/sys/module/msm_poweroff/parameters/download_mode"
+# --- the THIRD heat fix's device side (section 15) ------------------------------------------------
+# The parameter every zl1 cmdline sets to 1: what the installer writes, and what the trial measures.
+# It is under `lpm_levels` because that is the driver's own MODULE_PARAM_PREFIX -- and the installer
+# DISCOVERS the path rather than assuming it, so the fixture has to have it where a real device would.
+mkdir -p "$FR/sys/module/lpm_levels/parameters" "$FR/sys/devices/system/cpu/cpu0/cpuidle"
+printf '1\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+# The cmdline, as a map, because the installer reads BOTH sides and prints them next to each other: the
+# cmdline is what the boot was TOLD, the file is what the driver HAS, and the disagreement between them
+# is what the fix looks like. A fixture with only the file would make the "both sides" line untestable.
+printf 'console=ttyMSM0,115200n8 lpm_levels.sleep_disabled=1 androidboot.hardware=qcom\n' > "$FR/proc/cmdline"
+# Four cpuidle states, named as this board's kernel names them. `disable` is 0 on all four, and the
+# harness asserts it stays 0: it is one of the four files this repository records as writable on the
+# device, and changing it is a DECISION rather than a reading (docs 138).
+for i in 0 1 2 3; do
+  case $i in 0) n=wfi ;; 1) n=retention ;; 2) n=standalone_pc ;; 3) n=pc ;; esac
+  mkdir -p "$FR/sys/devices/system/cpu/cpu0/cpuidle/state$i"
+  printf '%s\n' "$n" > "$FR/sys/devices/system/cpu/cpu0/cpuidle/state$i/name"
+  printf '%s\n' "$((1000 + i * 100))" > "$FR/sys/devices/system/cpu/cpu0/cpuidle/state$i/usage"
+  printf '%s\n' "$((100000 + i * 10000))" > "$FR/sys/devices/system/cpu/cpu0/cpuidle/state$i/time"
+  printf '0\n' > "$FR/sys/devices/system/cpu/cpu0/cpuidle/state$i/disable"
+done
 printf 'the keeper itself, for the status listing\n' > "$FR/usr/local/sbin/zl1-debug-net.sh"
 printf '100.0 900.0\n' > "$FR/proc/uptime"
 printf 'deadbeef-0000-0000-0000-000000000000\n' > "$FR/proc/sys/kernel/random/boot_id"
@@ -319,6 +347,21 @@ enable)
         printf 'zl1-harness: refusing to run %s with device paths -- no rewritten copy in %s\n' "\$ex" "$W/applier" >&2
         exit 97
       fi ;;
+    # Section 15's unit. Its applier has ONE device path (the parameter), so the rewritten copy in
+    # $W/applier is the whole rewrite -- and the run is what makes the parameter really change, which is
+    # what the installer then reads back.
+    zl1-lpm-sleep-fix.service)
+      ex=\$(sed -n 's/^ExecStart=//p' "$FR/etc/systemd/system/\$u" 2>/dev/null | head -1)
+      alt="$W/applier/\$(basename "\$ex")"
+      printf 'systemctl-ran-applier %s\n' "\$ex" >> "$ACT"
+      if [ -n "\${FAKE_LPM_SKIP_APPLIER:-}" ]; then exit 0; fi
+      if [ -f "\$alt" ]; then
+        exec env PATH="$STUB:\$PATH" sh "\$alt"
+      elif [ -e "\$ex" ]; then
+        printf 'NO-REWRITTEN-APPLIER %s\n' "\$ex" >> "$ACT"
+        printf 'zl1-harness: refusing to run %s with device paths -- no rewritten copy in %s\n' "\$ex" "$W/applier" >&2
+        exit 97
+      fi ;;
     esac ;;
   esac
   ;;
@@ -345,7 +388,12 @@ is-active)
 show)
   case "\$*" in
   *-p\ Result*) printf 'success\n' ;;
-  *-p\ ExecMainStatus*) printf '0\n' ;;
+  # A FIXTURE, not a constant: install-lpm-sleep-fix.sh decides its verdict from this value, so "the
+  # unit ran and failed" has to be a state the harness can put the device in -- otherwise the check that
+  # reads it could never be seen to fail (docs 114: a gate that cannot fail is not a gate). This arm is
+  # the one that MATCHES -- the 'value' variant below is shadowed by it, which is how the first draft
+  # of this fixture was written and why it did nothing.
+  *-p\ ExecMainStatus*) [ -e "$W/lpm-execstatus" ] && cat "$W/lpm-execstatus" || printf '0\n' ;;
   *-p\ MainPID*) printf '0\n' ;;
   *-p\ NRestarts*) printf '0\n' ;;
   *-p\ ActiveState*) printf 'inactive\n' ;;
@@ -359,7 +407,7 @@ show)
     if [ -e "$W/netwatch-nomono" ]; then printf 'n/a\n'; else cat "$W/netwatch-mono" 2>/dev/null || printf '0\n'; fi ;;
   *-p\ ExecMainStartTimestamp*) printf 'n/a\n' ;;
   *-p\ Result\ --value*) printf 'success\n' ;;
-  *-p\ ExecMainStatus\ --value*) printf '0\n' ;;
+  *-p\ ExecMainStatus\ --value*) [ -e "$W/lpm-execstatus" ] && cat "$W/lpm-execstatus" || printf '0\n' ;;
   esac ;;
 cat)
   u="\$2"
@@ -467,6 +515,9 @@ emit "s#/userdata#$FR/userdata#g"
 emit "s#/run/zl1-debug-net.lock#$FR/run/zl1-debug-net.lock#g"
 emit "s#/proc/sys/kernel/random/boot_id#$FR/proc/sys/kernel/random/boot_id#g"
 emit "s#/proc/uptime#$FR/proc/uptime#g"
+# The cmdline, for section 15. Unmapped it would read the HOST's cmdline, and the installer prints the
+# cmdline and the parameter side by side -- so the reading would be about this laptop's boot.
+emit "s#/proc/cmdline#$FR/proc/cmdline#g"
 emit "s#/proc/\[0-9\]\*#$FR/proc/[0-9]*#g"
 emit "s|\\\${d#/proc/}|\\\${d#$FR/proc/}|g"
 emit "s|/proc/\\\$ppid|$FR/proc/\\\$ppid|g"
@@ -1916,6 +1967,186 @@ notwant '^systemctl (restart|start|stop|enable|disable)' "$ACT" \
 want 'was NOT restarted' "$OUT" "so the operator still has to ask for it, and is told they must"
 
 # ==================================================================================================
+# ==================================================================================================
+echo
+echo "== 15. lpm-sleep-fix: the THIRD heat fix, and the trial's own verdict is its licence =="
+# ==================================================================================================
+# What makes this installer different from its four siblings: its licence is not a state of the device,
+# it is a LINE IN ANOTHER INSTRUMENT'S ARCHIVED OUTPUT. So the checks come in three groups -- the
+# licence (which must refuse on every verdict but one), the two prerequisites that are about the DEVICE
+# (the parameter must exist; a panic must not arm EDL, because this fix persists), and the verdict,
+# which is read from the device rather than from any command's exit status.
+extract_applier "$LPM" APPLIER_EOF "$W/applier/lpm.raw.sh"
+# ONE device path, so the rewrite is one substitution -- and it is asserted, because a rewrite that
+# matched nothing would leave the applier pointing at the HOST's /sys.
+sed -e "s#/sys/module#$FR/sys/module#g" "$W/applier/lpm.raw.sh" > "$W/applier/zl1-lpm-sleep-fix.sh"
+sh -n "$W/applier/zl1-lpm-sleep-fix.sh" || { echo "the rewritten lpm applier does not parse" >&2; exit 2; }
+grep -qF "$FR/sys/module" "$W/applier/zl1-lpm-sleep-fix.sh" \
+  || { echo "the lpm applier rewrite did not land -- it would write the HOST's /sys" >&2; exit 2; }
+cp "$W/applier/zl1-lpm-sleep-fix.sh" "$W/applier/lpm.good.sh"
+
+# The licence file. `lpm_licence` writes one, so each scenario states the VERDICT it is testing rather
+# than assembling a file inline and getting its shape subtly wrong.
+lpm_licence() { printf '%s\n' "$@" > "$W/trial-out.txt"; printf '%s' "$W/trial-out.txt"; }
+# The device's side. `lpm_device` puts the three things a scenario varies back to a known state:
+# the parameter (present at 1, absent, or not writable), the panic flag, and the unit's own exit status.
+lpm_device() { # present | absent ; armed | disarmed
+  rm -rf "$FR/sys/module/lpm_levels"; mkdir -p "$FR/sys/module/lpm_levels/parameters"
+  [ "$1" = present ] && printf '1\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+  printf '%s\n' "$([ "$2" = armed ] && echo 1 || echo 0)" > "$FR/sys/module/msm_poweroff/parameters/download_mode"
+  rm -f "$W/lpm-execstatus"
+  cp "$W/applier/lpm.good.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+}
+lpm_reset() { # the unit and the parameter, as a boot leaves them
+  rm -f "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" "$FR/etc/systemd/system/zl1-lpm-sleep-fix.sh"
+  lpm_device present disarmed
+  printf '1\n' > "$FR/sys/module/lpm_levels/parameters/sleep_disabled"
+}
+
+# --- the licence: every verdict but one forbids the install, and none of them touches the device ----
+# "No ssh at all" is the assertion that matters for all five: the licence is read from a file on THIS
+# host, so a refused install must not have opened a connection in order to find that out.
+for v in refuted not-supported inconclusive confounded; do
+  lpm_reset
+  L=$(lpm_licence "   -> something about the ladder" "== verdict: $v")
+  run "$LPM" --install --after-trial "$L"
+  [ "$RC" = 1 ] && ok "licence '$v' refuses with exit 1" || bad "licence '$v' exited $RC"
+  want "verdict: $v" "$OUT" "  and the refusal names the verdict it read"
+  [ -z "$(grep -E '^ssh ' "$ACT" 2>/dev/null)" ] \
+    && ok "  and the device was never contacted -- the licence is read on the host" \
+    || bad "  it opened a connection to the device before deciding on the licence"
+  [ ! -e "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] \
+    && ok "  and nothing was installed" || bad "  a refused licence still wrote the unit"
+done
+# The shape that makes the whole check a check: a file that CONTAINS the right words and does not have
+# the right LINE. A gate written as `grep -q supported-not-proven` passes this one; a gate written
+# against the whole line does not. (docs 114's lesson, and the same fixture the proof gate carries.)
+lpm_reset
+L=$(lpm_licence "a run whose supported-not-proven conclusion is not on a verdict line")
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "a file that merely CONTAINS the words is refused" || bad "it exited $RC"
+[ -z "$(grep -E '^ssh ' "$ACT" 2>/dev/null)" ] && ok "  and still no connection" || bad "  it contacted the device"
+# THE LAST LINE IS THE LICENCE, and this pair is the reason: an archive can hold more than one run.
+lpm_reset
+L=$(lpm_licence "== verdict: supported-not-proven" "== verdict: refuted")
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "a SUPPORTED that a later REFUTED supersedes is refused" || bad "it exited $RC"
+want 'verdict: refuted' "$OUT" "  and it says which reading it refused on"
+lpm_reset
+L=$(lpm_licence "== verdict: refuted" "== verdict: supported-not-proven")
+run "$LPM" --install --after-trial "$L"
+# It INSTALLS here, and that is the assertion: the licence gate is what this pair is about, and the same
+# device state that was refused a moment ago is accepted the moment the last verdict line says so.
+[ "$RC" = 0 ] && ok "and the reverse order is accepted -- the LAST verdict line is the licence" || bad "it exited $RC on a good licence"
+[ -f "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] && ok "  and it installed" || bad "  it did not install"
+# No file, an unreadable file, and a file with no verdict line. Three different facts, three answers.
+lpm_reset
+run "$LPM" --install
+[ "$RC" = 1 ] && ok "--install with no --after-trial refuses with exit 1" || bad "it exited $RC"
+want 'needs --after-trial' "$OUT" "  and says what is missing"
+run "$LPM" --install --after-trial "$W/does-not-exist.txt"
+[ "$RC" = 1 ] && ok "an unreadable --after-trial refuses with exit 1" || bad "it exited $RC"
+want 'cannot be read on this host' "$OUT" "  and says it could not be read"
+L=$(lpm_licence "the trial refused on prerequisite C and wrote no verdict")
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "a file with NO verdict line refuses" || bad "it exited $RC"
+want "holds no '== verdict" "$OUT" "  and says a run with no verdict is not a clean run"
+
+# --- the two device prerequisites ------------------------------------------------------------------
+# A: the parameter must EXIST. "NOT FOUND" is not "already off": a boot with no such parameter has
+# nothing for this fix to write, and reporting that as success is the silent-success shape.
+lpm_reset; lpm_device absent disarmed
+L=$(lpm_licence "== verdict: supported-not-proven")
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "no sleep_disabled parameter refuses with exit 1" || bad "it exited $RC"
+want 'no /sys/module/\*/parameters/sleep_disabled on the device' "$OUT" "  and says the parameter is not there"
+want "not the same thing as 'it is already off'" "$OUT" "  and says why that is not the same as off"
+[ ! -e "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] && ok "  and nothing was installed" || bad "  it installed anyway"
+# B: a panic must not arm EDL. The trial is scoped to one boot by construction; this installer is not.
+lpm_reset; lpm_device present armed
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "an ARMED download_mode refuses with exit 1 (the trial is one boot, this fix is every boot)" \
+  || bad "it exited $RC"
+want 'prerequisite A is not met' "$OUT" "  and names the prerequisite"
+want 'install-no-edl-on-panic.sh --install' "$OUT" "  and names the command that meets it"
+[ ! -e "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] && ok "  and nothing was installed" || bad "  it installed anyway"
+# The same state is a READING for --status, which writes nothing and needs no licence.
+before=$(snap)
+run "$LPM" --status
+[ "$RC" = 0 ] && ok "--status on an armed device exits 0 -- a reading is not a decision" || bad "it exited $RC"
+want 'NOT met' "$OUT" "  and reports A as not met"
+[ "$before" = "$(snap)" ] && ok "  and --status changed nothing on the device" || bad "  --status wrote something"
+
+# --- the happy path, and the verdict read from the DEVICE -------------------------------------------
+lpm_reset
+L=$(lpm_licence "== verdict: supported-not-proven")
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 0 ] && ok "a good licence and a disarmed panic flag installs (exit 0)" || bad "it exited $RC"
+printf '%s\n' "$OUT" | grep -qx '== verdict: installed' && ok "  and the verdict is 'installed'" || bad "  the verdict was not 'installed'"
+[ -f "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] && ok "  the unit landed" || bad "  the unit did not land"
+[ -f "$FR/etc/systemd/system/zl1-lpm-sleep-fix.sh" ] && ok "  and so did the applier" || bad "  the applier did not land"
+grep -q 'WantedBy=multi-user.target' "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" \
+  && ok "  the unit is wanted by multi-user.target" || bad "  the unit has no [Install] section"
+grep -q 'ExecStart=/etc/systemd/system/zl1-lpm-sleep-fix.sh' "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" \
+  && ok "  and it runs the applier the installer wrote" || bad "  the unit runs something else"
+want 'systemctl-ran-applier /etc/systemd/system/zl1-lpm-sleep-fix.sh' "$(cat "$ACT")" "  the applier really ran (the stub runs ExecStart)"
+[ "$(cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled")" = 0 ] \
+  && ok "  and it wrote 0 to the parameter -- the fix is armed on the fake device" \
+  || bad "  the parameter reads $(cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled")"
+want 'systemctl enable --now zl1-lpm-sleep-fix.service' "$(cat "$ACT")" "  and the unit was enabled AND started"
+# The parameter's `disable` file is one of the four this repository records as writable on the device.
+[ "$(cat "$FR/sys/devices/system/cpu/cpu0/cpuidle/state3/disable")" = 0 ] \
+  && ok "  and no cpuidle state was disabled -- the ladder's own nodes are not this fix's business" \
+  || bad "  something disabled a cpuidle state"
+# THE VERDICT IS ABOUT THE DEVICE, NOT ABOUT THE TRANSPORT. Every command above returned 0; the two
+# scenarios below are the ones where the DEVICE says something went wrong, and they are why the verdict
+# block asks rather than infers.
+lpm_reset
+printf '1\n' > "$W/lpm-execstatus"
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "ExecMainStatus != 0 -> exit 1, even though every command returned 0" || bad "it exited $RC"
+want '== verdict: not-installed' "$OUT" "  and the verdict is 'not-installed'"
+want 'ExecMainStatus' "$OUT" "  and it names the reading that failed"
+rm -f "$W/lpm-execstatus"
+# The applier runs, exits 0, and the parameter does NOT take the write. This is the defect
+# install-cpufreq-governor.sh records, one installer over: the unit is `active` and the phone is as hot
+# as it was. The mutation is in the APPLIER ONLY, so the installer's own code is the shipped one.
+lpm_reset
+sed 's#^    printf 0 > "\$p" 2>/dev/null#    : #' "$W/applier/lpm.good.sh" > "$W/applier/lpm.mut.sh"
+grep -q '^    : ' "$W/applier/lpm.mut.sh" || { echo "the lpm applier mutation did not apply" >&2; exit 2; }
+cp "$W/applier/lpm.mut.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+run "$LPM" --install --after-trial "$L"
+[ "$RC" = 1 ] && ok "a write that does not take -> exit 1 (the applier's own read-back is not enough)" || bad "it exited $RC"
+want 'did not read back as 0' "$OUT" "  and the verdict names the parameter that did not take it"
+cp "$W/applier/lpm.good.sh" "$W/applier/zl1-lpm-sleep-fix.sh"
+
+# --- the applier on its own, and --remove -----------------------------------------------------------
+# The applier is a real file that runs on the device, so it is run here against the fake root directly.
+lpm_reset
+: > "$ACT"
+runsh "$W/applier/zl1-lpm-sleep-fix.sh"
+[ "$RC" = 0 ] && ok "the applier alone exits 0 and writes 0" || bad "the applier exited $RC"
+[ "$(cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled")" = 0 ] && ok "  the parameter reads 0" || bad "  it does not"
+rm -rf "$FR/sys/module/lpm_levels"
+runsh "$W/applier/zl1-lpm-sleep-fix.sh"
+[ "$RC" = 1 ] && ok "and with no parameter at all the applier FAILS rather than reporting success" || bad "it exited $RC"
+want 'the heat fix is NOT armed' "$OUT" "  and says the heat fix is not armed"
+lpm_reset
+run "$LPM" --remove
+[ "$RC" = 0 ] && ok "--remove exits 0" || bad "--remove exited $RC"
+[ ! -e "$FR/etc/systemd/system/zl1-lpm-sleep-fix.service" ] && ok "  the unit is gone" || bad "  the unit is still there"
+[ ! -e "$FR/etc/systemd/system/zl1-lpm-sleep-fix.sh" ] && ok "  and the applier is gone" || bad "  the applier is still there"
+[ "$(cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled")" = 1 ] \
+  && ok "  and the parameter is back to 1 -- the undo is complete on this boot, not only from the next" \
+  || bad "  the parameter reads $(cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled")"
+# The flag surface.
+run "$LPM" --nonsense
+[ "$RC" = 2 ] && ok "an unknown flag exits 2" || bad "it exited $RC"
+run "$LPM" --explain
+[ "$RC" = 0 ] && ok "--explain exits 0 and writes nothing" || bad "it exited $RC"
+want 'refuted' "$OUT" "  and names the verdicts it refuses on"
+lpm_reset
+
 echo
 echo "== the health check cites this harness's count, and that citation cannot drift =="
 # The same guard every other harness here carries (docs 110). It is in this file because the health

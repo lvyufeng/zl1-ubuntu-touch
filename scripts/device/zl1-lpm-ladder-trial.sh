@@ -583,6 +583,18 @@ fi
 # A 2x2 plus an opportunity test, and it is built so that REFUTED is reachable. Every branch names the
 # reading it came from; none of them claims to know what the parameter does.
 hdr "10. the verdict"
+# THE LINE, AND WHY THERE IS ONE NOW. This section has always printed five named outcomes, and not one
+# of them was printed as a LINE -- they were prose, separated by exit code. That is enough for a person
+# and not enough for anything else: `install-lpm-sleep-fix.sh` may only install the fix when THIS trial
+# has said the parameter gates the ladder, and a licence that has to be extracted from a sentence is the
+# shape this repository has already recorded as a defect (docs 114: a substring gate accepted a sentence
+# that merely CONTAINED the word). So each branch below prints
+#
+#     == verdict: <name>
+#
+# as a whole line, in the form every other probe in this tree uses, and the names are the ones the
+# outcomes already had: refuted / supported-not-proven / not-supported / inconclusive / confounded.
+# The prose stays, because the prose is what explains the name.
 say "   before this boot's write, state$DEEPEST ($DEEP_NAME) had been entered $DEEP_BEFORE_U time(s)"
 say "   during the window it was entered $DEEP_DU more time(s), for $DEEP_DT more of its counted time"
 say "   the shallowest state (state0) moved $WFI_DU time(s) in the same window"
@@ -591,12 +603,14 @@ case "$DEEP_DU" in
 UNKNOWN|NOT-A-NUMBER|"")
   say "   -> INCONCLUSIVE: the deepest state's counter could not be read across the window, so nothing"
   say "      here is a reading about the ladder. Exit 1."
+  say "== verdict: inconclusive"
   exit 1 ;;
 esac
 case "$WFI_DU" in
 UNKNOWN|NOT-A-NUMBER|"")
   say "   -> INCONCLUSIVE: the shallowest state's counter could not be read, so 'was there any idle"
   say "      opportunity at all' has no answer. Exit 1."
+  say "== verdict: inconclusive"
   exit 1 ;;
 esac
 
@@ -605,12 +619,14 @@ if [ "$DEEP_BEFORE_U" != 0 ] && [ "$DEEP_BEFORE_U" != UNKNOWN ]; then
     say "   -> CONFOUNDED: the deepest state had already been entered before the write, so the parameter"
     say "      is not what gates it -- but this boot also has a confounder recorded above (the keeper, or"
     say "      a disabled state), so the run is reported as confounded rather than as a clean refutation."
+    say "== verdict: confounded"
   else
     say "   -> REFUTED: state$DEEPEST was ALREADY being entered before this script wrote anything"
     say "      ($DEEP_BEFORE_U time(s) since boot). So sleep_disabled=1 does not gate that state on this"
     say "      device, and the hypothesis that the ladder is switched off by this parameter is dead for"
     say "      it -- whatever the after-window shows. This is the reading that makes the experiment worth"
     say "      running: it can come out against the thing it was built to test."
+    say "== verdict: refuted"
   fi
   exit 0
 fi
@@ -619,6 +635,7 @@ if [ "$WFI_DU" = 0 ]; then
   say "   -> INCONCLUSIVE: no idle state moved at all in this window, so the CPU was never idle and the"
   say "      experiment says NOTHING about the ladder. (Something is busy -- and if the keeper is running"
   say "      this is exactly the confound prerequisite C exists for.) Exit 1."
+  say "== verdict: inconclusive"
   exit 1
 fi
 
@@ -635,14 +652,24 @@ if [ "$DEEP_DU" -gt 0 ]; then
     say "      CONFOUNDED, and it is stated here rather than left to the reader: a confounder recorded"
     say "      above (the keeper running, or the deepest state disabled) can produce this sign on its own,"
     say "      so this run is not the answer. Exit 1."
+    say "== verdict: confounded"
     exit 1
   fi
+  say "== verdict: supported-not-proven"
   exit 0
 fi
 
 if [ "$CONFOUNDED" = 1 ]; then
   say "   -> CONFOUNDED: the deepest state was not entered, and this boot has a confounder recorded above"
   say "      (the keeper running, or the state disabled) which explains that without the parameter. Exit 1."
+  # AND THE CODE NOW MATCHES THE SENTENCE. This branch prints "Exit 1." and used to `exit 0`: the script's
+  # own header defines exit 1 as "the verdict is INCONCLUSIVE or CONFOUNDED", and this is one of its two
+  # CONFOUNDED branches. The same reading in the branch above -- deep state WAS entered, with a confounder
+  # -- has always exited 1, so the two disagreed about the same word. It was found while building the
+  # installer that reads this line, which is the point: a licence nobody can parse is a licence nobody
+  # checks, and an exit code nobody checks drifts from its own manual.
+  say "== verdict: confounded"
+  exit 1
 else
   say "   -> NOT SUPPORTED: state0 moved $WFI_DU time(s) -- so there WAS idle opportunity -- and"
   say "      state$DEEPEST was still entered 0 times with the ladder allowed. Either the parameter does"
@@ -652,5 +679,6 @@ else
   say "      'if (!idx)' branch is the wfi). So a NOT SUPPORTED result here is not a source question; it is"
   say "      a fact about this board that the source cannot explain, and it is the interesting outcome."
   say "      Do not report this as the fix."
+  say "== verdict: not-supported"
 fi
 exit 0

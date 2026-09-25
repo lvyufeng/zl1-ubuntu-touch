@@ -140,6 +140,10 @@ notwant() { if grep -Eq -- "$1" <<< "$2"; then bad "$3"; grep -E -- "$1" <<< "$2
 # The verdict is the LAST section of the trial, so it is extracted from its own header. Anchored on the
 # numbered header and not on the first `->` line anywhere: this script prints `->` in earlier sections.
 verdict() { printf '%s\n' "$1" | sed -n '/^== 10\. the verdict$/,$p'; }
+# THE LINE, as opposed to the prose: the whole-line `== verdict: <name>` a caller can gate on. It is
+# extracted with `grep -x`, i.e. the same whole-line rule the installer applies -- a test that accepted a
+# substring would pass on a sentence that merely mentions the name (docs 114).
+vline() { printf '%s\n' "$1" | grep -ax '== verdict: [a-z-]*' | tail -1 | sed 's/^== verdict: //'; }
 # Everything the fake device holds, so "wrote nothing" is checkable rather than asserted from a log.
 snap() { ( cd "$1" 2>/dev/null && find . -printf '%y %p %s\n' | sort && find . -type f -exec md5sum {} + 2>/dev/null | sort ); }
 param() { cat "$FR/sys/module/lpm_levels/parameters/sleep_disabled" 2>/dev/null | tr -d '\n'; }
@@ -549,9 +553,21 @@ FAKE_KEEPER=
 FAKE_KEEPER=1 run "--apply --allow-keeper"
 want 'with a confounder recorded' "$OUT" "--allow-keeper proceeds with the confounder stated"
 want 'CONFOUNDED' "$(verdict "$OUT")" "and the verdict says CONFOUNDED rather than concluding"
+[ "$(vline "$OUT")" = confounded ] && ok "and the whole line is '== verdict: confounded'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 1 ] && ok "and a confounded run exits 1 (it cannot be used as the answer)" || bad "it exited $RC"
 [ "$(param)" = 1 ] && ok "and the parameter is back to 1" || bad "the parameter reads $(param)"
 FAKE_KEEPER=
+# THE OTHER CONFOUNDED BRANCH, and why it needs its own scenario: the keeper confounder above reaches
+# the SUPPORTED branch (the deep state DID move in the window). The branch where the deep state did NOT
+# move and a confounder is recorded is a different branch, and it printed "Exit 1." while exiting 0 --
+# the script's own header defines exit 1 as "INCONCLUSIVE or CONFOUNDED", and this is one of its two
+# CONFOUNDED branches. Nothing reached it, so nothing caught it. This is the scenario that does.
+FAKE_KEEPER=1 FAKE_IDLE=shallow run "--apply --allow-keeper"
+want 'CONFOUNDED' "$(verdict "$OUT")" "a confounder with NO deep entry is the other CONFOUNDED branch"
+[ "$(vline "$OUT")" = confounded ] && ok "and its whole line is '== verdict: confounded' too" || bad "the line is '$(vline "$OUT")'"
+[ "$RC" = 1 ] && ok "and it exits 1 -- the prose said 'Exit 1.' and the code used to exit 0, which is the defect this scenario exists for" || bad "it exited $RC"
+[ "$(param)" = 1 ] && ok "and the parameter is back to 1" || bad "the parameter reads $(param)"
+FAKE_KEEPER= FAKE_IDLE=
 
 # ==================================================================================================
 echo
@@ -623,6 +639,38 @@ grep -q '^sleep 3$' "$ACT" && ok "the settle window used the --settle value it w
 
 # ==================================================================================================
 echo
+echo "== 7b. the verdict LINE, which is what a caller may gate on =="
+# ==================================================================================================
+# Every branch prints `== verdict: <name>` as a WHOLE line, in the form this tree's other probes use.
+# Before this stage none of the five outcomes was a line at all -- they were prose separated by exit
+# code, which is enough for a person and not enough for anything that has to decide on it.
+# A here-string and not a pipeline: under `set -o pipefail` a `printf | grep -q` reports the WRITER's
+# SIGPIPE, so a match that IS there can be printed as a missing one (docs 134 measured it, 4 red runs in
+# 100 at this size -- and this harness's own family meta-check scans every pipefail harness for exactly
+# this shape and reddened on the first draft of this loop).
+VSRC=$(sed 's/#.*//' "$SRC")
+for n in refuted supported-not-proven not-supported inconclusive confounded; do
+  if grep -Eq -- "== verdict: $n" <<< "$VSRC"; then
+    ok "the subject can print '== verdict: $n'"
+  else
+    bad "'== verdict: $n' is not in the subject -- an outcome with no line is an outcome nothing can gate on"
+  fi
+done
+# Exactly one, on every path that reaches the verdict at all: a second line would make "the last one
+# wins" the rule, and that is not a rule, that is an accident.
+run "--apply --settle 3"
+[ "$(printf '%s\n' "$OUT" | grep -ac '== verdict: [a-z-]*')" = 1 ] \
+  && ok "and a run prints exactly ONE verdict line, so 'the last one' is the only one" \
+  || bad "this run printed $(printf '%s\n' "$OUT" | grep -ac '== verdict: [a-z-]*') verdict lines"
+# The refusing paths must print NONE: a refusal is not a verdict about the ladder, and a line there
+# would let the installer read "confounded" out of a run that never happened.
+FAKE_PARAM=missing run "--apply"
+[ "$(printf '%s\n' "$OUT" | grep -ac '== verdict: [a-z-]*')" = 0 ] \
+  && ok "and a REFUSAL prints no verdict line at all (a refusal is not a reading about the ladder)" \
+  || bad "a refusal printed a verdict line: $(vline "$OUT")"
+
+# ==================================================================================================
+echo
 echo "== 8. the verdict can REFUTE the hypothesis it was built to test =="
 # ==================================================================================================
 # The deep state had entries BEFORE the write. That kills the hypothesis for that state whatever the
@@ -632,6 +680,7 @@ want 'REFUTED' "$(verdict "$OUT")" "a state already being entered before the wri
 want 'ALREADY being entered before this script wrote anything' "$(verdict "$OUT")" "and says exactly that"
 want '37 time\(s\) since boot' "$(verdict "$OUT")" "with the before-count it read, not a zero"
 want 'can come out against the thing it was built to test' "$(verdict "$OUT")" "and says why that matters"
+[ "$(vline "$OUT")" = refuted ] && ok "and the whole line is '== verdict: refuted'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 0 ] && ok "a refutation is a measurement, so it exits 0" || bad "it exited $RC"
 [ "$(param)" = 1 ] && ok "and the parameter is back to 1" || bad "the parameter reads $(param)"
 FAKE_DEEP_BEFORE=
@@ -639,6 +688,7 @@ FAKE_DEEP_BEFORE=
 run "--apply --settle 3"
 want 'SUPPORTED, NOT PROVEN' "$(verdict "$OUT")" "entries appearing only after the write is SUPPORTED, not PROVEN"
 want 'not proof of it' "$(verdict "$OUT")" "and it says so in those words"
+[ "$(vline "$OUT")" = supported-not-proven ] && ok "and the whole line is '== verdict: supported-not-proven'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 0 ] && ok "a supported reading exits 0" || bad "it exited $RC"
 [ "$(param)" = 1 ] && ok "and the parameter is back to 1" || bad "the parameter reads $(param)"
 # No opportunity: the CPU was never idle, so the experiment says nothing. This is the case the keeper
@@ -647,6 +697,7 @@ FAKE_IDLE=none run "--apply --settle 3"
 want 'no idle state moved at all in this window' "$(verdict "$OUT")" "no idle opportunity is named as such"
 want 'INCONCLUSIVE' "$(verdict "$OUT")" "and the verdict is INCONCLUSIVE, not a conclusion"
 want 'says NOTHING about the ladder' "$(verdict "$OUT")" "with the reason"
+[ "$(vline "$OUT")" = inconclusive ] && ok "and the whole line is '== verdict: inconclusive'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 1 ] && ok "and an inconclusive run exits 1" || bad "it exited $RC"
 [ "$(param)" = 1 ] && ok "and the parameter is back to 1" || bad "the parameter reads $(param)"
 FAKE_IDLE=
@@ -654,6 +705,7 @@ FAKE_IDLE=
 FAKE_IDLE=shallow run "--apply --settle 3"
 want 'NOT SUPPORTED' "$(verdict "$OUT")" "idle opportunity without a deep entry is NOT SUPPORTED"
 want 'Do not report this as the fix' "$(verdict "$OUT")" "and says not to report it as the fix"
+[ "$(vline "$OUT")" = not-supported ] && ok "and the whole line is '== verdict: not-supported'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 0 ] && ok "and it exits 0 -- it IS a measurement" || bad "it exited $RC"
 FAKE_IDLE=
 # The deepest state disabled by the other mechanism: nothing this script writes can move it, so the run
@@ -661,6 +713,7 @@ FAKE_IDLE=
 FAKE_DEEP_DIS=1 run "--apply --settle 3"
 want 'is DISABLED by the other mechanism' "$OUT" "a disabled deepest state is reported before the write"
 want 'CONFOUNDED' "$(verdict "$OUT")" "and the verdict is CONFOUNDED"
+[ "$(vline "$OUT")" = confounded ] && ok "and the whole line is '== verdict: confounded'" || bad "the line is '$(vline "$OUT")'"
 [ "$RC" = 1 ] && ok "a confounded run exits 1" || bad "it exited $RC"
 FAKE_DEEP_DIS=
 

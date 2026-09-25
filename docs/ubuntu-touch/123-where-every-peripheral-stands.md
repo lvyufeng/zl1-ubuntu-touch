@@ -42,7 +42,7 @@
 | **GPS** | **只量过离线** | 仪器 `zl1-gps-probe.sh`（只读）；**第一个客户端有名字了**：预装的天气 app 的 QML 里 `PositionSource { active: settings.detectCurrentLocation }`，它自己的 AppArmor profile 带 `location` | **从来没有拿到过一次定位。**`u_hardware_gps_start` **一次都没被调用过**。文档 82 的两根杠杆都是死的（v63 的 boot hook 把 `/usr/bin/getprop` 换成没有 `custom.*` 分支的 stub）。**2026-09-25 又量了一条：它在内核这一层什么都没有**——`drivers/` 里没有 GNSS 驱动、`msm8996.dtsi` 里没有 GNSS 节点、配置里没有 `CONFIG_*GNSS*`，整个 `--dump-compatibles`（1499 行）里 `gnss`/`gps` **一条都不匹配**。GNSS 引擎在调制解调器（MSS）里，而固件从来没被挂上（doc 120/154）。**所以它不可能出现在任何从设备树派生的覆盖率报告里**——见 §1.1 |
 | **指纹** | **只量过离线** | 两个仪器：`zl1-fingerprint-probe.sh`（**驱动以上的层**：存目录、HAL、信任库）和 `zl1-fp-kernel-probe.sh`（docs 157，**驱动这一层**）。**根因之一找到了（离线，doc 83）：是一个缺失的目录**，不是坏的 HAL。修法存在（`install-fingerprint-store-dir.sh`，doc 106） | **两个读数都一次都没在设备上跑过。**存目录的判据是 `journalctl -b -u biometryd | grep -c "setActiveGroup failed"` **变成 0**。**2026-09-25 又量了一条（离线，doc 157）：这块板的设备树声明两个指纹块，而内核只为其中一个编了驱动**——HAL 开的那一个（`/dev/goodix_fp`）**没有驱动**（`# CONFIG_INPUT_GP5XX8 is not set`，从**镜像自己嵌的那份配置**里读出来的），板上另一个块有（`CONFIG_MSM_QBT1000=y`）。**所以"指纹不工作"必须按块说**，而补上那个驱动 = 重新编译 + 刷 boot，**还没做**。**离那一行有多远也量过了（离线，doc 158）**：`host/zl1-fp-driver-build-check.sh` 把从"选项是关的"到"驱动绑上"的每一个环节都读了一遍，判定 **`one-config-line-away`**——选项在、依赖满足、源码在、`of_match_table` 与节点逐字节相同、**这次构建产出的五棵树每一棵都带节点且每一个驱动要的属性都在**、**镜像里附着的那五棵逐字节相同**、两个 `.c` 用**这次构建自己的命令行**编得过且 51 个未定义符号全部能在 `vmlinux` 里找到。**这条链只差配置里那一行**，而"那一行改在哪、要不要刷"仍然是设备的决定。**而那一行已经改了，驱动已经进了镜像（2026-09-25，doc 159）**：`lineage_zl1_defconfig:1871` 改成 `CONFIG_INPUT_GP5XX8=y`（`diff` 的全部输出就是这一行），重新编译内核，再拼进 v63 那份 initramfs，得到 `halium-boot-zl1-v63-fpdriver.img`。**而"只差一行"是从两张镜像里算出来的**：`host/zl1-boot-image-kernel.sh --diff` 读它们**各自嵌的那份配置**，答案是 **`1 option(s) differ`**（`CONFIG_INPUT_GP5XX8 y -> not set`），而两者的 initramfs（`ebb281ff5537d99a`）与五棵附着的设备树（`5b280099e84e773c`）**逐字节相同**——所以唯一的变量是内核。**但这一行改在内核树里，不在这个仓库里**，所以"改了"这件事**只由镜像证明**；而镜像**一次都没有在设备上跑过**，驱动绑不绑得上、绑上之后 HAL 开不开得了节点、节点开得了之后存目录在不在（doc 126）**全是运行时的事，一件都没量过**。**2026-09-24 之前的探针输出不要信**：它的存在性测试是 `nsenter -m -- test`，在这台设备上跑不起来，每次都答"missing" |
 | **modem / telephony** | **只量过离线** | 仪器 `zl1-modem-probe.sh`（只读、从不打开块设备，已经在 capture 的默认集里当 04b） | **一次真机读数都没取过。**离线结论是：cmdline **一直**带着 `firmware_class.path=/vendor/firmware_mnt/image`（指对了），而 UT 的 `/vendor` 是**指向 `/android/vendor` 的软链**，所以问题从"路径"变成了"**那个挂载**"。要做的是读四行（doc 120 §7.1） |
-| **发热** | **三个原因，一个修复都没装上** | ① v63 debug keeper 每秒 `systemctl` 一次（约一个核）；② 镜像把四个核**全钉在 `performance`**；③ **SoC 被禁止用自己低功耗阶梯**（每条 cmdline 都带 `lpm_levels.sleep_disabled=1`）。仪器：`zl1-thermal.sh`、`zl1-sleep-and-throttle.sh`（capture 04c）、`zl1-lpm-ladder-trial.sh` | **三个修复都要一个 boot。**① 和 ② 由 `zl1-heat-fix-chain.sh --yes` 一条命令做；③ 的答案是 `sleep_disabled` 上的一次**写入**（0664 可写，不用 flash），**而"写下去有没有用"要设备上的前后对比**（doc 122） |
+| **发热** | **三个原因，一个修复都没装上** | ① v63 debug keeper 每秒 `systemctl` 一次（约一个核）；② 镜像把四个核**全钉在 `performance`**；③ **SoC 被禁止用自己低功耗阶梯**（每条 cmdline 都带 `lpm_levels.sleep_disabled=1`）。仪器：`zl1-thermal.sh`、`zl1-sleep-and-throttle.sh`（capture 04c）、`zl1-lpm-ladder-trial.sh`（实验）、`install-lpm-sleep-fix.sh`（安装器，doc 160） | **三个修复都要一个 boot，而三个都还没跑过。**① 和 ② 由 `zl1-heat-fix-chain.sh --yes` 一条命令做；③ 是 `sleep_disabled` 上的一次**写入**（0664 可写，不用 flash），"写下去有没有用"要设备上的前后对比（doc 122），而**让这个答案活过重启**要 doc 160 的安装器——它的执照是那次实验的**最后一行判词** |
 | **网络（RNDIS）** | **已证明，而且原因是宿主侧的** | 宿主手动 bind `rndis_host` + 设 IP（**Option C**，`V63-OPTIONC-CONFIRMED-WORKING.md`）。35 s 失联是**宿主侧**的，设备一直没问题 | 无。**链路卡住时从宿主侧重新枚举 gadget**（`authorized` 0→1）：不用重启、不用插拔、不用按键 |
 
 **`systemctl --failed` 是空的**（自 2026-09-21 的冷启动 `c86ce828-…` 起）。
@@ -159,9 +159,11 @@ GPS    让天气 app 的 "detect current location" 打开（zl1-gps-first-client
 ```
 # 0. 物理长按 POWER 10–20 秒，等 RNDIS 和 ssh
 scripts/host/zl1-one-boot-runbook.sh --status    # 只读：这个 boot 上还剩什么没做
-scripts/host/zl1-one-boot-runbook.sh --yes       # 五步，按唯一能成立的顺序
+scripts/host/zl1-one-boot-runbook.sh --yes       # 六步，按唯一能成立的顺序
 ssh root@$IP 'sh /tmp/zl1-lpm-ladder-trial.sh --apply'   # ← 单独的一次决定，不是一次读数
 ```
 
 它跑的是 `01 capture`（只读）→ `02 panic guard`（**唯一跨 boot 的一步**）→ `03 heat chain`（发烫 ① 和 ②）
-→ `04 fingerprint`（判据：`setActiveGroup failed` 归零）→ `05 trial --status`（只读）。
+→ `04 fingerprint`（判据：`setActiveGroup failed` 归零）→ `05 trial --status`（只读）→
+`06 lpm-fix`（[doc 160](160-the-third-heat-cause-had-an-experiment-and-no-installer.md)：**只有在 05 说
+`supported-not-proven` 时才**把散热 ③ 的写入装成"每次开机都做"的 unit——它的执照就是**这一次运行**写出来的那份 05 输出）。

@@ -102,6 +102,7 @@ PANIC="$HERE/../install-no-edl-on-panic.sh"
 HEAT="$HERE/zl1-heat-fix-chain.sh"
 FP="$HERE/../install-fingerprint-store-dir.sh"
 TRIAL="$HERE/../device/zl1-lpm-ladder-trial.sh"
+LPM="$HERE/../install-lpm-sleep-fix.sh"
 
 MODE=status
 OUT=""
@@ -181,7 +182,7 @@ gave_up() { # rc
 # disagree about what the sequence IS: a step added to the plan and not to this list would be invisible
 # to every check below, which is the "an extractor that drops an item" shape this tree has recorded
 # twice (docs 120 section 7).
-STEPS=(01-capture 02-panic-guard 03-heat-chain 04-fingerprint 05-trial)
+STEPS=(01-capture 02-panic-guard 03-heat-chain 04-fingerprint 05-trial 06-lpm-fix)
 
 skipped() {
   local s
@@ -706,6 +707,7 @@ host_ready() {
 03-heat-chain $HEAT
 04-fingerprint $FP
 05-trial $TRIAL
+06-lpm-fix $LPM
 EOF
   if wanted 03-heat-chain; then
     # (b) what step 03's own body will drive. Read out of the chain above.
@@ -760,11 +762,14 @@ if [ "$MODE" = status ]; then
   say "  02-panic-guard   WRITES      the one step that outlasts the boot; arms A for step 05"
   say "  03-heat-chain    WRITES      retires the keeper, which arms C for step 05"
   say "  04-fingerprint   WRITES      a directory + a unit; its verdict is a log count"
-  say "  05-trial         reads       last, because only here can A and C both be true"
+  say "  05-trial         writes ONE  last, because only here can A and C both be true; it reverts"
+  say "                                itself, so its undo is this boot ending"
+  say "  06-lpm-fix       WRITES      arms the third heat cause from the next boot on -- and ONLY if"
+  say "                                05-trial ended with '== verdict: supported-not-proven'"
   say
   say "the bound each step gets (this is the number that decides whether a step is cut off mid-flight):"
   say "  01-capture     $(step_bound_line 01-capture)"
-  say "  02/04/05       ${STEP_LIMIT}s   flat (--step-limit); each is one installer invocation, with no"
+  say "  02/04/05/06    ${STEP_LIMIT}s   flat (--step-limit); each is one installer invocation, with no"
   say "                            callee of its own to read a shape out of"
   say "  03-heat-chain  $(step_bound_line 03-heat-chain)"
   say "  a step that outlasts its bound is DID NOT FINISH -- not a failure, and not a success"
@@ -1095,6 +1100,40 @@ else
 fi
 
 # ==================================================================================================
+# 06. THE THIRD HEAT FIX (docs 160), and the only step here whose licence is another step's OUTPUT
+# ==================================================================================================
+# The heat has three named causes and the heat chain installs two. The third -- every zl1 cmdline
+# carries `lpm_levels.sleep_disabled=1`, which removes the SoC's whole low-power ladder, full power
+# collapse included -- needs a writer at every boot, because the value does not survive a reboot. It is
+# installed HERE and not in the heat chain because its licence is step 05's own verdict: the chain runs
+# before the trial can (the trial refuses while the keeper is burning a core, and the chain is what
+# retires it), so the install cannot be inside it without reordering the thing that makes 05 possible.
+#
+#     == verdict: supported-not-proven   -> installs (the parameter gates the ladder, and the run was clean)
+#     anything else                      -> refuses, and says which reading it refused on
+#
+# The licence file is $OUT/05-trial.txt, which this run wrote. Under `--only 06-lpm-fix` there is no such
+# file, and the installer refuses for that reason -- which is the honest answer: a run that did not
+# measure the ladder cannot licence making it permanent.
+if wanted 06-lpm-fix; then
+  if run_step 06-lpm-fix "arm the third heat cause (WRITES a unit that writes one sysfs file on EVERY boot)" \
+      "$LPM" --install --after-trial "$OUT/05-trial.txt"; then
+    say "   -> rc=0: the writer is installed, enabled, applied now, and the parameter reads back as 0"
+    step_done 06-lpm-fix 0 "installed; the device answered 0 on every parameter, so the ladder is reachable from the next boot on"
+    PASS=$((PASS + 1))
+  else
+    rc=$?
+    say "   -> rc=$rc  (it refuses unless 05-trial ended with '== verdict: supported-not-proven' AND every"
+    say "      download_mode reads 0 -- so a refusal here is usually step 05's answer or step 02's)"
+    step_done 06-lpm-fix "$rc" "not installed -- read 06-lpm-fix.txt; it names which reading it refused on"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  say "-- 06-lpm-fix skipped"
+  step_done 06-lpm-fix skip "skipped by the operator"
+fi
+
+# ==================================================================================================
 # The plan and the execution are two independent things in this file -- STEPS is a list, and the order is
 # the sequence of `if wanted ...` blocks below it -- so they are CHECKED AGAINST EACH OTHER rather than
 # trusted to agree. Without this, editing the run order leaves STEPS listing the old one, `--skip`/`--only`
@@ -1157,4 +1196,7 @@ say "    failed or the address proof did not license the keeper kill."
 say "  * 04: the verdict is a log count, not a feeling --"
 say "    journalctl -b -u biometryd | grep -c 'setActiveGroup failed'  should go to 0."
 say "  * 05: its verdict IS the answer to the third heat cause. REFUTED is a result."
+say "  * 06: it ran only if 05 said supported-not-proven. 'not-installed' is the licence doing its job,"
+say "    and its own file names the verdict it read -- a run whose ladder was never measured must not"
+say "    make the ladder permanent."
 [ "$FAIL" = 0 ] && [ "$N_TIMED_OUT" = 0 ]

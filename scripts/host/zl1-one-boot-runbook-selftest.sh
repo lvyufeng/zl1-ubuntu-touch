@@ -324,8 +324,9 @@ callee ../install-no-edl-on-panic.sh        PANIC
 callee host/zl1-heat-fix-chain.sh           HEAT
 callee ../install-fingerprint-store-dir.sh  FP
 callee device/zl1-lpm-ladder-trial.sh       TRIAL
+callee ../install-lpm-sleep-fix.sh          LPM
 
-CALLEE_NAMES='CAPTURE|PANIC|HEAT|FP|TRIAL'
+CALLEE_NAMES='CAPTURE|PANIC|HEAT|FP|TRIAL|LPM'
 order() { grep -E "CALLEE ($CALLEE_NAMES) args=" "$ACT" 2>/dev/null; }
 # Every `CALLEE <NAME>` line must be one this file knows how to look for: an unknown marker is a SETUP
 # failure, not a silent omission. This is the "extractor that drops an item" shape that doc 120 records
@@ -391,6 +392,7 @@ sed -e "s#^CAP=\"\$HERE/#CAP=\"$CAL/host/#" \
     -e "s#^HEAT=\"\$HERE/#HEAT=\"$CAL/host/#" \
     -e "s#^FP=\"\$HERE/../install-#FP=\"$CAL/../install-#" \
     -e "s#^TRIAL=\"\$HERE/../device/#TRIAL=\"$CAL/device/#" \
+    -e "s#^LPM=\"\$HERE/../install-#LPM=\"$CAL/../install-#" \
     -e "s#/sys/bus/usb/devices/#$FR/sys/bus/usb/devices/#g" \
     "$SRC" > "$RB"
 chmod +x "$RB"
@@ -403,7 +405,8 @@ for pair in "$CAL/host/zl1-post-recovery-capture.sh:scripts/host/zl1-post-recove
             "$CAL/../install-no-edl-on-panic.sh:scripts/install-no-edl-on-panic.sh" \
             "$CAL/host/zl1-heat-fix-chain.sh:scripts/host/zl1-heat-fix-chain.sh" \
             "$CAL/../install-fingerprint-store-dir.sh:scripts/install-fingerprint-store-dir.sh" \
-            "$CAL/device/zl1-lpm-ladder-trial.sh:scripts/device/zl1-lpm-ladder-trial.sh"; do
+            "$CAL/device/zl1-lpm-ladder-trial.sh:scripts/device/zl1-lpm-ladder-trial.sh" \
+            "$CAL/../install-lpm-sleep-fix.sh:scripts/install-lpm-sleep-fix.sh"; do
   pat=${pair%%:*}; rel=${pair##*:}
   grep -qF "$pat" "$RB" || { echo "the rewrite to '$pat' did not land" >&2; exit 2; }
   [ -f "$REPO/$rel" ] || { echo "the callee $rel does not exist in the tree" >&2; exit 2; }
@@ -526,8 +529,24 @@ want 'CALLEE CAPTURE args=--outdir' "$(order | sed -n '1p')" "step 01 runs FIRST
 want 'CALLEE PANIC args=--install' "$(order | sed -n '2p')" "then the panic guard, installed"
 want 'CALLEE HEAT args=--yes --outdir' "$(order | sed -n '3p')" "then the heat chain, in its --yes mode, and TOLD WHERE TO ARCHIVE"
 want 'CALLEE FP args=--install' "$(order | sed -n '4p')" "then the fingerprint store directory"
-want 'CALLEE TRIAL args=--status' "$(order | sed -n '5p')" "and LAST the trial, READ-ONLY by default"
-[ "$(order | wc -l)" = 5 ] && ok "exactly five steps -- no step runs twice and none is smuggled in" || bad "$(order | wc -l) callee call(s) ran"
+want 'CALLEE TRIAL args=--status' "$(order | sed -n '5p')" "then the trial, READ-ONLY by default"
+# AND LAST THE INSTALL THAT STEP 05 LICENSES. It takes step 05's OWN OUTPUT as an argument, so the order
+# is not a preference: an install that ran before the trial would be reading a file that does not exist
+# yet, and the argument is asserted rather than just the position -- a step 06 that ran with no licence
+# would be the whole gate missing.
+want 'CALLEE LPM args=--install --after-trial' "$(order | sed -n '6p')" "and LAST the third heat fix, LICENSED by the trial's own archived output"
+# The exact FILE, not a pattern: this harness's `want` is a literal substring match, so the path is
+# compared as a value. It has to be THIS run's archive -- a licence read from a path that happens to
+# exist (an earlier run's directory, or a stray file) would license an install on a boot that never
+# measured the ladder.
+LPMARG=$(order | sed -n '6p' | sed 's/.*--after-trial //')
+ARCH6=$(latest_archive)
+if [ -n "$ARCH6" ] && [ "$LPMARG" = "$ARCH6/05-trial.txt" ]; then
+  ok "  and that output is THIS run's 05-trial.txt -- the licence is the file this run just wrote"
+else
+  bad "  step 06 was licensed by '$LPMARG', not by $ARCH6/05-trial.txt"
+fi
+[ "$(order | wc -l)" = 6 ] && ok "exactly six steps -- no step runs twice and none is smuggled in" || bad "$(order | wc -l) callee call(s) ran"
 [ "$RC" = 0 ] && ok "and the run exits 0" || bad "it exited $RC"
 # The capture archives INSIDE ours, so its INDEX.txt is not overwritten by ours -- two records of the
 # same boot. A shared outdir would silently lose one of them.
@@ -704,7 +723,8 @@ FP_SLEEP_FP=5 run --yes --step-limit 2
 want 'DID NOT FINISH: killed at 2s (rc=124, timeout(1))' "$OUT" "the host-side reason is named, with the bound and the code"
 want 'This is NOT a failure of the' "$OUT" "and it is explicitly NOT filed as a failure of the step"
 want 'NOT a success' "$OUT" "nor as a success -- the device state after it is unread, and that is said"
-want 'CALLEE TRIAL' "$(order | sed -n '5p')" "and the LAST step still ran: a step that ran out of time does not cost the others"
+want 'CALLEE TRIAL' "$(order | sed -n '5p')" "and the step after it still ran: a step that ran out of time does not cost the others"
+want 'CALLEE LPM' "$(order | sed -n '6p')" "and neither did the one after THAT -- an unbounded 04 does not cost the boot its later steps"
 OD7=$(latest_archive)
 # The two ROWS are read with grep -E and not with `want`: this harness's `want` is a GLOB match (see its
 # definition), where an anchored pattern is the literal `^` and the check would pass for the wrong reason.
@@ -719,8 +739,8 @@ want 'DID NOT FINISH' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "and one line explai
 want 'DID NOT FINISH: the host gave up at 2s' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "the row's own note says which bound was hit, so the next reader does not have to infer it"
 want 'Neither a failure of the step nor a success' "$(cat "$OD7/INDEX.txt" 2>/dev/null)" "with the same sentence the reader needs, in the record itself"
 want '1 did not finish' "$OUT" "and the totals count it apart from the failures"
-want 'one-boot runbook did not complete: 4 step(s) ran, 0 failed, 1 did not finish' "$OUT" \
-  "the exact line: four of the five ran, none FAILED, one did not finish -- the same step must not be counted as both"
+want 'one-boot runbook did not complete: 5 step(s) ran, 0 failed, 1 did not finish' "$OUT" \
+  "the exact line: five of the six ran, none FAILED, one did not finish -- the same step must not be counted as both"
 ( cd "$OD7" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "and the archive still verifies" || bad "the archive fails its own sha256sum -c"
 
 echo
