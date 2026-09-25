@@ -1,0 +1,232 @@
+zl1 -- the SECOND heat cause (cpufreq governor), THIRD device run, 2026-09-25
+============================================================================
+
+One boot throughout: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5 -- the same boot as docs 168, 170 and
+172. Read again AFTER this run: unchanged, four cores `interactive`, `systemctl is-system-running` =
+running, 0 failed units. Nothing was flashed, no partition was written, no block device was opened, no
+service was restarted, the container was never stopped.
+
+THIS IS THE FIRST RUN OF THE INSTRUMENT AS DOCS 172 LEFT IT, and the first run of the pre-hold on a real
+phone. Its verdict is NO RETURN: the instrument REFUSED to print a price, and printed the DIRECTION of
+the difference that stopped it (4.1 C BELOW window A, on thermal_zone9). The second run printed
+`COST-MEASURED 3.5 C` on the same phone in the same shape; this one does not.
+
+Every number below is the device's own. THE DEVICE CLOCK IS WRONG (it reads 1970-02-13) -- the real dates
+and times are the host ones in this header -- but it ADVANCES at the normal rate, so the `/proc/uptime`
+figures the instrument prints are the honest clock for everything in section B, and they are what the
+timeline in section C is computed from.
+
+Host: this laptop (launched 2026-09-25T22:43:45Z).  Device: root@10.15.19.82 (rndis0), serial 33e80afe.
+The instrument was pushed with `scp ... /tmp/` and its sha256 on the device is the same as the shippped
+file's: 5389fffeaa8709e48ad1c09aa3f93a27eb80fc23704bff2865cc546fa5d5451a.
+
+The only thing this experiment writes is four cpufreq files, and the value it writes back is the fix's own
+(`interactive`). This run was started with `--keep`, so it NAMED its scratch directory instead of removing
+it (/tmp/zl1-governor-temp-ab.ubXCQ9, holding pre.1, pre.2, win.A, win.B, back and deltas) and those files
+were pulled to this laptop before anything else touched the device.
+
+--------------------------------------------------------------------------------
+A. THE RUN (--yes --keep), IN FULL, as it came back
+--------------------------------------------------------------------------------
+
+
+== zl1 governor temperature A/B -- 1970-02-13T20:57:23Z UTC
+  device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+  cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor)
+  instrument:  /tmp/zl1-thermal.sh
+  windows:     45s each, 20s after each write
+  holds:       up to 300s before A, up to 240s before C, at a 0.5 C bar, every 10s
+  states:      A/C 'interactive' (the fix, installed)  B 'performance' (the image's own value)
+  panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+  now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+== the refusals, on their own terms (nothing is written until all of them have passed)
+   A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+   B. instrument: readable (/tmp/zl1-thermal.sh)
+   C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+   D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+   C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                  back -- writable in fact, and every core agrees on what it read.
+
+== the pre-hold -- is this phone holding still, before a window is read at all?
+   Two readings 10s apart must agree on EVERY tsens zone to within 0.5 C before window A is
+   read. Up to 300s. A phone that never holds still cannot be priced, and this is refused
+   before the intervention: this is the one exit from this script that writes nothing at all.
+   IT IS HOLDING STILL: after 20s, the largest change on any tsens zone in the last 10s
+   was 0.4 C (signed 0.4 C, on thermal_zone16 (tsens_tz_sensor15)). Window A
+   below is a STATE, not a point on a curve -- which is what makes B and C comparable to it.
+
+== window A -- as installed (every core on 'interactive', nothing written yet)
+   busy 0.82 of 4 cores; 38 zone(s) read
+   wrote 'performance' to all 4 core(s) and read 'performance' back: the cores are PINNED from
+   here until the undo (this is the image's own state -- the second heat cause put back).
+
+== window B -- the cores PINNED (the one change this experiment makes)
+   busy 0.54 of 4 cores
+   wrote 'interactive' to all 4 core(s) and read 'interactive' back: this is the state it started in.
+
+== the wait -- does window A's reading come back before the control window reads it?
+   window A's hottest tsens zone: 47.0 C. Waiting up to 240s (every 10s) for EVERY
+   tsens zone to come back to within 0.5 C of its OWN window A reading before window C reads
+   anything. Every zone, and not just the hottest one: the hottest zone CHANGES HANDS while a run goes
+   on, so a test that follows it compares one zone's number with another's and calls it a return
+   (docs 172 -- the second device run passed that test while being 4.2 C down).
+   IT DID NOT COME BACK within 240s: the largest difference from window A is 4.1
+   BELOW window A's reading of the SAME zone (-4.1 C, on thermal_zone9 (tsens_tz_sensor8)). Two things can look like this and this instrument cannot
+   tell them apart: the intervention's warming has not decayed (thermal mass), or the phone moved on
+   its own by more than the margin while the run went on -- in EITHER direction. BOTH are statements
+   about this RUN and about the phone. Neither is a price for the governor, so THIS RUN PRINTS NO
+   PRICE: there is no control window to compare against, and window C is not read at all.
+
+   What it does establish is the phone's own thermal behaviour under this intervention, and that is
+   worth having: it is the number a longer wait would have to beat. If you want the price anyway,
+   --settle-back 0 runs the old design and --margin N loosens the bar; both are printed in the
+   verdict so nobody has to guess which one was used.
+
+== no window C -- there is no control window in this run, so there is no verdict to print
+   the cores are back on 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state this script found them in.
+   The run stops here with a table of the TWO windows it did take, because the third is only a control
+   while it reads the same STATE as the first one -- and the wait above just measured that it would not.
+   zone       type                        A      B     B-A
+   thermal_zone14 tsens_tz_sensor13        40.1   42.0   +1.9
+   thermal_zone1 tsens_tz_sensor0         39.9   41.6   +1.7
+   thermal_zone6 tsens_tz_sensor5         41.9   43.5   +1.6
+   thermal_zone11 tsens_tz_sensor10        44.8   46.1   +1.3
+   thermal_zone12 tsens_tz_sensor11        44.8   46.1   +1.3
+   thermal_zone16 tsens_tz_sensor15        37.5   38.8   +1.3
+   thermal_zone17 tsens_tz_sensor16        41.7   43.0   +1.3
+   thermal_zone18 tsens_tz_sensor17        42.7   44.0   +1.3
+   thermal_zone2 tsens_tz_sensor1         42.5   43.8   +1.3
+   thermal_zone4 tsens_tz_sensor3         41.9   43.2   +1.3
+   thermal_zone5 tsens_tz_sensor4         41.2   42.5   +1.3
+   thermal_zone7 tsens_tz_sensor6         40.9   42.2   +1.3
+   thermal_zone19 tsens_tz_sensor18        38.2   39.4   +1.2
+   thermal_zone20 tsens_tz_sensor19        39.4   40.4   +1.0
+   thermal_zone21 tsens_tz_sensor20        40.4   41.4   +1.0
+   thermal_zone23 msm_therm                37.0   38.0   +1.0
+   thermal_zone24 emmc_therm               34.0   35.0   +1.0
+   thermal_zone27 quiet_therm              37.0   38.0   +1.0
+   thermal_zone3 tsens_tz_sensor2         40.9   41.9   +1.0
+   thermal_zone8 tsens_tz_sensor7         42.2   42.9   +0.7
+   thermal_zone13 tsens_tz_sensor12        44.8   45.4   +0.6
+   thermal_zone15 tsens_tz_sensor14        38.2   38.8   +0.6
+   thermal_zone22 pm8994_tz                37.0   37.4   +0.4
+   thermal_zone0 bms                      33.2   33.2   +0.0
+   thermal_zone25 pa_therm0                34.0   34.0   +0.0
+   thermal_zone26 pa_therm1                30.0   30.0   +0.0
+   thermal_zone28 xo_therm_buf              0.0    0.0   +0.0
+   thermal_zone29 battery                  33.2   33.2   +0.0
+   thermal_zone30 DLMt_APC1                 0.0    0.0   +0.0
+   thermal_zone31 LLM_cp00                  0.0    0.0   +0.0
+   thermal_zone32 LLM_cp01                  0.0    0.0   +0.0
+   thermal_zone33 LLM_cp10                  0.0    0.0   +0.0
+   thermal_zone34 LLM_cp11                  0.0    0.0   +0.0
+   thermal_zone35 LLM_m4m0                  0.0    0.0   +0.0
+   thermal_zone36 LLM_l21-                  0.0    0.0   +0.0
+   thermal_zone37 LLM_l20-                  0.0    0.0   +0.0
+   thermal_zone10 tsens_tz_sensor9         47.0   45.4   -1.6
+   thermal_zone9 tsens_tz_sensor8         47.0   44.8   -2.2
+
+== the verdict
+   -> NO RETURN: some tsens zone did not come back to within 0.5 C of its own window A reading
+      within 240s (the largest difference was 4.1 C BELOW window A's reading of the SAME zone), so window C would not
+      have read window A's state -- it would have read whatever the run did to the phone after A.
+      This run therefore PRINTS NO PRICE for the second heat cause, and that is the correct answer:
+      the number the old design would have printed from A and B alone (the largest warming above) is
+      not the governor's cost, it is the governor's cost PLUS however far the phone moved on its own
+      -- and this instrument has just measured that the phone moved further than it can resolve.
+
+   What this run DOES establish is about the phone: after the intervention was undone, the zones were
+   still 4.1 C away from their window A readings 240s later. That is the number a
+   longer wait or a bigger margin would have to beat, and it is printed with the setting that produced
+   it.
+
+   The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state it started in.
+
+   --keep: this run's scratch directory is /tmp/zl1-governor-temp-ab.ubXCQ9 (deltas, deltas.note, win.A/B/C, back).
+
+--------------------------------------------------------------------------------
+B. THE RAW FILES THE RUN LEFT BEHIND (--keep), headers only
+--------------------------------------------------------------------------------
+
+Every window and every sample is a run of `zl1-thermal.sh`, and each one prints the /proc/uptime it read
+and how busy the machine was while it read it. Those two columns are the honest timeline of this run.
+
+  pre.1  -- the first pre-hold sample
+    zl1 thermal budget :: Fri Feb 13 03:57:33 PM EST 1970 :: uptime 19861 s :: window 10s :: read-only
+      busy 1.04 of 4 cores (26%), of which iowait 0.00 cores
+      user 5%  sys 19%  irq 1%  softirq 1%  iowait 0%   (5867 ticks, 10 s)
+      context switches 8487/s   loadavg 4.00 3.99 4.02   D-state threads 3
+    == thermal zones:
+       thermal_zone0 bms                          32.7 C   <- type not in the unit table; assumed milli-degC (raw 32700)
+
+  pre.2  -- the second pre-hold sample = THE PLATEAU
+    zl1 thermal budget :: Fri Feb 13 03:58:07 PM EST 1970 :: uptime 19895 s :: window 10s :: read-only
+      busy 1.05 of 4 cores (26%), of which iowait 0.00 cores
+      user 5%  sys 20%  irq 1%  softirq 1%  iowait 0%   (5892 ticks, 10 s)
+      context switches 8704/s   loadavg 4.29 4.07 4.04   D-state threads 3
+    == thermal zones:
+       thermal_zone0 bms                          32.7 C   <- type not in the unit table; assumed milli-degC (raw 32700)
+
+  win.A  -- window A (the fix installed)
+    zl1 thermal budget :: Fri Feb 13 03:58:31 PM EST 1970 :: uptime 19919 s :: window 45s :: read-only
+      busy 0.82 of 4 cores (21%), of which iowait 0.00 cores
+      user 5%  sys 15%  irq 1%  softirq 1%  iowait 0%   (19529 ticks, 45 s)
+      context switches 4217/s   loadavg 4.10 4.07 4.05   D-state threads 5
+    == thermal zones:
+       thermal_zone0 bms                          33.2 C   <- type not in the unit table; assumed milli-degC (raw 33200)
+
+  win.B  -- window B (the cores PINNED)
+    zl1 thermal budget :: Fri Feb 13 03:59:49 PM EST 1970 :: uptime 19997 s :: window 45s :: read-only
+      busy 0.54 of 4 cores (14%), of which iowait 0.00 cores
+      user 3%  sys 10%  irq 0%  softirq 0%  iowait 0%   (19103 ticks, 45 s)
+      context switches 4015/s   loadavg 4.18 4.11 4.06   D-state threads 3
+    == thermal zones:
+       thermal_zone0 bms                          33.2 C   <- type not in the unit table; assumed milli-degC (raw 33200)
+
+  back   -- THE LAST SAMPLE OF THE WAIT: what the phone looked like when the bound ran out
+    zl1 thermal budget :: Fri Feb 13 04:14:12 PM EST 1970 :: uptime 20860 s :: window 10s :: read-only
+      busy 1.07 of 4 cores (27%), of which iowait 0.00 cores
+      user 6%  sys 20%  irq 1%  softirq 1%  iowait 0%   (5851 ticks, 10 s)
+      context switches 8705/s   loadavg 4.14 4.25 4.19   D-state threads 5
+    == thermal zones:
+       thermal_zone0 bms                          33.7 C   <- type not in the unit table; assumed milli-degC (raw 33700)
+
+  deltas -- the two-window table the run printed (A, B, B-A); window C was never read, so there is no
+  third column. It is in section A above, in full, and it is the same 38 rows.
+
+--------------------------------------------------------------------------------
+C. THE TIMELINE, from /proc/uptime (the device clock is wrong; uptime is not)
+--------------------------------------------------------------------------------
+
+  uptime    what                                  busy
+  19861     pre.1   (first pre-hold sample)       1.04 of 4 cores
+  19895     pre.2   (second: this is the plateau) 1.05
+  19919     window A starts                      0.82
+  19997     window B starts (cores PINNED)       0.54
+  ~20062    the undo is done, and the wait starts (B's 45 s + the 20 s settle)
+  20860     the last sample of the wait -- and the phone is 4.1 C BELOW window A on thermal_zone9
+
+  THE WAIT COST 798 SECONDS OF WALL CLOCK AGAINST A 240 SECOND BOUND -- 24 samples, i.e. about 33 s each,
+  and each sample is `zl1-thermal.sh --seconds 10`: its own 10 s window PLUS the time this device takes to
+  walk /proc for its per-process snapshot. So the bound counts the SLEEPS, and the samples are charged on
+  top of it -- on this phone, about 3.3 times the bound. The run's own text says "within 240s", which is
+  the bound and not the wall clock, and that is a defect this run found (docs 173 section 5).
+
+  The whole run spanned uptime 19861 -> ~20870: 1009 s, about 17 MINUTES, of which the wait was 13.
+
+--------------------------------------------------------------------------------
+D. WHAT WAS AND WAS NOT ESTABLISHED
+--------------------------------------------------------------------------------
+
+  ESTABLISHED:  (1) the pre-hold works on the real phone -- the phone was HOLDING STILL (the largest change
+                    on any tsens zone in 10 s was 0.4 C) before window A was read, and it said so;
+                (2) the phone is a phone whose own state moves more than this experiment can resolve inside
+                    one run: 4.1 C of difference from window A, in the OPPOSITE direction to the
+                    intervention, measured AFTER the cores were put back;
+                (3) the instrument refuses a price for it, does not read window C, restores the cores, and
+                    prints the direction of the difference that stopped it.
+
+  NOT ESTABLISHED, and this is the whole point: WHAT THE SECOND HEAT CAUSE IS WORTH IN TEMPERATURE. Three
+  device runs have now been made with this instrument and NONE of them has produced a price -- one
+  CONTAMINATED (docs 170), one that printed an artifact (docs 172), and this one, which refused.
