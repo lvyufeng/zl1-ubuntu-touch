@@ -66,9 +66,15 @@
 #   not-verified-whether-it-compiles   the compile could not be attempted (no toolchain, or no sibling
 #                                      `.cmd` to recover the flags from). A check that could not be
 #                                      made is NOT a pass, and this rung says so out loud.
-#   already-in-the-kernel              the built config ALREADY has the option on, so the missing
-#                                      driver has a different cause and this instrument is the wrong
-#                                      one. (It is not a success: it is a contradiction with docs 157.)
+#   already-in-the-kernel              the built config has the option ON. What that means depends
+#                                      on which question you are asking, and the verdict says which:
+#                                      for "how far is this driver" the distance is ZERO; for the
+#                                      premise this instrument was written under (docs 157 read the
+#                                      RUNNING image and it said not set) it is a contradiction to be
+#                                      explained before anything is built. Since docs 159 the option is
+#                                      on DELIBERATELY, so the caveat now names the image instead: this
+#                                      verdict is about the BUILD DIRECTORY, and the build directory is
+#                                      not the image -- read the image (host/zl1-boot-image-kernel.sh).
 #   one-config-line-away               every link is in place: the option is available and its
 #                                      dependencies are satisfied, the driver is in this tree, it
 #                                      matches the node's compatible exactly, this phone's built trees
@@ -835,7 +841,7 @@ elif [ "$DTB_BAD" != 0 ]; then
   VMSG="$DTB_BAD .dtb file(s) under $DTBD exist and could not be parsed, so the node reading covers only the files that could be read. This rung exists because 'no tree here names this phone' and 'a tree here could not be read' send an operator to two different places, and only one of them is a claim about the board."
 elif [ "$OPT_BUILT" != "NOT SET" ]; then
   V=already-in-the-kernel
-  VMSG="the BUILT config already reads $OPT = $OPT_BUILT, so the missing /dev/goodix_fp has a different cause and this instrument is the wrong one. This contradicts docs 157's reading and should be resolved before anything is built."
+  VMSG="the BUILT config reads $OPT = $OPT_BUILT, so the DISTANCE measured here is ZERO: this build directory produces a kernel that carries the driver. Two things follow, and only one of them can be true at once. (1) If the option was switched on ON PURPOSE (docs 159 turned it on with one defconfig line), then this rung is the expected answer and the open question has MOVED: a build directory is not an image, so read the image you are about to boot -- host/zl1-boot-image-kernel.sh reads the config out of the Image itself. (2) If it was NOT, then docs 157's reading of the RUNNING image said not set, and something is off between this build directory and that image -- say which before anything is built."
 elif [ "$COMPILE" = skipped ]; then
   V=not-verified-whether-it-compiles
   VMSG="every STATIC link is in place, and the two links that need a toolchain were not checked: $COMPILE_WHY. A check that could not be made is not a pass, so this is NOT the top rung."

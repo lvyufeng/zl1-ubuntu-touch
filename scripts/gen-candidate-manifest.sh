@@ -54,6 +54,8 @@ result_of() {
       echo "**Phase 1 baseline** — reproduced byte-for-byte by two clean rebuilds; this is the reproducible target SHA" ;;
     halium-boot-zl1-filtered-dtb-postswitch-debug-v*.img)
       echo "debug iteration" ;;
+    halium-boot-zl1-v63-fpdriver.img)
+      echo "**the fingerprint driver, built and verified OFFLINE -- never run on hardware yet** (docs/ubuntu-touch/159-the-driver-was-built-into-the-image-and-the-image-is-the-reading.md). One deliberate change to the rebuilt v63: **one line** in the kernel's defconfig, \`CONFIG_INPUT_GP5XX8=y\`, which compiles \`drivers/input/goodixfp/\` (\`gf_spi.c\` + \`platform.c\`) into the kernel -- the driver for the Goodix sensor the container's HAL opens \`/dev/goodix_fp\` for, and the one link docs 157/158 measured as missing. Read out of the image ITSELF by \`host/zl1-boot-image-kernel.sh\`: the kernel's own embedded config differs from the rebuilt v63's in **exactly one option**, and the driver's strings (\`goodix_fp\`, \`gf318m\`, \`goodix,fingerprint\`, \`goodix_fp_spi\`) are in the decompressed Image. **The initramfs (\`sha256 ebb281ff5537d99a\`), the five appended DTBs (\`5b280099e84e773c\`) and the cmdline are BYTE-IDENTICAL to the rebuilt v63**, so the only variable is the kernel; the kernel blob grows by 2601 bytes. The undo is flashing \`halium-boot-zl1-v63-rebuilt.img\` back" ;;
     *.img)
       echo "—" ;;
   esac

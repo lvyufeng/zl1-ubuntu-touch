@@ -250,9 +250,11 @@ mk_fixture "Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1" "goodix,f
 wantf 'spi-disabled' "$OUT" "with the reason named in the verdict"
 
 mk_fixture "Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1" "goodix,fingerprint" "" "on"; fxrun
-[ "$(verdict "" "$OUT")" = already-in-the-kernel ] && ok "a built config that ALREADY has the option on -> already-in-the-kernel, which is a contradiction with docs 157 and not a success" \
+[ "$(verdict "" "$OUT")" = already-in-the-kernel ] && ok "a built config that has the option on -> already-in-the-kernel: the distance is ZERO, and since docs 159 that is also what turning it on DELIBERATELY produces" \
   || bad "rung was '$(verdict "" "$OUT")'"
-want 'this instrument is the wrong one' "$OUT" "and the message says the instrument is the wrong one rather than hinting at success"
+want 'DISTANCE measured here is ZERO' "$OUT" "and the message says the distance is zero rather than calling the reading a contradiction on its own"
+want 'a build directory is not an image' "$OUT" "and it names what the run is actually about -- the BUILD DIRECTORY -- so the image is not read as this"
+want 'zl1-boot-image-kernel.sh' "$OUT" "and it points at the tool that reads the IMAGE, because that is the question the build directory cannot answer"
 
 mk_fixture; rm -f "$W/fx/src/drivers/input/goodixfp/gf_spi.c"; fxrun
 [ "$(verdict "" "$OUT")" = driver-source-missing ] && ok "no source file -> driver-source-missing" || bad "rung was '$(verdict "" "$OUT")'"
@@ -470,12 +472,35 @@ RSRC="${ZL1_KERNEL_SRC:-/mnt/data/halium-zl1-build/kernel/leeco/msm8996}"
 ROBJ="${ZL1_KERNEL_OBJ:-/mnt/data/halium-zl1-build/out/target/product/zl1/obj/KERNEL_OBJ}"
 RDTB="$ROBJ/arch/arm64/boot/dts/qcom"
 if [ -d "$RSRC" ] && [ -d "$ROBJ" ] && [ -d "$RDTB" ]; then
-  ROUT=$(timeout -k 5 900 bash "$SRC" 2>&1); RRC=$?
-  [ "$RRC" = 0 ] && ok "the subject runs against the real tree (rc=0)" || bad "against the real tree it exited $RRC"
+  # TWO RUNS, because since docs 159 the build directory and the trees it reads are two different
+  # answers, and a harness that only made one of them would read the stage's own result as a defect.
+  #
+  # (a) THE LIVE BUILD DIRECTORY, as it is. Its `.config` now carries the option ON -- the one line
+  #     docs 159 flipped -- so the honest verdict is that the distance is ZERO. This is the EXPIRY
+  #     CHECK, and it fires in BOTH directions: if someone turns the option back off without saying so,
+  #     the assertion below reddens just as loudly.
+  LOUT=$(timeout -k 5 900 bash "$SRC" 2>&1); LRC=$?
+  [ "$LRC" = 0 ] && ok "the subject runs against the real build directory (rc=0)" || bad "against the real build directory it exited $LRC"
+  wantf 'CONFIG_INPUT_GP5XX8 = y (built in)' "$LOUT" "and the LIVE built config reads the option ON -- this is docs 159's one defconfig line, seen from the build directory"
+  [ "$(verdict "" "$LOUT")" = already-in-the-kernel ] && ok "so its verdict is 'already-in-the-kernel' -- the distance is zero, and the note about the boot image is printed with it" \
+    || bad "the live build directory's verdict is '$(verdict "" "$LOUT")'"
+  wantf 'a build directory is not an image' "$LOUT" "and the verdict says which of the two things it is looking at"
+
+  # (b) THE SAME REAL TREE, with the config NAMED. Everything that makes this half real is still the
+  #     real one -- the real source, the real Makefile and Kconfig, the real driver sources, the five
+  #     real built DTBs, the real boot image's five appended trees, the real objdir's flags and the real
+  #     vmlinux -- and the two files that are written here are the CONFIG and the DEFCONFIG, both with
+  #     the option off, both hashed in the subject's own section 1. So the rungs below the top one are
+  #     still reached ON THE REAL TREE, and the reading carries the identity of the config it is about.
+  printf '#\n# Automatically generated file\n#\nCONFIG_INPUT=y\n# CONFIG_INPUT_GP5XX8 is not set\n' > "$W/off.config"
+  printf '# CONFIG_INPUT_GP5XX8 is not set\n' > "$W/off.defconfig"
+  ROUT=$(timeout -k 5 900 bash "$SRC" --config "$W/off.config" --defconfig "$W/off.defconfig" 2>&1); RRC=$?
+  [ "$RRC" = 0 ] && ok "with a NAMED config the subject runs against the real tree (rc=0)" || bad "against the real tree it exited $RRC"
+  wantf "$(sha256sum "$W/off.config" | cut -c1-16)" "$ROUT" "and the config it read is identified by hash in the reading, not by its path -- the path can hold another file tomorrow"
   RV=$(verdict "" "$ROUT")
   [ "$RV" = one-config-line-away ] && ok "and the verdict is 'one-config-line-away' -- measured here, not read back from a document" \
     || bad "the real tree's verdict is '$RV'"
-  wantf 'CONFIG_INPUT_GP5XX8 = NOT SET' "$ROUT" "the BUILT config has the option off"
+  wantf 'CONFIG_INPUT_GP5XX8 = NOT SET' "$ROUT" "under that config the built option reads off"
   want 'INPUT = y \(built in\)' "$ROUT" "and the option's only dependency is satisfied"
   want 'built from:    gf_spi.o platform.o$' "$ROUT" "the real Makefile's continuation line is read whole"
   want 'required by the driver:gfvdda-supply goodix,gpio_irq goodix,gpio_reset' "$ROUT" "the real driver's requirements, with the dead one excluded"
@@ -516,7 +541,7 @@ if [ -d "$RSRC" ] && [ -d "$ROBJ" ] && [ -d "$RDTB" ]; then
   # do with the driver -- a false red about the driver, which is the most dangerous kind of red.
   mut quoteflags "out = line[i:].strip().replace('\"', '')" 'out = line[i:].strip()'
   if [ -r "$W/mut/quoteflags.sh" ]; then
-    QOUT=$(timeout -k 5 900 bash "$W/mut/quoteflags.sh" 2>&1)
+    QOUT=$(timeout -k 5 900 bash "$W/mut/quoteflags.sh" --config "$W/off.config" --defconfig "$W/off.defconfig" 2>&1)
     [ "$(verdict "" "$QOUT")" = driver-does-not-compile ] && ok "  with the shell quoting left in the flags the compile fails and the verdict blames the DRIVER -- the false red the strip exists to prevent" \
       || bad "  the quote mutation landed on '$(verdict "" "$QOUT")'"
     want 'macro names must be identifiers' "$QOUT" "  and the diagnostic is the one the quotes produce"
@@ -525,7 +550,7 @@ if [ -d "$RSRC" ] && [ -d "$ROBJ" ] && [ -d "$RDTB" ]; then
   # the rule stated in the subject's own header, end to end: with no toolchain the verdict must drop off
   # the top rung rather than quietly standing on readings that were never made.
   mkdir -p "$W/notc"
-  NOOUT=$(ZL1_TC_BIN="$W/notc" timeout -k 5 900 bash "$SRC" --quiet 2>&1)
+  NOOUT=$(ZL1_TC_BIN="$W/notc" timeout -k 5 900 bash "$SRC" --config "$W/off.config" --defconfig "$W/off.defconfig" --quiet 2>&1)
   [ "$(verdict "" "$NOOUT")" = not-verified-whether-it-compiles ] && ok "with no toolchain the REAL tree drops off the top rung to 'not-verified-whether-it-compiles'" \
     || bad "with no toolchain the verdict was '$(verdict "" "$NOOUT")'"
   # and the same rule for an objdir the flags cannot be recovered from: there is nothing to compile FROM.
