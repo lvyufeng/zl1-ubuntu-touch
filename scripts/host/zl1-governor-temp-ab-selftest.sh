@@ -25,6 +25,19 @@
 #      mutation, because they are the whole difference between pricing a bool and pricing a governor: a
 #      governor the kernel does not OFFER (silent at the write site, and it would read as "costs nothing"),
 #      and cores that DISAGREE (there is then no window A to speak of).
+#   7. THE WAIT DECIDES WHETHER THERE IS A CONTROL WINDOW AT ALL (docs 170, 171). A reading that comes back
+#      makes window C a control and the run prints a price; a reading that does NOT come back inside the
+#      bound makes the run print NO PRICE and skip window C entirely. Both are scenarios, and the mutation
+#      that ignores the wait's answer has to be driven by the second one: every other scenario's reading
+#      comes back, so a branch that never runs cannot be seen from the passing side.
+#   8. THE RUN SAYS WHERE ITS OWN FILES ARE, AND CLEANS UP AFTER ITSELF. A plain run removes its scratch
+#      directory and says which; --keep keeps it and says where; and the shipped source has exactly ONE
+#      exit trap doing both the restore and the cleanup -- because a second `trap ... EXIT` REPLACES the
+#      first, which is how the cleanup came to never run on the device (docs 170), silently. m10 disarms it
+#      and the only assertion in this file that can see that is the one that counts leftovers.
+#   9. THE WHOLE TABLE IS PRINTED. The device run printed twelve rows and said the rest were "in the archive"
+#      -- a directory with a random suffix that nothing named. The version with a cap is mutation m8, and the
+#      assertion it has to break is the table's OWN claim that every row is printed.
 #
 # How it works: **the stub directory IS the device**, the same construction this family's other harnesses
 # use -- the script runs as itself against a fake root, with PATH for the child set to `$STUB:$MINBIN`. TWO
@@ -188,15 +201,37 @@ n=$(cat "${FP_COUNT:-/nonexistent}" 2>/dev/null)
 case "$n" in ''|*[!0-9]*) n=0 ;; esac
 n=$((n + 1))
 printf '%s' "$n" > "${FP_COUNT:-/dev/null}" 2>/dev/null
-printf 'window n=%s pinned=%s\n' "$n" "$pinned" >> "${FP_ACT:-/dev/null}"
+# THE COOLING MODEL, and it exists because the instrument now WAITS for the reading to come back before it
+# reads the control window (docs 170). `FP_COOL` is the number of SAMPLES the intervention's excess survives
+# after the cores are put back; `-1` means it never decays at all, which is the phone the first device run
+# turned out to be. The counter is a file for the same reason the window counter is: the stub is a process,
+# and it cannot remember anything between calls.
+cool=$(cat "${FP_COOLFILE:-/nonexistent}" 2>/dev/null)
+case "$cool" in ''|*[!0-9-]*) cool=n ;; esac   # `n` = this phone has never been pinned in this run
+if [ "$pinned" = 1 ]; then
+  cool="${FP_COOL:-1}"
+  printf '%s' "$cool" > "${FP_COOLFILE:-/dev/null}" 2>/dev/null
+elif [ "$cool" != n ]; then
+  [ "$cool" -gt 0 ] 2>/dev/null && cool=$((cool - 1))
+  printf '%s' "$cool" > "${FP_COOLFILE:-/dev/null}" 2>/dev/null
+fi
+printf 'window n=%s pinned=%s cool=%s\n' "$n" "$pinned" "$cool" >> "${FP_ACT:-/dev/null}"
 awk -v b="$pinned" -v n="$n" -v base="${FP_BASE:-42.0}" -v diff="${FP_DIFF:-0}" -v drift="${FP_DRIFT:-0}" \
-    -v other="${FP_OTHER_DIFF:-0}" '
+    -v other="${FP_OTHER_DIFF:-0}" -v cool="$cool" -v ct="${FP_COOL:-1}" -v nz="${FP_ZONES:-4}" '
   BEGIN {
-    hot = base + drift * (n - 1) + (b ? diff : 0)
+    # The excess the intervention left behind: full while the cores are pinned, and decaying by one step per
+    # sample afterwards. `ct < 0` is the phone whose heat does not decay inside the window at all -- which is
+    # what the first device run measured (docs 170).
+    if (b)                 exc = diff
+    else if (cool == "n")  exc = 0
+    else if (ct < 0)       exc = diff
+    else if (ct == 0)      exc = 0
+    else                   exc = diff * cool / ct
+    hot = base + drift * (n - 1) + exc
     printf "zl1 thermal budget :: window %d :: read-only\n", n
     printf "  busy 0.80 of 4 cores (20%%), of which iowait 0.00 cores\n"
     printf "== thermal zones:\n"
-    for (i = 0; i < 4; i++) printf "   thermal_zone%d tsens_tz_sensor%d             %.1f C\n", i, i, hot + i * 0.5
+    for (i = 0; i < nz; i++) printf "   thermal_zone%d tsens_tz_sensor%d             %.1f C\n", i, i, hot + i * 0.5
     printf "   thermal_zone0 bms                          35.7 C   <- type not in the unit table; assumed milli-degC (raw 35700)\n"
     printf "   thermal_zone22 pm8994_tz                    %.1f C\n", base + drift * (n - 1) + (b ? other : 0)
     printf "   hottest: tsens_tz_sensor0 %.1f C  (raw %d = deci-degC, of 38 zones; 1 flagged above)\n", hot, hot * 10
@@ -271,16 +306,17 @@ wantsq() { local sq; sq=$(squash "$2"); if grep -Eq -- "$1" <<< "$sq"; then ok "
 # root -- including a new file -- changes the hash.
 tree_hash() { (cd "$FR" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | sha256sum | awk '{print $1}'; }
 
-FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0
+FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
 scen() { # name -- reset the device to the healthy, installed state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
-  FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0
+  FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
   gc_mk
   dl_set 0
-  rm -f "$W/win.count"
+  rm -f "$W/win.count" "$W/cool.count"
   : > "$ACT"
 }
-env_for() { printf '%s\n' "FP_GOV=$(gc_path 0)" "FP_COUNT=$W/win.count" "FP_ACT=$ACT" "FP_DIFF=$FP_DIFF" \
+env_for() { printf '%s\n' "FP_GOV=$(gc_path 0)" "FP_COUNT=$W/win.count" "FP_COOLFILE=$W/cool.count" "FP_ACT=$ACT" \
+  "FP_DIFF=$FP_DIFF" "FP_COOL=$FP_COOL" "FP_ZONES=$FP_ZONES" \
   "FP_DRIFT=$FP_DRIFT" "FP_BASE=$FP_BASE" "FP_OTHER_DIFF=$FP_OTHER_DIFF" "FP_INSTRUMENT_RC=$FP_INSTRUMENT_RC"; }
 
 run() { # the script's own args...
@@ -371,6 +407,17 @@ want 'for zl1_g in /sys/devices/system/cpu/cpu\*/cpufreq/scaling_governor' "$(ca
 N_GOV_WRITES=$(grep -c 'printf .%s. "\$zl1_want" > "\$zl1_g"' "$W/.nocomments.sh")
 [ "$N_GOV_WRITES" = 1 ] && ok "and there is exactly ONE place that writes a governor (the read-back loop is not a write)" \
                         || bad "$N_GOV_WRITES governor writes in the shipped source, expected 1"
+# ONE EXIT TRAP, and it does both jobs. A POSIX shell keeps ONE action per condition, so a second `trap ... EXIT`
+# silently REPLACES the first: that is how the cleanup came to never run on the device (docs 170), and it is
+# invisible from the passing side because every assertion about the RESTORE still holds. Static, on the shipped
+# source, because the failure mode is "the line that should be there is not".
+N_EXIT_TRAPS=$(grep -c '^trap .* EXIT$' "$W/.nocomments.sh")
+[ "$N_EXIT_TRAPS" = 1 ] && ok "the shipped source sets exactly ONE EXIT trap (a second would cancel the first)" \
+                        || bad "$N_EXIT_TRAPS EXIT traps in the shipped source, expected 1"
+want 'trap .do_restore; cleanup. EXIT' "$(cat "$W/.nocomments.sh")" "and that trap does BOTH the restore and the cleanup"
+# The word the run must not use: it points at the run's own scratch directory without naming it, and the path
+# has a random suffix. `run_window` and the table header both used it before docs 170.
+notwant 'archive' "$(cat "$W/.nocomments.sh")" "and nothing in the run calls its scratch directory an 'archive'"
 
 # ==================================================================================================
 echo
@@ -515,7 +562,7 @@ echo "== 3. the happy path: three proved states, a delta table, and the device b
 scen happy
 FP_DIFF=5.0
 H0=$(tree_hash)
-run --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "the run exits 0" || bad "the run exited $RC"
 want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
@@ -539,6 +586,98 @@ want 'ambient is not controlled' "$OUT" "and the caveat is printed with the verd
 gc_all interactive && ok "every core is back on interactive" || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the whole fake device is byte-for-byte as it was before the run" || bad "the run left the tree changed"
 [ "$(cat "$W/win.count" 2>/dev/null)" = 3 ] && ok "exactly three windows were taken" || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s), not 3"
+want 'This run used: --seconds 1 --settle 0 --settle-back 0 --poll 10' "$OUT" \
+  "and the settings it ran with are printed with the caveat, so nobody has to guess which design this was"
+
+# ==================================================================================================
+echo
+echo "== 3b. the wait: window C is a CONTROL only if the reading came back first (docs 170) =="
+# ==================================================================================================
+# The first device run of this instrument read A 40.9 -> B 47.7 -> C 48.0 and came back CONTAMINATED, and
+# the shape of that contamination is what these two scenarios are about: the phone never came back down, so
+# the control window read the intervention's own heat. A control window can only catch a drift that VANISHES
+# by the time it is read, so the run waits -- and a reading that does not come back is its own verdict.
+scen wait-returns
+FP_DIFF=5.0; FP_COOL=1
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 0 ] && ok "the reading came back, so the run is a measurement: exit 0" || bad "the wait-returns run exited $RC"
+want 'IT CAME BACK' "$OUT" "it says the reading came back"
+want 'IT CAME BACK: 43\.5 C after 1s, against window A.s 43\.5 C' "$OUT" \
+  "and prints HOW LONG it took and both numbers -- the wait is a measurement, not a delay"
+want 'is therefore a CONTROL and not a second reading of the same heat' "$OUT" \
+  "and says what that buys: window C is a control because of it"
+want 'COST-MEASURED' "$OUT" "and the control window then did its job"
+want 'from A to C \(the control, same state as A\):   0\.0 C' "$OUT" "with C back where A was"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 4 ] && ok "four instrument calls: three windows and ONE wait sample" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B, one sample, C was expected"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the wait-returns run left the tree changed"
+
+scen no-return
+FP_DIFF=5.0; FP_COOL=-1
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 1 ] && ok "a phone whose heat does not decay inside the bound: exit 1" || bad "the no-return run exited $RC, expected 1"
+want 'IT DID NOT COME BACK within 3s' "$OUT" "it says the reading did not come back, and inside which bound"
+want 'NO RETURN' "$OUT" "the verdict is no-return"
+want 'PRINTS NO PRICE' "$OUT" "and it says the run prints no price rather than a number"
+want 'the intervention.s warming has not decayed \(thermal mass\)' "$OUT" \
+  "and names BOTH things this can mean, because the instrument cannot tell them apart"
+notwant 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" "so no other verdict appears anywhere in the output"
+notwant 'window C -- the CONTROL' "$OUT" "and window C was never read at all"
+want '^   zone       type                        A      B     B-A' "$OUT" \
+  "the table is the TWO windows it did take, with its own header"
+want '^   thermal_zone1 tsens_tz_sensor1 +42\.5 +47\.5 +\+5\.0' "$OUT" \
+  "and it still prints the warming it saw, so the run is not empty"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 5 ] && ok "five instrument calls: A, B and three bounded samples, and NO C" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and 3 samples were expected"
+gc_all interactive && ok "and the cores are back on interactive -- it stopped early, it did not stop restoring" \
+                   || bad "the cores are now$(gc_each)"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-return run left the tree changed"
+
+# ==================================================================================================
+echo
+echo "== 3c. what the run leaves behind, and whether it says where (docs 170) =="
+# ==================================================================================================
+# The defect this section exists for was found ON THE DEVICE, not by reading the script: the version with
+# `trap 'rm -rf "$TMP"' EXIT` early and `trap 'do_restore' EXIT` later never cleaned up at all -- the second
+# EXIT trap replaces the first -- and the message that said "the whole table is in the archive" named no path.
+# So both halves are asserted: a plain run removes its directory AND says so, and --keep keeps it AND says where.
+scen cleanup
+FP_DIFF=5.0
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+P=$(awk '/was removed/{ sub(/ was removed.*/, ""); print $NF }' <<< "$OUT")
+[ -n "$P" ] && ok "a plain run says which scratch directory it removed" || bad "nothing in the output names the scratch directory it removed"
+[ -n "$P" ] && [ ! -e "$P" ] && ok "and it really is gone ($P)" || bad "the scratch directory is still on this host: ${P:-<unnamed>}"
+
+scen keep
+FP_DIFF=5.0
+run --yes --seconds 1 --settle 0 --settle-back 0 --keep --thermal "$STUB/zl1-thermal.sh"
+P=$(awk '/--keep: this run/{ sub(/ \(deltas.*/, ""); print $NF }' <<< "$OUT")
+[ -n "$P" ] && ok "--keep names the directory" || bad "--keep does not name the directory"
+[ -d "$P" ] && ok "and it is still there ($P)" || bad "the directory --keep promised is not there: ${P:-<unnamed>}"
+[ -f "$P/deltas" ] && ok "with the delta table in it, which is what 'the whole table' was pointing at" \
+                   || bad "the kept directory has no deltas file"
+[ -f "$P/win.A" ] && [ -f "$P/win.B" ] && [ -f "$P/win.C" ] && ok "and the three windows it took" \
+                   || bad "the kept directory is missing a window"
+rm -rf "$P"
+[ ! -e "$P" ] && ok "and the harness cleaned up after itself" || bad "the harness left $P behind"
+
+# THE WHOLE TABLE, not the top N. The device run printed twelve rows and told the reader the rest were "in
+# the archive"; with the path unnamed that was the same as printing nothing.
+scen wholetable
+FP_DIFF=5.0; FP_ZONES=13
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+NROWS=$(grep -cE '^   thermal_zone[0-9]+ ' <<< "$OUT")
+NCLAIM=$(sed -n 's/.*(\([0-9][0-9]*\) zone(s) in this table.*/\1/p' <<< "$OUT")
+[ -n "$NCLAIM" ] && ok "the table states how many rows it has ($NCLAIM)" || bad "the table states no row count"
+[ -n "$NCLAIM" ] && [ "$NROWS" = "$NCLAIM" ] && ok "and every one of them is printed ($NROWS lines)" \
+  || bad "the table claims $NCLAIM row(s) and printed $NROWS"
+want '^   thermal_zone12 tsens_tz_sensor12 ' "$OUT" "including the thirteenth zone, which the old truncation cut"
+notwant 'the whole table is in the archive' "$OUT" "and nothing claims a table is somewhere else"
+notwant 'more; the whole' "$OUT" "and there is no '... N more' line at all"
 
 # ==================================================================================================
 echo
@@ -546,7 +685,7 @@ echo "== 4. the verdict can come out AGAINST the fix, and can be called off by i
 # ==================================================================================================
 scen nocost
 FP_DIFF=0.1
-run --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 [ "$RC" = 0 ] && ok "a governor worth less than the resolution: exit 0" || bad "it exited $RC"
 want 'NO DETECTABLE COST' "$OUT" "and the verdict is no-detectable-cost -- the script coming out against itself"
 want 'coming out AGAINST the fix it was built around' "$OUT" "said out loud, so the verdict is not read as a failure"
@@ -556,7 +695,7 @@ scen drift
 # A/B would report 2.5 C as the governor's price; the control window is the only thing that can tell.
 FP_DIFF=1.5
 FP_DRIFT=1.0
-run --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 [ "$RC" = 1 ] && ok "a drifting phone: exit 1 (a statement about the run)" || bad "the drift scenario exited $RC, expected 1"
 want 'CONTAMINATED' "$OUT" "and the verdict is contaminated"
 want 'the SAME state as A -- is still 2\.0 C' "$OUT" "with the control window's own number beside it"
@@ -567,7 +706,7 @@ scen otherzone
 # is about the SoC's OWN sensors; a rail that follows the charger is not one of them.
 FP_DIFF=5.0
 FP_OTHER_DIFF=10.0
-run --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 want 'largest warming from A to B on any tsens zone: 5\.0 C' "$OUT" \
   "the maximum is taken over the tsens zones, not over every zone in the table"
 notwant 'largest warming from A to B on any tsens zone: 10\.0' "$OUT" "so a hotter rail is not reported as the SoC's answer"
@@ -579,7 +718,7 @@ echo
 echo "== 5. an instrument that answers nothing: no table, no verdict =="
 # ==================================================================================================
 scen empty
-run --yes --seconds 1 --settle 0 --thermal "$W/quiet-instrument.sh"
+run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
 [ "$RC" = 1 ] && ok "an instrument that prints no zones: exit 1" || bad "the empty-instrument run exited $RC, expected 1"
 want 'NO ZONE WAS READABLE IN ALL THREE WINDOWS' "$OUT" "and it says there is no table rather than printing a delta of zeros"
 notwant 'COST-MEASURED|NO DETECTABLE COST' "$OUT" "and it prints no verdict at all"
@@ -591,7 +730,7 @@ echo "== 6. the trap: what is left on a path nobody wrote by hand =="
 # ==================================================================================================
 scen interrupt
 FP_DIFF=5.0
-runbg "$S/interrupt.txt" "$RW" --yes --seconds 1 --settle 3 --thermal "$STUB/zl1-thermal.sh"
+runbg "$S/interrupt.txt" "$RW" --yes --seconds 1 --settle 3 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 kill_pinned
 gc_all performance && ok "the kill landed in the pinned window (every core really reads performance)" \
                    || bad "the kill did not land in the pinned window -- nothing about the trap is being tested"
@@ -621,7 +760,7 @@ fi
 if mut m1-nocontrol 's#if (ca >= ba / 2)                 { print "contaminated"; exit }#if (0)                              { print "contaminated"; exit }#'; then
   scen mut-m1
   FP_DIFF=1.5; FP_DRIFT=1.0
-  mutrun m1-nocontrol --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m1-nocontrol --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   [ "$RC" = 0 ] && ok "mutation 'control ignored': the drifting phone now reads as a result (the check is live)" \
                 || bad "the 'control ignored' mutant exited $RC"
   want 'COST-MEASURED' "$OUT" "and it prints the drift as if the governor had done it"
@@ -631,7 +770,7 @@ fi
 if mut m2-threshold 's#if (ba < 0.2)                     { print "no-detectable-cost"; exit }#if (0)                              { print "no-detectable-cost"; exit }#'; then
   scen mut-m2
   FP_DIFF=0.1
-  mutrun m2-threshold --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m2-threshold --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   want 'COST-MEASURED' "$OUT" "mutation 'no threshold': 0.1 C -- one step of the instrument -- is reported as a cost"
 fi
 # (m3) THE INTERVENTION MADE A NO-OP: the read-back is what catches it, and without it the run would go on to
@@ -640,7 +779,7 @@ fi
 if mut m3-noreadback 's#^    printf .%s. "\$zl1_want" > "\$zl1_g" 2>/dev/null || return 1$#    : #'; then
   scen mut-m3
   FP_DIFF=5.0
-  mutrun m3-noreadback --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m3-noreadback --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   [ "$RC" = 4 ] && ok "mutation 'write that did not land': exit 4, refused to print a verdict" \
                 || bad "the no-op mutant exited $RC, expected 4"
   want 'THE INTERVENTION DID NOT LAND' "$OUT" "and the message is the one that would otherwise hide a real experiment"
@@ -653,7 +792,7 @@ fi
 if mut m4-notrap 's#^  \[ "\$WROTE" = 1 \] || return 0$#  return 0#'; then
   scen mut-m4
   FP_DIFF=5.0
-  runbg "$S/trap.txt" "$W/mut-m4-notrap.rw.sh" --yes --seconds 1 --settle 3 --thermal "$STUB/zl1-thermal.sh"
+  runbg "$S/trap.txt" "$W/mut-m4-notrap.rw.sh" --yes --seconds 1 --settle 3 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   kill_pinned
   wait "$BG_PID" 2>/dev/null
   gc_all performance && ok "mutation 'trap disarmed': the interrupt leaves the cores PINNED (the trap is the restorer)" \
@@ -667,7 +806,7 @@ if mut m5-nooffer 's@gov_offered "\$zl1_g" "\$BLOCKED_GOV" ||@: ||@'; then
   scen mut-m5
   gc_offer performance no
   FP_DIFF=5.0
-  mutrun m5-nooffer --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m5-nooffer --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   notwant 'REFUSED \(C\)' "$OUT" "mutation 'no offer check': a governor the kernel does not offer no longer refuses"
   want 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" \
     "and the run proceeds -- which is the whole cost of the mutant, on a device where the write would not land"
@@ -680,7 +819,7 @@ if mut m7-nopanic 's@^  \[ "\$zl1_v" = 0 \] || DL_BAD=@  : || DL_BAD=@'; then
   scen mut-m7
   dl_set 1
   FP_DIFF=5.0
-  mutrun m7-nopanic --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m7-nopanic --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   notwant 'REFUSED \(A\)' "$OUT" "mutation 'no panic gate': an armed panic guard no longer refuses (the gate is live)"
   want 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" \
     "and the run proceeds -- which is the whole cost of the mutant, on a device where it must not"
@@ -689,11 +828,56 @@ fi
 # (m6) the empty-table guard removed: no reading at all becomes a verdict of zeros.
 if mut m6-notable 's#^if \[ ! -s "\$TMP/deltas" \]; then$#if false; then#;s#^if \[ -z "\$TSENS" \]; then$#if false; then#'; then
   scen mut-m6
-  mutrun m6-notable --yes --seconds 1 --settle 0 --thermal "$W/quiet-instrument.sh"
+  mutrun m6-notable --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
   want 'COST-MEASURED|NO DETECTABLE COST' "$OUT" \
     "mutation 'no table guard': an instrument that printed nothing still produces a verdict"
   want 'NO DETECTABLE COST' "$OUT" \
     "and with no zones at all the number it prices is an empty string, read as 0 -- the guards are what stop it"
+fi
+# (m8) THE TABLE TRUNCATED AGAIN -- the device run's own defect, put back. Section 3c asserts the row count
+# against the table's own claim, so a cap at two rows has to be visible: it is not "a shorter table", it is a
+# table with holes that nothing names.
+if mut m8-truncate "s#^sort -k6,6gr \"\$TMP/deltas\" | awk '{#sort -k6,6gr \"\$TMP/deltas\" | awk 'NR <= 2 {#"; then
+  scen mut-m8
+  FP_DIFF=5.0; FP_ZONES=13
+  mutrun m8-truncate --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  NR2=$(grep -cE '^   thermal_zone[0-9]+ ' <<< "$OUT")
+  NR2CLAIM=$(sed -n 's/.*(\([0-9][0-9]*\) zone(s) in this table.*/\1/p' <<< "$OUT")
+  want 'sorted by B-A; every one is printed' "$OUT" \
+    "mutation 'table truncated': the line claiming EVERY row is printed is still there -- that is the cost"
+  [ "$NR2" -lt "$NR2CLAIM" ] && ok "while only $NR2 of the $NR2CLAIM row(s) printed, so the claim and the table disagree" \
+                             || bad "the truncation did not take: $NR2 rows printed against a claim of $NR2CLAIM"
+fi
+# (m9) THE WAIT'S ANSWER IGNORED: the no-return phone gets a verdict anyway. Every other scenario's reading
+# COMES BACK, so a branch that never runs cannot be seen from the passing side -- the mutant has to be driven
+# by the scenario that has a reading which does not, and it has to be seen to print a price.
+if mut m9-ignorewait 's#^  if \[ "\$RETURNED" = 1 \]; then$#  if true; then#'; then
+  scen mut-m9
+  FP_DIFF=5.0; FP_COOL=-1
+  mutrun m9-ignorewait --yes --seconds 1 --settle 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'NO RETURN' "$OUT" "mutation 'wait ignored': the no-return phone no longer produces that verdict"
+  want 'COST-MEASURED|CONTAMINATED|NO DETECTABLE COST' "$OUT" \
+    "and it prints a PRICE instead -- the whole cost of the mutant, on a phone where there is no control"
+fi
+# (m10) THE CLEANUP DISARMED -- the device's own defect, one step in: the trap keeps the restore and drops the
+# cleanup, so the scratch directory survives every run. Section 3c is what can see it, and note that NOTHING
+# about the restore changes: every other assertion in this file still passes on this mutant.
+if mut m10-nocleanup "s#^trap 'do_restore; cleanup' EXIT\$#trap 'do_restore' EXIT#"; then
+  scen mut-m10
+  FP_DIFF=5.0
+  # FILES, not here-strings: `comm -13 <<< "" <<< "$AFTER"` reports "missing operand" when the first side is
+  # empty, which reads as "no leftover" -- a false pass on the one scenario that has to have one.
+  find /tmp -maxdepth 1 -type d -name 'zl1-governor-temp-ab.*' 2>/dev/null | sort > "$W/.left.before"
+  mutrun m10-nocleanup --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  find /tmp -maxdepth 1 -type d -name 'zl1-governor-temp-ab.*' 2>/dev/null | sort > "$W/.left.after"
+  notwant 'was removed' "$OUT" "mutation 'cleanup disarmed': the run no longer says it removed anything"
+  comm -13 "$W/.left.before" "$W/.left.after" > "$W/.left.new"
+  if [ -s "$W/.left.new" ]; then
+    ok "and it left its scratch directory on this host, silently: $(tr '\n' ' ' < "$W/.left.new")"
+    xargs -r rm -rf < "$W/.left.new"
+  else
+    bad "no directory was left behind, so the cleanup is not what section 3c is testing"
+  fi
 fi
 
 # ==================================================================================================

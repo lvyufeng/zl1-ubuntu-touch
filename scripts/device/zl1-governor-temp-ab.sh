@@ -14,6 +14,14 @@
 # to the governor; if C stays warm, the run was contaminated and the script says so instead of reporting a
 # number.
 #
+# THE WAIT BEFORE C (docs 170). The first device run came back CONTAMINATED, and not for the reason the design
+# had named: pinning the cores warmed the SoC and 45 s of the fix's state did not shed it, so C read 48.0 C
+# against A's 40.9 C. A control window can only catch a drift that VANISHES by the time it is read, so the run
+# now WAITS for the reading to come back within MARGIN of window A, with a bound (SETTLE_BACK), and PRINTS how
+# long it took. A reading that never comes back is its own verdict (`no-return`, exit 1) and the run prints NO
+# PRICE -- which is the honest answer, because "the intervention's heat has not decayed" and "the phone
+# drifted more than the margin" look identical here, and neither is a price for the governor.
+#
 # THE KNOB IS FOUR FILES, NOT ONE, and that is the whole difference from the ladder instrument. There is no
 # `tr` alphabet here (a governor name is stored and read back as itself) and no module parameter: the state
 # is `/sys/devices/system/cpu/cpuN/cpufreq/scaling_governor`, one per core, and "the fix is installed" means
@@ -23,18 +31,23 @@
 # WHAT IT DOES NOT DO. It writes four governor files and nothing else. No partition, no block device, no
 # module parameter, no service restart, no reboot. The value it writes back is the FIX's own value
 # (`interactive`), so the device is left exactly where it was found -- and even if it were not, the boot's
-# own zl1-cpufreq-governor unit writes `interactive` again on the next boot.
+# own zl1-cpufreq-governor unit writes `interactive` again on the next boot. It removes its own scratch
+# directory on the way out unless `--keep`, and the restore and the cleanup are ONE trap: the version that
+# had two EXIT traps never cleaned up at all, silently, because the second replaces the first (docs 170).
 #
 # Usage:
 #     zl1-governor-temp-ab.sh --status            the refusals, the state, and what a run would do (writes nothing)
 #     zl1-governor-temp-ab.sh --yes               run the experiment (this is the write)
 #     zl1-governor-temp-ab.sh --seconds N --settle N --thermal PATH
+#     zl1-governor-temp-ab.sh --settle-back N --poll N --margin C
+#                                                 the WAIT between the undo and the control window (see below)
+#     zl1-governor-temp-ab.sh --keep              leave the run's own files and print where they are
 #     zl1-governor-temp-ab.sh --revert            put every core back on `interactive` and prove it
 #     zl1-governor-temp-ab.sh --explain           what each reading decides, and change nothing
 #
 # Exit codes: 0 a verdict that is a measurement about the phone (cost-measured OR no-detectable-cost --
 #             the second one is this script coming out against the fix it was built around);
-#             1 INCONCLUSIVE or CONTAMINATED -- a statement about the RUN and not about the phone;
+#             1 NO-RETURN, INCONCLUSIVE or CONTAMINATED -- a statement about the RUN and not about the phone;
 #             2 not the zl1;
 #             3 REFUSED -- a refusal is not met and nothing was written;
 #             4 the write happened and something went wrong after it (the state and the restore are
@@ -48,6 +61,19 @@ SETTLE=20
 THERMAL=/tmp/zl1-thermal.sh
 YES=0
 WROTE=0
+KEEP=0
+NO_RETURN=0
+# THE WAIT. The first device run of this instrument (2026-09-25, docs 170) came back CONTAMINATED for a
+# reason the design had not named: 45 s after the undo the SoC was still ~7 C above window A, so the control
+# window started on a phone that had not shed the intervention's heat -- and a control window can only catch
+# a drift that VANISHES by the time it is read. Waiting for the reading to COME BACK, with a bound, is not a
+# nicety: it is what makes the third window a control instead of a second reading of the thermal mass. The
+# wait is itself a measurement and the run prints how long it took. `--settle-back 0` turns it off, which
+# restores the old (weaker) behaviour on purpose -- with the wait off, `contaminated` is the likely verdict
+# and the operator should know that is a property of the design and not of the governor.
+SETTLE_BACK=240
+POLL=10
+MARGIN=0.5
 
 # The two states, named for the FIX and not for the governor: FIX_GOV is what the installer writes and what
 # window A must already be; BLOCKED_GOV is the image's own value, i.e. the cause put back. Nothing here
@@ -63,6 +89,10 @@ while [ $# -gt 0 ]; do
   --yes)    MODE=run; YES=1; shift ;;
   --seconds) SECONDS_WIN="${2?--seconds needs a number}"; shift 2 ;;
   --settle)  SETTLE="${2?--settle needs a number}"; shift 2 ;;
+  --settle-back) SETTLE_BACK="${2?--settle-back needs a number}"; shift 2 ;;
+  --poll)    POLL="${2?--poll needs a number}"; shift 2 ;;
+  --margin)  MARGIN="${2?--margin needs a temperature}"; shift 2 ;;
+  --keep)    KEEP=1; shift ;;
   --thermal) THERMAL="${2?--thermal needs a path}"; shift 2 ;;
   --revert) MODE=revert; shift ;;
   --explain) MODE=explain; shift ;;
@@ -87,7 +117,22 @@ rd() {
 }
 
 TMP=$(mktemp -d /tmp/zl1-governor-temp-ab.XXXXXX) || exit 1
-trap 'rm -rf "$TMP"' EXIT
+# NO EXIT TRAP HERE, and that is the fix for a defect the first device run found (docs 170). This line used
+# to be `trap 'rm -rf "$TMP"' EXIT`, and the restore installs `trap 'do_restore' EXIT` further down -- which
+# REPLACES it, because a POSIX shell keeps ONE action per condition. So the cleanup never ran once: every
+# invocation leaked its scratch directory, including the read-only `--status`, and the message that says
+# "the whole table is in the archive" pointed at a path nothing printed. The two are ONE trap now, set where
+# the restore is set, so they cannot cancel each other; `--keep` is the only way to opt out of the cleanup.
+cleanup() {
+  if [ "$KEEP" = 1 ]; then
+    say ""
+    say "   --keep: this run's scratch directory is $TMP (deltas, deltas.note, win.A/B/C, back)."
+    return 0
+  fi
+  rm -rf "$TMP"
+  say ""
+  say "   the scratch directory $TMP was removed (--keep leaves it instead, and a failed window forces it on)."
+}
 
 # --- the cores, found rather than assumed --------------------------------------------------------------
 # The glob is the only name this repository has measured the device to expose, and it is looked up for the
@@ -181,7 +226,11 @@ on_signal() {
   do_restore
   exit 130
 }
-trap 'do_restore' EXIT
+# ONE EXIT TRAP, doing BOTH jobs -- restore first, then cleanup -- because two EXIT traps cannot coexist:
+# the second replaces the first, silently, and that is exactly how the cleanup came to never run (docs 170).
+# `on_signal` restores and exits 130; the EXIT trap then runs too, finds `WROTE=0` (do_restore clears it only
+# when its read-back said the restore held) and cleans up.
+trap 'do_restore; cleanup' EXIT
 trap 'on_signal' INT TERM HUP
 
 if [ "$MODE" = explain ]; then
@@ -207,19 +256,32 @@ zl1 governor temperature A/B -- what each reading decides
      of a quarter of the change -- and would read as a smaller cost, i.e. as a real number.
   4. WINDOW B: the zones with the cores pinned, i.e. the image's own state, the second heat cause put back.
   5. THE UNDO, ALSO PROVED: write 'interactive' to every core and require every core to read it.
-  6. WINDOW C, the CONTROL: the fix's state again. If the warming seen in window B is still there in window
-     C, the governor did not cause it -- the phone drifted, or the load changed -- and the verdict says
-     contaminated rather than reporting a number as the effect.
-  7. THE VERDICT:
+  6. THE WAIT, and this is what makes the next step a CONTROL. Window C reads the same GOVERNOR as A, which
+     is not the same thing as reading the same STATE: pinning the cores warms the SoC, and thermal mass does
+     not care that the governor was put back 20 s ago. The first device run of this instrument (docs 170)
+     read A 40.9 -> B 47.7 -> C 48.0 and came back CONTAMINATED for exactly that reason. So after the undo
+     the run waits for the hottest tsens zone to come back to within MARGIN of window A, up to SETTLE_BACK
+     seconds, polling every POLL, and PRINTS HOW LONG IT TOOK. That number is the phone's thermal behaviour
+     under this intervention, and it is worth having on its own.
+  7. WINDOW C, the CONTROL: the fix's state again, read only once the reading has come back. If the warming
+     seen in window B is still there in window C -- after the wait said it had gone -- the governor did not
+     cause it and the verdict says contaminated rather than reporting a number as the effect.
+  8. THE VERDICT:
        cost-measured        B was warmer than A by more than this experiment's resolution, AND C came back
                             down (the third window did not keep the warming)
        no-detectable-cost   B was not warmer than A: pinning the cores is worth less than the resolution
                             here -- which is this script coming out against the fix it was built around
        contaminated         the warming persisted into C -- a statement about the RUN
+       no-return            the reading did not come back within SETTLE_BACK, so there IS no control window
+                            and the run prints NO PRICE. Two things look like this -- the intervention's
+                            warming has not decayed, or the phone drifted by more than MARGIN -- and the
+                            instrument cannot tell them apart. Both are statements about the phone.
      An intervention that did not land, or an undo that did not hold, is NOT a verdict at all: it exits 4
      with the state printed, because every number below it would be a comparison of two identical states.
      The resolution is 0.2 C, which is two steps of the instrument's own 0.1 C and is printed with the
      verdict, because a threshold nobody can see is a threshold nobody can argue with.
+     --settle-back 0 turns the wait OFF and restores the old design: window C then starts on a phone that
+     may still be holding the intervention's heat, and 'contaminated' becomes a property of that setting.
 EOF
   exit 0
 fi
@@ -373,8 +435,15 @@ if [ "$MODE" != run ]; then
   hdr "a run would do this (--status writes nothing)"
   say "   window A: the zones as installed ('$FIX_GOV' on all $CPU_N cores), ${SECONDS_WIN}s"
   say "   write '$BLOCKED_GOV' to every core, prove all of them read it, wait ${SETTLE}s, window B, ${SECONDS_WIN}s"
-  say "   write '$FIX_GOV' back, prove all of them read it, wait ${SETTLE}s, window C, ${SECONDS_WIN}s (the control)"
-  say "   then the per-zone deltas B-A and C-A and a verdict; the trap restores '$FIX_GOV' on every exit path"
+  say "   write '$FIX_GOV' back, prove all of them read it, then WAIT (up to ${SETTLE_BACK}s, every ${POLL}s) for"
+  if [ "$SETTLE_BACK" = 0 ]; then
+    say "   the reading to return to within ${MARGIN} C of window A -- WAIT DISABLED (--settle-back 0), so window C"
+    say "   starts on a phone that may still be holding the intervention's heat."
+  else
+    say "   the reading to return to within ${MARGIN} C of window A, and say how long that took"
+  fi
+  say "   window C, ${SECONDS_WIN}s (the control); then the per-zone deltas B-A and C-A and a verdict"
+  say "   the trap restores '$FIX_GOV' on every exit path, and removes $TMP unless --keep"
   exit 0
 fi
 
@@ -385,12 +454,27 @@ fi
 run_window() { # $1 = label
   sh "$THERMAL" --seconds "$SECONDS_WIN" --quiet > "$TMP/win.$1" 2>&1
   rc=$?
-  [ "$rc" = 0 ] || bad "   NOTE: the instrument exited $rc in window $1 (its output is in the archive)"
+  if [ "$rc" != 0 ]; then
+    # The path is named, and the evidence is KEPT, because the interesting case is the one where something
+    # went wrong -- and an error whose evidence is deleted on the way out is an error nobody can look at.
+    KEEP=1
+    bad "   NOTE: the instrument exited $rc in window $1; its output is $TMP/win.$1 (kept: --keep is forced on"
+    bad "   when a window fails, because that file is the only copy)"
+  fi
   b=$(awk '/^[ ]+busy / { print $2; exit }' "$TMP/win.$1" 2>/dev/null)
   printf '%s\n' "${b:-unreadable}"
 }
 
 zones_of() { awk '$1 ~ /^thermal_zone[0-9]+$/ && $4 == "C" { print $1, $2, $3 }' "$1" 2>/dev/null; }
+# The hottest TSENS zone in one instrument output, or nothing at all. TSENS only, for the same reason the
+# verdict takes its maximum over those and not over the table: the battery and the pm8994 rails follow the
+# charger, so "the hottest zone" there would be a reading about the power supply. Empty output means NOT
+# READABLE, and every caller treats that as its own answer rather than as zero.
+hot_tsens() {
+  awk '$1 ~ /^thermal_zone[0-9]+$/ && $2 ~ /^tsens_tz_sensor/ && $4 == "C" {
+         if (!seen || $3 + 0 > m) { m = $3 + 0; seen = 1 } }
+       END { if (seen) printf "%.1f", m }' "$1" 2>/dev/null
+}
 
 hdr "window A -- as installed (every core on '$FIX_GOV', nothing written yet)"
 BUSY_A=$(run_window A)
@@ -422,6 +506,113 @@ else
   bad "   THE RESTORE DID NOT HOLD: after writing '$FIX_GOV' the cores read '$(gov_state)'. The trap will try"
   bad "   again on exit; refusing to print a verdict from an experiment whose undo failed. Exiting 4."
   exit 4
+fi
+
+# --- the wait: does the reading COME BACK before the control window reads it? ---------------------------
+# Window C is a control only if it reads the SAME state as A. It reads the same GOVERNOR, which is not the
+# same thing: pinning the cores warms the SoC, and thermal mass does not care that the governor was put back.
+# The first device run (docs 170) read A 40.9 -> B 47.7 -> C 48.0 -- the whole run warmed and C never came
+# back -- and a control window cannot tell that from an intervention that really did cost 6.8 C. So the run
+# now WAITS for the reading to return within $MARGIN of window A, with a bound, and PRINTS HOW LONG.
+# The wait is not a settling delay: it is the measurement that makes the third window mean something, and a
+# reading that never comes back is its own result -- about the phone's thermal mass, not about the governor.
+hdr "the wait -- does window A's reading come back before the control window reads it?"
+W_A=$(hot_tsens "$TMP/win.A")
+WAITED=0; W_NOW=; RETURNED=0
+if [ -z "$W_A" ]; then
+  bad "   window A had no readable tsens zone at all, so there is no reading for this to come back to. The"
+  bad "   wait is skipped and the verdict below cannot be trusted; that is a statement about the instrument."
+elif [ "$SETTLE_BACK" = 0 ]; then
+  say "   --settle-back 0: THE WAIT IS OFF. Window C will start immediately after the undo, so if the"
+  say "   intervention's heat has not decayed by then the control window cannot separate it from the"
+  say "   governor -- which is what the first device run of this instrument measured (docs 170). The verdict"
+  say "   below is read with that limitation, and 'contaminated' is a property of THIS setting."
+else
+  say "   window A's hottest tsens zone: ${W_A} C. Waiting up to ${SETTLE_BACK}s (every ${POLL}s) for it to come"
+  say "   back to within ${MARGIN} C of that before window C reads anything."
+  # `--poll 0` would spin the loop forever (`WAITED` would never advance), so a sample always costs at least
+  # one second -- and the count that goes into the message is that same number, not the one asked for.
+  ADV=$POLL
+  [ "$ADV" -ge 1 ] 2>/dev/null || ADV=1
+  while [ "$WAITED" -lt "$SETTLE_BACK" ]; do
+    sleep "$ADV"
+    WAITED=$((WAITED + ADV))
+    sh "$THERMAL" --seconds "$ADV" --quiet > "$TMP/back" 2>&1
+    W_NOW=$(hot_tsens "$TMP/back")
+    # An unreadable sample is not a returned reading: skipping it (rather than treating "" as 0 or as a
+    # return) keeps the loop going, and the bound still ends it.
+    [ -n "$W_NOW" ] || continue
+    if awk -v a="$W_A" -v n="$W_NOW" -v m="$MARGIN" 'BEGIN { exit ((n - a) <= m) ? 0 : 1 }'; then
+      RETURNED=1
+      break
+    fi
+  done
+  if [ "$RETURNED" = 1 ]; then
+    say "   IT CAME BACK: ${W_NOW} C after ${WAITED}s, against window A's ${W_A} C (margin ${MARGIN} C). Window C"
+    say "   below is therefore a CONTROL and not a second reading of the same heat."
+  else
+    bad "   IT DID NOT COME BACK within ${SETTLE_BACK}s: the hottest tsens zone is ${W_NOW:-unreadable} C against"
+    bad "   window A's ${W_A} C, i.e. more than ${MARGIN} C above it. Two things can look like this and this"
+    bad "   instrument cannot tell them apart: the intervention's warming has not decayed (thermal mass), or"
+    bad "   the phone warmed on its own by more than the margin while the run went on. BOTH are statements"
+    bad "   about this RUN and about the phone. Neither is a price for the governor, so THIS RUN PRINTS NO"
+    bad "   PRICE: there is no control window to compare against, and window C is not read at all."
+    bad ""
+    bad "   What it does establish is the phone's own thermal behaviour under this intervention, and that is"
+    bad "   worth having: it is the number a longer wait would have to beat. If you want the price anyway,"
+    bad "   --settle-back 0 runs the old design and --margin N loosens the bar; both are printed in the"
+    bad "   verdict so nobody has to guess which one was used."
+    NO_RETURN=1
+  fi
+fi
+
+if [ "$NO_RETURN" = 1 ]; then
+  hdr "no window C -- there is no control window in this run, so there is no verdict to print"
+  S_END=$(gov_state)
+  if [ "$S_END" = "$FIX_GOV" ]; then
+    WROTE=0   # verified: nothing is left for the trap to undo, exactly as on the normal path
+    say "   the cores are back on '$S_END'$(gov_list) -- the state this script found them in."
+  else
+    bad "   the cores read '$S_END', not '$FIX_GOV' -- leaving the trap armed to try again on exit."
+  fi
+  say "   The run stops here with a table of the TWO windows it did take, because the third is only a control"
+  say "   while it reads the same STATE as the first one -- and the wait above just measured that it would not."
+  awk -v A="$TMP/win.A" -v B="$TMP/win.B" '
+    $1 ~ /^thermal_zone[0-9]+$/ && $4 == "C" {
+      k = $1; type[k] = $2
+      if (FILENAME == A) a[k] = $3 + 0; else b[k] = $3 + 0
+      if (!(k in seen)) { seen[k] = 1; order[++n] = k }
+      next
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        if (!((k in a) && (k in b))) { missing++; continue }
+        printf "%s %s %.1f %.1f %.1f\n", k, type[k], a[k], b[k], b[k] - a[k]
+      }
+      if (missing) printf "# %d zone(s) were not readable in both windows and are not in this table\n", missing > "/dev/stderr"
+    }' "$TMP/win.A" "$TMP/win.B" > "$TMP/deltas" 2>"$TMP/deltas.note"
+  [ -s "$TMP/deltas.note" ] && { while IFS= read -r l; do say "   $l"; done < "$TMP/deltas.note"; }
+  if [ -s "$TMP/deltas" ]; then
+    say "   zone       type                        A      B     B-A"
+    sort -k5,5gr "$TMP/deltas" | awk '{ printf "   %-10s %-22s %6.1f %6.1f %+6.1f\n", $1, $2, $3, $4, $5 }'
+  else
+    bad "   no zone was readable in both windows either, so not even the two-window table exists."
+  fi
+  hdr "the verdict"
+  say "   -> NO RETURN: the reading did not come back to within ${MARGIN} C of window A within ${SETTLE_BACK}s,"
+  say "      so window C would not have read window A's state -- it would have read the heat the intervention"
+  say "      left behind. This run therefore PRINTS NO PRICE for the second heat cause, and that is the"
+  say "      correct answer: the number the old design would have printed from A and B alone (the largest"
+  say "      warming above) is not the governor's cost, it is the governor's cost PLUS whatever part of the"
+  say "      phone's own warming had not decayed."
+  say ""
+  say "   What this run DOES establish is about the phone: the intervention's warming (or the phone's own"
+  say "   drift) outlasted ${SETTLE_BACK}s at a ${MARGIN} C bar. That is the number a longer wait or a bigger"
+  say "   margin would have to beat, and it is printed with the setting that produced it."
+  say ""
+  say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
+  exit 1
 fi
 
 hdr "window C -- the CONTROL: the fix's state again, so the third window is the same state as the first"
@@ -463,10 +654,13 @@ if [ ! -s "$TMP/deltas" ]; then
 fi
 
 say "   zone       type                        A      B      C     B-A    C-A"
-sort -k6,6gr "$TMP/deltas" | awk 'NR <= 12 {
+# THE WHOLE TABLE, not the top twelve. The version that printed twelve and said "... N more; the whole table
+# is in the archive" named a directory with a random suffix that nothing printed -- so for the operator it
+# was the same as printing nothing, and the first device run (docs 170) is how that was found. 38 rows is
+# nothing on a terminal, and if the table is worth keeping it is worth printing.
+sort -k6,6gr "$TMP/deltas" | awk '{
   printf "   %-10s %-22s %6.1f %6.1f %6.1f %+6.1f %+6.1f\n", $1, $2, $3, $4, $5, $6, $7 }'
-n_all=$(wc -l < "$TMP/deltas" | tr -d ' ')
-[ "$n_all" -gt 12 ] && say "   ... $(($n_all - 12)) more; the whole table is in the archive (it is one line per zone)"
+say "   ($(wc -l < "$TMP/deltas" | tr -d ' ') zone(s) in this table, sorted by B-A; every one is printed.)"
 
 # --- the verdict ---------------------------------------------------------------------------------------
 # The maximum is taken over the TSENS zones, which are the SoC's own sensors: battery and pm8994 follow the
@@ -521,10 +715,11 @@ fi
 
 say ""
 say "   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the"
-say "   battery's charging state is not controlled, and the third window can only catch a drift that outlasts"
-say "   the second -- a drift that happens to peak in window B and vanish in C is indistinguishable from this"
-say "   effect HERE, and is exactly what the control cannot rule out. The zones are the instrument's numbers,"
-say "   normalised by it; this script does not divide anything."
+say "   battery's charging state is not controlled, and window C is a control only to the extent that the wait"
+say "   above found the reading back (it waited ${SETTLE_BACK}s at a ${MARGIN} C bar, and what it measured is"
+say "   printed above). The zones are the instrument's numbers, normalised by it; this script does not divide."
+say "   This run used: --seconds ${SECONDS_WIN} --settle ${SETTLE} --settle-back ${SETTLE_BACK} --poll ${POLL}"
+say "   --margin ${MARGIN}."
 say ""
 say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
 exit "$RC"

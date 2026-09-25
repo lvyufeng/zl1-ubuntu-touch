@@ -70,9 +70,9 @@ B. THE RUN (--yes), IN FULL
      thermal_zone3  tsens_tz_sensor2         39.6   42.5   42.2   +2.9   +2.6
      ... 26 more; the whole table is in the archive (it is one line per zone)
 
-     38 zones were read; 12 are printed. SEE SECTION D -- the other 26 are NOT in any archive: the
-     line above points at $TMP/deltas, and the script's own EXIT trap removes $TMP. That message is
-     wrong, and it cost this run the full table.
+     38 zones were read; 12 are printed, and the line above names no path. SEE SECTIONS D AND E: the
+     "archive" is $TMP/deltas, whose path the script never prints -- and the rest of the table is
+     recovered below from where it actually was.
 
   == the verdict
      window A was the fix installed ('interactive'); B was the cores PINNED ('performance'); C was
@@ -124,11 +124,24 @@ The design's stated blind spot ("a drift that peaks in window B and vanishes in 
 indistinguishable from this effect") is not what happened here; what happened is a rise that does not
 decay inside the window at all, and that is a second blind spot the design did not name.
 
-DEFECT 1 (the instrument's message). "... N more; the whole table is in the archive (it is one line
-per zone)" -- the archive is $TMP/deltas and the EXIT trap removes $TMP. There is no --keep and no
-path printed, so the sentence sends the operator to a directory that no longer exists, and it cost
-this run the 26 unprinted zone rows. A message that points at evidence which does not survive is the
-shape this repository keeps writing about; it was found by running it, not by reading it.
+DEFECT 1 (the instrument's message, and a second defect behind it). "... N more; the whole table is in
+the archive (it is one line per zone)" -- the message names no PATH, and the directory it means has a
+random suffix ($TMP/zl1-governor-temp-ab.XXXXXX). Worse, the same shape is in run_window ("its output
+is in the archive"). The reading that follows is what the first version of this log got WRONG, and it
+was settled by looking on the device rather than by reading the script:
+
+    $ ls -d /tmp/zl1-governor-temp-ab.*
+    /tmp/zl1-governor-temp-ab.HZcZCl        <- EMPTY: leaked by the --status run
+    /tmp/zl1-governor-temp-ab.MlHTie        <- this run: deltas, deltas.note, win.A, win.B, win.C
+    /tmp/zl1-governor-temp-ab.sh
+
+The script DOES contain `trap 'rm -rf "$TMP"' EXIT` -- at line 90, before the refusals. And at line 184
+it contains `trap 'do_restore' EXIT`. In a POSIX shell a second EXIT trap REPLACES the first, so the
+cleanup never runs at all: every invocation leaks its scratch directory, including the read-only
+--status run (hence the empty one above). So the archive was never deleted -- the defect is that
+(i) nothing is cleaned up, silently, and (ii) the message points at it without naming it, which for an
+operator is the same thing. This is the "two traps, one EXIT, the second silently cancels the first"
+shape, and it is invisible from the passing side: every assertion about the restore still holds.
 
 DEFECT 2 (the design). A control window that assumes the intervention's effect decays faster than the
 window is too weak for a cause whose effect is THERMAL MASS. The fix is not a longer settle chosen in
@@ -138,3 +151,64 @@ not happen inside the bound is itself a measurement ("this intervention's warmin
 within N s"), not a verdict about the governor.
 
 Both are fixable offline, and the harness has to fail on each before the next device run.
+
+--------------------------------------------------------------------------------
+E. THE FULL TABLE, RECOVERED FROM THE LEAKED DIRECTORY
+--------------------------------------------------------------------------------
+
+From /tmp/zl1-governor-temp-ab.MlHTie/deltas (the run's own file, unmodified; sorted here by B-A):
+
+  zone       type                        A      B      C     B-A    C-A
+  thermal_zone12 tsens_tz_sensor11        40.9   47.7   48.0   +6.8   +7.1
+  thermal_zone11 tsens_tz_sensor10        40.6   47.0   46.7   +6.4   +6.1
+  thermal_zone10 tsens_tz_sensor9         40.6   46.1   48.7   +5.5   +8.1
+  thermal_zone13 tsens_tz_sensor12        40.9   46.4   46.4   +5.5   +5.5
+  thermal_zone9  tsens_tz_sensor8         40.3   45.8   48.7   +5.5   +8.4
+  thermal_zone4  tsens_tz_sensor3         39.6   44.8   43.2   +5.2   +3.6
+  thermal_zone8  tsens_tz_sensor7         38.7   43.8   42.9   +5.1   +4.2
+  thermal_zone2  tsens_tz_sensor1         39.9   44.5   43.8   +4.6   +3.9
+  thermal_zone5  tsens_tz_sensor4         39.0   43.5   42.2   +4.5   +3.2
+  thermal_zone6  tsens_tz_sensor5         39.6   43.5   43.2   +3.9   +3.6
+  thermal_zone7  tsens_tz_sensor6         39.0   42.9   41.9   +3.9   +2.9
+  thermal_zone3  tsens_tz_sensor2         39.6   42.5   42.2   +2.9   +2.6
+  thermal_zone14 tsens_tz_sensor13        39.8   42.4   41.1   +2.6   +1.3
+  thermal_zone1  tsens_tz_sensor0         39.9   42.2   41.2   +2.3   +1.3
+  thermal_zone17 tsens_tz_sensor16        41.1   43.3   42.4   +2.2   +1.3
+  thermal_zone19 tsens_tz_sensor18        38.2   40.1   39.1   +1.9   +0.9
+  thermal_zone18 tsens_tz_sensor17        42.7   44.3   44.0   +1.6   +1.3
+  thermal_zone21 tsens_tz_sensor20        40.4   42.0   41.4   +1.6   +1.0
+  thermal_zone20 tsens_tz_sensor19        39.8   41.1   39.8   +1.3   +0.0
+  thermal_zone16 tsens_tz_sensor15        38.2   39.4   38.5   +1.2   +0.3
+  thermal_zone23 msm_therm                37.0   38.0   38.0   +1.0   +1.0
+  thermal_zone27 quiet_therm              37.0   38.0   38.0   +1.0   +1.0
+  thermal_zone15 tsens_tz_sensor14        38.2   39.1   38.8   +0.9   +0.6
+  thermal_zone0  bms                      33.2   33.7   33.7   +0.5   +0.5
+  thermal_zone22 pm8994_tz                36.8   37.3   37.7   +0.5   +0.9
+  thermal_zone29 battery                  33.2   33.7   33.7   +0.5   +0.5
+  thermal_zone24 emmc_therm               35.0   35.0   35.0   +0.0   +0.0
+  thermal_zone25 pa_therm0                34.0   34.0   34.0   +0.0   +0.0
+  thermal_zone26 pa_therm1                31.0   31.0   31.0   +0.0   +0.0
+  thermal_zone28 xo_therm_buf              0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone30 DLMt_APC1                 0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone31 LLM_cp00                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone32 LLM_cp01                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone33 LLM_cp10                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone34 LLM_cp11                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone35 LLM_m4m0                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone36 LLM_l21-                  0.0    0.0    0.0   +0.0   +0.0
+  thermal_zone37 LLM_l20-                  0.0    0.0    0.0   +0.0   +0.0
+
+Three things this table says that the twelve printed rows did not:
+
+  * The warming is not one sensor. Every populated tsens zone moved the same way, and C-A is positive
+    on 25 of the 38 rows (the other 13 are 0.0). The battery, the eMMC, pa_therm0/1 and the pm8994
+    rails barely moved (+0.5, 0.0, 0.0, +0.5), so this is the SoC and not the chassis being warmed from
+    outside.
+  * Nine zones read 0.0 in ALL THREE windows (xo_therm_buf, DLMt_APC1 and the seven LLM_*). A zone that
+    reports 0 in every window is a zone whose delta is exactly 0 and which therefore enters the delta
+    table as a real row -- and it is not "cool", it is UNREAD. They cannot change a verdict (0 is not
+    the maximum here), but a reader counting rows would.
+  * The A column's hottest tsens zone is thermal_zone18 (tsens_tz_sensor17) at 42.7 C, NOT the zone
+    with the largest B-A. The instrument's headline is the maximum of B-A, so the three numbers it
+    prints (40.9 / 47.7 / 48.0) belong to ONE zone -- thermal_zone12 -- and calling them "the hottest
+    zone" is wrong in a way that the full table makes visible.
