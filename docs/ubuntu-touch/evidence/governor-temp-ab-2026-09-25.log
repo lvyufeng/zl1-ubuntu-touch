@@ -1,0 +1,140 @@
+zl1 -- the SECOND heat cause (cpufreq governor), first device run, 2026-09-25
+==========================================================================
+
+One boot throughout: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5 (read before the run, after it, and
+again after the health check; it did not change). Nothing was flashed, no partition was written, no
+block device was opened, no service was restarted, the container was never stopped.
+
+Host: this laptop.  Device: root@10.15.19.82 (rndis0), serial 33e80afe.  THE DEVICE CLOCK IS WRONG
+-- it reads 1970-02-13 -- so every timestamp the instrument prints is wrong and the real date is the
+one in this header. That is the same defect docs 100 records for journal queries.
+
+The only thing this experiment writes is four cpufreq files. The value it writes back is the fix's
+own (`interactive`), and the boot's zl1-cpufreq-governor unit writes it again on the next boot.
+
+--------------------------------------------------------------------------------
+A. PUSHED, AND THE REFUSALS ON THEIR OWN (--status, writes nothing)
+--------------------------------------------------------------------------------
+
+  scp scripts/device/zl1-thermal.sh scripts/device/zl1-governor-temp-ab.sh root@10.15.19.82:/tmp/
+
+  == zl1 governor temperature A/B -- 1970-02-13T19:21:01Z UTC   (device clock is wrong; real date 09-25)
+    device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+    cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor cpu1 cpu2 cpu3)
+    instrument:  /tmp/zl1-thermal.sh
+    windows:     45s each, 20s after each write
+    states:      A/C 'interactive' (the fix, installed)  B 'performance' (the image's own value)
+    panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+    now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+  == the refusals, on their own terms (nothing is written until all of them have passed)
+     A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+     B. instrument: readable (/tmp/zl1-thermal.sh)
+     C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+     D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+
+--------------------------------------------------------------------------------
+B. THE RUN (--yes), IN FULL
+--------------------------------------------------------------------------------
+
+  == the refusals ... (identical, plus)
+     C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                    back -- writable in fact, and every core agrees on what it read.
+
+  == window A -- as installed (every core on 'interactive', nothing written yet)
+     busy 0.81 of 4 cores; 38 zone(s) read
+     wrote 'performance' to all 4 core(s) and read 'performance' back: the cores are PINNED from
+     here until the undo (this is the image's own state -- the second heat cause put back).
+
+  == window B -- the cores PINNED (the one change this experiment makes)
+     busy 0.54 of 4 cores
+     wrote 'interactive' to all 4 core(s) and read 'interactive' back: this is the state it started in.
+
+  == window C -- the CONTROL: the fix's state again, so the third window is the same state as the first
+     busy 0.82 of 4 cores
+     final state: all 4 core(s) read 'interactive' -- the fix is where this script found it.
+
+  == the per-zone deltas (the instrument's OWN numbers, in its own unit -- it normalised them)
+     zone       type                        A      B      C     B-A    C-A
+     thermal_zone12 tsens_tz_sensor11        40.9   47.7   48.0   +6.8   +7.1
+     thermal_zone11 tsens_tz_sensor10        40.6   47.0   46.7   +6.4   +6.1
+     thermal_zone10 tsens_tz_sensor9         40.6   46.1   48.7   +5.5   +8.1
+     thermal_zone13 tsens_tz_sensor12        40.9   46.4   46.4   +5.5   +5.5
+     thermal_zone9  tsens_tz_sensor8         40.3   45.8   48.7   +5.5   +8.4
+     thermal_zone4  tsens_tz_sensor3         39.6   44.8   43.2   +5.2   +3.6
+     thermal_zone8  tsens_tz_sensor7         38.7   43.8   42.9   +5.1   +4.2
+     thermal_zone2  tsens_tz_sensor1         39.9   44.5   43.8   +4.6   +3.9
+     thermal_zone5  tsens_tz_sensor4         39.0   43.5   42.2   +4.5   +3.2
+     thermal_zone6  tsens_tz_sensor5         39.6   43.5   43.2   +3.9   +3.6
+     thermal_zone7  tsens_tz_sensor6         39.0   42.9   41.9   +3.9   +2.9
+     thermal_zone3  tsens_tz_sensor2         39.6   42.5   42.2   +2.9   +2.6
+     ... 26 more; the whole table is in the archive (it is one line per zone)
+
+     38 zones were read; 12 are printed. SEE SECTION D -- the other 26 are NOT in any archive: the
+     line above points at $TMP/deltas, and the script's own EXIT trap removes $TMP. That message is
+     wrong, and it cost this run the full table.
+
+  == the verdict
+     window A was the fix installed ('interactive'); B was the cores PINNED ('performance'); C was
+     'interactive' again. Busy: A 0.81, B 0.54, C 0.82 of 4 cores (a READING, not a gate: a governor
+     changes the clock a core runs at, and this figure counts busy TIME, so the two are not expected
+     to track).
+     the largest warming from A to B on any tsens zone: 6.8 C  (thermal_zone12 (tsens_tz_sensor11))
+     and from A to C (the control, same state as A):   8.4 C  (thermal_zone9 (tsens_tz_sensor8))
+     the threshold this experiment calls a cost: 0.2 C -- two steps of the instrument's 0.1 C
+
+     -> CONTAMINATED: B was warmer than A by 6.8 C, but C -- the SAME state as A -- is still 8.4 C
+        above A. So the warming did not come back with the governor's state and was not caused by it:
+        the phone drifted, or the load did. A statement about this RUN, not about the governor.
+
+        (exit 1)
+
+     The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive
+     cpu3=interactive -- the state it started in.
+
+--------------------------------------------------------------------------------
+C. THE DEVICE AFTERWARDS
+--------------------------------------------------------------------------------
+
+  boot_id:    2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5      (unchanged)
+  cores:      cpu0..cpu3 gov=interactive                 (the fix's state, where it was found)
+  system:     running          failed units: 0
+  uptime:     up 3:58, load average: 4.02 4.05 4.05
+
+--------------------------------------------------------------------------------
+D. WHAT THIS RUN ESTABLISHES, AND THE TWO THINGS IT BROKE
+--------------------------------------------------------------------------------
+
+WHAT IT ESTABLISHES. The instrument runs on the real device and every refusal passes there: the
+panic guard is disarmed (1 download_mode parameter reads 0), the cores are writable AND offer both
+values, window A is the fix installed, and the write is proved by read-back on the device itself.
+The trap's restore held: the device was left on `interactive`, read back after the run.
+
+WHAT IT DOES NOT ESTABLISH. The second cause's price in degrees. The verdict is CONTAMINATED: the
+warming did not come back with the state, so this run says nothing about the governor.
+
+AND THE SHAPE OF THAT CONTAMINATION IS THE INTERESTING PART -- it is not the drift the control was
+built for. The three windows read, on the hottest zone: A 40.9, B 47.7, C 48.0. That is a monotone
+rise across the whole run, not a bump in B that survives into C. The busy figures say the load did
+not change (A 0.81, B 0.54, C 0.82 -- and B is the PINNED window with the LOWEST busy time, which is
+the instrument's own documented reason for not treating busy as a gate). So the reading is consistent
+with the intervention heating the SoC and 45 s of the fix's state not being enough to shed 7 C of
+thermal mass -- which the control window CANNOT separate from a phone that is warming on its own.
+The design's stated blind spot ("a drift that peaks in window B and vanishes in C is
+indistinguishable from this effect") is not what happened here; what happened is a rise that does not
+decay inside the window at all, and that is a second blind spot the design did not name.
+
+DEFECT 1 (the instrument's message). "... N more; the whole table is in the archive (it is one line
+per zone)" -- the archive is $TMP/deltas and the EXIT trap removes $TMP. There is no --keep and no
+path printed, so the sentence sends the operator to a directory that no longer exists, and it cost
+this run the 26 unprinted zone rows. A message that points at evidence which does not survive is the
+shape this repository keeps writing about; it was found by running it, not by reading it.
+
+DEFECT 2 (the design). A control window that assumes the intervention's effect decays faster than the
+window is too weak for a cause whose effect is THERMAL MASS. The fix is not a longer settle chosen in
+advance (that is the same guess one size up): the run has to WAIT for the reading to come back to
+within a stated margin of A, with a bound, and then say how long it took -- and a return that does
+not happen inside the bound is itself a measurement ("this intervention's warming does not decay
+within N s"), not a verdict about the governor.
+
+Both are fixable offline, and the harness has to fail on each before the next device run.
