@@ -108,14 +108,10 @@ printf '%s\n' '33e80afe-v63-usbd-disabled-rndis' > "$FR/sys/bus/usb/devices/3-3/
 serial_on()  { mkdir -p "$FR/sys/bus/usb/devices/3-3"; printf '%s\n' "${FP_SERIAL:-33e80afe-v63-usbd-disabled-rndis}" > "$FR/sys/bus/usb/devices/3-3/serial"; }
 serial_off() { rm -rf "$FR/sys/bus/usb/devices"; }
 
-# The read-back block the chain sends at the end of a run (and after a failure). One fixture, because
-# the chain's use of it is the same in both places: it must APPEAR, and it must be archived.
-cat > "$W/state.txt" <<'EOF'
-netwatch: file=present fn=has-ensure_addrs unit=active
-keeper: gone
-addrs: 192.168.2.15=1 10.15.19.100=1
-governors: interactive interactive interactive interactive
-EOF
+# The end-state read-back used to be a fixture FILE here (`netwatch: … / keeper: gone / addrs: …`). It is
+# gone on purpose (docs 165): the chain's device-side program is RUN now (see endstate.sh below), because
+# a fixture that hands over the answer is a fixture that cannot test the reader composing it -- and this
+# one handed over an answer (`10.15.19.100=1`) that no device could ever have produced.
 
 # The proof's output. It is a fixture FILE rather than a string the stub prints, because the thing under
 # test is which verdict line the chain accepts -- and the cases differ only in that line.
@@ -192,7 +188,7 @@ done
 case "\$*" in
 true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;;
 *random/boot_id*) printf 'deadbeef-1111-2222-3333-444444444444\n'; exit 0 ;;
-*netwatch*) sl="\${FP_SLEEP_STATE:-}"; [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl" >/dev/null 2>&1; cat "$W/state.txt"; exit 0 ;;
+*netwatch*) sl="\${FP_SLEEP_STATE:-}"; [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl" >/dev/null 2>&1; "$W/endstate.sh" "\$@"; exit 0 ;;
 *zl1-address-owner-proof.sh*) cat "$W/proof.txt"; exit "\${FP_RC_PROOF:-0}" ;;
 *zl1-thermal.sh*) sl="\${FP_SLEEP_AB:-}"; [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl" >/dev/null 2>&1; cat "$AB_FIX"; exit "\${FP_RC_AB:-0}" ;;
 esac
@@ -216,6 +212,108 @@ cp "\$1" "$FR/tmp/\$(basename "\$2")" || exit 1
 exit "\${FP_RC_SCP:-0}"
 EOF
 chmod +x "$STUB"/*
+
+# --- the end-state program, RUN FOR REAL (docs 165) ------------------------------------------------
+# Until 2026-09-25 the ssh stub answered the end-state read-back from a fixture FILE, so the device-side
+# program the chain composes was NEVER EXECUTED by this harness. It ran on the device, where it printed
+# `keeper: 287596` on a boot whose argv-matched keeper count was 0 the whole time -- and 197 green checks
+# could not see it, because this file handed the chain the answer the program was supposed to compute.
+# A fixture that hands over the answer cannot test the reader that composes it. (The sibling rule is the
+# same one inverted -- docs 163 section 5: a READER's fixture needs no shim, but it does have to be run.)
+#
+# So the ssh stub hands the command to this, which maps the paths it names into the fake device root and
+# EXECUTES the result -- with `ip` and `systemctl` stubbed and everything else real. The program arrives
+# as an ARGUMENT because that is how ssh delivers it (`ssh host '<program>'`), never on stdin.
+#
+# The mapping is a list of the paths the shipped program names TODAY, so a rename inside the chain would
+# leave the program reading THIS LAPTOP's /proc, /sys/devices/system/cpu/cpu*/cpufreq and
+# /etc/systemd/system -- paths that all exist here, which is what makes that failure quiet instead of
+# loud. So the mapping counts how many of its five patterns the program actually contains, writes the
+# count to endstate.count, and this harness asserts it (section 2b). A fixture that stops covering the
+# program is the same defect as one that hands over the answer.
+#
+# The placeholder is @FR@ rather than an expanded $FR because the body is a QUOTED heredoc: the first
+# version of this file was written with `$FR` in it and expanded nothing, so the program it ran was the
+# device's own program against the host's own filesystem -- every end-state check in section 2 was red
+# and the reason was the fixture, not the chain. The substitution is one sed at the end.
+cat > "$W/endstate.sh" <<'EOF'
+#!/bin/sh
+prog=$(printf '%s\n' "$*")
+d=${0%/*}
+n=0
+for pat in /etc/systemd/system/zl1-netwatch.sh '/proc/[0-9]*' '/proc/$$' '${p#/proc/}' /sys/devices/system/cpu; do
+  case "$prog" in *"$pat"*) n=$((n + 1)) ;; esac
+done
+printf 'ENDSTATE mapped=%s of 5\n' "$n" > "$d/endstate.count"
+printf '%s\n' "$prog" | sed \
+  -e "s#/etc/systemd/system/zl1-netwatch.sh#@FR@/etc/systemd/system/zl1-netwatch.sh#g" \
+  -e "s#/proc/\[0-9\]\*#@FR@/proc/[0-9]*#g" \
+  -e "s#/proc/\$\$#@FR@/proc/\$\$#g" \
+  -e "s|\${p#/proc/}|\${p#@FR@/proc/}|g" \
+  -e "s#/sys/devices/system/cpu#@FR@/sys/devices/system/cpu#g" \
+  > "$d/endstate.mapped"
+sh "$d/endstate.mapped"
+EOF
+sed -i "s#@FR@#$FR#g" "$W/endstate.sh"
+chmod +x "$W/endstate.sh"
+
+# The keeper's path comes OUT OF the installer that retires it, exactly as the chain now reads it -- and
+# the stand-in for that installer carries the same line (below), because a stand-in without it would make
+# the chain report UNKNOWN in every scenario here, which is the correct behaviour and not what these
+# scenarios are for.
+KEEPER_REAL=$(sed -n 's/^KEEPER=\(.*\)$/\1/p' "$HERE/../install-retire-debug-keeper.sh" 2>/dev/null | head -1)
+[ -n "$KEEPER_REAL" ] || { echo "the real retire installer has no KEEPER= line for the chain to read" >&2; exit 2; }
+
+# The fake device's /proc. Four shapes, and the last two are the ones that fooled the device:
+#   * `proc_bystander` -- a process whose FULL cmdline mentions the keeper's path (a `ps | grep`), which a
+#     substring match reports as the keeper.
+#   * `proc_selfshape` -- what the reader's own process looks like ON THE DEVICE: the chain sends
+#     `KEEPER='<path>' ...` as the argument of `sh -c`, so the keeper's path IS in its own argv, at
+#     position 2, behind `-c`. That is why the old reader printed its own pid: it matched by substring
+#     over the whole cmdline. Measured on the device: `keeper: 2356709` / `my pid: 2356709`.
+# `proc_keeper` is the real keeper's invocation shape: argv[0] IS the path, which must still match.
+proc_none()      { rm -rf "$FR/proc"; mkdir -p "$FR/proc"; }
+proc_keeper()    { mkdir -p "$FR/proc/4242"; printf '%s\0' "$KEEPER_REAL" > "$FR/proc/4242/cmdline"; }
+proc_bystander() { mkdir -p "$FR/proc/4243"; printf '/bin/sh\0-c\0ps -ef | grep %s\0' "$KEEPER_REAL" > "$FR/proc/4243/cmdline"; }
+proc_selfshape() { mkdir -p "$FR/proc/4244"; printf '/bin/sh\0-c\0KEEPER=%s f=/etc/systemd/system/zl1-netwatch.sh ...\0' "$KEEPER_REAL" > "$FR/proc/4244/cmdline"; }
+# The keeper as the DEVICE starts it: the v63 boot hook runs `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg
+# 2>&1 &` from a shell (install-retire-debug-keeper.sh lines 26-29, docs 94), and a script with a shebang
+# is exec'd as <interpreter> <script> -- so the keeper's cmdline is `/bin/sh\0<path>\0`. This is not a
+# hypothetical shape: it is THE shape, which is why the argv rule has two halves and this fixture exists.
+proc_shellrun()  { mkdir -p "$FR/proc/4245"; printf '/bin/sh\0%s\0' "$KEEPER_REAL" > "$FR/proc/4245/cmdline"; }
+# The netwatch file the program asks about (`ensure_addrs()` present, executable) and the four governors.
+mkdir -p "$FR/etc/systemd/system" "$FR/sys/devices/system/cpu"
+cat > "$FR/etc/systemd/system/zl1-netwatch.sh" <<'NETEOF'
+#!/bin/sh
+ensure_addrs() { :; }
+NETEOF
+chmod +x "$FR/etc/systemd/system/zl1-netwatch.sh"
+for c in 0 1 2 3; do
+  mkdir -p "$FR/sys/devices/system/cpu/cpu$c/cpufreq"
+  printf 'interactive\n' > "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"
+done
+proc_none
+
+# `ip` and `systemctl` are the two device tools the program calls, so they are the two this fixture has to
+# answer for. FP_ADDRS chooses WHICH addresses the device is said to have, which is what makes "the reader
+# asks for the DEVICE's own pair" a scenario rather than a claim about the code.
+cat > "$STUB/ip" <<EOF
+#!/bin/sh
+printf 'ip %s\n' "\$*" >> "$ACT"
+case "\${FP_ADDRS:-both}" in
+both) printf 'rndis0           UP             10.15.19.82/24 192.168.2.15/24 \n' ;;
+one)  printf 'rndis0           UP             10.15.19.82/24 \n' ;;
+none) : ;;
+esac
+exit 0
+EOF
+cat > "$STUB/systemctl" <<EOF
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >> "$ACT"
+case "\$*" in *is-active*) printf 'active\n'; exit 0 ;; esac
+exit 0
+EOF
+chmod +x "$STUB/ip" "$STUB/systemctl"
 
 # --- the callees ----------------------------------------------------------------------------------
 # One stand-in per script the chain drives. It records its invocation in $ACT (so the ORDER is
@@ -244,6 +342,11 @@ EOF
 callee install-netwatch-service NW
 callee install-retire-debug-keeper RETIRE
 callee install-cpufreq-governor CPUFREQ
+# The retire stand-in carries the ONE line the chain READS OUT OF IT (docs 165): the keeper's path. That
+# read is the whole reason the end-state reader stopped comparing against a guessed name, so the stand-in
+# has to have the line the real one has -- and the value is taken FROM the real one, cross-checked here,
+# rather than typed twice.
+printf 'KEEPER=%s\n' "$KEEPER_REAL" >> "$CAL/host/install-retire-debug-keeper.sh"
 
 # The proof runs ON the device, so its stand-in is the ssh stub's answer above; what has to exist is the
 # FILE that gets pushed. The chain pushes the real one, so the real one has to be readable -- and it is
@@ -306,6 +409,7 @@ run() { # outdir, args...
         ZL1_MISC_OUT="$MISC_OUT" FP_REAL_SLEEP="$FP_REAL_SLEEP" \
         FP_RC_AB="$FP_RC_AB" FP_SLEEP_RETIRE="$FP_SLEEP_RETIRE" FP_SLEEP_CPUFREQ="$FP_SLEEP_CPUFREQ" \
         FP_SLEEP_AB="$FP_SLEEP_AB" FP_SLEEP_STATE="$FP_SLEEP_STATE" FP_RC_SCP="$FP_RC_SCP" \
+        FP_ADDRS="$FP_ADDRS" \
         timeout 120 bash "$CHAIN" --outdir "$o" "$@" 2>&1); RC=$?
 }
 run_bg_start() { # outdir, args... -- for the interrupt scenario
@@ -329,6 +433,12 @@ scen() { # name -- a fresh archive dir, and the default device state
   FP_RC_AB=0; FP_SLEEP_RETIRE=0; FP_SLEEP_CPUFREQ=0
   FP_SLEEP_AB=""; FP_SLEEP_STATE=""; FP_RC_SCP=0
   FP_RC_NW=""; FP_RC_RETIRE=""; FP_RC_CPUFREQ=""
+  # The addresses the fake device has, and therefore the answer the end-state reader's `ip` call gets: the
+  # empty default is the real device's shape (BOTH of its own addresses on rndis0).
+  FP_ADDRS=""
+  # The end-state program's own record of whether the fake-root mapping still covers it (section 2b). It is
+  # cleared per scenario so that a scenario where the program never ran cannot read a previous one's count.
+  rm -f "$W/endstate.count"
   proof_obtained
 }
 
@@ -365,11 +475,85 @@ scen status
 run "$S" --status
 [ "$RC" = 0 ] && ok "--status exits 0" || bad "--status exited $RC"
 want 'netwatch: file=present fn=has-ensure_addrs unit=active' "$OUT" "it reports the netwatch file, its function and the unit"
-want 'keeper: gone' "$OUT" "and whether the keeper is still there"
-want 'addrs:.*192.168.2.15=1 10.15.19.100=1' "$OUT" "and whether the two addresses are on the interfaces"
-want 'governors:' "$OUT" "and what the four cores are set to"
+want 'keeper: gone' "$OUT" "and whether the keeper is still there (none running in this fixture)"
+want 'addrs: 192.168.2.15/24=present 10.15.19.82/24=present' "$OUT" \
+  "and whether the DEVICE's own two addresses are on its interface"
+want 'governors: interactive interactive interactive interactive' "$OUT" "and what the four cores are set to"
 [ -z "$(callees)" ] && ok "--status runs no installer" || bad "--status invoked an installer"
-want 'netwatch-file:' "$(sshs)" "the questions are asked ON the device, in one script"
+# ONE ssh call carries all four questions, and this is the RECORD of what was sent rather than what came
+# back: the previous assertion here looked for a marker (`netwatch-file:`) that the pre-fix program had,
+# so it was checking the fixture's own memory of the program.
+want '^ssh .*KEEPER=.*netwatch: file=.*keeper: .*addrs: .*governors: ' "$(sshs)" \
+  "the four questions are asked ON the device, in one program, in one call"
+
+# ==================================================================================================
+echo
+echo "== 2b. the end-state READER itself: RUN for real, against a fake /proc and a fake ip =="
+# ==================================================================================================
+# docs 165. Until 2026-09-25 the ssh stub answered this read-back from a fixture FILE, so the program the
+# chain composes was never executed by this harness -- while on the device it printed `keeper: 287596` on a
+# boot whose argv-matched keeper count was ZERO the whole time, and asked for the HOST's address on an
+# interface this device does not have. Both defects are assertions here now, each with a mutation that puts
+# the defect back and requires this harness to redden (section 9).
+#
+# (a) the fixture still COVERS the program. The mapping is a list of the paths the chain names today, so a
+# rename inside the chain would leave the program reading this laptop's /proc and governors -- paths that
+# exist here, which is exactly what would make that quiet. The count is taken from the program's own text.
+scen map
+run "$S" --status
+want 'mapped=5 of 5' "$(cat "$W/endstate.count" 2>/dev/null)" \
+  "the fake-root mapping still covers all five device paths the program names"
+
+# (b) a keeper whose OWN argv[0] is the path -- what a unit's `ExecStart=/usr/local/sbin/zl1-debug-net.sh`
+# produces. This is NOT the shape the hook on this device gives (that is (c) below); it is here because the
+# rule accepts it, and a fixture that only exercised one half would let the other half be deleted.
+scen keeper-argv
+proc_keeper
+run "$S" --status
+proc_none
+want 'keeper: 4242' "$OUT" "a keeper running as argv[0] is reported, by pid"
+
+# (c) and the same for the shape the DEVICE actually uses -- the boot hook runs `<path> >/dev/kmsg 2>&1 &`
+# from a shell, and a shebang script is exec'd as <interpreter> <script>, so argv[1] IS the path (docs 94):
+scen keeper-shellrun
+proc_shellrun
+run "$S" --status
+proc_none
+want 'keeper: 4245' "$OUT" "a keeper shebang-exec'd from the boot hook (argv[1] IS the path) is reported too"
+
+# (d) the two shapes that the OLD reader called the keeper, and neither is:
+scen keeper-bystander
+proc_bystander
+run "$S" --status
+proc_none
+want 'keeper: gone' "$OUT" "a process that merely MENTIONS the path (a 'ps | grep') is not the keeper"
+
+scen keeper-selfshape
+proc_selfshape
+run "$S" --status
+proc_none
+want 'keeper: gone' "$OUT" \
+  "and the reader's OWN shape on the device (the path in argv[2], behind 'sh -c') is not itself"
+
+# (e) the addresses are the DEVICE's pair. `one` is the device with only one of them, which is what makes
+# the reader's answer a reading of the interface rather than a constant.
+scen addr-one
+FP_ADDRS=one
+run "$S" --status
+want 'addrs: 192.168.2.15/24=ABSENT 10.15.19.82/24=present' "$OUT" \
+  "one address missing is reported as that address missing (not as 'the pair is fine')"
+
+scen addr-none
+FP_ADDRS=none
+run "$S" --status
+want 'addrs: NOT READ' "$OUT" "an ip that answers nothing says the reading was not taken"
+notwant 'addrs: .*ABSENT' "$OUT" "and it does not print two ABSENTs it never measured"
+
+scen addr-hostpair
+# The pre-fix reader asked for 10.15.19.100 (the HOST's address on usb0). This is that defect as a state:
+# a device that has its own pair and NOT the host's must still read as whole.
+run "$S" --status
+notwant '10\.15\.19\.100' "$OUT" "the host's own address is not asked of the phone any more"
 
 # ==================================================================================================
 echo
@@ -947,6 +1131,45 @@ if mutate statebound 's#bound "\$STATE_LIMIT" ##'; then
   [ "$RC" = 1 ] && ok "mutation 'no read-back bound': the chain still stops" || bad "the 'no read-back bound' mutant exited $RC"
   notwant 'UNREADABLE' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the read-back that outlasted its bound is NOT declared unreadable (the check is live)"
   want '^netwatch: file=' "$(cat "$S/INDEX.txt" 2>/dev/null)" "the archive just waits it out and takes the reading -- which is right here and wrong on a stalled link"
+fi
+
+# (13)-(15) the three END-STATE READER defects, put back one at a time (docs 165) -------------------
+# These are what makes section 2b mean anything. Each is a defect that was in the shipped script and was
+# READ ON THE DEVICE, not reasoned about: a pid printed for a keeper that was not running, and an address
+# asked of an interface this device does not have. Each one has to redden this harness -- because
+# `keeper: gone` is also what a reader that NEVER matches anything prints, so without these the section's
+# checks would be satisfied by a function that was never run and by one that always says gone.
+# (13) the guessed name instead of the path read out of the installer: the keeper is running in the
+# fixture, and the search name is one no process has (the name the script used to carry).
+if mutate guessedname 's#^KEEPER_BIN=\$(sed -n .*$#KEEPER_BIN="/usr/local/sbin/zl1-debug-init.sh"#'; then
+  scen mut-guessedname
+  proc_keeper
+  mutant_run "$CHAIN_DIR/guessedname.sh" "$S"
+  proc_none
+  want 'netwatch: file=' "$OUT" "mutation 'guessed name': the read-back was taken (so the check below is not vacuous)"
+  want 'keeper: gone' "$OUT" \
+    "mutation 'guessed name': a RUNNING keeper is reported gone, because the name was guessed and not read out of the installer"
+fi
+# (14) the substring match: the defect measured on the device as `keeper: 2356709` beside `my pid:
+# 2356709`. The scenario's /proc holds the reader's own shape -- `sh -c` with the keeper's path in
+# argv[2] -- and a whole-cmdline match reports THAT, which is the false pid.
+if mutate oldsubstr 's#case "\$a1" in "\$KEEPER") hit=1 ;; esac#case "$(tr "\\0" " " < "$p/cmdline" 2>/dev/null)" in *"$KEEPER"*) hit=1 ;; esac#'; then
+  scen mut-oldsubstr
+  proc_selfshape
+  mutant_run "$CHAIN_DIR/oldsubstr.sh" "$S"
+  proc_none
+  want 'netwatch: file=' "$OUT" "mutation 'substring match': the read-back was taken (so the check below is not vacuous)"
+  want 'keeper: 4244' "$OUT" \
+    "mutation 'substring match': the reader's OWN cmdline is reported as the keeper -- the device's false pid, reproduced"
+fi
+# (15) the host's address in place of the device's: the mutation restores `*10.15.19.100/24*`, which is
+# what the pre-fix program asked for, so the device's own address reads ABSENT on a device that has it.
+if mutate hostaddr 's#\*10\.15\.19\.82/24\*#*10.15.19.100/24*#'; then
+  scen mut-hostaddr
+  mutant_run "$CHAIN_DIR/hostaddr.sh" "$S"
+  want 'netwatch: file=' "$OUT" "mutation 'the host address': the read-back was taken (so the check below is not vacuous)"
+  want 'addrs: 192.168.2.15/24=present 10.15.19.82/24=ABSENT' "$OUT" \
+    "mutation 'the host address': the DEVICE's own address reads ABSENT on a device that has it -- the reading that could never be 1"
 fi
 
 # ==================================================================================================

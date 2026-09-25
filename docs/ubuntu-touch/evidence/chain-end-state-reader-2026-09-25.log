@@ -1,0 +1,60 @@
+# zl1 heat-fix chain -- the end-state reader, fixed and read on the device
+# host date: 2026-09-25T17:53:30Z   (device clock is wrong and is not used)
+# device: root@10.15.19.82 (serial 33e80afe), USB 18d1:d001 (RNDIS), boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5
+#         (the boot the one-boot runbook ran on; read again at the end of this stage, no reboot since)
+
+## 1. the FIXED reader, the shipped command, read-only:
+$ scripts/host/zl1-heat-fix-chain.sh --status
+zl1 heat-fix chain -- status (read-only)
+  device:  root@10.15.19.82 (serial 33e80afe)
+  boot_id: 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5
+
+  netwatch: file=present fn=has-ensure_addrs unit=active
+  keeper: gone
+  addrs: 192.168.2.15/24=present 10.15.19.82/24=present
+  governors: interactive interactive interactive interactive
+
+  read it as the chain: the netwatch file must carry ensure_addrs() BEFORE the keeper is retired,
+  and the keeper being gone with BOTH of the device's own addresses still present is the end state
+  the third step buys. (The addresses are read on the device and are the device's: the host's own
+  address is a host-side fact and is not asked for here -- see the note above dev_end_state.)
+
+## 2. the shape census: every shell-script process on the device, as pid|argv[0]|argv[1]
+$ ssh root@10.15.19.82 'for p in /proc/[0-9]*; do set -- $(tr "\0" "\n" < "$p/cmdline" 2>/dev/null); ...'
+750|/bin/sh|/usr/local/sbin/zl1-v63-monitor.sh
+32747|/bin/sh|/userdata/zl1-kmsg/snapshot.sh
+37567|/bin/sh|/userdata/zl1-container-fix/apply.sh
+37572|/bin/sh|/userdata/zl1-host-fix/apply.sh
+50433|/bin/sh|/usr/share/ubuntu-touch-session/run-systemd-session
+128538|/bin/sh|/etc/systemd/system/zl1-netwatch.sh
+164771|/bin/sh|/userdata/zl1-wlan/bringup.sh
+1197940|/bin/sh|/usr/libexec/ubuntu-touch-session/camera-service-trust-stored
+1216202|bash|-c
+
+## 3. the only process on this device whose cmdline mentions 'zl1-debug' is THE COMMAND ITSELF:
+1219622: bash -c n=0; for p in /proc/[0-9]*; do c=$(tr "\0" " " < "$p/cmdline" 2>/dev/null); case "$c" in *zl1-debug*) n=$((n+1)); printf "%s: %s\n" "${p#/proc/}" "$c" ;; esac; done; echo "processes whose cmdline contains zl1-debug: $n" 
+processes whose cmdline contains zl1-debug: 1
+#   ^ the 1 is pid 1219622, i.e. the census command printed above it -- its own text contains the
+#     pattern. That is the defect docs 165 fixes, reproduced on the device in four lines: the OLD reader
+#     matched by SUBSTRING over the whole cmdline, and its own text was in its own argv, so it reported
+#     ITSELF. The new one matches by argv POSITION (argv[0] is the path, or argv[0] is a shell and
+#     argv[1] the path), so a `bash -c '<text>'` process is not a keeper no matter what its text says.
+#     There is NO keeper on this boot, which is what section 1's `keeper: gone` says.
+
+## 4. the shipped matcher run BY HAND, verbatim text extracted from the shipped script, twice:
+# positive control: 128538 IS the netwatch, running as `/bin/sh /etc/systemd/system/zl1-netwatch.sh`
+# (section 2), so the argv rule's second half finds a running `sh <script>` process on this device.
+### KEEPER='/etc/systemd/system/zl1-netwatch.sh'
+netwatch: file=present fn=has-ensure_addrs unit=active
+keeper: 128538
+addrs: 192.168.2.15/24=present 10.15.19.82/24=present
+governors: interactive interactive interactive interactive
+
+# negative control: the keeper's own path, on a boot where nothing runs it -- `gone`, and section 3
+# shows nothing could have been found. Note the program did NOT report itself in either run.
+### KEEPER='/usr/local/sbin/zl1-debug-net.sh'
+netwatch: file=present fn=has-ensure_addrs unit=active
+keeper: gone
+addrs: 192.168.2.15/24=present 10.15.19.82/24=present
+governors: interactive interactive interactive interactive
+

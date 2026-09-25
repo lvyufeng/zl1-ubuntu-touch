@@ -219,6 +219,93 @@ fi
 BOOT_ID=$("${SSH[@]}" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d '\r\n')
 [ -n "$BOOT_ID" ] || BOOT_ID="unknown-$(date -u +%Y%m%dT%H%M%SZ)"
 
+# --- the end-state reader: ONE device-side program, and three things it must not do (docs 165) -------
+# Both callers below (`--status` and the closing read-back) ask the same four questions, and until
+# 2026-09-25 they each carried their OWN copy of the program -- so a defect in it existed twice. It is
+# one function now, and every one of the three defects fixed here was measured on the device that day:
+#
+#   * IT MUST NOT SEARCH FOR A NAME THAT IS NOT THE KEEPER'S. Both copies matched
+#     `*zl1-debug-init*|*zl1-debug-keeper*`; the keeper is `/usr/local/sbin/zl1-debug-net.sh`
+#     (`install-retire-debug-keeper.sh`'s `KEEPER=`). So the search could not have found the keeper even
+#     if it had been running. The path is READ OUT OF that installer now, and when it cannot be read the
+#     line says so -- comparing against a guessed name is what produced the false reading below.
+#   * IT MUST NOT MATCH BY SUBSTRING OVER A WHOLE CMDLINE. That is why it printed a pid on a boot whose
+#     argv-matched keeper count was ZERO the whole time: the program's own text is in its own argv
+#     (`sh -c '<this text>'`), so the substring pattern matched ITSELF. Measured twice -- `keeper:
+#     287596` in tmp-one-boot-20260925T171422Z/03-heat-chain.txt, and, running the same loop by hand on
+#     the device, `keeper: 2356709` next to `my pid: 2356709`. It matches by ARGV POSITION now, the same
+#     rule `zl1-lpm-ladder-trial.sh` and `zl1-one-boot-runbook.sh` already use (argv[1] IS the path, or
+#     argv[0] is a shell and argv[1] the path), and it skips its own pid as well. The SECOND half is the
+#     one this device needs: the v63 boot hook starts the keeper as `sh <path>` (a shebang script is
+#     exec'd as <interpreter> <script>, `install-retire-debug-keeper.sh` lines 26-29, docs 94), so its
+#     cmdline is `/bin/sh\0/usr/local/sbin/zl1-debug-net.sh\0` -- argv[0] is NOT the keeper.
+#   * IT MUST NOT ASK THE DEVICE FOR A HOST ADDRESS. `10.15.19.100` is the HOST's address on `usb0`
+#     (four host scripts set it: `zl1-rndis-recover.sh`, `zl1-rndis-udev-helper.sh`, `host-watch-usb0.sh`,
+#     `verify-device-online.sh`) -- and `usb0` does not exist on this device, whose interface is
+#     `rndis0`. So that half of the line could not read 1 on any boot, while the prose beside it called
+#     "both addresses still 1" the end state the chain exists to reach. The device's OWN pair is
+#     `192.168.2.15/24` and `10.15.19.82/24`, both on `rndis0` -- the same pair
+#     `device/zl1-boot-address-check.sh` reads -- and an unreadable `ip` now says so instead of reporting
+#     two ABSENTs.
+KEEPER_BIN=$(sed -n 's/^KEEPER=\(.*\)$/\1/p' "$RETIRE" 2>/dev/null | head -1)
+case "$KEEPER_BIN" in
+/*) : ;;
+*)  say "  NOTE: the keeper's path could not be read out of $(basename "$RETIRE"), so the keeper line below"
+    say "        will say UNKNOWN: this chain will not compare a process list against a name it guessed."
+    KEEPER_BIN="" ;;
+esac
+# The path is spliced into a single-quoted remote program, so a quote in it would break the quoting; the
+# value comes from a file in this repository, and this is the check that makes that an argument rather
+# than a hope.
+case "$KEEPER_BIN" in *"'"*) say "  NOTE: the keeper's path contains a quote and cannot be spliced into the remote program: $KEEPER_BIN"
+                       KEEPER_BIN="" ;;
+esac
+dev_end_state() { # prints the device-side program on stdout; the caller runs it over ssh
+  printf "KEEPER='%s'\n" "$KEEPER_BIN"
+  cat <<'EOF'
+    f=/etc/systemd/system/zl1-netwatch.sh
+    printf 'netwatch: file=%s fn=%s unit=%s\n' \
+      "$([ -x "$f" ] && echo present || echo MISSING)" \
+      "$(grep -qc '^ensure_addrs()' "$f" 2>/dev/null && echo has-ensure_addrs || echo MISSING)" \
+      "$(systemctl is-active zl1-netwatch.service 2>/dev/null || true)"
+    k=""
+    if [ -z "$KEEPER" ]; then
+      printf 'keeper: UNKNOWN (the keeper'"'"'s path was not readable on the host, so no name was searched for)\n'
+    else
+      for p in /proc/[0-9]*; do
+        [ "$p" = "/proc/$$" ] && continue
+        [ -r "$p/cmdline" ] || continue
+        set -- $(tr "\0" "\n" < "$p/cmdline" 2>/dev/null)
+        a0=${1:-}; a1=${2:-}; hit=0
+        case "$a1" in "$KEEPER") hit=1 ;; esac
+        if [ "$hit" = 0 ]; then
+          case "$a0" in
+          "$KEEPER") hit=1 ;;
+          */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$KEEPER") hit=1 ;; esac ;;
+          esac
+        fi
+        [ "$hit" = 1 ] && { k="${p#/proc/}"; break; }
+      done
+      printf 'keeper: %s\n' "${k:-gone}"
+    fi
+    all=$(ip -4 -br addr show 2>/dev/null)
+    if [ -z "$all" ]; then
+      printf 'addrs: NOT READ (ip -4 -br addr show returned nothing, so this is not a reading of the phone)\n'
+    else
+      a2=ABSENT; a19=ABSENT
+      case "$all" in *192.168.2.15/24*) a2=present ;; esac
+      case "$all" in *10.15.19.82/24*) a19=present ;; esac
+      printf 'addrs: 192.168.2.15/24=%s 10.15.19.82/24=%s\n' "$a2" "$a19"
+    fi
+    g=""
+    for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+      [ -r "$c" ] || continue
+      g="$g$(cat "$c" 2>/dev/null) "
+    done
+    printf 'governors: %s\n' "${g% }"
+EOF
+}
+
 # --- --status: where is the chain on this boot? ----------------------------------------------------
 # Read-only, and it answers the four questions the chain is about, in the chain's own order. It is here
 # so that "run it and see" is never the first thing a person does to a phone they cannot easily reboot.
@@ -227,30 +314,13 @@ if [ "$STATUS" = 1 ]; then
   say "  device:  $HOST (serial $DEV)"
   say "  boot_id: $BOOT_ID"
   say
-  ST=$("${SSH[@]}" '
-    f=/etc/systemd/system/zl1-netwatch.sh
-    printf "netwatch-file: %s\n" "$([ -x "$f" ] && echo present || echo MISSING)"
-    printf "netwatch-fn:   %s\n" "$(grep -qc "^ensure_addrs()" "$f" 2>/dev/null && echo has-ensure_addrs || echo MISSING)"
-    printf "netwatch-unit: %s\n" "$(systemctl is-active zl1-netwatch.service 2>/dev/null || true)"
-    k=""
-    for p in /proc/[0-9]*; do
-      c=$(tr "\0" " " < "$p/cmdline" 2>/dev/null) || continue
-      case "$c" in *zl1-debug-init*|*zl1-debug-keeper*) k="${p#/proc/}"; break ;; esac
-    done
-    printf "keeper:        %s\n" "${k:-gone}"
-    printf "addr2:         %s\n" "$(ip -4 -br addr show rndis0 2>/dev/null | grep -c "192.168.2.15")"
-    printf "addr19:        %s\n" "$(ip -4 -br addr show usb0 2>/dev/null | grep -c "10.15.19.100")"
-    g=""
-    for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
-      [ -r "$c" ] || continue
-      g="$g $(cat "$c" 2>/dev/null)"
-    done
-    printf "governors:    %s\n" "${g# }"
-  ' 2>/dev/null | tr -d '\r')
+  ST=$("${SSH[@]}" "$(dev_end_state)" 2>/dev/null | tr -d '\r')
   printf '%s\n' "$ST" | sed 's/^/  /'
   say
   say "  read it as the chain: the netwatch file must carry ensure_addrs() BEFORE the keeper is retired,"
-  say "  and the keeper being gone with the addresses still present is the end state the third step buys."
+  say "  and the keeper being gone with BOTH of the device's own addresses still present is the end state"
+  say "  the third step buys. (The addresses are read on the device and are the device's: the host's own"
+  say "  address is a host-side fact and is not asked for here -- see the note above dev_end_state.)"
   exit 0
 fi
 
@@ -360,28 +430,9 @@ read_state() {
   # host-side timeout is not evidence for. So the failure is spelled out, in the one place a reader
   # looks.
   local raw rc
-  raw=$(bound "$STATE_LIMIT" "${SSH[@]}" '
-    f=/etc/systemd/system/zl1-netwatch.sh
-    printf "netwatch: file=%s fn=%s unit=%s\n" \
-      "$([ -x "$f" ] && echo present || echo MISSING)" \
-      "$(grep -qc "^ensure_addrs()" "$f" 2>/dev/null && echo has-ensure_addrs || echo MISSING)" \
-      "$(systemctl is-active zl1-netwatch.service 2>/dev/null || true)"
-    k=""
-    for p in /proc/[0-9]*; do
-      c=$(tr "\0" " " < "$p/cmdline" 2>/dev/null) || continue
-      case "$c" in *zl1-debug-init*|*zl1-debug-keeper*) k="${p#/proc/}"; break ;; esac
-    done
-    printf "keeper: %s\n" "${k:-gone}"
-    printf "addrs: 192.168.2.15=%s 10.15.19.100=%s\n" \
-      "$(ip -4 -br addr show rndis0 2>/dev/null | grep -c "192.168.2.15")" \
-      "$(ip -4 -br addr show usb0 2>/dev/null | grep -c "10.15.19.100")"
-    g=""
-    for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
-      [ -r "$c" ] || continue
-      g="$g$(cat "$c" 2>/dev/null) "
-    done
-    printf "governors: %s\n" "${g% }"
-  ' 2>/dev/null)
+  # The SAME program `--status` runs (see dev_end_state above), which is the point: two copies of it is
+  # how the three defects it now avoids came to exist twice.
+  raw=$(bound "$STATE_LIMIT" "${SSH[@]}" "$(dev_end_state)" 2>/dev/null)
   rc=$?
   # `tr` is applied AFTER the status is read: piping straight into it would hide timeout(1)'s 124 behind
   # the pipeline's last command (this script runs under `set -o pipefail`, which is what makes that a
@@ -759,8 +810,13 @@ archive
 say "  archive: $OUT"
 say ""
 say "  Read the governors line: four identical names means the applier read its writes back (docs 99 --"
-say "  the first version printed 'on 0 cores' and exited 0). And 'keeper: gone' with both addresses"
-say "  still 1 is the end state this chain exists to reach."
+say "  the first version printed 'on 0 cores' and exited 0). And 'keeper: gone' with BOTH of the device's"
+say "  own addresses 'present' is the end state this chain exists to reach."
+say ""
+say "  And read the keeper line as a reading of the DEVICE: it is matched by ARGV (never by a substring of"
+say "  the cmdline, which matched this reader itself until docs 165) and against the path read out of"
+say "  install-retire-debug-keeper.sh. UNKNOWN there means the path could not be read on this host -- it"
+say "  does not mean anything about the phone."
 say ""
 say "  That end state is the MECHANISM, and it is what this chain can settle. Whether the phone runs"
 say "  cooler is what 06b-heat-ab.txt is for, and it is a reading with the caveats printed beside it:"
