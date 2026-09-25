@@ -25,9 +25,21 @@
 #                      config line says what was asked for; a string in the Image says what is there.
 #                      They are two readings and this prints both, because the interesting failure is
 #                      exactly when they disagree.
-#   5. --diff A B      the options whose state DIFFERS between two images' embedded configs. This is the
-#                      reading that makes "the only change is the one line I made" a fact rather than an
-#                      intention -- and it is computed from the two images, not from the two defconfigs.
+#   5. --diff A B      TWO readings, in this order, and the order matters. (a) THE LAYERS: which of the
+#                      layers this tool reads -- the whole image, the kernel blob, the decompressed
+#                      Image, the appended device trees, the ramdisk, the cmdline -- moved between the
+#                      two. (b) THE OPTIONS: which of the kernel's own config options changed state.
+#                      This is the reading that makes "the only change is the one line I made" a fact
+#                      rather than an intention, and both halves are computed from the two images.
+#
+#                      (a) exists because (b) alone answers a NARROWER question than the tool's name.
+#                      The config is ONE layer: two images can print `0 option(s) differ` while their
+#                      RAMDISKS are completely different -- which is exactly what the pair
+#                      `-fpdriver` / `-fpdriver-modemfw` does, because the first changes the kernel and
+#                      the second changes the initramfs. A reader who diffs two boot images and sees
+#                      only the config will conclude they are the same, and be wrong about the half
+#                      that boots. Neither half is a verdict on its own: the layer table says WHICH
+#                      files moved, the option list says WHAT moved inside the kernel.
 #
 # THE DISTINCTION THIS FILE EXISTS TO KEEP: "this kernel's config does not mention the option" and "this
 # kernel carries NO embedded config at all" are different facts, about different things, and a tool that
@@ -42,7 +54,9 @@
 #                                     [--quiet] [--json] [--keep] [--explain]
 #   --watch OPT     an extra config option to report the state of (repeatable). The defaults are the
 #                   fingerprint's four names plus the two blocks docs 157 separated.
-#   --diff          with exactly two images: print every option whose state differs between them.
+#   --diff          with exactly two images: print which layer moved (image, kernel blob, Image,
+#                   appended device trees, ramdisk, cmdline) and then every config option whose state
+#                   differs. `--quiet` does not suppress either -- this flag IS the reading.
 #   --quiet         the verdicts only, not the readings.
 #   --json          one JSON object per image on stdout (for anything that wants to read this).
 #   --keep          keep the temp directory and print its path.
@@ -337,8 +351,68 @@ if [ "$DIFF" = 1 ]; then
     python3 "$W/read.py" "$a" "$WATCH" > "$W/a.json"
     python3 "$W/read.py" "$b" "$WATCH" > "$W/b.json"
     say ""
+    say "== the layers this tool reads, and which of them MOVED between the two images"
+    say "   (the option list below answers a NARROWER question than this one: two images can have"
+    say "    identical kernels and completely different ramdisks, so read both.)"
+    python3 - "$W/a.json" "$W/b.json" <<'PYEOF'
+import json, sys
+A = json.load(open(sys.argv[1])); B = json.load(open(sys.argv[2]))
+
+def short(v, n=16):
+    v = str(v or '')
+    return v[:n] if v else '(none)'
+
+# EVERY LAYER THIS TOOL ACTUALLY READS. The label is what a reader has to be able to name; the two keys
+# are the JSON fields on each side -- they are the same field name today, and they are listed per side
+# because that is what makes a row a comparison rather than a lookup.
+rows = [
+    ('boot image (whole file)',                 'sha256',          'sha256'),
+    ('kernel blob (what the bootloader loads)', 'kernel_sha256',   'kernel_sha256'),
+    ('decompressed Image',                      'image_sha256',    'image_sha256'),
+    ('appended device trees',                   'appended_sha256', 'appended_sha256'),
+    ('ramdisk',                                 'ramdisk_sha256',  'ramdisk_sha256'),
+    ('cmdline',                                 'cmdline',         'cmdline'),
+]
+# The device-tree row carries its FDT count, because `(none)` on BOTH sides is also how an image with no
+# appended trees reads -- and "both have none" must not look like "both have the same trees".
+#
+# AND THE COMPARISON IS ON THE FULL VALUE, NEVER ON WHAT IS DISPLAYED. This is not a style point: the
+# first cut of this table compared the TRUNCATED strings, and the cmdline row printed
+# `androidboot.hard  androidboot.hard  same` for two images whose cmdlines are 493 characters long and
+# differ further in. A display width that silently decides the verdict is the same defect this table was
+# written to remove, one layer down -- so the pair compared is (full, full) and only the pair PRINTED is
+# shortened, with the width named under the table.
+labelled = []
+for label, ka, kb in rows:
+    if label.startswith('appended'):
+        label = '%s (%s FDT)' % (label, A.get('appended_fdts'))
+    labelled.append((label, str(A.get(ka) or ''), str(B.get(kb) or '')))
+w = max(len(r[0]) for r in labelled)
+wv = min(16, max(len(short(r[1])) for r in labelled), max(len(short(r[2])) for r in labelled))
+moved = []
+for label, fa, fb in labelled:
+    same = (fa == fb)
+    if not same:
+        moved.append(label)
+    print('   %-*s  %-*s %-*s %s' % (w, label, wv, short(fa, wv), wv, short(fb, wv),
+                                     'same' if same else 'DIFFERS'))
+print('   (the first %d characters of each value are shown; the comparison above is on the WHOLE value,' % wv)
+print('    and the full hashes are printed in the per-image sections above)')
+if not moved:
+    print('   -> no layer this tool reads differs: at every layer above the two images are identical')
+else:
+    print('   -> %d of %d layers differ: %s' % (len(moved), len(labelled), '; '.join(moved)))
+    if any(m.startswith('ramdisk') for m in moved):
+        # THE SENTENCE THIS TABLE EXISTS FOR. A reader who diffs two boot images and sees only the option
+        # list will read `0 option(s) differ` as "these two images are the same" -- and be wrong about the
+        # half that boots. Measured on the pair `-fpdriver` / a kernel+ramdisk rebuild of it: identical
+        # kernels, identical device trees, identical cmdline, and two completely different ramdisks.
+        print('      (a ramdisk difference is INVISIBLE to the option list below: the config is one layer)')
+PYEOF
+    say ""
     say "== the options that DIFFER between the two kernels' own configs"
-    say "   (this is computed from the two IMAGES, so it needs no defconfig to agree with)"
+    say "   (this is computed from the two IMAGES, so it needs no defconfig to agree with -- and it answers"
+    say "    a NARROWER question than the layer table above: the config is one layer of the image)"
     python3 - "$W/a.json" "$W/b.json" <<'PY'
 import json, sys
 A = json.load(open(sys.argv[1])); B = json.load(open(sys.argv[2]))

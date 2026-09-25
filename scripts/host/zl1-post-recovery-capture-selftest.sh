@@ -151,6 +151,14 @@ done
 # the reachability probe: 'true'. Answered from the environment, so "the device is on the bus but SSH
 # is not up yet" is a reachable scenario instead of an untested branch.
 case "\$*" in true) [ "\${FP_SSH:-yes}" = yes ] && exit 0 || exit 1 ;; esac
+# AN SSH THAT NEVER ANSWERS (docs 161). This is the shape that cost a boot on 2026-09-25: the remote
+# command had already finished and the CLIENT was stuck, so nothing on the device-side was hung and no
+# device-side guard could have caught it. It has to be a hook on the STUB rather than a long 'sleep' in a
+# callee, because a sleeping callee is still an ssh that will eventually return -- and "it came back
+# late" is a different failure from "it never came back".
+if [ -n "\${FP_SSH_HANG:-}" ]; then
+  case "\$*" in *"\${FP_SSH_HANG}"*) sleep 3600 ;; esac
+fi
 cmd=\$(printf '%s' "\$*" | sed -f "$W/paths.sed")
 # FP_STUB_PATH exists so the "this device has no timeout(1)" branch can be RUN rather than read: with a
 # PATH of our own we decide whether \`command -v timeout\` succeeds, which is the whole branch condition.
@@ -314,6 +322,7 @@ run() {
         FP_SERIAL="${FP_SERIAL:-33e80afe}" \
         FP_SLEEP_EDLPM="${FP_SLEEP_EDLPM:-}" FP_SLEEP_BOOTADDR="${FP_SLEEP_BOOTADDR:-}" \
         FP_RC_EDLPM="${FP_RC_EDLPM:-}" FP_RC_BOOTADDR="${FP_RC_BOOTADDR:-}" \
+        FP_SSH_HANG="${FP_SSH_HANG:-}" \
         timeout 120 bash "$CAP" --outdir "$od" "$@" 2>&1); RC=$?
   # The blind-spot guard, at the one place every scenario routes through: if the subject calls a callee
   # this file does not know how to look for, say so HERE rather than letting every count assertion below
@@ -340,7 +349,7 @@ wait_bg() {
   kill -9 "$BGPID" 2>/dev/null
   wait "$BGPID" 2>/dev/null; RC=$?
 }
-reset_rc() { FP_RC_EDLPM=; FP_RC_BOOTADDR=; FP_SLEEP_EDLPM=; FP_SLEEP_BOOTADDR=; }
+reset_rc() { FP_RC_EDLPM=; FP_RC_BOOTADDR=; FP_SLEEP_EDLPM=; FP_SLEEP_BOOTADDR=; FP_SSH_HANG=; }
 
 echo "zl1 post-recovery capture -- offline self-test"
 echo "  subject: $SRC"
@@ -747,6 +756,98 @@ notwant '^0[3-9]-' "$(cat "$ODI/INDEX.txt")" "and no step that never started is 
 ( cd "$ODI" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "the partial archive verifies" || bad "the partial checksums do not verify"
 [ ! -e "$ODI/07-orientation.txt" ] && ok "and no file pretends a step ran that never did" || bad "a step file exists for a step that never ran"
 FP_SLEEP_BOOTADDR=
+
+# ==================================================================================================
+echo
+echo "== 7b. the HOST side of every call is bounded too, and the two bounds are told apart =="
+# ==================================================================================================
+# WHY THIS SECTION EXISTS. Section 7 bounds the DEVICE side of a step, and that guard is real -- but it
+# lives on the FAR SIDE of an ssh. On 2026-09-25 that was not enough: the identity block's ssh sat for
+# 4m09s with NO child running on the device (the remote command had finished; the client was stuck), and
+# this script's own outer bound was 4775 s, so a dead socket could spend a boot that cost a finger.
+#
+# The same class was fixed one file over, in the runbook, and recorded (docs 132). It never reached the
+# callee the runbook invokes -- which is the finding, and the reason the first assertion below is
+# STRUCTURAL rather than a count: the unbounded runner must not EXIST, so there is nothing to call by
+# accident in six months.
+echo
+echo "   -- structural: there is one runner and it cannot be called without a bound"
+if grep -qE '^run_bg\(\)' "$CAP"; then
+  bad "an UNBOUNDED run_bg() is still defined in the capture -- every call site is a place a hung ssh spends the boot"
+else
+  ok "no unbounded run_bg() is defined in the capture"
+fi
+# REMOVE the bounded occurrences and NOTHING may be left, the same shape section 7c uses for ${SSH[@]}:
+# a count alone passes on a file where the count is right and the lines are different.
+UB=$(grep -n 'run_bg' "$CAP" 2>/dev/null | grep -v 'run_bg_bound' | grep -v ':[[:space:]]*#' || true)
+[ -z "$UB" ] && ok "and every remaining mention of run_bg is run_bg_bound or a comment" \
+             || { bad "these call sites are not the bounded runner:"; printf '%s\n' "$UB" | sed 's/^/        | /'; }
+# TWO PATTERNS AND NOT THE LINE ITSELF, because this harness's `want` matches with `grep -E` and the line is
+# full of regex metacharacters -- MEASURED, not assumed: `HOST_BACKSTOP=\$((STEP_LIMIT [+] 30))` does NOT
+# match the line `HOST_BACKSTOP=$((STEP_LIMIT + 30))` under GNU grep 3.7, while the same pattern with the
+# dollars and parens in bracket expressions does. A pattern that has to be decoded before it can be read is
+# a bad test of a line that is meant to be read; these two say the same thing in the clear, and the SECOND
+# one is the load-bearing claim (a bare `+` there would be a quantifier, so it is `[+]`).
+want 'HOST_BACKSTOP=' "$(cat "$CAP")" "the capture derives a device backstop of its own"
+want 'STEP_LIMIT [+] 30' "$(cat "$CAP")" \
+  "and it is DERIVED from --step-limit, so raising the flag cannot leave the backstop tighter than the step"
+want 'IO_LIMIT=60' "$(cat "$CAP")" "and the push has a bound of its own"
+# The reason for two bounds: the device's timeout is the one that should fire, because its process-group
+# signal is what reaches a child the step spawned. The host one is for the case where it never gets to run.
+want 'strictly LOOSER than the device' "$(cat "$CAP")" "and the source says which of the two is meant to fire first"
+
+echo
+echo "   -- behavioural: an ssh that NEVER answers is killed on this side, and the run continues"
+# FP_SSH_HANG matches the identity block's remote command (it is the only one that reads /proc for the
+# keeper). `--step-limit 2` makes HOST_BACKSTOP 32 s, so this is a ~32 s scenario and not a hang: the
+# assertion is that the run COMES BACK. A stub that returned would not test a wall-clock bound at all.
+FP_STATE=present; reset_rc; FP_SSH_HANG='keeper pids'
+ODH="$W/out/hang"
+rm -rf "$ODH"
+run "$ODH" --step-limit 2
+FP_SSH_HANG=
+# EXIT 1, and not 0: the identity block is part of the boot's record, so losing it is a partial capture.
+# What must NOT happen is the run ending AT it -- the assertion right after this one is the one that
+# separates "the bound cost one reading" from "the bound cost the boot".
+[ "$RC" = 1 ] && ok "the capture RETURNED even though one ssh never answered (exit 1: a partial capture, not a failed step)" \
+  || bad "it exited $RC: the bound must end the call, and a dead ssh must not spend the run"
+# And the cause is DISTINGUISHABLE from a failed step: every step still reports 0. Without this, exit 1
+# plus a full INDEX of zeros would be an unexplainable code.
+notwant '^0[0-9][a-z]*-[a-z-]* +[1-9]' "$(cat "$ODH/INDEX.txt" 2>/dev/null)" \
+  "and no STEP failed -- the exit code is the identity block, not the chain"
+want 'identity: NOT READ -- the host backstop ended this ssh at 32s' "$(cat "$ODH/00-identity.txt")" \
+  "and 00-identity.txt says which bound ended it and on which side"
+want 'identity: THE LINES ABOVE THIS ONE ARE THE WHOLE OF WHAT CAME BACK' "$(cat "$ODH/00-identity.txt")" \
+  "and says out loud that the rest is MISSING rather than leaving a short file that reads as complete"
+want 'identity: cpu ticks are MISSING, and missing is not zero' "$(cat "$ODH/00-identity.txt")" \
+  "and that missing is not zero -- the reading it exists to record is a CPU tick count"
+want 'PARTIAL rc=124 -- 00-identity.txt is SHORT' "$OUT" \
+  "the run reports the identity block as PARTIAL, not as ok"
+# THE POINT OF THE WHOLE CHANGE: the steps after it still ran. A bound whose only effect is to end the
+# run early would be a different defect wearing this one's clothes.
+[ -f "$ODH/04-health-check.txt" ] && ok "and every step AFTER it still ran -- the bound costs one reading, not the boot" \
+  || bad "the run stopped at the identity block: the bound is ending the capture instead of one call"
+( cd "$ODH" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) && ok "the archive still verifies" || bad "the checksums do not verify"
+
+echo
+echo "   -- and the two bounds are TOLD APART in the note: device-side timeout vs host backstop"
+# Both `timeout`s exit 124, so an exit code alone cannot say which machine gave up -- and that is not a
+# detail: "the device's own bound fired" is a reading about the PHONE, "the host backstop fired" is a
+# reading about the LINK. The device-side wrapper prints a marker into the step's own output, and the note
+# reads it. `--step-limit 2` with a step that sleeps 30 makes the DEVICE's timeout the one that fires.
+FP_STATE=present; reset_rc; FP_SLEEP_BOOTADDR=30
+ODM="$W/out/devmark"
+rm -rf "$ODM"
+run "$ODM" --step-limit 4
+FP_SLEEP_BOOTADDR=
+want 'ZL1STEP-TIMEOUT device' "$(cat "$ODM/02-boot-address.txt" 2>/dev/null)" \
+  "a step the DEVICE's timeout ended carries the marker that says so"
+notwant 'the HOST BACKSTOP ended this step' "$OUT" \
+  "and the note does NOT blame the host for it -- the two are distinguishable, which is the whole marker's job"
+want "the DEVICE's own timeout" "$OUT" "and it names the device as the side that gave up"
+# And the marker is in the SOURCE of the remote command, not only in the fixture: an assertion that the
+# fixture prints it would pass on a subject that never reads it.
+want 'ZL1STEP-TIMEOUT device' "$(cat "$CAP")" "the marker is written by the shipped code, not by this harness's stub"
 
 # ==================================================================================================
 echo

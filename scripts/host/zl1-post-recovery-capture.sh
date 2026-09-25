@@ -250,9 +250,39 @@ trap on_signal INT TERM HUP
 # same TERM during `sleep 20 & wait` at +2.0 s. So a foreground ssh call would make Ctrl-C wait out
 # the very step it is trying to abandon -- and the step is bounded by the DEVICE's timeout, which is
 # 240 s. Backgrounding is what makes the interrupt-handler above worth having.
+#
+# AND EVERY CALL IS BOUNDED ON THIS SIDE TOO (docs 161). The paragraph above explains why the call is
+# backgrounded; it says nothing about how long it may live, and until 2026-09-25 NOTHING bounded the host
+# half of a step. The device half has `timeout -k 5 $STEP_LIMIT` and that guard is real -- but it lives on
+# the FAR SIDE of an ssh, and the failure this cost is not the device hanging: it is the SSH ITSELF never
+# answering. Measured, on the boot that was spent: the identity block's `run_bg ssh` sat for 4m09s with no
+# child running on the device at all -- the remote command had already finished and the client was simply
+# stuck -- and this script's outer bound was 4775 s, so a dead socket could have eaten the boot. The next
+# section (the bounded runner) is the fix; these two numbers are its two bounds.
 RB_RC=0
-run_bg() {
-  "$@" &
+# The backstop for a DEVICE call: strictly LOOSER than the device's own bound, because the device's
+# timeout is the one that should fire -- its process-group signal is what reaches a step that spawned a
+# child. This bound exists for the case where that timeout never gets to run: a dead socket, a dropped
+# link, a wedged ssh.
+HOST_BACKSTOP=$((STEP_LIMIT + 30))
+# The bound for a PUSH, which is a small script over a link that is up: the same size the heat chain uses
+# for its own read-backs. A step is not retried, so a slow-but-working link must not be cut off.
+IO_LIMIT=60
+# AND THE UNBOUNDED RUNNER IS GONE, not merely avoided. It had five call sites and every one of them was a
+# place a hung ssh could spend the boot; leaving it in the file as a thing somebody may call again is how
+# docs 132's fix stopped at the runbook and never reached the callee it invokes. So there is exactly ONE
+# runner now, it always takes a bound, and the harness asserts that no unbounded call exists in the source
+# -- the hazard is removed from the tree rather than remembered as a convention.
+#
+# `timeout` on THIS side, in front of every call. `timeout` must exist here: the harness's sandbox PATH is
+# built from real coreutils, and a host without timeout(1) could not have run the other bounded callers.
+# THE TWO SIDES ARE TOLD APART BY A MARKER, not by an exit code: `timeout` exits 124 on expiry and the
+# device's own `timeout` ALSO exits 124, so a step that reports "124" would otherwise be ambiguous about
+# which machine gave up. The device-side wrapper prints `ZL1STEP-TIMEOUT device` when IT is the one that
+# fired; a 124/137 with no such marker in the step's output is the host backstop.
+run_bg_bound() { # bounded-call LIMIT SECONDS, then the command
+  local lim="$1"; shift
+  timeout -k 5 "$lim" "$@" &
   RB_PID=$!
   wait "$RB_PID"
   RB_RC=$?
@@ -282,7 +312,7 @@ step() { # name, kind, localpath, remote-args...
   case "$kind" in
   device)
     local base; base=$(basename "$src")
-    run_bg "${SCP[@]}" "$src" "$HOST:/tmp/$base" >/dev/null 2>&1 || rc=90
+    run_bg_bound "$IO_LIMIT" "${SCP[@]}" "$src" "$HOST:/tmp/$base" >/dev/null 2>&1 || rc=90
     rc=$RB_RC
     if [ "$rc" = 0 ]; then
       # A DEVICE-SIDE bound, and it is on the device on purpose. `timeout` (GNU, and it is in the
@@ -293,9 +323,17 @@ step() { # name, kind, localpath, remote-args...
       #
       # And when timeout is NOT there the step still runs, but it says so in its own output rather
       # than being silently unbounded -- an absent guard must be visible, not inferred (docs 99).
-      run_bg "${SSH[@]}" "
+      #
+      # The `ZL1STEP-TIMEOUT device` line is the MARKER described at run_bg_bound: it is what lets the
+      # note below say which machine ended the step instead of guessing from an exit code both sides use.
+      run_bg_bound "$HOST_BACKSTOP" "${SSH[@]}" "
         if command -v timeout >/dev/null 2>&1; then
           timeout -k 5 $STEP_LIMIT sh /tmp/$base $args
+          zr=\$?
+          case \$zr in
+            124|137) printf '%s\n' 'ZL1STEP-TIMEOUT device' >&2 ;;
+          esac
+          exit \$zr
         else
           printf '%s\n' 'NOTE: this device has no timeout(1): THIS STEP IS NOT TIME-BOUNDED.' >&2
           sh /tmp/$base $args
@@ -306,7 +344,7 @@ step() { # name, kind, localpath, remote-args...
     fi
     ;;
   host)
-    run_bg bash "$src" "$@" > "$out" 2>&1
+    run_bg_bound "$HOST_BACKSTOP" bash "$src" "$@" > "$out" 2>&1
     rc=$RB_RC
     ;;
   esac
@@ -319,10 +357,29 @@ step() { # name, kind, localpath, remote-args...
     # 124 is `timeout`'s own code, and it means something specific and actionable: the step did not
     # finish. Saying that here is the difference between "a verdict was bad" and "the phone is
     # probably at high load right now, go and look at 04". 137 is the -k 5 case.
+    #
+    # AND THERE ARE TWO `timeout`s NOW, one on each side of the ssh, both of which exit 124 (docs 161).
+    # Which one fired is not a detail: "the device's own bound fired" is a reading about the PHONE, and
+    # "the host backstop fired" is a reading about the LINK -- and until this line existed the note
+    # below claimed the first for both. The device-side wrapper prints its marker into the step's own
+    # output, so the question is answered by reading the file rather than by guessing from the code.
     case "$rc" in
-    124) note "        ^ that is timeout(1): the step did not finish in ${STEP_LIMIT}s. This is NOT a" \
-              ; note "          verdict, it is a hung device-side script -- check the load in 04." ;;
-    137) note "        ^ that is timeout(1) -k: it had to be SIGKILLed at ${STEP_LIMIT}s+5s." ;;
+    124)
+      if grep -qa '^ZL1STEP-TIMEOUT device' "$out" 2>/dev/null; then
+        note "        ^ the DEVICE's own timeout(1) ended this step at ${STEP_LIMIT}s. This is NOT a"
+        note "          verdict, it is a hung device-side script -- check the load in 04."
+      else
+        note "        ^ the HOST BACKSTOP ended this step at ${HOST_BACKSTOP}s, with no marker from the"
+        note "          device's own timeout(${STEP_LIMIT}s) in its output: the ssh never came back. This"
+        note "          is a reading about the LINK, not about the phone -- the step's own output stops"
+        note "          where the socket died."
+      fi ;;
+    137)
+      if grep -qa '^ZL1STEP-TIMEOUT device' "$out" 2>/dev/null; then
+        note "        ^ the DEVICE's timeout(1) -k 5 had to SIGKILL at ${STEP_LIMIT}s+5s."
+      else
+        note "        ^ the HOST BACKSTOP had to SIGKILL at ${HOST_BACKSTOP}s+5s: the ssh ignored TERM."
+      fi ;;
     esac
     # The verdict that matters is usually the last non-empty line, and printing it here is the
     # difference between "something failed" and knowing what without opening a file.
@@ -333,19 +390,47 @@ step() { # name, kind, localpath, remote-args...
 }
 
 say "=== the boot's identity, before anything can change it ==="
+# THREE THINGS ABOUT THIS BLOCK, and the third is the one that cost a boot (docs 161):
+#
+#   1. It is BOUNDED, like every other call. Its bound is the host backstop because there is no device-side
+#      `timeout` here to sit behind -- this is a bare ssh whose remote command is a handful of reads.
+#   2. A missing reading is WRITTEN DOWN as missing rather than left out. Before this, a failed ssh left
+#      00-identity.txt holding four lines, one short of the two it exists to record, with nothing in the
+#      file to say so -- and the file is the artefact every later reading is dated against.
+#   3. And it SAYS WHICH HALF FAILED, because the two halves mean different things: `uptime`/`kernel` coming
+#      back while `keeper pids` does not is a reading about a loop over /proc (the keeper walk is ~650
+#      `cmdline` reads, seconds of syscall work on this SoC); nothing coming back at all is the link.
 {
   printf 'boot_id: %s\n' "$BOOT_ID"
   printf 'captured: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'host: %s\n' "$(uname -sr)"
-  run_bg "${SSH[@]}" '
+  run_bg_bound "$HOST_BACKSTOP" "${SSH[@]}" '
     printf "uptime: %s\n" "$(cat /proc/uptime | tr "\n" " ")"
     printf "kernel: %s\n" "$(uname -r)"
     printf "keeper pids: %s\n" "$(for p in /proc/[0-9]*; do [ -r "$p/cmdline" ] || continue; case "$(tr "\0" " " < "$p/cmdline")" in "/bin/sh /usr/local/sbin/zl1-debug-net.sh "*) printf "%s " "${p#/proc/}";; esac; done)"
     printf "keeper cpu ticks (utime+stime): %s\n" "$(for p in /proc/[0-9]*; do [ -r "$p/cmdline" ] || continue; case "$(tr "\0" " " < "$p/cmdline")" in "/bin/sh /usr/local/sbin/zl1-debug-net.sh "*) awk "{print \$14+\$15}" "$p/stat";; esac; done)"
     printf "failed units: %s\n" "$(systemctl --failed --no-legend 2>/dev/null | wc -l)"
   ' 2>&1
+  _irc=$RB_RC
+  if [ "$_irc" != 0 ]; then
+    case "$_irc" in
+    124) printf 'identity: NOT READ -- the host backstop ended this ssh at %ss (the link, not the phone)\n' "$HOST_BACKSTOP" ;;
+    137) printf 'identity: NOT READ -- the host backstop had to SIGKILL the ssh at %ss+5s\n' "$HOST_BACKSTOP" ;;
+    *)   printf 'identity: NOT READ -- the ssh exited %s\n' "$_irc" ;;
+    esac
+    printf 'identity: THE LINES ABOVE THIS ONE ARE THE WHOLE OF WHAT CAME BACK. keeper pids and keeper\n'
+    printf 'identity: cpu ticks are MISSING, and missing is not zero -- a keeper reading is not available\n'
+    printf 'identity: from this boot. See docs 161 section 2.\n'
+  fi
 } > "$OUT/00-identity.txt" 2>&1
-note "ok   (-> 00-identity.txt)"
+# The note reflects the exit code: an unconditional "ok" is the defect this line was, and it printed "ok"
+# over the exact call that hung for four minutes.
+if [ "${_irc:-0}" = 0 ]; then
+  note "ok   (-> 00-identity.txt)"
+else
+  note "PARTIAL rc=$_irc -- 00-identity.txt is SHORT and says which readings are missing"
+  FAIL=$((FAIL + 1))
+fi
 say
 
 # ==================================================================================================

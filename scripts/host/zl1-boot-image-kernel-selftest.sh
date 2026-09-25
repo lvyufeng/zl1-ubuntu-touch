@@ -90,7 +90,8 @@ def fdt(model):
                        0x11, 0x10, 0, len(stb), len(sb)) + b'\0' * 16 + sb + stb
 
 def build(out, opts, strings_on=True, config_mode='ok', header='ok', append=True, page=4096,
-          truncate=0, kernel_extra=b'', earlyed=False, badpage=False, cutmember=0, oversize=0):
+          truncate=0, kernel_extra=b'', earlyed=False, badpage=False, cutmember=0, oversize=0,
+          cmdline='androidboot.hardware=qcom'):
     lines = ['#', '# Automatically generated file; DO NOT EDIT.', '#']
     for name, state in opts.items():
         lines.append('%s=y' % name if state == 'y' else '# %s is not set' % name)
@@ -129,9 +130,17 @@ def build(out, opts, strings_on=True, config_mode='ok', header='ok', append=True
         d += b'ANDROID!'
     d += struct.pack('<8I', len(kernel) + oversize, 0x80008000, 0, 0x81000000, 0, 0xf00000, 0x80000100, page)
     d += struct.pack('<II', 0, 0x00000000)          # dt_size / os_version
-    d += struct.pack('<I', 0) + b'\x00' * 12        # id
-    d += b'\x00' * 16                                # name
-    d += b'androidboot.hardware=qcom' + b'\x00' * 512
+    # THE FIELDS IN THE ORDER THE FORMAT PUTS THEM (docs 161). This used to be `id` then `name` then
+    # `cmdline`, i.e. the 16-byte name field sat WHERE THE CMDLINE BELONGS -- so the reader's
+    # `d[64:64+512].split(b'\0')[0]` started on a NUL and EVERY fixture in this file read an EMPTY
+    # cmdline. Nothing noticed for two rounds because no assertion read the cmdline's VALUE; only the
+    # label was checked. It surfaced the moment the layer table was added and printed `cmdline  (none)
+    # (none)  same` for two fixtures whose cmdlines differ, next to real images whose cmdlines print
+    # correctly -- which is the whole reason a table that names its layers is worth more than a list
+    # that names its options.
+    d += struct.pack('<I', 0) + b'\x00' * 12        # name[16] (all NUL in this fixture)
+    d += cmdline.encode() + b'\x00' * (512 - len(cmdline))
+    d += b'\x00' * 8                                 # id[8]
     d += b'\x00' * 1024                              # extra_cmdline
     n = len(d)
     d += b'\x00' * ((page - n % page) % page if page else 0)
@@ -149,6 +158,7 @@ out = sys.argv[1]
 opts = {}
 strings_on, config_mode, header, append, page, truncate = True, 'ok', 'ok', True, 4096, 0
 earlyed, badpage, cutmember, oversize = False, False, 0, 0
+cmdline = 'androidboot.hardware=qcom'
 i = 2
 while i < len(sys.argv):
     a = sys.argv[i]
@@ -166,10 +176,11 @@ while i < len(sys.argv):
     elif a == '--oversize':  oversize = int(sys.argv[i+1]); i += 2
     elif a == '--page':      page = int(sys.argv[i+1]); i += 2
     elif a == '--truncate':  truncate = int(sys.argv[i+1]); i += 2
+    elif a == '--cmdline':   cmdline = sys.argv[i+1]; i += 2
     else:
         raise SystemExit('mkimage: unknown argument %r' % a)
 build(out, opts, strings_on, config_mode, header, append, page, truncate, b'', earlyed, badpage,
-      cutmember, oversize)
+      cutmember, oversize, cmdline)
 PY
 
 mk() { python3 "$W/mkimage.py" "$@"; }
@@ -300,6 +311,51 @@ notwant '0 option\(s\) differ' "$OUT" "rather than printing an empty difference 
 run --diff "$W/a.img"
 [ "$RC" = 2 ] && ok "--diff with one image is refused (exit 2) rather than silently comparing nothing" || bad "it exited $RC"
 
+# THE LAYER TABLE (docs 161). `--diff` used to answer only about the config, and the config is ONE
+# layer: two images can print `0 option(s) differ` while their ramdisks are completely different --
+# which is what the pair `-fpdriver` / a kernel+ramdisk rebuild of it does, one changing the kernel and
+# the other the initramfs. The table is asserted for its SHAPE and for its ORDER: a layer table printed
+# after the option list would still be there and still be useless.
+run --diff "$W/a.img" "$W/b.img"
+want 'boot image \(whole file\)' "$OUT" "the layer table names the whole image"
+want 'kernel blob \(what the bootloader loads\)' "$OUT" "and the kernel blob the bootloader loads"
+want 'decompressed Image' "$OUT" "and the decompressed Image"
+want 'appended device trees \([0-9]+ FDT\)' "$OUT" "and the appended device trees WITH their FDT count (both sides reading '(none)' must not look like 'the same trees')"
+want 'ramdisk' "$OUT" "and the ramdisk"
+want 'cmdline' "$OUT" "and the cmdline"
+want '\-> [0-9]+ of 6 layers differ' "$OUT" "and a summary that counts them out of SIX"
+# ONE LINE ONLY, and the label appears twice (the table's row AND the summary that names the moved
+# layers), so without this the arithmetic below is handed a two-line string and `[` errors out -- which
+# reads as "the order is wrong" when what is wrong is the extractor. The first line is taken with
+# `sed -n 1p` and NOT with `head -1`: this file sets `pipefail`, `head` exits early, and the death of its
+# writer would become this pipeline's status (docs 134) -- the family's meta-harness scans for exactly
+# that shape and flagged the first version of these two lines.
+_layers=$(printf '%s\n' "$OUT" | grep -n '^   boot image (whole file)' | cut -d: -f1 | sed -n 1p)
+_options=$(printf '%s\n' "$OUT" | grep -n '== the options that DIFFER' | cut -d: -f1 | sed -n 1p)
+if [ -n "$_layers" ] && [ -n "$_options" ] && [ "$_layers" -lt "$_options" ]; then
+  ok "and the table comes BEFORE the option list -- which is the point: the list answers a narrower question"
+else
+  bad "the table is not before the option list (layers at line ${_layers:-none}, options at line ${_options:-none})"
+fi
+
+# AND THE COMPARISON IS ON THE WHOLE VALUE, NOT ON WHAT IS SHOWN. Two images whose cmdlines agree for
+# the first 16 characters and differ after them are `same` to a display-width comparison -- and that is
+# the exact defect this table was written to remove, one layer down. The fixture carries a 493-character
+# cmdline, which is what the real v63 header has.
+CL_A='androidboot.hardware=qcom androidboot.console=ttyHSL0 androidboot.selinux=permissive zl1=a'
+CL_B='androidboot.hardware=qcom androidboot.console=ttyHSL0 androidboot.selinux=permissive zl1=b'
+mk "$W/cl_a.img" --opt CONFIG_INPUT=y --cmdline "$CL_A"
+mk "$W/cl_b.img" --opt CONFIG_INPUT=y --cmdline "$CL_B"
+[ "$(printf '%s' "$CL_A" | cut -c1-16)" = "$(printf '%s' "$CL_B" | cut -c1-16)" ] \
+  && ok "the two fixture cmdlines agree on their first 16 characters (so a truncated comparison cannot see the difference)" \
+  || bad "the fixture cmdlines differ inside the first 16 characters, so this does not test what it says"
+run --diff "$W/cl_a.img" "$W/cl_b.img"
+want 'cmdline .* DIFFERS' "$OUT" "and a cmdline that differs only PAST the displayed width still reads DIFFERS"
+[ "$(printf '%s\n' "$OUT" | sed -n 's/^ *cmdline .* \(same\|DIFFERS\)$/\1/p')" = DIFFERS ] \
+  && ok "and it is the cmdline row that says so, not some other layer" \
+  || bad "the cmdline row reads '$(printf '%s\n' "$OUT" | sed -n 's/^ *cmdline .* \(same\|DIFFERS\)$/\1/p')'"
+want 'the comparison above is on the WHOLE value' "$OUT" "and the table says the comparison is on the whole value, so the narrow display is not mistaken for the test"
+
 echo
 echo "== 5. the mutations: each breaks ONE thing in the SUBJECT and must redden a NAMED assertion =="
 # ==================================================================================================
@@ -364,6 +420,19 @@ if [ -r "$W/mut/noconfigasnotset.sh" ]; then
   mutrun "$W/mut/noconfigasnotset.sh" "$W/nocfg.img"
   want 'CONFIG_INPUT_GP5XX8 *not set' "$OUT" "  with the two facts folded, a kernel that carries NO config reports the option as NOT SET"
   notwant 'NO CONFIG EMBEDDED' "$OUT" "  and the state that was UNKNOWN is gone from the output"
+fi
+
+# (f) print the layer table's SUMMARY but none of its rows -- the reading this round added, and the
+# mutation has to remove the part that carries the information. (The first draft of this mutant replaced
+# the `say` line above the python block, which left the block running: the rows still printed and the
+# mutation proved nothing. Where a reading is produced matters as much as which line prints it.)
+mut nolayers "    print('   %-*s  %-*s %-*s %s' % (w, label, wv, short(fa, wv), wv, short(fb, wv)," "    print('   %-*s  %-*s %-*s %s' % (w, '', wv, '', wv, '',"
+if [ -r "$W/mut/nolayers.sh" ]; then
+  mutrun "$W/mut/nolayers.sh" --diff "$W/a.img" "$W/b.img"
+  notwant '^   boot image \(whole file\)' "$OUT" "  with the rows gone, nothing names the layers the option list does not cover"
+  notwant '^   ramdisk ' "$OUT" "  and the ramdisk is no longer named in a row"
+  want '[0-9]+ of 6 layers differ' "$OUT" "  while the SUMMARY still counts them -- a verdict over rows that were never printed is worse than no table at all"
+  want '[0-9]+ option\(s\) differ' "$OUT" "  and the option list is still printed, which is exactly how a reader would be misled"
 fi
 
 # (e) print an empty difference when one side has no config to compare

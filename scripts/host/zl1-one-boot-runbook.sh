@@ -26,11 +26,15 @@
 #                           first: everything that only exists on this boot is already on disk by then.
 #     04 fingerprint        order-free, and placed here because it is a small unit install that reads
 #                           back a directory; its verdict is a log count that can be read at leisure.
-#     05 trial --status     LAST, and read-only. Its refusals are checked against what steps 02 and 03
-#                           actually did, so this is the first moment in the boot where they can all be
-#                           true at once. `--apply-trial` upgrades this one step to the write, and it is
-#                           a SEPARATE flag on purpose: `--yes` authorizes the sequence, NOT a write to
+#     05 trial --status     read-only. Its refusals are checked against what steps 02 and 03 actually
+#                           did, so this is the first moment in the boot where they can all be true at
+#                           once. `--apply-trial` upgrades this one step to the write, and it is a
+#                           SEPARATE flag on purpose: `--yes` authorizes the sequence, NOT a write to
 #                           the SoC's power parameter.
+#     06 lpm-fix            LAST, because its LICENCE is step 05's output: it may only install the
+#                           persistent third heat fix when 05's LAST verdict line is
+#                           `supported-not-proven`, read from `$OUT/05-trial.txt` -- the file THIS run
+#                           just wrote. Without 05 there is nothing to license it and it refuses.
 #
 # WHAT THIS ADDS OVER RUNNING THE FIVE BY HAND: it checks each step's result against the NEXT step's
 #   precondition, from the device, as soon as that precondition becomes checkable -- `download_mode`
@@ -56,7 +60,7 @@
 #                  implied by --yes. Refused unless the sequence reached step 05 with A and C met.
 #   --only STEP    run just this step (and its prerequisites are NOT checked -- you are driving).
 #   --skip STEP    leave this step out. Steps are named 01-capture, 02-panic-guard, 03-heat-chain,
-#                  04-fingerprint, 05-trial.
+#                  04-fingerprint, 05-trial, 06-lpm-fix.
 #   --outdir DIR   where to archive (default: repo tmp-one-boot-<utc timestamp>/)
 #   --settle SECS  passed through to the heat chain (its default is 90)
 #   --step-limit SECS  wall-clock bound on ONE step (default 900). A step that outlasts it is reported
@@ -553,7 +557,11 @@ fi
 # measured it. It was written when the capture had SIX device steps; it has NINETEEN now (docs 157 added 04o), because every
 # gap-closing stage since docs 138 added one, and no one re-read a number on another file. Measured:
 #
-#   capture  19 device steps, each bounded on the DEVICE at STEP_LIMIT 240 -> 19 x 245 + 120 = 4775 s
+#   capture  19 device steps, each a push at IO_LIMIT 60 + an ssh at STEP_LIMIT 240 on the device and
+#            STEP_LIMIT+30 on this side; plus 3 host steps and 1 identity block at STEP_LIMIT+30
+#            -> 19x65 + 19x275 + 4x275 + 120 = 7680 s
+#            (this line said "19 x 245 + 120 = 4775 s" and justified it with "the identity block, the
+#             archive and the three HOST steps ride in the slack" -- see the note at _cap_shape)
 #   chain    settle 90 + 5 step sites x 305 + 2 bounded scps x 305 + the proof 180 + the A/B 240
 #            + 4 read-backs x 65 + slack = 3145 s
 #   runbook  one timeout(1) of 900 s over the WHOLE of either invocation -> 5.3x and 3.5x over
@@ -587,13 +595,26 @@ _num() { # VARNAME, file -> the number the first `VARNAME=` line gives, or nothi
     | sed -n -e 's/.*:-\([0-9][0-9]*\)}.*/\1/p' -e 's/^[^=]*=\([0-9][0-9]*\)$/\1/p' \
     | sed -n '1p'
 }
-_cap_shape() { # -> "DEVICE_STEPS PER_STEP_SECONDS"; non-zero when either cannot be read
-  local n lim
+_cap_shape() { # -> "DEVICE_STEPS HOST_STEPS PER_STEP_SECONDS IO_SECONDS"; non-zero when any cannot be read
+  # FOUR NUMBERS NOW, and the two new ones are the fix for a comment that was false (docs 161). This
+  # function used to return the device-step count and STEP_LIMIT, and the bound was `n x (lim+5) + 120`,
+  # justified by "the identity block, the archive and the three HOST steps ride in the slack". They did
+  # not ride in anything: on 2026-09-25 the identity block's ssh hung for 4m09s, unbounded, on a boot
+  # whose outer bound was 4775 s. Two terms were missing and both are COUNTED from the callee now -- the
+  # host-kind steps, and the bound the callee puts on the HOST side of every call.
+  local n h lim io
   n=$(grep -cE '^ *step [0-9a-z-]+ +device ' "$CAP" 2>/dev/null)
+  h=$(grep -cE '^ *step [0-9a-z-]+ +host ' "$CAP" 2>/dev/null)
   lim=$(_num STEP_LIMIT "$CAP")
+  io=$(_num IO_LIMIT "$CAP")
   case "$n"   in ''|0|*[!0-9]*) return 1 ;; esac
   case "$lim" in ''|0|*[!0-9]*) return 1 ;; esac
-  printf '%s %s\n' "$n" "$lim"
+  # The host-step count and IO_LIMIT are read, not defaulted: a capture that stops naming its host steps,
+  # or whose push bound disappears, makes this return non-zero so the step keeps the flat bound AND SAYS
+  # SO -- which is not a pass, because the check that would have made it safe did not happen.
+  case "$h"   in ''|*[!0-9]*) return 1 ;; esac
+  case "$io"  in ''|0|*[!0-9]*) return 1 ;; esac
+  printf '%s %s %s %s\n' "$n" "$h" "$lim" "$io"
 }
 _chain_shape() { # -> "STEPS SCP_SITES PER_STEP SETTLE AB_WINDOW AB_HOLD STATE_LIMIT READBACKS PROOF_DEV"
   local n sc lim st w h sl rs pd
@@ -617,13 +638,26 @@ _chain_shape() { # -> "STEPS SCP_SITES PER_STEP SETTLE AB_WINDOW AB_HOLD STATE_L
 if [ -r "$CAP" ]; then
   _s=$(_cap_shape)
   if [ $? -eq 0 ]; then
-    _n=${_s%% *}; _l=${_s##* }
-    # Each device step is bounded ON THE DEVICE with `-k 5`, so its own worst case is LIM+5; the identity
-    # block, the archive and the three HOST steps ride in the slack. CONSERVATIVE ON PURPOSE: the two
-    # probe steps the capture skips by default are counted anyway, because too loose costs elapsed time
-    # and too tight costs the boot.
-    CAP_BOUND=$(( _n * (_l + 5) + 120 ))
-    CAP_WHY="$_n device steps x ($_l+5) + 120 of slack"
+    # A here-document rather than `set --`, for the reason spelled out beside `_chain_shape` below: this
+    # script's positional parameters are its ARGUMENTS.
+    read -r _n _h _l _io <<EOF
+$_s
+EOF
+    # EVERY TERM IS A CALL THE CALLEE MAKES, and each one is bounded on BOTH sides now (docs 161):
+    #
+    #   device step   a push at IO_LIMIT, then an ssh at STEP_LIMIT on the device and HOST_BACKSTOP on
+    #                 this side -- and the callee derives HOST_BACKSTOP as STEP_LIMIT+30, so the ssh's
+    #                 worst case is LIM+35 with `timeout -k 5`
+    #   host step     one call, bounded at HOST_BACKSTOP -> LIM+35
+    #   identity      the same, once, before the chain starts -> LIM+35
+    #
+    # The count of host steps is taken from the callee rather than assumed, and the `+1` is the identity
+    # block, which is not a `step` line and so cannot be counted as one. CONSERVATIVE ON PURPOSE on both
+    # counts: every `step` call site is counted even though a given path takes fewer, and the two probe
+    # steps the capture skips by default are counted anyway -- too loose costs elapsed time on a boot that
+    # is already spent, too tight costs the boot.
+    CAP_BOUND=$(( _n * (_io + 5) + _n * (_l + 35) + (_h + 1) * (_l + 35) + 120 ))
+    CAP_WHY="$_n device steps x ((${_io}+5) push + (${_l}+35) ssh) + ($_h host steps + 1 identity) x (${_l}+35) + 120 of slack"
   fi
 fi
 if [ -r "$HEAT" ]; then

@@ -162,7 +162,39 @@ fi
 always ""
 always "== 2. witness one: /sys/fs/pstore (survives the reset, if the bootloader preserves it)"
 
-SIG='Kernel panic|Unable to handle kernel|Internal error|BUG:|WDOG|watchdog|Going down for restart|PC is at|Call trace|Unable to mount root'
+# THE PATTERNS, SPLIT INTO TWO SETS, because this instrument's ONE set once called a healthy boot dead
+# (docs 161). The list was
+#   Kernel panic|Unable to handle kernel|Internal error|BUG:|WDOG|watchdog|Going down for restart|PC is at|Call trace|Unable to mount root
+# and TWO of its alternatives are printed by a boot that is entirely well:
+#   `msm_watchdog 9830000.qcom,wdt: MSM Watchdog Initialized`   matches bare `watchdog`
+#   the backtrace that follows every boot-time WARNING             matches `Call trace`
+# Measured on keep/boot-0488bd3c-.../boot-84s.log -- a boot that ran on and produced later snapshots, so
+# it provably did not die: WARNING: x6, Call trace: x6, and Kernel panic / Unable to handle kernel /
+# Internal error / BUG: / Going down for restart / PC is at / WDOG: watchdog bite / watchdog bite -- all 0.
+# The first time this script ran on a device (2026-09-25) it printed `*** contains a death signature ***`
+# and `FOUND: a kernel oops/panic is on record` for exactly that, i.e. for a boot-time WARNING -- and the
+# verdict was nearly written down as the attribution of the EDL trip. So:
+#
+#   * the two ambiguous words moved OUT of the verdict and into a COUNTED reading. `Call trace` x6 is a
+#     fact about a log; "a kernel oops is on record" is a claim this script may only make when it can
+#     also NAME the line it read it from.
+#   * every match now names its pattern (`matched '<pattern>'`), because a verdict whose pattern is
+#     anonymous cannot be audited -- and an unauditable verdict is how the false positive survived a
+#     hand-written harness as well as a device run.
+#
+# `PC is at` is kept in the verdict set even though it measured 0 on the healthy boot: it is a genuine
+# oops marker (the CPU's faulting instruction), it just is not printed by the six WARNINGs above.
+SIG='Kernel panic|Unable to handle kernel|Internal error|BUG:|Going down for restart|Unable to mount root|PC is at|WDOG: watchdog bite|watchdog bite'
+
+# Print the COUNT of everything a healthy boot also prints, so "no signature" is a reading rather than a
+# blank. Never a verdict: these two strings are in every real log this project has.
+amb_note() { # file
+  _ct=$(grep -ac 'Call trace' "$1" 2>/dev/null); _ct=${_ct:-0}
+  _wd=$(grep -aci 'watchdog' "$1" 2>/dev/null); _wd=${_wd:-0}
+  say "   not-as-a-signature: 'Call trace' x$_ct, 'watchdog' x$_wd  (a healthy boot prints both --"
+  say "   6 and 2 on the 84s snapshot of a boot that provably did not die; docs 161)"
+}
+
 found=0
 
 if [ ! -d /sys/fs/pstore ]; then
@@ -182,14 +214,16 @@ else
       [ -f "$f" ] || continue
       say ""
       say "   --- $f"
-      if grep -qaE "$SIG" "$f" 2>/dev/null; then
+      _sig=$(grep -aoE "$SIG" "$f" 2>/dev/null | head -1)
+      if [ -n "$_sig" ]; then
         found=1
-        always "   *** contains a death signature ***"
+        always "   *** contains a death signature *** matched '$_sig'"
         grep -aE "$SIG" "$f" 2>/dev/null | head -12 | sed 's/^/   | /'
         say "   --- (the whole record)"
         if [ "$FULL" = 1 ]; then cat "$f"; else tail -n 80 "$f"; fi | sed 's/^/   | /'
       else
         say "   no death signature in it (printing the tail; --full for all of it)"
+        amb_note "$f"
         if [ "$FULL" = 1 ]; then cat "$f"; else tail -n 20 "$f"; fi | sed 's/^/   | /'
       fi
     done
@@ -218,24 +252,51 @@ else
   else
     say "   archive.log      : absent"
   fi
-  say "   archives (newest first):"
+  say "   archives (in 'ls -dt' order -- which THIS device's clock makes arbitrary, docs 161):"
   ls -dt "$K"/boot-*/ "$K"/bad-*/ 2>/dev/null | head -8 | while IFS= read -r d; do
     printf '   %s  (%s files, newest %s)\n' "$d" \
       "$(ls "$d" 2>/dev/null | wc -l)" \
       "$(ls -t "$d" 2>/dev/null | head -1)"
   done
 
-  # The newest boot archive: the only one that can be the boot that died.
-  newest="$(ls -dt "$K"/boot-*/ 2>/dev/null | head -1)"
+  # WHICH ARCHIVE IS THE BOOT THAT DIED: named by the drain's own log, NOT by `ls -dt` (docs 161).
+  # This device's clock is wrong, so every archive directory carries the same mtime and `ls -dt` returns
+  # an arbitrary order -- measured on 2026-09-25 over the four archives present: it ranked
+  # boot-0488bd3c first and put the boot that ACTUALLY died, boot-92165447, LAST. The drain appends
+  # `uptime prev=<boot_id> files=N` at every boot and the id it names is the boot that ran before this
+  # one, so the LAST such line is the archive to read. `ls -dt` stays as a fallback and the report says
+  # which rule answered, because "the newest archive" is a claim about the clock until proven otherwise.
+  newest=""; _rule=""
+  if [ -r "$K/archive.log" ]; then
+    # NEWEST FIRST, AND THE FIRST ONE WHOSE ARCHIVE IS STILL THERE. The last `prev=` line is NOT the rule:
+    # an archive can already have been pruned by the newest-4 rule, and the line still names it -- measured
+    # on 2026-09-25, where the last line named boot-61c4abf0 (the LIVE boot, filed by a mid-boot restart of
+    # the collector) and that directory had been pruned, so "the last line" would have fallen through and
+    # the fallback would have answered a question about the clock. What is wanted is the NEWEST line whose
+    # archive exists, which is the boot that ran before this one.
+    _an=$(awk '/prev=/{line[++n]=$0}
+                END{for(i=n;i>=1;i--) if (match(line[i],/prev=[0-9a-fA-F-]+/))
+                      print substr(line[i], RSTART+5, RLENGTH-5)}' "$K/archive.log" 2>/dev/null |
+          while IFS= read -r c; do
+            [ -n "$c" ] && [ -d "$K/boot-$c" ] && { printf '%s\n' "$c"; break; }
+          done)
+    [ -n "$_an" ] && { newest="$K/boot-$_an/"; _rule="archive.log, the newest entry whose archive still exists"; }
+  fi
+  if [ -z "$newest" ]; then
+    newest="$(ls -dt "$K"/boot-*/ 2>/dev/null | head -1)"
+    _rule="ls -dt -- and this device's clock is wrong, so that order is arbitrary"
+  fi
   if [ -z "$newest" ]; then
     always "   no keep/boot-*/ archive yet -- nothing was carried forward, so there is no witness"
     say "   for the previous boot. (It exists from the *second* boot after the drain install.)"
     rc=1
   else
     cur="$(cat "$K/current-boot-id" 2>/dev/null)"
+    say "   chosen by: $_rule"
     case "$newest" in
-    *"$cur"*) say "   newest archive is THIS boot's id -- the previous boot was not archived." ;;
-    *) say "   newest archive $(basename "$newest") is a *previous* boot: that is the candidate." ;;
+    *"$cur"*) say "   and it is THIS boot's id -- the previous boot was not archived (a mid-boot restart"
+               say "   of the collector files the live boot under its own id; docs 161). No candidate here." ;;
+    *) say "   $(basename "$newest") is a *previous* boot: that is the candidate." ;;
     esac
     # full path, not the basename: the greps below do not run from inside the archive directory
     last="$newest$(ls -t "$newest" 2>/dev/null | head -1)"
@@ -243,13 +304,15 @@ else
     if [ -n "$last" ]; then
       say ""
       say "   --- $last  (the tail of that boot)"
-      if grep -qaE "$SIG" "$last" 2>/dev/null; then
+      _sig=$(grep -aoE "$SIG" "$last" 2>/dev/null | head -1)
+      if [ -n "$_sig" ]; then
         found=1
-        always "   *** contains a death signature ***"
+        always "   *** contains a death signature *** matched '$_sig'"
         grep -aE "$SIG" "$last" 2>/dev/null | head -12 | sed 's/^/   | /'
         say "   --- (the whole record)"
       else
         say "   no death signature; the last $( [ "$FULL" = 1 ] && echo all || echo 30) lines:"
+        amb_note "$last"
       fi
       if [ "$FULL" = 1 ]; then cat "$last"; else tail -n 30 "$last"; fi | sed 's/^/   | /'
     fi
@@ -262,7 +325,10 @@ always ""
 always "== verdict"
 
 if [ "$found" = 1 ]; then
-  always "   FOUND: a kernel oops/panic is on record, in the witness marked above."
+  always "   FOUND: a kernel oops/panic is on record, in the witness marked above -- the pattern it"
+  always "   matched is named on the *** line, and THAT is the string to check by eye before believing"
+  always "   this verdict. If the named pattern is not a panic in the line it matched, this is a false"
+  always "   positive and the sentence below does not apply to your boot."
   always "   With download_mode=$dm and a forced watchdog bite on panic, that death resets the SoC with"
   always "   the dload flag set -- which is EDL. Check the timestamp and the content before calling it"
   always "   *the* cause (pstore keeps the most recent oops, not necessarily the one you want), but it"

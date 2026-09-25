@@ -295,9 +295,11 @@ CHAINSHAPE
   if [ "$2" = CAPTURE ]; then
     cat >> "$CAL/$1" <<'CAPSHAPE'
 STEP_LIMIT=240
+IO_LIMIT=60
 : <<'CAPSTEPS'
 step 01-edl-postmortem   device "$HERE/../device/zl1-edl-postmortem.sh"
 step 02-boot-address     device "$HERE/../device/zl1-boot-address-check.sh"
+step 03-keeper-status    host   "$HERE/../install-retire-debug-keeper.sh" --status
 step 04b-modem           device "$HERE/../device/zl1-modem-probe.sh"
 CAPSTEPS
 CAPSHAPE
@@ -873,8 +875,11 @@ echo
 echo "   -- the derivation is printed, per step, with the callee's own counted shape:"
 reset; host_fixture_ok
 run --status
-want '01-capture     900s   the callee computes to 855s (3 device steps x (240+5) + 120 of slack)' "$OUT" \
-  "the capture's bound is its device-step count times its own per-step limit, printed as arithmetic"
+# The 1690s EXCEEDS the flat 900s, so this step takes the SHAPE branch ("computed from the callee") and
+# not the floor branch -- and which branch a step takes is itself the reading, which is why the assertion
+# names the form rather than just the number.
+want '01-capture     1690s   computed from the callee: 3 device steps x ((60+5) push + (240+35) ssh) + (1 host steps + 1 identity) x (240+35) + 120 of slack' "$OUT" \
+  "the capture's bound is EVERY call it makes -- both sides of each device step, its host steps and its identity block -- at the callee's own numbers, printed as arithmetic"
 want '03-heat-chain  900s   the callee computes to 362s (settle 10 + (2 step sites + 0 bounded scps) x (3+5) + proof (6+4) + A/B (2x5+7+60) + 1 read-backs x (4+5) + 240 of slack)' "$OUT" \
   "and the chain's is every counted call site at the chain's own numbers"
 want 'under the flat floor, so the floor is what applies' "$OUT" \
@@ -886,10 +891,10 @@ echo
 echo "   -- and the flag is a FLOOR: below the computed number, the computed number is what applies:"
 reset; host_fixture_ok
 run --yes --step-limit 2 --skip 02-panic-guard --skip 03-heat-chain --skip 04-fingerprint --skip 05-trial
-want 'bound: 855s   computed from the callee: 3 device steps x (240+5) + 120 of slack' "$OUT" \
-  "step 01 gets its callee's 855s, NOT the 2s that was asked for -- the computed bound can only loosen"
+want 'bound: 1690s   computed from the callee: 3 device steps x ((60+5) push + (240+35) ssh) + (1 host steps + 1 identity) x (240+35) + 120 of slack' "$OUT" \
+  "step 01 gets its callee's 1690s, NOT the 2s that was asked for -- the computed bound can only loosen"
 OD7d=$(latest_archive)
-want '01-capture = 855s  3 device steps x (240+5) + 120 of slack' "$(cat "$OD7d/INDEX.txt" 2>/dev/null)" \
+want '01-capture = 1690s  3 device steps x ((60+5) push + (240+35) ssh) + (1 host steps + 1 identity) x (240+35) + 120 of slack' "$(cat "$OD7d/INDEX.txt" 2>/dev/null)" \
   "and the archive records the number that actually applied, next to the arithmetic, so a 124 in the rc column is readable"
 
 echo
@@ -1230,7 +1235,7 @@ echo
 # exactly the state this whole change came out of: 900 s over a callee whose own worst case is thousands of seconds. What
 # the mutant must do is stop the number from being COMPUTED, so the only assertion that can see it is the
 # one that names the arithmetic.
-if mutate noboundshape 's#^    CAP_BOUND=\$(( _n \* (_l + 5) + 120 ))$#    CAP_BOUND=""#'; then
+if mutate noboundshape 's#^    CAP_BOUND=\$(( _n \* (_io + 5) + _n \* (_l + 35) + (_h + 1) \* (_l + 35) + 120 ))$#    CAP_BOUND=""#'; then
   reset; host_fixture_ok
   FP_SLEEP_FP=0 mutrun "$MUTDIR/noboundshape.sh" --yes --step-limit 2 --skip 02-panic-guard --skip 03-heat-chain --skip 04-fingerprint --skip 05-trial
   [ "$MRC" = 0 ] && ok "mutation 'the bound is not computed': the run still completes" \

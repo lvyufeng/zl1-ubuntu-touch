@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Keep the kernel log — as a bounded set of **early** snapshots, not a continuous follow.
+# Keep the kernel log — as a bounded set of snapshots across the boot, not a continuous follow.
+# (It was a set of **early** snapshots only, ending at 363 s of uptime, until docs 161 measured what
+# that cost: the boot that went to EDL on 2026-09-25 lived 2299 s, so its archive held nothing from
+# the time it died. See the schedule comment below the guard.)
 #
 # Why this exists: on 2026-09-21 the kernel ring buffer was unreadable on this device. Two
 # things were wrong, and the second one changed the design:
@@ -48,10 +51,26 @@ guard() {
     { echo "not the zl1 (no msm8996 in /proc/device-tree/compatible) — refusing" >&2; exit 1; }
 }
 
-# The snapshot collector. Deliberately a short, bounded sequence of sleep-then-dump rather
-# than a loop: the point is coverage of the first ~2 minutes, and each dump is the *whole*
-# ring as it stands, so a later snapshot is never a superset of an earlier one — the early
-# one is the only one that still has the boot messages.
+# The snapshot collector. Deliberately a bounded sequence of sleep-then-dump rather than a
+# loop: each dump is the *whole* ring as it stands, so a later snapshot is never a superset of
+# an earlier one — the early one is the only one that still has the boot messages.
+#
+# **AND THE SEQUENCE HAS TO OUTLAST THE BOOT IT IS WATCHING (docs 161).** It used to be
+# `5 5 5 10 20 40 80 160`, which ends at about 363 s of uptime, and the doc-comment above says
+# "coverage of the first ~2 minutes" as if that were the design. Measured on the boot that went
+# to EDL on 2026-09-25: `keep/boot-92165447-.../` holds nine snapshots at 36, 41, 46, 52, 62,
+# 82, 122, 203 and 363 s — the gaps ARE that list, offset by the ~35 s it takes the unit to
+# start — and that boot lived to **2299 s**. So the archive of a boot that dies late holds
+# nothing from the time it died, and this is NOT the ring wrapping: the collector had already
+# finished. The post-mortem's second witness printed `no death signature` over it, which was
+# true of the first six minutes of a thirty-eight minute boot.
+#
+# The schedule now reaches ~80 min of uptime: 15 snapshots at 36, 41, 46, 51, 61, 81, 121, 201,
+# 361, 681, 1001, 1641, 2281, 3561 and 4841 s. At ~250 KiB each that is ~3.75 MiB per boot, and
+# keep/ holds four boots, so the whole archive stays under ~15 MiB against the 11 GiB free on
+# /userdata. The tail is not doubling for its own sake: what a late death needs is a snapshot
+# *near* it, and a boot that dies at minute 30 is not served by a snapshot at minute 6 whose
+# contents the ring has long overwritten.
 #
 # Two additions after 2026-09-21, both of them consequences of the same mistake:
 #
@@ -79,10 +98,24 @@ K=$D/keep
 mkdir -p "$D" "$K"
 
 # ---- carry the previous boot forward, before anything is wiped -------------
+#
+# AND "THE PREVIOUS BOOT" HAS TO BE A DIFFERENT BOOT (docs 161). `current-boot-id` is written by the
+# PREVIOUS run of this script, so it normally names another boot -- but this unit can also be started on a
+# LIVE boot (the installer enables and starts it, and on 2026-09-25 `--install` was run twice for the
+# schedule change), and then `prev` IS this boot. Measured, from the two installs: `keep/boot-61c4abf0-…/`
+# was created with the LIVE boot id, `files=9` and then `files=4`, and the `rm -f` below deleted the
+# rest of that boot'\''s snapshots. A directory named after the running boot is a witness of nothing, and the
+# deletion destroys the only copy of a boot still in progress. So a restart is detected and BOTH steps are
+# skipped: nothing is carried forward, nothing is deleted, and the log says which happened.
+BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+[ -n "$BOOT" ] || BOOT=unknown
+prev=$(cat "$K/current-boot-id" 2>/dev/null)
+[ -n "$prev" ] || prev=unknown
+RESTART=0
+[ "$prev" = "$BOOT" ] && RESTART=1
+
 set -- "$D"/boot-*.log
-if [ -e "$1" ]; then
-    prev=$(cat "$K/current-boot-id" 2>/dev/null)
-    [ -n "$prev" ] || prev=unknown
+if [ -e "$1" ] && [ "$RESTART" = 0 ]; then
     a="$K/boot-$prev"
     n=2
     while [ -e "$a" ]; do a="$K/boot-$prev.$n"; n=$((n + 1)); done
@@ -92,14 +125,16 @@ if [ -e "$1" ]; then
     # newest 4 only; boot-*/ excludes the hand-made keep/boot-badgpu-*.log files
     ls -dt "$K"/boot-*/ 2>/dev/null | tail -n +5 | while IFS= read -r p; do rm -rf "$p"; done
 fi
-BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
-[ -n "$BOOT" ] || BOOT=unknown
-printf "%s\n" "$BOOT" > "$K/current-boot-id" 2>/dev/null
-
-# Keep only the snapshots from the current boot, so `--read` is never ambiguous about
-# which boot it is looking at. The uptime in the filename is the marker. The copy above
-# is what makes this safe.
-rm -f "$D"/boot-*.log "$D"/boot.log "$D"/now-*.log 2>/dev/null
+if [ "$RESTART" = 1 ]; then
+    printf "%s skip prev=%s (this boot -- mid-boot restart: nothing carried forward, nothing deleted)\n" \
+        "$(cut -d. -f1 /proc/uptime)" "$prev" >> "$K/archive.log"
+else
+    printf "%s\n" "$BOOT" > "$K/current-boot-id" 2>/dev/null
+    # Keep only the snapshots from the current boot, so `--read` is never ambiguous about
+    # which boot it is looking at. The uptime in the filename is the marker. The copy above
+    # is what makes this safe.
+    rm -f "$D"/boot-*.log "$D"/boot.log "$D"/now-*.log 2>/dev/null
+fi
 
 snap() {
     f="$D/boot-$(cut -d. -f1 /proc/uptime)s.log"
@@ -117,7 +152,7 @@ snap() {
     fi
 }
 snap
-for d in 5 5 5 10 20 40 80 160; do
+for d in 5 5 5 10 20 40 80 160 320 320 640 640 1280 1280; do
     sleep "$d"
     snap
 done
@@ -224,11 +259,28 @@ REMOTE
 }
 
 case "${1:-}" in
+--help|-h)
+  # The header is printed VERBATIM, `#` prefixes and all -- that is the convention every other script
+  # here follows and what the health check's property test requires (a line that is not a comment means
+  # something other than the header is being printed). It prints the WHOLE header rather than a shorter
+  # summary, because the design and its history already live there and a second version would be one
+  # more thing to keep in step.
+  awk 'NR==1{next} /^#/{print; next} {exit}' "$0"
+  exit 0
+  ;;
 --install)
   guard
   push_scripts
   write_units
-  echo "installed. The snapshot unit collects the ring at ~0, 5, 10, 15, 25, 45, 85, 165, 325 s of uptime."
+  # THE MESSAGE IS DERIVED FROM THE SCRIPT THAT WAS JUST PUSHED, not typed again. It used to restate
+  # the schedule by hand and it went stale the moment the schedule changed (docs 161) -- the same shape
+  # as every other number in this repo that lived in two places. `snap` is called once before the loop,
+  # so the first snapshot is at the unit's start (~35 s of uptime, measured) and the rest follow the list.
+  _sched=$(printf '%s\n' "$SNAPSHOT_SH" | sed -n 's/^for d in \(.*\); do$/\1/p')
+  [ -n "$_sched" ] || { echo "refusing to report a schedule: the collector's 'for d in' line is unreadable" >&2; exit 1; }
+  _upto=$(printf '%s\n' "$_sched" | awk '{for (i = 1; i <= NF; i++) t += $i} END {printf "%d", t + 35}')
+  echo "installed. The snapshot unit collects the ring at ~0 s of uptime (one dump before the loop) and"
+  echo "then after each of: $_sched s  -- the last snapshot is therefore at about ${_upto} s of uptime."
   echo "Before wiping them it archives the previous boot's set to /userdata/zl1-kmsg/keep/boot-<boot_id>/"
   echo "(newest 4 kept), and any boot whose ring contains the secure-world failure signatures copies"
   echo "itself to keep/bad-<boot_id>/ as soon as the signature appears."

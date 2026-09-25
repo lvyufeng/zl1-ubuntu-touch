@@ -128,6 +128,57 @@ setup() { # $1 = scenario name
   G)  # not the zl1
       printf 'Xiaomi\x00' > "$FR/proc/device-tree/model"
       ;;
+  I)  # WHICH ARCHIVE IS THE BOOT THAT DIED, WHEN `ls -dt` AND THE DRAIN'S LOG DISAGREE (docs 161).
+      # This device's clock is wrong, so EVERY archive directory carries the same mtime and `ls -dt` is an
+      # arbitrary order -- measured on the device, where it ranked boot-0488bd3c first and put the boot
+      # that actually died, boot-92165447, LAST. The rule is the drain's own log: the NEWEST `prev=` entry
+      # whose archive still exists. So the fixture has to make the two rules disagree, and it also carries
+      # the case that broke the first version of the rule -- a `prev=` line naming a boot whose archive has
+      # already been pruned by the newest-4 rule, so "the last line" is not the answer either.
+      #   mtime order (what `ls -dt` answers):  boot-old01   <- written LAST, so it ranks first, and it is WRONG
+      #   the log, oldest first:                old01, dead00, gone99   <- gone99 has NO directory
+      #   the only right answer:                dead00
+      mkdir -p "$FR/sys/fs/pstore" "$FR/userdata/zl1-kmsg/keep/boot-dead00"
+      printf 'live11\n' > "$FR/userdata/zl1-kmsg/keep/current-boot-id"
+      { printf '121.10s wifi up\n'
+        printf '290.40s WDOG: watchdog bite, going down for restart\n'; } \
+        > "$FR/userdata/zl1-kmsg/keep/boot-dead00/boot-last.log"
+      printf '10 prev=old01 files=1\n20 prev=dead00 files=1\n30 prev=gone99 files=1\n' \
+        > "$FR/userdata/zl1-kmsg/keep/archive.log"
+      # THE MTIMES ARE SET EXPLICITLY, not left to the order the statements run in: the two directories
+      # would otherwise be created within the same millisecond and `ls -dt` would break the tie
+      # arbitrarily -- which is the same broken clock this whole fixture is about. Measured after the
+      # first version did exactly that: 'ls -dt' ranked boot-dead00 first, so the state passed its
+      # assertions while being unable to tell the two rules apart.
+      mkdir -p "$FR/userdata/zl1-kmsg/keep/boot-old01"
+      printf 'nothing interesting\n' > "$FR/userdata/zl1-kmsg/keep/boot-old01/boot-0001.log"
+      touch -t 202001010000.00 "$FR/userdata/zl1-kmsg/keep/boot-dead00"
+      touch -t 202101010000.00 "$FR/userdata/zl1-kmsg/keep/boot-old01"
+      ;;
+  H)  # A HEALTHY BOOT, IN THE SHAPE A REAL BOOT LOG ACTUALLY HAS.
+      # This is the fixture the harness was missing, and it is the whole of docs 161's section 5. Every
+      # other "clean" state above is a file holding one invented line, and a real kernel log is not that:
+      # measured on keep/boot-0488bd3c-.../boot-84s.log -- a boot that provably did not die, because it
+      # produced five later snapshots -- it carries `WARNING:` x6 each followed by `Call trace:`, plus
+      # the watchdog driver's own two init lines. `watchdog` and `Call trace` were both in the verdict
+      # pattern, so on 2026-09-25 the instrument printed `*** contains a death signature ***` and
+      # `FOUND: a kernel oops/panic is on record` for a healthy boot -- and that verdict was nearly
+      # written down as the attribution of the EDL trip. A negative fixture that cannot reach the
+      # detector proves nothing about the detector; this one is the real thing.
+      mkdir -p "$FR/sys/fs/pstore" "$FR/userdata/zl1-kmsg/keep/boot-dead00"
+      printf 'live11\n' > "$FR/userdata/zl1-kmsg/keep/current-boot-id"
+      { printf '[    0.210092] msm_watchdog 9830000.qcom,wdt: wdog absent resource not present\n'
+        printf '[    0.210400] msm_watchdog 9830000.qcom,wdt: MSM Watchdog Initialized\n'
+        n=0
+        while [ "$n" -lt 6 ]; do
+          printf '[    1.612%03d] WARNING: CPU: 2 PID: 1 at drivers/clk/qcom/clk-rcg2.c:114 clk_rcg2_set_rate+0x1c/0x40\n' "$n"
+          printf '[    1.613%03d] Call trace:\n' "$n"
+          n=$((n + 1))
+        done
+        printf '[   70.246562] healthd: battery l=2(0) v=3899 t=40.2 h=2 st=2 otg=0 c=-1475(0) chg=USB_DCP\n'
+        printf '[   81.170899] zl1-v63-monitor: event tick=26 uptime=80.82 state=DISCONNECTED functions=rndis\n'
+      } > "$FR/userdata/zl1-kmsg/keep/boot-dead00/boot-last.log"
+      ;;
   esac
 }
 
@@ -180,14 +231,19 @@ echo "  script under test: $SRC"
 echo "  fake root:         $FR"
 echo
 
+# NAMING THE PATTERN IS THE ASSERTION, not a decoration: the false positive on 2026-09-25 was a match
+# whose pattern nobody could see. `matched 'Kernel panic'` makes a wrong attribution visible on the line
+# it read, which is the only thing that separates this verdict from "the file contained some word".
 echo "== A: an oops in pstore (the primary witness) =="
 run A
 want A 0 "FOUND: a kernel oops/panic is on record" "attributed from pstore"
+want A 0 "matched 'Kernel panic'" "and the FOUND names the pattern it matched (docs 161)"
 
 echo
 echo "== B: pstore empty, the kmsg archive carries the death =="
 run B
 want B 0 "FOUND: a kernel oops/panic is on record" "attributed from the second witness"
+want B 0 "matched 'WDOG: watchdog bite'" "the kmsg witness names its pattern too"
 
 echo
 echo "== C: the driver's own probe-time line in this boot's earliest snapshot =="
@@ -220,6 +276,57 @@ echo
 echo "== G: not the zl1 =="
 run G
 want G 2 "not LE_ZL1" "stops before reading anything as ours"
+
+echo
+echo "== I: two archives, and the one the drain names is not the one the clock ranks first (docs 161) =="
+# NOTE: the `*` in the two assertions below is a LITERAL star, not a glob. `want`/`notwant` match with
+# `case "$out" in *"$3"*)` and a QUOTED expansion is not re-read as a pattern, so a backslash written here
+# would have to be present in the output -- which is how the first version of these two lines passed
+# vacuously (the forbidden string was `\*previous\*` and no such string can ever be printed).
+run I
+# THE FIXTURE HAS TO DISAGREE WITH ITSELF, or this state proves nothing about the rule: `ls -dt` must rank
+# boot-old01 first (the wrong boot) while the log names boot-dead00. If the mtime order ever came out the
+# other way the assertions below would pass for the wrong reason, so it is checked rather than assumed.
+ISETUP=$(ls -dt "$FR/userdata/zl1-kmsg/keep"/boot-*/ 2>/dev/null | sed -n 1p)
+case "$ISETUP" in
+*"$FR/userdata/zl1-kmsg/keep/boot-old01/") ok "I: the fixture does disagree -- 'ls -dt' ranks boot-old01 first, which is the wrong one" ;;
+*) bad "I: 'ls -dt' ranked '$(basename "${ISETUP:-none}")', not boot-old01, so this state cannot tell the two rules apart" ;;
+esac
+want I 0 "chosen by: archive.log" "the archive is chosen by the drain's own log, not by the clock"
+want I 0 "boot-dead00 is a *previous* boot" "and it is the boot the log names"
+want I 0 "matched 'WDOG: watchdog bite'" "so the death in THAT archive is the one reported"
+notwant I "boot-old01 is a *previous*" "the archive the clock ranks newest is NOT offered as the candidate"
+notwant I "chosen by: ls -dt" "and the clock-based fallback is not the rule that answered"
+
+echo
+echo "== H: a HEALTHY boot, in the shape a real boot log has (docs 161) =="
+run H
+want H 0 "No oops on record" "six WARNINGs with their Call traces, and the watchdog's own init lines, are NOT a death"
+notwant H "contains a death signature" "the two strings EVERY healthy boot prints are out of the verdict pattern"
+want H 0 "not-as-a-signature: 'Call trace' x6, 'watchdog' x2" \
+  "and they are printed as COUNTS instead, so 'no signature' is a reading rather than a blank"
+
+echo
+echo "== the count the health check cites for this harness =="
+# THE DRIFT GUARD (docs 110, enforced tree-wide by cli-usage's section 4d): the health check names this
+# harness WITH a hand-typed check count, and a hand-typed count is exactly the kind of claim that goes
+# stale in silence. This harness is newly NAMED by the page in docs 161, so it now has to check its own
+# citation -- `total` is PASS+FAIL+1 because the check below is itself a check.
+HEALTH="$HERE/zl1-health-check.sh"
+if [ -r "$HEALTH" ]; then
+  match=$(tr '\n' ' ' < "$HEALTH" | grep -oE 'zl1-edl-postmortem-selftest\.sh[^0-9]*[0-9]+ checks' | sed -n 1p)
+  cited=$(printf '%s\n' "$match" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) checks$/\1/p')
+  total=$((PASS + FAIL + 1))
+  if [ -z "$cited" ]; then
+    bad "zl1-health-check.sh does not cite this harness's count -- either the citation is gone or its wording changed"
+  elif [ "$cited" = "$total" ]; then
+    ok "the health check cites $cited checks, and this run has exactly that many"
+  else
+    bad "the health check cites $cited checks but this harness has $total -- fix host/zl1-health-check.sh"
+  fi
+else
+  bad "cannot read $HEALTH -- its citations are unchecked"
+fi
 
 echo
 echo "pass=$PASS fail=$FAIL"
