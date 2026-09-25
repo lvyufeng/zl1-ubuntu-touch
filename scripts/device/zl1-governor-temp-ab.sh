@@ -41,6 +41,24 @@
 #       (`no-plateau`, exit 1) and, because it is refused BEFORE window A, that run writes nothing.
 #   (c) the post-wait uses `max_dev` too, so "the reading came back" means every zone is where it was.
 #
+# THE TWO HOLDS' UNITS WERE BOTH WRONG, AND IT IS THE SAME MISTAKE TWICE (docs 174, from the third device run
+# of docs 173). The first device run with the version above came back NO RETURN, and reading its own timing
+# found the two defects:
+#   (1) A BOUND IN THE WRONG SECONDS. `--settle-back 240` took 798 s of wall clock, because the bound counted
+#       the seconds the loop SLEPT while every sample cost this device about 23 s more (the instrument walks
+#       /proc after its window is over: a 10 s sample costs about 33 s end to end). The run took 1009 s and
+#       the --status text promised 12 minutes. Both holds are now bounded in now_s()'s seconds -- real
+#       elapsed seconds, from /proc/uptime because the RTC reads 1970 -- and each hold PRINTS the wall clock
+#       it spent, so the next run can be planned from a measurement instead of an estimate.
+#   (2) A RATE COMPARED AGAINST A DISPLACEMENT. The pre-hold tested "two readings POLL apart agree within
+#       MARGIN", which is a rate: 0.5 C per 10 s is 3 C per MINUTE, and a phone certified by that test had
+#       moved 4.1 C by the time the run was done. What MARGIN is, and always was for the wait before C, is a
+#       displacement -- how far from its own window A reading a zone may be before the difference cannot be
+#       attributed. So the pre-hold now asks what the movement it just saw PROJECTS TO over the run's own
+#       span, and refuses when that reaches MARGIN. Nothing else about the design changed, and that is the
+#       finding (docs 173, section 6.1): on this phone the bar is unreachable, so the thing to change is the
+#       design -- cancel the drift instead of requiring its absence.
+#
 # THE KNOB IS FOUR FILES, NOT ONE, and that is the whole difference from the ladder instrument. There is no
 # `tr` alphabet here (a governor name is stored and read back as itself) and no module parameter: the state
 # is `/sys/devices/system/cpu/cpuN/cpufreq/scaling_governor`, one per core, and "the fix is installed" means
@@ -59,10 +77,16 @@
 #     zl1-governor-temp-ab.sh --yes               run the experiment (this is the write)
 #     zl1-governor-temp-ab.sh --seconds N --settle N --thermal PATH
 #     zl1-governor-temp-ab.sh --settle-start N --settle-back N --poll N --margin C
-#                                                 the TWO holds: one before window A, one before window C
-#                                                 WORST CASE at the defaults: 300 + 45 + 20 + 45 + 20 + 240
-#                                                 + 45 s is about 12 minutes, and every second of it is
-#                                                 waiting or reading -- the device is written twice.
+#                                                 the TWO holds: one before window A, one before window C.
+#                                                 Both bounds are WALL CLOCK (docs 174), and --margin C is a
+#                                                 DISPLACEMENT over the whole run, so the pre-hold's bar for
+#                                                 one interval of --poll is --margin x poll / run span.
+#                                                 AT THE DEFAULTS: pre-hold up to 300 s + 45 + 20 + 45 + 20 +
+#                                                 wait up to 240 + 45 s is about 13 minutes, and every second
+#                                                 of it is waiting or reading -- the device is written twice.
+#                                                 The run PRINTS the wall clock it actually took, because the
+#                                                 instrument's own samples are inside these bounds (a 10 s
+#                                                 window costs this device about 23 s: docs 173, section 5).
 #     zl1-governor-temp-ab.sh --keep              leave the run's own files and print where they are
 #     zl1-governor-temp-ab.sh --revert            put every core back on `interactive` and prove it
 #     zl1-governor-temp-ab.sh --explain           what each reading decides, and change nothing
@@ -104,6 +128,27 @@ SETTLE_BACK=240
 SETTLE_START=300
 POLL=10
 MARGIN=0.5
+# THE BAR IS NOT THE SAMPLE INTERVAL (docs 174). "How far from its window A reading a zone may be before this
+# run cannot attribute the difference to the governor" is what the wait before window C has always tested, and
+# it is a DISPLACEMENT -- it is spent over the run. The pre-hold tested `two readings POLL apart within
+# MARGIN` instead, and that is a RATE bar: 0.5 C per 10 s is 3 C per minute, or 30 C over a ten-minute run,
+# against a resolution of 0.2 C. It certified a phone that had moved 2.4 C per minute as "holding still", and
+# that phone then moved 4.1 C (docs 173, section 6). So the bar for one interval of G is MARGIN x G / RUN_SPAN
+# -- and RUN_SPAN is defined BELOW the argument loop, because a span computed before --seconds and
+# --settle-back are read would be the defaults' span and not this run's.
+# bar_of GAP MARGIN SPAN -- the displacement one interval of GAP may use out of a bar of MARGIN over SPAN.
+# %.4f and not %.1f because the point of this number is that it is SMALLER than the instrument's own 0.1 C
+# step: rounding it to one decimal would print 0.0 and hide exactly the thing it exists to show.
+bar_of() {
+  awk -v g="$1" -v m="$2" -v s="$3" 'BEGIN { if (s + 0 <= 0) { print m; exit } printf "%.4f", m * g / s }'
+}
+# proj_of DEV GAP SPAN -- what a movement of DEV in GAP projects to over SPAN. The absolute difference is
+# taken here too, so a phone that is falling fast projects as a big number in the same way one that is
+# climbing does: the sign is printed beside it, the size is what the bar is spent on.
+proj_of() {
+  d=$(dev_abs "$1")
+  awk -v d="$d" -v g="$2" -v s="$3" 'BEGIN { if (g + 0 <= 0) { print d; exit } printf "%.1f", d * s / g }'
+}
 
 # The two states, named for the FIX and not for the governor: FIX_GOV is what the installer writes and what
 # window A must already be; BLOCKED_GOV is the image's own value, i.e. the cause put back. Nothing here
@@ -132,6 +177,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# THE RUN'S OWN SPAN -- from the start of window A to the end of window C, as this run was configured, and
+# computed HERE because every number it is made of arrives as an argument: the version that computed it beside
+# the defaults above reported a span of 415 s for a run whose settings were 1/0/0/1, and the pre-hold's bar is
+# derived from it (docs 174).
+RUN_SPAN=$((SECONDS_WIN * 3 + SETTLE * 2 + SETTLE_BACK))
+
 say() { printf '%s\n' "$*"; }
 hdr() { printf '\n== %s\n' "$*"; }
 bad() { printf '%s\n' "$*" >&2; }
@@ -145,6 +196,19 @@ grep -qa msm8996 /proc/device-tree/compatible 2>/dev/null ||
 rd() {
   if [ -r "$1" ]; then v=$(tr -d '\n' < "$1" 2>/dev/null); printf '%s' "${v:-EMPTY}"
   else printf 'UNREADABLE'; fi
+}
+
+# THE CLOCK, and it is /proc/uptime rather than the RTC. This device's clock reads 1970-02-13 (docs 173,
+# section 8), so every date this script prints is wrong -- while uptime advances at the right rate and never
+# STEPS. That last property is the one that matters here: both holds below are bounded in the seconds this
+# returns, and a clock that jumps (an NTP step on a phone whose time is 56 years out) would end a hold early
+# or late for a reason that has nothing to do with the phone's temperature. `date +%s` is the fallback rather
+# than the first choice, and it is a fallback that prints a wrong date, which is why it is only reached when
+# /proc/uptime cannot be read at all.
+now_s() {
+  zl1_u=$(awk 'NR == 1 { printf "%d", $1 }' /proc/uptime 2>/dev/null)
+  case "$zl1_u" in ''|*[!0-9]*) zl1_u=$(date +%s 2>/dev/null) ;; esac
+  printf '%s' "${zl1_u:-0}"
 }
 
 TMP=$(mktemp -d /tmp/zl1-governor-temp-ab.XXXXXX) || exit 1
@@ -281,13 +345,18 @@ zl1 governor temperature A/B -- what each reading decides
                                     cause costs nothing', which is the one wrong answer that looks real
        window A is the fix installed (every core reads 'interactive')   otherwise the cores are already
                                     pinned and window A is not the state this experiment exists to price
-  2. THE PRE-HOLD, and it decides whether there is anything here to measure at all. Two readings POLL apart
-     must agree on EVERY tsens zone to within MARGIN, up to SETTLE_START seconds. A window read on a moving
-     phone is not a state, it is a point on a curve -- the same drift then sits inside every delta below it,
-     and it cannot be told from the governor. The second device run of this instrument (docs 172) read
-     window A on a phone falling 4.2 C per ten seconds and printed a price anyway. A phone that never holds
-     still is the verdict `no-plateau`, and because this happens BEFORE window A it is the one exit from
-     this script that writes nothing at all.
+  2. THE PRE-HOLD, and it decides whether there is anything here to measure at all. Two readings must agree
+     on EVERY tsens zone, and the bar is not a rate: MARGIN C is a DISPLACEMENT over the WHOLE RUN, so one
+     interval of G is allowed MARGIN x G / RUN_SPAN -- and on a phone that moves measurably at all, that
+     number is smaller than the instrument's own 0.1 C step, which is the point. The hold waits up to
+     SETTLE_START seconds of WALL CLOCK for it. A window read on a moving phone is not a state, it is a point
+     on a curve -- the same drift then sits inside every delta below it, and it cannot be told from the
+     governor. The second device run (docs 172) read window A on a phone falling 4.2 C per ten seconds; the
+     third (docs 173) certified one moving 2.4 C per minute as "holding still" with a bar that was a rate,
+     and that phone moved another 4.1 C before the run was over. A phone that never holds still enough is the
+     verdict `no-plateau`, and because this happens BEFORE window A it is the one exit from this script that
+     writes nothing at all. It also PRINTS what it saw and what that projects to, because that projection is
+     the number that says the three-window design cannot price this phone (docs 173, section 6.1).
   3. WINDOW A, as installed: the zones with all four cores on 'interactive'. Nothing has been written yet.
   4. THE INTERVENTION AND THE PROOF: write 'performance' to every core, read every core back, and REQUIRE
      all of them to read it. A write that landed on three of four would make the next window a measurement
@@ -299,7 +368,8 @@ zl1 governor temperature A/B -- what each reading decides
      not care that the governor was put back 20 s ago. The first device run of this instrument (docs 170)
      read A 40.9 -> B 47.7 -> C 48.0 and came back CONTAMINATED for exactly that reason. So after the undo
      the run waits for EVERY tsens zone to come back to within MARGIN of its OWN window A reading, up to
-     SETTLE_BACK seconds, polling every POLL, and PRINTS HOW LONG IT TOOK. That number is the phone's thermal
+     SETTLE_BACK seconds OF WALL CLOCK (docs 174: the bound used to count the seconds the loop slept, so 240
+     of them cost 798 s), polling every POLL, and PRINTS HOW LONG IT TOOK. That number is the phone's thermal
      behaviour under this intervention, and it is worth having on its own.
      EVERY ZONE, and the difference is ABSOLUTE. The second device run (docs 172) tested the HOTTEST zone
      and tested it ONE-SIDED, so a reading 4.2 C BELOW window A read as "came back" -- and the hottest zone
@@ -320,12 +390,17 @@ zl1 governor temperature A/B -- what each reading decides
                             this -- the intervention's warming has not decayed, or the phone moved by more
                             than MARGIN on its own, in either direction -- and the instrument cannot tell
                             them apart. Both are statements about the phone.
-       no-plateau           the phone never held still for SETTLE_START seconds before window A, so there was
-                            no state to measure. Nothing was written. (--settle-start 0 disables this hold.)
+       no-plateau           the phone never held still ENOUGH for SETTLE_START seconds (wall clock) before
+                            window A: two readings did not agree closely enough that what it just saw
+                            projects to less than MARGIN over the run's own span. Nothing was written.
+                            (--settle-start 0 disables this hold; --margin N raises the displacement.)
      An intervention that did not land, or an undo that did not hold, is NOT a verdict at all: it exits 4
      with the state printed, because every number below it would be a comparison of two identical states.
      The resolution is 0.2 C, which is two steps of the instrument's own 0.1 C and is printed with the
      verdict, because a threshold nobody can see is a threshold nobody can argue with.
+     BOTH HOLDS ARE BOUNDED IN WALL CLOCK and the run prints what it spent, because on this device the
+     instrument's own samples are inside those bounds and not beside them: a 10 s sample costs about 33 s
+     end to end. The version that counted sleeps promised 12 minutes and took 17 (docs 173, section 5).
      --settle-back 0 turns the WAIT off and restores the old design: window C then starts on a phone that
      may still be holding the intervention's heat, and 'contaminated' becomes a property of that setting.
      --settle-start 0 turns the PRE-HOLD off and restores the older design still: window A is then a point
@@ -354,7 +429,7 @@ say "  device:      $(cat /proc/device-tree/model 2>/dev/null || echo unknown)"
 say "  cores:       $CPU_N (${CPUS:-none})"
 say "  instrument:  $THERMAL"
 say "  windows:     ${SECONDS_WIN}s each, ${SETTLE}s after each write"
-say "  holds:       $(if [ "$SETTLE_START" = 0 ]; then echo "pre-hold OFF"; else echo "up to ${SETTLE_START}s before A"; fi), up to ${SETTLE_BACK}s before C, at a ${MARGIN} C bar, every ${POLL}s"
+say "  holds:       $(if [ "$SETTLE_START" = 0 ]; then echo "pre-hold OFF"; else echo "up to ${SETTLE_START}s of wall clock before A"; fi), up to ${SETTLE_BACK}s of wall clock before C, at a ${MARGIN} C displacement bar; run span ${RUN_SPAN}s (one ${POLL}s interval may use $(bar_of "$POLL" "$MARGIN" "$RUN_SPAN") C)"
 say "  states:      A/C '$FIX_GOV' (the fix, installed)  B '$BLOCKED_GOV' (the image's own value)"
 say "  panic guard: $(if [ "$DL_N" = 0 ]; then echo "NO download_mode PARAMETER -- a panic would arm EDL"; \
                      elif [ -n "$DL_BAD" ]; then echo "ARMED ($DL_BAD) -- a panic would arm EDL"; \
@@ -485,12 +560,14 @@ if [ "$MODE" != run ]; then
   if [ "$SETTLE_START" = 0 ]; then
     say "   pre-hold: OFF (--settle-start 0) -- window A is read immediately, whatever the phone is doing"
   else
-    say "   pre-hold: up to ${SETTLE_START}s (every ${POLL}s) for two readings ${POLL}s apart to agree on every"
-    say "   tsens zone to within ${MARGIN} C -- refused BEFORE window A if they never do, so that exit writes"
+    say "   pre-hold: up to ${SETTLE_START}s of WALL CLOCK for two readings to agree on every tsens zone that"
+    say "   what the second one just saw projects to less than ${MARGIN} C over this run's ${RUN_SPAN}s -- i.e. at"
+    say "   most $(bar_of "$POLL" "$MARGIN" "$RUN_SPAN") C in one ${POLL}s interval. Refused BEFORE window A if they never"
+    say "   do, so that exit writes"
   fi
   say "   window A: the zones as installed ('$FIX_GOV' on all $CPU_N cores), ${SECONDS_WIN}s"
   say "   write '$BLOCKED_GOV' to every core, prove all of them read it, wait ${SETTLE}s, window B, ${SECONDS_WIN}s"
-  say "   write '$FIX_GOV' back, prove all of them read it, then WAIT (up to ${SETTLE_BACK}s, every ${POLL}s) for"
+  say "   write '$FIX_GOV' back, prove all of them read it, then WAIT (up to ${SETTLE_BACK}s of wall clock) for"
   if [ "$SETTLE_BACK" = 0 ]; then
     say "   every tsens zone to return to within ${MARGIN} C of its OWN window A reading -- WAIT DISABLED"
     say "   (--settle-back 0), so window C starts on a phone that may still be holding the intervention's heat."
@@ -499,6 +576,10 @@ if [ "$MODE" != run ]; then
     say "   that took"
   fi
   say "   window C, ${SECONDS_WIN}s (the control); then the per-zone deltas B-A and C-A and a verdict"
+  say "   BOUNDS ARE WALL CLOCK and the run prints what it spent. Every sample costs its own window PLUS this"
+  say "   instrument's walk of /proc, which a 10 s sample measured at about 13 s more (docs 173, section 5),"
+  say "   so a ${SECONDS_WIN}s window costs about $((SECONDS_WIN + 13))s end to end -- the old bound counted sleeps and"
+  say "   --settle-back 240 cost 798 s."
   say "   the trap restores '$FIX_GOV' on every exit path, and removes $TMP unless --keep"
   exit 0
 fi
@@ -507,9 +588,11 @@ fi
 # One window is one run of the instrument. `--quiet` drops the per-process table: this experiment compares
 # THERMAL ZONES and nothing in the process table changes its answer, while the table costs output and the
 # busy figure it needs is in the summary line either way.
-run_window() { # $1 = label
+run_window() { # $1 = label -- prints "<busy> <wall clock seconds>"
+  zl1_w0=$(now_s)
   sh "$THERMAL" --seconds "$SECONDS_WIN" --quiet > "$TMP/win.$1" 2>&1
   rc=$?
+  zl1_wall=$(( $(now_s) - zl1_w0 ))
   if [ "$rc" != 0 ]; then
     # The path is named, and the evidence is KEPT, because the interesting case is the one where something
     # went wrong -- and an error whose evidence is deleted on the way out is an error nobody can look at.
@@ -518,7 +601,17 @@ run_window() { # $1 = label
     bad "   when a window fails, because that file is the only copy)"
   fi
   b=$(awk '/^[ ]+busy / { print $2; exit }' "$TMP/win.$1" 2>/dev/null)
-  printf '%s\n' "${b:-unreadable}"
+  printf '%s %s\n' "${b:-unreadable}" "$zl1_wall"
+}
+# ONE WINDOW, BOOKED. `run_window` is always called inside `$( )`, which is a SUBSHELL: an accumulator set in
+# there is lost, and the first version of this bookkeeping printed "0s in 0 window(s)" for exactly that reason
+# (the one place those numbers were visible was the line that was wrong). So the wall clock comes back as
+# OUTPUT and is booked here, at the top level.
+win() { # $1 = label; leaves the busy figure in WIN_BUSY and the wall clock added to WIN_WALL
+  zl1_two=$(run_window "$1")
+  WIN_BUSY=${zl1_two%% *}
+  WIN_WALL=$((WIN_WALL + ${zl1_two##* }))
+  WIN_N=$((WIN_N + 1))
 }
 
 zones_of() { awk '$1 ~ /^thermal_zone[0-9]+$/ && $4 == "C" { print $1, $2, $3 }' "$1" 2>/dev/null; }
@@ -564,43 +657,93 @@ dev_abs()   { printf '%s' "${1%%|*}"; }
 dev_signed(){ zl1_r=${1#*|}; printf '%s' "${zl1_r%%|*}"; }
 dev_where() { printf '%s' "${1#*|*|}"; }
 
+# WHAT THE INSTRUMENT ITSELF COSTS, per sample, on THIS run -- and it is a difference between two numbers the
+# run counted rather than a constant: `HOLD_WALL - HOLD_SLEEP` is everything the holds spent that was not the
+# sleep they asked for, which on this device is the instrument walking /proc after every window. Printed as a
+# whole number of seconds, and printed as "no sample was taken" when the holds took none, because 0/0 is not 0.
+per_sample() {
+  if [ "$HOLD_SAMPLES" -lt 1 ]; then printf 'no sample was taken'
+  else printf '%ss per sample' "$(( (HOLD_WALL - HOLD_SLEEP) / HOLD_SAMPLES ))"; fi
+}
+# THE RUN'S OWN WALL CLOCK, on every exit path that got as far as measuring (docs 173, section 5). It exists
+# because both bounds are in now_s() seconds and the instrument's samples are INSIDE them: an operator reading
+# "--settle-back 240" has to be able to tell 240 s of run from 240 sleeps, and the only honest version of that
+# number is the one this run measured. It is called by the refusals too, so a run that stops early still says
+# what stopping early cost.
+cost_line() {
+  say "   WALL CLOCK: this attempt took $(( $(now_s) - RUN_T0 ))s: ${WIN_WALL}s in ${WIN_N} window(s), ${HOLD_WALL}s in"
+  say "   the holds. The holds asked for ${HOLD_SLEEP}s of sleep and spent the rest waiting on the instrument"
+  say "   itself, $(per_sample). Every bound above is in THESE seconds, not in sleeps."
+}
+
 # --- the pre-hold: a phone that is not holding still cannot be priced ----------------------------------
 # THE SECOND HALF OF THE SAME IDEA as the wait before C, and it exists for the same measured reason (docs 172).
 # The second device run read window A on a phone that was falling 4.2 C per ten seconds -- so A, B and C were
 # three points on a curve rather than three states, the drift was as large as the effect being priced, and the
 # run printed a number anyway. A control window cannot fix that: the drift is there in EVERY window, including
-# the first. So window A is now read only once two readings POLL apart agree on EVERY tsens zone to within
-# MARGIN, with a bound. This hold is refused BEFORE window A, which makes `no-plateau` the one verdict in this
-# script that happens with the device untouched: nothing has been written at that point but the same-value
-# proof, which writes back the value the cores already held.
+# the first. So window A is read only once two readings agree on EVERY tsens zone closely ENOUGH, with a bound.
+# This hold is refused BEFORE window A, which makes `no-plateau` the one verdict in this script that happens
+# with the device untouched: nothing has been written at that point but the same-value proof, which writes back
+# the value the cores already held.
+#
+# "CLOSELY ENOUGH" IS A DISPLACEMENT OVER THE RUN AND NOT A RATE OVER THE SAMPLE (docs 174). The third device
+# run passed this hold -- the phone was certified as "holding still" at 0.4 C per ten seconds -- and then moved
+# 4.1 C before the run was over, because 0.5 C per 10 s is 3 C per MINUTE: a bar that permits 30 C over a
+# ten-minute run cannot certify anything about a 0.2 C resolution. So the bar is bar_of(POLL, MARGIN,
+# RUN_SPAN), and what the hold decides on is proj_of: what the movement it just saw projects to over the whole
+# span. It is deliberately hard to pass, and on this phone it is expected to refuse (docs 173, section 6.1).
 PLATEAU=1
 PRE_WAITED=0
 PRE_DEV=
+PRE_GAP=0
+PRE_BAR=0
+# WHAT THE RUN SPENDS, AND IT IS COUNTED RATHER THAN ESTIMATED (docs 173, section 5). `HOLD_SLEEP` and
+# `HOLD_SAMPLES` separate the two things a sample costs -- the sleep the loop asks for, and the instrument
+# itself -- and that difference is what `cost_line` prints at the end. `RUN_T0` is the start of the measured
+# part of the run (the refusals above are not part of it).
+RUN_T0=$(now_s)
+WIN_WALL=0
+WIN_N=0
+HOLD_WALL=0
+HOLD_SLEEP=0
+HOLD_SAMPLES=0
 if [ "$SETTLE_START" = 0 ]; then
   hdr "the pre-hold -- OFF (--settle-start 0)"
   say "   Window A is read immediately, whatever this phone is doing. That is the design that printed a price"
   say "   on a phone falling 4.2 C in ten seconds (docs 172), so 'no-plateau' cannot happen here -- which"
   say "   makes THIS setting the thing that decides whether the run below prices a state or a curve."
 else
-  hdr "the pre-hold -- is this phone holding still, before a window is read at all?"
-  say "   Two readings ${POLL}s apart must agree on EVERY tsens zone to within ${MARGIN} C before window A is"
-  say "   read. Up to ${SETTLE_START}s. A phone that never holds still cannot be priced, and this is refused"
-  say "   before the intervention: this is the one exit from this script that writes nothing at all."
+  hdr "the pre-hold -- is this phone holding still ENOUGH, before a window is read at all?"
+  say "   ${MARGIN} C is a DISPLACEMENT and not a rate: it is how far from its window A reading a zone may be"
+  say "   before this run can no longer attribute the difference to the governor (that is what the wait before"
+  say "   window C has always tested). So over this run's ${RUN_SPAN}s one interval of ${POLL}s may use"
+  say "   $(bar_of "$POLL" "$MARGIN" "$RUN_SPAN") C of it, and what this hold decides on is what the movement it just saw PROJECTS"
+  say "   TO over the whole span. Two readings, on EVERY tsens zone, up to ${SETTLE_START}s of WALL CLOCK. A phone"
+  say "   that never holds still enough cannot be priced, and this is refused before the intervention: this is"
+  say "   the one exit from this script that writes nothing at all."
   ADV=$POLL
   [ "$ADV" -ge 1 ] 2>/dev/null || ADV=1
   PRE_PH=1
   PRE_PREV=""
   PLATEAU=0
-  while [ "$PRE_WAITED" -lt "$SETTLE_START" ]; do
+  PRE_T0=$RUN_T0
+  PRE_LAST_T=$PRE_T0
+  while [ "$(( $(now_s) - PRE_T0 ))" -lt "$SETTLE_START" ]; do
     sleep "$ADV"
-    PRE_WAITED=$((PRE_WAITED + ADV))
+    HOLD_SLEEP=$((HOLD_SLEEP + ADV))
     sh "$THERMAL" --seconds "$ADV" --quiet > "$TMP/pre.$PRE_PH" 2>&1
+    HOLD_SAMPLES=$((HOLD_SAMPLES + 1))
+    PRE_NOW_T=$(now_s)
+    PRE_GAP=$((PRE_NOW_T - PRE_LAST_T))
+    PRE_LAST_T=$PRE_NOW_T
+    PRE_WAITED=$((PRE_NOW_T - PRE_T0))
     if [ -n "$PRE_PREV" ]; then
       PRE_DEV=$(max_dev "$PRE_PREV" "$TMP/pre.$PRE_PH")
+      PRE_BAR=$(bar_of "$PRE_GAP" "$MARGIN" "$RUN_SPAN")
       # An unreadable sample is not agreement: skipping it (rather than treating "" as 0) keeps the loop
       # going, and the bound still ends it.
       if [ -n "$PRE_DEV" ] &&
-         awk -v d="$(dev_abs "$PRE_DEV")" -v m="$MARGIN" 'BEGIN { exit (d <= m) ? 0 : 1 }'; then
+         awk -v d="$(dev_abs "$PRE_DEV")" -v m="$PRE_BAR" 'BEGIN { exit (d <= m) ? 0 : 1 }'; then
         PLATEAU=1
         break
       fi
@@ -608,32 +751,38 @@ else
     PRE_PREV="$TMP/pre.$PRE_PH"
     if [ "$PRE_PH" = 1 ]; then PRE_PH=2; else PRE_PH=1; fi
   done
+  HOLD_WALL=$((HOLD_WALL + $(now_s) - PRE_T0))
   if [ "$PLATEAU" = 1 ]; then
-    say "   IT IS HOLDING STILL: after ${PRE_WAITED}s, the largest change on any tsens zone in the last ${ADV}s"
-    say "   was $(dev_abs "$PRE_DEV") C (signed $(dev_signed "$PRE_DEV") C, on $(dev_where "$PRE_DEV")). Window A"
-    say "   below is a STATE, not a point on a curve -- which is what makes B and C comparable to it."
+    say "   IT IS HOLDING STILL ENOUGH: after ${PRE_WAITED}s of wall clock, the largest change on any tsens zone"
+    say "   in the last ${PRE_GAP}s was $(dev_abs "$PRE_DEV") C (signed $(dev_signed "$PRE_DEV") C, on $(dev_where "$PRE_DEV"))"
+    say "   -- projected over this run's ${RUN_SPAN}s that is $(proj_of "$PRE_DEV" "$PRE_GAP" "$RUN_SPAN") C, inside the ${MARGIN} C bar."
+    say "   Window A below is a STATE, not a point on a curve -- which is what makes B and C comparable to it."
   else
-    bad "   NO PLATEAU within ${SETTLE_START}s: two readings ${ADV}s apart never agreed on every tsens zone to"
-    bad "   within ${MARGIN} C. The largest change it still saw was $(dev_abs "${PRE_DEV:-0.0|0.0|}") C (signed"
-    bad "   $(dev_signed "${PRE_DEV:-0.0|0.0|}") C, on $(dev_where "${PRE_DEV:-0.0|0.0|}"))."
+    bad "   NO PLATEAU within ${SETTLE_START}s of wall clock: two readings ${PRE_GAP}s apart never agreed closely"
+    bad "   enough to price this run. The largest change it still saw was $(dev_abs "${PRE_DEV:-0.0|0.0|}") C (signed"
+    bad "   $(dev_signed "${PRE_DEV:-0.0|0.0|}") C, on $(dev_where "${PRE_DEV:-0.0|0.0|}")) -- projected over this run's ${RUN_SPAN}s"
+    bad "   that is $(proj_of "${PRE_DEV:-0.0|0.0|}" "$PRE_GAP" "$RUN_SPAN") C, against the ${MARGIN} C this experiment can attribute."
     bad ""
-    bad "   A window read on a phone that is moving is a point on a curve: window A would be a state this"
-    bad "   phone was passing through, and the same drift would sit inside every delta below it -- so the"
-    bad "   number this run could print would be the drift plus the governor, and there is no way to tell"
-    bad "   them apart from the windows alone. THIS RUN PRINTS NO PRICE and stops HERE."
+    bad "   The bar is not the sample interval, it is what this run can resolve: one interval of ${PRE_GAP}s is"
+    bad "   allowed ${PRE_BAR} C of it, and this phone used more than that. A window read on a moving phone is a"
+    bad "   point on a curve: the same drift would sit inside every delta below it, and the number this run"
+    bad "   could print would be the drift PLUS the governor, with no way to tell them apart from the windows"
+    bad "   alone. THIS RUN PRINTS NO PRICE and stops HERE."
     bad ""
-    bad "   What it does establish is about the phone: it moved more than ${MARGIN} C every ${ADV}s for"
-    bad "   ${SETTLE_START}s, which is a reading about this device at this load, and it is worth having."
+    bad "   What it does establish is about the PHONE and about the DESIGN: this phone does not hold still at"
+    bad "   the timescale of a run, and a three-window A/B/C requires it to (docs 173, section 6.1). That is"
+    bad "   the number the next design has to beat, and it is worth having."
     bad "   NOTHING WAS WRITTEN: this is refused before window A, and the only write this script has made is"
     bad "   the same-value proof, which writes back the value the cores already held (state '$(gov_state)')."
-    bad "   To measure anyway: --settle-start 0 runs the old design, and --margin N loosens the bar; both are"
-    bad "   printed by whatever run follows this one."
+    bad "   To measure anyway: --settle-start 0 runs the old design, and --margin N raises the displacement"
+    bad "   this run is allowed; both are printed by whatever run follows this one."
+    cost_line
     exit 1
   fi
 fi
 
 hdr "window A -- as installed (every core on '$FIX_GOV', nothing written yet)"
-BUSY_A=$(run_window A)
+win A; BUSY_A=$WIN_BUSY
 say "   busy $BUSY_A of 4 cores; $(zones_of "$TMP/win.A" | wc -l | tr -d ' ') zone(s) read"
 
 # THE INTERVENTION, and it is armed before the write: `WROTE=1` means "a core may have changed, so the trap
@@ -652,7 +801,7 @@ fi
 sleep "$SETTLE"
 
 hdr "window B -- the cores PINNED (the one change this experiment makes)"
-BUSY_B=$(run_window B)
+win B; BUSY_B=$WIN_BUSY
 say "   busy $BUSY_B of 4 cores"
 
 if write_gov "$FIX_GOV"; then
@@ -684,19 +833,23 @@ elif [ "$SETTLE_BACK" = 0 ]; then
   say "   governor -- which is what the first device run of this instrument measured (docs 170). The verdict"
   say "   below is read with that limitation, and 'contaminated' is a property of THIS setting."
 else
-  say "   window A's hottest tsens zone: ${W_A} C. Waiting up to ${SETTLE_BACK}s (every ${POLL}s) for EVERY"
-  say "   tsens zone to come back to within ${MARGIN} C of its OWN window A reading before window C reads"
-  say "   anything. Every zone, and not just the hottest one: the hottest zone CHANGES HANDS while a run goes"
-  say "   on, so a test that follows it compares one zone's number with another's and calls it a return"
-  say "   (docs 172 -- the second device run passed that test while being 4.2 C down)."
-  # `--poll 0` would spin the loop forever (`WAITED` would never advance), so a sample always costs at least
-  # one second -- and the count that goes into the message is that same number, not the one asked for.
+  say "   window A's hottest tsens zone: ${W_A} C. Waiting up to ${SETTLE_BACK}s of WALL CLOCK (every ${POLL}s,"
+  say "   and the seconds THIS waits for are the clock's, samples and all: docs 174) for EVERY tsens zone to"
+  say "   come back to within ${MARGIN} C of its OWN window A reading before window C reads anything. Every"
+  say "   zone, and not just the hottest one: the hottest zone CHANGES HANDS while a run goes on, so a test"
+  say "   that follows it compares one zone's number with another's and calls it a return (docs 172 -- the"
+  say "   second device run passed that test while being 4.2 C down)."
+  # `--poll 0` would spin the loop forever (the bound would never be spent), so a sample always costs at least
+  # one second -- and the number that goes into the message is the clock's, not the one asked for.
   ADV=$POLL
   [ "$ADV" -ge 1 ] 2>/dev/null || ADV=1
-  while [ "$WAITED" -lt "$SETTLE_BACK" ]; do
+  WAIT_T0=$(now_s)
+  while [ "$(( $(now_s) - WAIT_T0 ))" -lt "$SETTLE_BACK" ]; do
     sleep "$ADV"
-    WAITED=$((WAITED + ADV))
+    HOLD_SLEEP=$((HOLD_SLEEP + ADV))
     sh "$THERMAL" --seconds "$ADV" --quiet > "$TMP/back" 2>&1
+    HOLD_SAMPLES=$((HOLD_SAMPLES + 1))
+    WAITED=$(( $(now_s) - WAIT_T0 ))
     DEV=$(max_dev "$TMP/win.A" "$TMP/back")
     # An unreadable sample is not a returned reading: skipping it (rather than treating "" as 0 or as a
     # return) keeps the loop going, and the bound still ends it.
@@ -708,22 +861,23 @@ else
       break
     fi
   done
+  HOLD_WALL=$((HOLD_WALL + $(now_s) - WAIT_T0))
   if [ "$RETURNED" = 1 ]; then
-    say "   IT CAME BACK: every tsens zone is within ${MARGIN} C of its own window A reading after ${WAITED}s"
-    say "   -- the largest difference was ${DEV_ABS} C (${DEV_SGN} C, on ${DEV_WHERE}). Window C below is"
+    say "   IT CAME BACK: every tsens zone is within ${MARGIN} C of its own window A reading after ${WAITED}s of"
+    say "   wall clock -- the largest difference was ${DEV_ABS} C (${DEV_SGN} C, on ${DEV_WHERE}). Window C below is"
     say "   therefore a CONTROL and not a second reading of the same heat."
   else
-    bad "   IT DID NOT COME BACK within ${SETTLE_BACK}s: the largest difference from window A is ${DEV_ABS}"
-    bad "   ${DIR} (${DEV_SGN} C, on ${DEV_WHERE}). Two things can look like this and this instrument cannot"
-    bad "   tell them apart: the intervention's warming has not decayed (thermal mass), or the phone moved on"
-    bad "   its own by more than the margin while the run went on -- in EITHER direction. BOTH are statements"
-    bad "   about this RUN and about the phone. Neither is a price for the governor, so THIS RUN PRINTS NO"
-    bad "   PRICE: there is no control window to compare against, and window C is not read at all."
+    bad "   IT DID NOT COME BACK within ${SETTLE_BACK}s of wall clock: the largest difference from window A is"
+    bad "   ${DEV_ABS} ${DIR} (${DEV_SGN} C, on ${DEV_WHERE}). Two things can look like this and this instrument"
+    bad "   cannot tell them apart: the intervention's warming has not decayed (thermal mass), or the phone"
+    bad "   moved on its own by more than the margin while the run went on -- in EITHER direction. BOTH are"
+    bad "   statements about this RUN and about the phone. Neither is a price for the governor, so THIS RUN"
+    bad "   PRINTS NO PRICE: there is no control window to compare against, and window C is not read at all."
     bad ""
     bad "   What it does establish is the phone's own thermal behaviour under this intervention, and that is"
     bad "   worth having: it is the number a longer wait would have to beat. If you want the price anyway,"
-    bad "   --settle-back 0 runs the old design and --margin N loosens the bar; both are printed in the"
-    bad "   verdict so nobody has to guess which one was used."
+    bad "   --settle-back 0 runs the old design and --margin N raises the displacement bar; both are printed"
+    bad "   in the verdict so nobody has to guess which one was used."
     NO_RETURN=1
   fi
 fi
@@ -776,11 +930,12 @@ if [ "$NO_RETURN" = 1 ]; then
   say "   it."
   say ""
   say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
+  cost_line
   exit 1
 fi
 
 hdr "window C -- the CONTROL: the fix's state again, so the third window is the same state as the first"
-BUSY_C=$(run_window C)
+win C; BUSY_C=$WIN_BUSY
 say "   busy $BUSY_C of 4 cores"
 
 # The undo is verified once more, and this is the line that decides whether the trap still owes anything.
@@ -814,6 +969,7 @@ awk -v A="$TMP/win.A" -v B="$TMP/win.B" -v C="$TMP/win.C" '
 if [ ! -s "$TMP/deltas" ]; then
   bad "   NO ZONE WAS READABLE IN ALL THREE WINDOWS: there is no delta table, so there is no reading."
   bad "   That is a statement about this run (and about the instrument), not about the governor. Exit 1."
+  cost_line
   exit 1
 fi
 
@@ -880,11 +1036,13 @@ fi
 say ""
 say "   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the"
 say "   battery's charging state is not controlled, and BOTH of the other two windows are what the two holds"
-say "   above made them (the pre-hold found the phone still within ${MARGIN} C before window A, and the wait"
-say "   found every zone back within ${MARGIN} C of it before window C; what each measured is printed above)."
+say "   above made them (the pre-hold projected the phone's own movement over this run's ${RUN_SPAN}s and found it"
+say "   inside ${MARGIN} C before window A, and the wait found every zone back within ${MARGIN} C of it before"
+say "   window C; what each measured is printed above)."
 say "   The zones are the instrument's numbers, normalised by it; this script does not divide."
 say "   This run used: --seconds ${SECONDS_WIN} --settle ${SETTLE} --settle-start ${SETTLE_START}"
 say "   --settle-back ${SETTLE_BACK} --poll ${POLL} --margin ${MARGIN}."
 say ""
 say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
+cost_line
 exit "$RC"

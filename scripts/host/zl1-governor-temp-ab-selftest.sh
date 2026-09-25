@@ -49,6 +49,18 @@
 #      `no-plateau` is the only verdict reached with the device untouched (`below` and `no-return` come after
 #      an intervention that was made and undone). The assertion is not a promise: it is that no intervention
 #      line appears and the whole fake device still hashes to what it did before.
+#  12. A BOUND IN THE WRONG SECONDS IS NOT A BOUND (docs 174). The wait said "up to 240 s" and spent 798 s on
+#      the device, because it counted the seconds it SLEPT while every sample cost the instrument about 23 s
+#      more than that. This fixture can now make its samples cost real time (`FP_SAMPLE_COST`), and that is the
+#      only way the difference is visible at all: with free samples the sleeps and the wall clock are the SAME
+#      number, which is why the sleep-second bound survived the whole suite before it. `slow-samples` takes ONE
+#      sample out of a 3 s bound, and m14 puts the sleep-second bound back and takes three.
+#  13. THE PRE-HOLD'S BAR HANGS ON THE RUN AND NOT ON THE SAMPLE (docs 174). Its test was `two readings POLL
+#      apart within MARGIN`, which is a RATE: 0.5 C per 10 s is 3 C per minute, i.e. 30 C over a ten-minute
+#      run, against a resolution of 0.2 C -- and a phone it certified as still then moved 4.1 C (docs 173).
+#      The bar is MARGIN x interval / RUN_SPAN, so both sides are pinned here: `plateau` prints that bar and
+#      the projection it passed on, and `slow-drift` moves 0.4 C per interval -- which the old RATE bar
+#      certified every time -- and is refused. m15 puts the old bar back.
 #
 # How it works: **the stub directory IS the device**, the same construction this family's other harnesses
 # use -- the script runs as itself against a fake root, with PATH for the child set to `$STUB:$MINBIN`. TWO
@@ -212,6 +224,13 @@ n=$(cat "${FP_COUNT:-/nonexistent}" 2>/dev/null)
 case "$n" in ''|*[!0-9]*) n=0 ;; esac
 n=$((n + 1))
 printf '%s' "$n" > "${FP_COUNT:-/dev/null}" 2>/dev/null
+# WHAT A SAMPLE COSTS ON THIS DEVICE, and it is the only way this fixture can tell a bound counted in SLEEPS
+# from one counted in WALL CLOCK (docs 174). The real instrument takes its window and THEN walks /proc, so a
+# 10 s sample costs about 33 s end to end (docs 173, section 5) -- and the run that bounded such samples in
+# sleeps spent 798 s on a bound of 240. `FP_SAMPLE_COST` is that extra cost, in REAL seconds, spent here so
+# that the subject's own clock sees it. A fixture whose samples are free cannot see the difference at all,
+# because then the sleeps and the wall clock are the same number.
+case "${FP_SAMPLE_COST:-0}" in ''|*[!0-9]*) ;; *) [ "$FP_SAMPLE_COST" -gt 0 ] && sleep "$FP_SAMPLE_COST" ;; esac
 # THE COOLING MODEL, and it exists because the instrument now WAITS for the reading to come back before it
 # reads the control window (docs 170). `FP_COOL` is the number of SAMPLES the intervention's excess survives
 # after the cores are put back; `-1` means it never decays at all, which is the phone the first device run
@@ -345,11 +364,11 @@ wantsq() { local sq; sq=$(squash "$2"); if grep -Eq -- "$1" <<< "$sq"; then ok "
 tree_hash() { (cd "$FR" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | sha256sum | awk '{print $1}'; }
 
 FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
-FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0
+FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0; FP_SAMPLE_COST=0
 scen() { # name -- reset the device to the healthy, installed state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
   FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
-  FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0
+  FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0; FP_SAMPLE_COST=0
   gc_mk
   dl_set 0
   rm -f "$W/win.count" "$W/cool.count"
@@ -358,7 +377,8 @@ scen() { # name -- reset the device to the healthy, installed state
 env_for() { printf '%s\n' "FP_GOV=$(gc_path 0)" "FP_COUNT=$W/win.count" "FP_COOLFILE=$W/cool.count" "FP_ACT=$ACT" \
   "FP_DIFF=$FP_DIFF" "FP_COOL=$FP_COOL" "FP_ZONES=$FP_ZONES" \
   "FP_DRIFT=$FP_DRIFT" "FP_BASE=$FP_BASE" "FP_OTHER_DIFF=$FP_OTHER_DIFF" "FP_INSTRUMENT_RC=$FP_INSTRUMENT_RC" \
-  "FP_DRIFT_UNTIL=$FP_DRIFT_UNTIL" "FP_LATE_ZONE=$FP_LATE_ZONE" "FP_LATE_DIFF=$FP_LATE_DIFF"; }
+  "FP_DRIFT_UNTIL=$FP_DRIFT_UNTIL" "FP_LATE_ZONE=$FP_LATE_ZONE" "FP_LATE_DIFF=$FP_LATE_DIFF" \
+  "FP_SAMPLE_COST=$FP_SAMPLE_COST"; }
 
 run() { # the script's own args...
   local e; e=$(env_for)
@@ -451,6 +471,19 @@ want 'DEV=\$\(max_dev "\$TMP/win\.A" "\$TMP/back"\)' "$(cat "$NC")" \
 want 'PRE_DEV=\$\(max_dev "\$PRE_PREV" "\$TMP/pre\.\$PRE_PH"\)' "$(cat "$NC")" \
   "and the pre-hold decides the same way, on two readings of the same phone"
 want '^SETTLE_START=300$' "$(cat "$NC")" "and the pre-hold is ON by default, so window A is a state not a curve"
+# THE TWO UNITS, BOTH OF WHICH WERE WRONG, ARE PINNED AT THE SOURCE (docs 174) -- because both are lines that
+# have to BE there rather than computations that have to come out right, and because a mutant can put each of
+# them back in a way the scenarios can then see (m14, m15).
+want 'PRE_WAITED=\$\(\(PRE_NOW_T - PRE_T0\)\)' "$(cat "$NC")" \
+  "the pre-hold's bound counts the CLOCK and not the seconds it slept"
+want 'while \[ "\$\(\( \$\(now_s\) - WAIT_T0 \)\)" -lt "\$SETTLE_BACK" \]' "$(cat "$NC")" \
+  "and so does the wait's, which is the one that promised 240 s and spent 798"
+want 'PRE_BAR=\$\(bar_of "\$PRE_GAP" "\$MARGIN" "\$RUN_SPAN"\)' "$(cat "$NC")" \
+  "and the pre-hold's bar hangs on the RUN's span, not on the sample interval"
+want '^RUN_SPAN=\$\(\(SECONDS_WIN \* 3 \+ SETTLE \* 2 \+ SETTLE_BACK\)\)$' "$(cat "$NC")" \
+  "with that span defined once, from the settings, rather than typed twice"
+want '^  cost_line$' "$(cat "$NC")" "and every exit that measured prints what it cost in wall clock"
+want '^    cost_line$' "$(cat "$NC")" "including the refusal that writes nothing, which still says what refusing cost"
 # The whitelist accepts a LOOP VARIABLE, which is weaker than accepting one named path -- so what it loops
 # over is checked too: the list must come from the cpufreq glob, and every write must go through the variable
 # that glob fills. Both halves are asserted on the SHIPPED source with comments stripped.
@@ -745,10 +778,19 @@ H0=$(tree_hash)
 run --yes --seconds 1 --settle 0 --settle-start 5 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "a phone that stops moving is measured: exit 0" || bad "the plateau run exited $RC"
-wantsq 'IT IS HOLDING STILL: after 3s' "$OUT" \
+wantsq 'IT IS HOLDING STILL ENOUGH: after 3s' "$OUT" \
   "it waited for the phone to stop moving and says how long that took (2 C per sample, until sample 2)"
 wantsq 'the largest change on any tsens zone in the last 1s was 0\.0 C' "$OUT" \
   "and prints what it settled at, so the wait is a reading rather than a delay"
+# THE BAR IS SMALL ON PURPOSE, AND THE RUN PRINTS IT (docs 174). This span is 1+0+1+0+0+1 = 3 s, so one 1 s
+# interval may use 0.5 x 1 / 3 = 0.1667 C of the displacement -- below the instrument's own 0.1 C step, which
+# is the whole point of hanging the bar on the run: a bar that permits a rate is a bar that certifies nothing.
+wantsq 'So over this run.s 3s one interval of 1s may use 0\.1667 C of it' "$OUT" \
+  "the bar it decides on is MARGIN x interval / the run's own span, and it is printed before any sample"
+wantsq 'projected over this run.s 3s that is 0\.0 C, inside the 0\.5 C bar' "$OUT" \
+  "and what the movement projected to over that span is printed beside it, so the pass is checkable"
+want 'WALL CLOCK: this attempt took [0-9]+s' "$OUT" \
+  "and it says what the attempt cost in wall clock, which is the unit every bound is in"
 notwant 'NO PLATEAU' "$OUT" "and it did not refuse"
 want 'window A -- as installed' "$OUT" "window A was read, after the hold and not before it"
 want 'COST-MEASURED' "$OUT" "and the run reached a verdict on the state it settled into"
@@ -774,6 +816,49 @@ notwant "read 'performance' back" "$OUT" "NO INTERVENTION WAS MADE: this exit wr
   || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): 4 pre-hold samples were expected"
 gc_all interactive && ok "and the cores are where they were" || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-plateau run changed the device"
+wantsq 'projected over this run.s 3s that is [0-9.]+ C, against the 0\.5 C this experiment can attribute' "$OUT" \
+  "and it prints what the movement it saw projects to over the run, which is the number that says why"
+
+# --- the bar hangs on the RUN and not on the sample interval (docs 174) -----------------------------------
+# The third device run passed the old pre-hold -- it certified a phone moving 0.4 C per ten seconds as
+# "holding still" and the run then moved 4.1 C -- because 0.5 C per 10 s is a RATE of 3 C per MINUTE, i.e.
+# 30 C over a ten-minute run, against a resolution of 0.2 C. Here the phone moves 0.4 C per 1 s interval on
+# a 3 s run: the OLD bar (MARGIN itself, 0.5) would certify it, and the new bar (0.5 x 1/3 = 0.1667, or
+# 0.3333 if the interval lands at 2 s) refuses it. That is m15.
+scen slow-drift
+FP_DIFF=5.0; FP_DRIFT=0.4
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-start 5 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 1 ] && ok "a phone moving 0.4 C per interval on a 3 s run: exit 1 (refused before window A)" \
+              || bad "the slow-drift run exited $RC, expected 1"
+want 'NO PLATEAU within 5s of wall clock' "$OUT" "the verdict names the hold and the bound it spent"
+wantsq 'The largest change it still saw was 0\.4 C' "$OUT" "with the movement that was too fast to price"
+wantsq 'The bar is not the sample interval, it is what this run can resolve' "$OUT" \
+  "and it says which bar it used, because 0.4 C would have passed the RATE bar this hold used to have"
+notwant 'window A -- as installed' "$OUT" "window A was never read"
+notwant "read 'performance' back" "$OUT" "and nothing was written: this refusal costs the device nothing"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the slow-drift run changed the device"
+
+# --- a bound in the wrong seconds (docs 174) --------------------------------------------------------------
+# `--settle-back 240` spent 798 s on the device, because the loop counted the seconds it SLEPT while every
+# sample cost the instrument about 23 s more than that (docs 173, section 5). The fixture can only see the
+# difference by MAKING its samples cost real time -- with free samples the sleeps and the wall clock are the
+# same number, which is why the whole suite passed the sleep-second bound for as long as it existed.
+scen slow-samples
+FP_DIFF=5.0; FP_COOL=-1; FP_SAMPLE_COST=2
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+[ "$RC" = 1 ] && ok "a bound of 3 s on a phone whose samples cost 2 s each: exit 1" || bad "the slow-samples run exited $RC"
+want 'IT DID NOT COME BACK within 3s of wall clock' "$OUT" \
+  "the bound it prints is the bound it kept, and it says the unit out loud"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 3 ] && ok "ONE wait sample and no more: 1 s of sleep + 2 s of instrument IS the 3 s it was given" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and ONE wait sample were expected (the sleep-second bound would take three)"
+wantsq 'WALL CLOCK: this attempt took [0-9]+s: [0-9]+s in 2 window\(s\), [0-9]+s in' "$OUT" \
+  "and the run reports what it spent, split into the windows and the holds"
+wantsq 'The holds asked for 1s of sleep and spent the rest waiting on the instrument itself, [0-9]+s per sample' "$OUT" \
+  "naming the difference between the two numbers, which is exactly what the old bound could not see"
+wantsq 'Every bound above is in THESE seconds, not in sleeps' "$OUT" \
+  "so an operator planning a run from the bounds is planning in the right unit"
 
 # ==================================================================================================
 echo
@@ -1053,6 +1138,37 @@ if mut m13-ignoreplateau 's#^  if \[ "\$PLATEAU" = 1 \]; then$#  if true; then#'
   want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
     "and the intervention is made on a phone that was moving 2.0 C per sample -- the cost is the write, not the number"
   want 'COST-MEASURED|CONTAMINATED|NO DETECTABLE COST' "$OUT" "with a verdict printed on top of it"
+fi
+# (m14) THE BOUND COUNTING SLEEPS AGAIN -- the third device run's first defect, exactly (docs 174). On the
+# device `--settle-back 240` cost 798 s of wall clock; here a 3 s bound costs one sample, and the mutant
+# spends it in three, because every sample costs the fixture 2 s that the sleep-counting bound does not see.
+# Driven by the scenario whose instrument is not free: with free samples the two bounds are the same number,
+# which is why this mutant was invisible for as long as the defect existed.
+if mut m14-sleepbound 's#^  while \[ "\$(( \$(now_s) - WAIT_T0 ))" -lt "\$SETTLE_BACK" \]; do$#  WAITED=0; while [ "$WAITED" -lt "$SETTLE_BACK" ]; do#;s#^    WAITED=\$(( \$(now_s) - WAIT_T0 ))$#    WAITED=$((WAITED + ADV))#'; then
+  scen mut-m14
+  FP_DIFF=5.0; FP_COOL=-1; FP_SAMPLE_COST=2
+  mutrun m14-sleepbound --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+  N14=$(cat "$W/win.count" 2>/dev/null)
+  [ "$N14" = 5 ] && ok "mutation 'the bound counts sleeps': 3 sleeps of 1 s became 3 samples -- 6 s of instrument spent inside a 3 s bound" \
+                 || bad "the sleep-bound mutant took $N14 instrument call(s); 5 (A, B and three samples) were expected"
+  # The mutant still prints what it spent -- that is the point: its own accounting now says the run took three
+  # times the bound it was given, and the shipped run says it took the bound. Both numbers are read out of the
+  # run's own output rather than computed here, so this is the defect reporting itself.
+  M14W=$(sed -n 's/.*attempt took \([0-9][0-9]*\)s:.*/\1/p' <<< "$OUT")
+  [ -n "$M14W" ] && [ "$M14W" -ge 6 ] && ok "and its own wall clock says ${M14W}s against a 3s bound -- the overrun is printed by the run that made it" \
+               || bad "the sleep-bound mutant reports '${M14W:-nothing}' for a run that has to have spent at least 6 s"
+fi
+# (m15) THE PRE-HOLD'S BAR MEASURED AGAINST ONE INTERVAL AGAIN, i.e. a RATE -- the third device run's second
+# defect (docs 174). With the bar back at MARGIN itself, the phone of the slow-drift scenario (0.4 C in one
+# 1 s interval of a 3 s run) is certified as holding still and the intervention is made on it.
+if mut m15-ratebar 's#^      PRE_BAR=\$(bar_of "\$PRE_GAP" "\$MARGIN" "\$RUN_SPAN")$#      PRE_BAR="$MARGIN"#'; then
+  scen mut-m15
+  FP_DIFF=5.0; FP_DRIFT=0.4
+  mutrun m15-ratebar --yes --seconds 1 --settle 0 --settle-start 5 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'NO PLATEAU' "$OUT" "mutation 'the bar is a rate again': the phone moving 0.4 C per interval is no longer refused"
+  want 'IT IS HOLDING STILL ENOUGH' "$OUT" "and it says the phone is holding still -- of a phone that is not"
+  want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
+    "and the intervention is made on it: the cost is the write, not a number"
 fi
 
 # ==================================================================================================
