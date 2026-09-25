@@ -22,6 +22,25 @@
 # PRICE -- which is the honest answer, because "the intervention's heat has not decayed" and "the phone
 # drifted more than the margin" look identical here, and neither is a price for the governor.
 #
+# THE SECOND DEVICE RUN PRINTED A PRICE, AND IT WAS AN ARTIFACT (docs 172). It read A 49.6 -> B 47.0 -> C 41.9
+# on the phone's hottest zone -- the phone FELL 7.7 C across the run -- and still printed COST-MEASURED 3.5 C,
+# because THREE things about the wait above were wrong together:
+#   (1) the comparison was ONE-SIDED (`sample - A <= MARGIN`), so a reading 4.2 C BELOW window A counted as
+#       "came back", and the run went on to read a control window that was nowhere near window A's state;
+#   (2) it compared the HOTTEST ZONE, and the hottest zone CHANGES HANDS while a run goes on -- window A's
+#       hottest was thermal_zone12 at 49.6 C while the first sample's maximum came from a different zone at
+#       45.4 C, so the test compared one zone's number against another's without saying so;
+#   (3) there was no check that the phone was holding still BEFORE window A was read, so window A was a point
+#       on a falling curve -- and a falling curve is what made (1) fire.
+# THREE THINGS CHANGED, and they are one idea: this instrument now refuses to price a phone that is not
+# holding still, before it starts and before its control window.
+#   (a) `max_dev` replaces the hottest-zone comparison: the largest ABSOLUTE difference from window A on any
+#       tsens zone, reported with its SIGN and with the zone's name, so the reader can see the direction.
+#   (b) the pre-hold (`--settle-start`, default 300 s): two readings POLL apart must agree on EVERY tsens zone
+#       to within MARGIN before window A is read at all. A phone that never holds still is its own verdict
+#       (`no-plateau`, exit 1) and, because it is refused BEFORE window A, that run writes nothing.
+#   (c) the post-wait uses `max_dev` too, so "the reading came back" means every zone is where it was.
+#
 # THE KNOB IS FOUR FILES, NOT ONE, and that is the whole difference from the ladder instrument. There is no
 # `tr` alphabet here (a governor name is stored and read back as itself) and no module parameter: the state
 # is `/sys/devices/system/cpu/cpuN/cpufreq/scaling_governor`, one per core, and "the fix is installed" means
@@ -39,19 +58,25 @@
 #     zl1-governor-temp-ab.sh --status            the refusals, the state, and what a run would do (writes nothing)
 #     zl1-governor-temp-ab.sh --yes               run the experiment (this is the write)
 #     zl1-governor-temp-ab.sh --seconds N --settle N --thermal PATH
-#     zl1-governor-temp-ab.sh --settle-back N --poll N --margin C
-#                                                 the WAIT between the undo and the control window (see below)
+#     zl1-governor-temp-ab.sh --settle-start N --settle-back N --poll N --margin C
+#                                                 the TWO holds: one before window A, one before window C
+#                                                 WORST CASE at the defaults: 300 + 45 + 20 + 45 + 20 + 240
+#                                                 + 45 s is about 12 minutes, and every second of it is
+#                                                 waiting or reading -- the device is written twice.
 #     zl1-governor-temp-ab.sh --keep              leave the run's own files and print where they are
 #     zl1-governor-temp-ab.sh --revert            put every core back on `interactive` and prove it
 #     zl1-governor-temp-ab.sh --explain           what each reading decides, and change nothing
 #
 # Exit codes: 0 a verdict that is a measurement about the phone (cost-measured OR no-detectable-cost --
 #             the second one is this script coming out against the fix it was built around);
-#             1 NO-RETURN, INCONCLUSIVE or CONTAMINATED -- a statement about the RUN and not about the phone;
+#             1 NO-PLATEAU, NO-RETURN, INCONCLUSIVE or CONTAMINATED -- a statement about the RUN and not about
+#             the phone;
 #             2 not the zl1;
 #             3 REFUSED -- a refusal is not met and nothing was written;
 #             4 the write happened and something went wrong after it (the state and the restore are
 #             printed, and the trap has already tried to undo it).
+#             `no-plateau` is the only one of these that happens with NOTHING written: it is refused before
+#             window A, i.e. before the experiment's first write.
 
 set -u
 
@@ -72,6 +97,11 @@ NO_RETURN=0
 # restores the old (weaker) behaviour on purpose -- with the wait off, `contaminated` is the likely verdict
 # and the operator should know that is a property of the design and not of the governor.
 SETTLE_BACK=240
+# THE PRE-HOLD. The second device run (docs 172) started on a phone that was falling 4.2 C per ten seconds,
+# which is what turned the one-sided comparison above from a subtlety into a wrong price. Waiting for two
+# readings to AGREE before window A is read is what makes window A a state rather than a point on a curve --
+# and it is refused before the intervention, so a phone that never holds still costs no write at all.
+SETTLE_START=300
 POLL=10
 MARGIN=0.5
 
@@ -89,6 +119,7 @@ while [ $# -gt 0 ]; do
   --yes)    MODE=run; YES=1; shift ;;
   --seconds) SECONDS_WIN="${2?--seconds needs a number}"; shift 2 ;;
   --settle)  SETTLE="${2?--settle needs a number}"; shift 2 ;;
+  --settle-start) SETTLE_START="${2?--settle-start needs a number}"; shift 2 ;;
   --settle-back) SETTLE_BACK="${2?--settle-back needs a number}"; shift 2 ;;
   --poll)    POLL="${2?--poll needs a number}"; shift 2 ;;
   --margin)  MARGIN="${2?--margin needs a temperature}"; shift 2 ;;
@@ -250,38 +281,55 @@ zl1 governor temperature A/B -- what each reading decides
                                     cause costs nothing', which is the one wrong answer that looks real
        window A is the fix installed (every core reads 'interactive')   otherwise the cores are already
                                     pinned and window A is not the state this experiment exists to price
-  2. WINDOW A, as installed: the zones with all four cores on 'interactive'. Nothing has been written yet.
-  3. THE INTERVENTION AND THE PROOF: write 'performance' to every core, read every core back, and REQUIRE
+  2. THE PRE-HOLD, and it decides whether there is anything here to measure at all. Two readings POLL apart
+     must agree on EVERY tsens zone to within MARGIN, up to SETTLE_START seconds. A window read on a moving
+     phone is not a state, it is a point on a curve -- the same drift then sits inside every delta below it,
+     and it cannot be told from the governor. The second device run of this instrument (docs 172) read
+     window A on a phone falling 4.2 C per ten seconds and printed a price anyway. A phone that never holds
+     still is the verdict `no-plateau`, and because this happens BEFORE window A it is the one exit from
+     this script that writes nothing at all.
+  3. WINDOW A, as installed: the zones with all four cores on 'interactive'. Nothing has been written yet.
+  4. THE INTERVENTION AND THE PROOF: write 'performance' to every core, read every core back, and REQUIRE
      all of them to read it. A write that landed on three of four would make the next window a measurement
      of a quarter of the change -- and would read as a smaller cost, i.e. as a real number.
-  4. WINDOW B: the zones with the cores pinned, i.e. the image's own state, the second heat cause put back.
-  5. THE UNDO, ALSO PROVED: write 'interactive' to every core and require every core to read it.
-  6. THE WAIT, and this is what makes the next step a CONTROL. Window C reads the same GOVERNOR as A, which
+  5. WINDOW B: the zones with the cores pinned, i.e. the image's own state, the second heat cause put back.
+  6. THE UNDO, ALSO PROVED: write 'interactive' to every core and require every core to read it.
+  7. THE WAIT, and this is what makes the next step a CONTROL. Window C reads the same GOVERNOR as A, which
      is not the same thing as reading the same STATE: pinning the cores warms the SoC, and thermal mass does
      not care that the governor was put back 20 s ago. The first device run of this instrument (docs 170)
      read A 40.9 -> B 47.7 -> C 48.0 and came back CONTAMINATED for exactly that reason. So after the undo
-     the run waits for the hottest tsens zone to come back to within MARGIN of window A, up to SETTLE_BACK
-     seconds, polling every POLL, and PRINTS HOW LONG IT TOOK. That number is the phone's thermal behaviour
-     under this intervention, and it is worth having on its own.
-  7. WINDOW C, the CONTROL: the fix's state again, read only once the reading has come back. If the warming
-     seen in window B is still there in window C -- after the wait said it had gone -- the governor did not
-     cause it and the verdict says contaminated rather than reporting a number as the effect.
-  8. THE VERDICT:
+     the run waits for EVERY tsens zone to come back to within MARGIN of its OWN window A reading, up to
+     SETTLE_BACK seconds, polling every POLL, and PRINTS HOW LONG IT TOOK. That number is the phone's thermal
+     behaviour under this intervention, and it is worth having on its own.
+     EVERY ZONE, and the difference is ABSOLUTE. The second device run (docs 172) tested the HOTTEST zone
+     and tested it ONE-SIDED, so a reading 4.2 C BELOW window A read as "came back" -- and the hottest zone
+     is a maximum over 23 numbers that move by different amounts, so following it compares one zone's number
+     with another zone's and calls the difference a return. Both halves are the same defect: the test was of
+     something other than "this zone is where it was".
+  8. WINDOW C, the CONTROL: the fix's state again, read only once every zone is back. If the warming seen in
+     window B is still there in window C -- after the wait said it had gone -- the governor did not cause it
+     and the verdict says contaminated rather than reporting a number as the effect.
+  9. THE VERDICT:
        cost-measured        B was warmer than A by more than this experiment's resolution, AND C came back
                             down (the third window did not keep the warming)
        no-detectable-cost   B was not warmer than A: pinning the cores is worth less than the resolution
                             here -- which is this script coming out against the fix it was built around
        contaminated         the warming persisted into C -- a statement about the RUN
-       no-return            the reading did not come back within SETTLE_BACK, so there IS no control window
-                            and the run prints NO PRICE. Two things look like this -- the intervention's
-                            warming has not decayed, or the phone drifted by more than MARGIN -- and the
-                            instrument cannot tell them apart. Both are statements about the phone.
+       no-return            some zone did not come back within SETTLE_BACK of its own window A reading, so
+                            there IS no control window and the run prints NO PRICE. Two things look like
+                            this -- the intervention's warming has not decayed, or the phone moved by more
+                            than MARGIN on its own, in either direction -- and the instrument cannot tell
+                            them apart. Both are statements about the phone.
+       no-plateau           the phone never held still for SETTLE_START seconds before window A, so there was
+                            no state to measure. Nothing was written. (--settle-start 0 disables this hold.)
      An intervention that did not land, or an undo that did not hold, is NOT a verdict at all: it exits 4
      with the state printed, because every number below it would be a comparison of two identical states.
      The resolution is 0.2 C, which is two steps of the instrument's own 0.1 C and is printed with the
      verdict, because a threshold nobody can see is a threshold nobody can argue with.
-     --settle-back 0 turns the wait OFF and restores the old design: window C then starts on a phone that
+     --settle-back 0 turns the WAIT off and restores the old design: window C then starts on a phone that
      may still be holding the intervention's heat, and 'contaminated' becomes a property of that setting.
+     --settle-start 0 turns the PRE-HOLD off and restores the older design still: window A is then a point
+     on whatever curve the phone is on, which is the setting that printed docs 172's artifact.
 EOF
   exit 0
 fi
@@ -306,6 +354,7 @@ say "  device:      $(cat /proc/device-tree/model 2>/dev/null || echo unknown)"
 say "  cores:       $CPU_N (${CPUS:-none})"
 say "  instrument:  $THERMAL"
 say "  windows:     ${SECONDS_WIN}s each, ${SETTLE}s after each write"
+say "  holds:       $(if [ "$SETTLE_START" = 0 ]; then echo "pre-hold OFF"; else echo "up to ${SETTLE_START}s before A"; fi), up to ${SETTLE_BACK}s before C, at a ${MARGIN} C bar, every ${POLL}s"
 say "  states:      A/C '$FIX_GOV' (the fix, installed)  B '$BLOCKED_GOV' (the image's own value)"
 say "  panic guard: $(if [ "$DL_N" = 0 ]; then echo "NO download_mode PARAMETER -- a panic would arm EDL"; \
                      elif [ -n "$DL_BAD" ]; then echo "ARMED ($DL_BAD) -- a panic would arm EDL"; \
@@ -433,14 +482,21 @@ fi
 if [ "$MODE" != run ]; then
   # --status: the refusals, the state, and what a run would do. Writes nothing.
   hdr "a run would do this (--status writes nothing)"
+  if [ "$SETTLE_START" = 0 ]; then
+    say "   pre-hold: OFF (--settle-start 0) -- window A is read immediately, whatever the phone is doing"
+  else
+    say "   pre-hold: up to ${SETTLE_START}s (every ${POLL}s) for two readings ${POLL}s apart to agree on every"
+    say "   tsens zone to within ${MARGIN} C -- refused BEFORE window A if they never do, so that exit writes"
+  fi
   say "   window A: the zones as installed ('$FIX_GOV' on all $CPU_N cores), ${SECONDS_WIN}s"
   say "   write '$BLOCKED_GOV' to every core, prove all of them read it, wait ${SETTLE}s, window B, ${SECONDS_WIN}s"
   say "   write '$FIX_GOV' back, prove all of them read it, then WAIT (up to ${SETTLE_BACK}s, every ${POLL}s) for"
   if [ "$SETTLE_BACK" = 0 ]; then
-    say "   the reading to return to within ${MARGIN} C of window A -- WAIT DISABLED (--settle-back 0), so window C"
-    say "   starts on a phone that may still be holding the intervention's heat."
+    say "   every tsens zone to return to within ${MARGIN} C of its OWN window A reading -- WAIT DISABLED"
+    say "   (--settle-back 0), so window C starts on a phone that may still be holding the intervention's heat."
   else
-    say "   the reading to return to within ${MARGIN} C of window A, and say how long that took"
+    say "   every tsens zone to return to within ${MARGIN} C of its own window A reading, and say how long"
+    say "   that took"
   fi
   say "   window C, ${SECONDS_WIN}s (the control); then the per-zone deltas B-A and C-A and a verdict"
   say "   the trap restores '$FIX_GOV' on every exit path, and removes $TMP unless --keep"
@@ -475,6 +531,106 @@ hot_tsens() {
          if (!seen || $3 + 0 > m) { m = $3 + 0; seen = 1 } }
        END { if (seen) printf "%.1f", m }' "$1" 2>/dev/null
 }
+# max_dev FILE_A FILE_B -- how far apart two instrument outputs are, ZONE BY ZONE.
+#
+# This is the comparison both holds are decided on, and it is not the same comparison this script used to
+# make. Until docs 172 the test was `the hottest tsens zone in this sample - the hottest tsens zone in
+# window A`, and that has two defects that were measured on the device together:
+#   * it is ONE-SIDED. A phone that came back 4.2 C COLDER than window A read as "came back", because
+#     "colder" passed `sample - A <= MARGIN` -- and the run then read a control window that was nowhere
+#     near the state of window A, and printed a price. The difference here is ABSOLUTE, so back means back.
+#   * "the hottest zone" CHANGES HANDS while a run goes on (it is the maximum of 23 numbers that move by
+#     different amounts), so the test compared the number of ONE zone against the number of ANOTHER and
+#     called that difference a return. Here every zone is compared with ITSELF, by name.
+# Output: "<absolute>|<signed>|<zone> (<type>)", or nothing when the two outputs share no tsens zone -- the
+# caller treats "nothing" as NOT A READING rather than as zero, which is what this repository does with
+# every empty answer. The sign is carried because it is the whole of docs 172: "5.0 C below" and "5.0 C
+# above" are different findings about the phone, and a message that prints only "5.0 C" hides which one it saw.
+max_dev() {
+  awk -v A="$1" -v B="$2" '
+    $1 ~ /^thermal_zone[0-9]+$/ && $2 ~ /^tsens_tz_sensor/ && $4 == "C" {
+      k = $1; type[k] = $2
+      if (FILENAME == A) { a[k] = $3 + 0; next }
+      if (!(k in a)) next
+      d = ($3 + 0) - a[k]
+      sd = d
+      if (d < 0) d = -d
+      if (!seen || d > m) { m = d; mz = k; mt = type[k]; ms = sd; seen = 1 }
+    }
+    END { if (seen) printf "%.1f|%.1f|%s (%s)", m, ms, mz, mt }' "$1" "$2" 2>/dev/null
+}
+# One field out of a max_dev answer, by name, so the call sites do not each invent their own parsing.
+dev_abs()   { printf '%s' "${1%%|*}"; }
+dev_signed(){ zl1_r=${1#*|}; printf '%s' "${zl1_r%%|*}"; }
+dev_where() { printf '%s' "${1#*|*|}"; }
+
+# --- the pre-hold: a phone that is not holding still cannot be priced ----------------------------------
+# THE SECOND HALF OF THE SAME IDEA as the wait before C, and it exists for the same measured reason (docs 172).
+# The second device run read window A on a phone that was falling 4.2 C per ten seconds -- so A, B and C were
+# three points on a curve rather than three states, the drift was as large as the effect being priced, and the
+# run printed a number anyway. A control window cannot fix that: the drift is there in EVERY window, including
+# the first. So window A is now read only once two readings POLL apart agree on EVERY tsens zone to within
+# MARGIN, with a bound. This hold is refused BEFORE window A, which makes `no-plateau` the one verdict in this
+# script that happens with the device untouched: nothing has been written at that point but the same-value
+# proof, which writes back the value the cores already held.
+PLATEAU=1
+PRE_WAITED=0
+PRE_DEV=
+if [ "$SETTLE_START" = 0 ]; then
+  hdr "the pre-hold -- OFF (--settle-start 0)"
+  say "   Window A is read immediately, whatever this phone is doing. That is the design that printed a price"
+  say "   on a phone falling 4.2 C in ten seconds (docs 172), so 'no-plateau' cannot happen here -- which"
+  say "   makes THIS setting the thing that decides whether the run below prices a state or a curve."
+else
+  hdr "the pre-hold -- is this phone holding still, before a window is read at all?"
+  say "   Two readings ${POLL}s apart must agree on EVERY tsens zone to within ${MARGIN} C before window A is"
+  say "   read. Up to ${SETTLE_START}s. A phone that never holds still cannot be priced, and this is refused"
+  say "   before the intervention: this is the one exit from this script that writes nothing at all."
+  ADV=$POLL
+  [ "$ADV" -ge 1 ] 2>/dev/null || ADV=1
+  PRE_PH=1
+  PRE_PREV=""
+  PLATEAU=0
+  while [ "$PRE_WAITED" -lt "$SETTLE_START" ]; do
+    sleep "$ADV"
+    PRE_WAITED=$((PRE_WAITED + ADV))
+    sh "$THERMAL" --seconds "$ADV" --quiet > "$TMP/pre.$PRE_PH" 2>&1
+    if [ -n "$PRE_PREV" ]; then
+      PRE_DEV=$(max_dev "$PRE_PREV" "$TMP/pre.$PRE_PH")
+      # An unreadable sample is not agreement: skipping it (rather than treating "" as 0) keeps the loop
+      # going, and the bound still ends it.
+      if [ -n "$PRE_DEV" ] &&
+         awk -v d="$(dev_abs "$PRE_DEV")" -v m="$MARGIN" 'BEGIN { exit (d <= m) ? 0 : 1 }'; then
+        PLATEAU=1
+        break
+      fi
+    fi
+    PRE_PREV="$TMP/pre.$PRE_PH"
+    if [ "$PRE_PH" = 1 ]; then PRE_PH=2; else PRE_PH=1; fi
+  done
+  if [ "$PLATEAU" = 1 ]; then
+    say "   IT IS HOLDING STILL: after ${PRE_WAITED}s, the largest change on any tsens zone in the last ${ADV}s"
+    say "   was $(dev_abs "$PRE_DEV") C (signed $(dev_signed "$PRE_DEV") C, on $(dev_where "$PRE_DEV")). Window A"
+    say "   below is a STATE, not a point on a curve -- which is what makes B and C comparable to it."
+  else
+    bad "   NO PLATEAU within ${SETTLE_START}s: two readings ${ADV}s apart never agreed on every tsens zone to"
+    bad "   within ${MARGIN} C. The largest change it still saw was $(dev_abs "${PRE_DEV:-0.0|0.0|}") C (signed"
+    bad "   $(dev_signed "${PRE_DEV:-0.0|0.0|}") C, on $(dev_where "${PRE_DEV:-0.0|0.0|}"))."
+    bad ""
+    bad "   A window read on a phone that is moving is a point on a curve: window A would be a state this"
+    bad "   phone was passing through, and the same drift would sit inside every delta below it -- so the"
+    bad "   number this run could print would be the drift plus the governor, and there is no way to tell"
+    bad "   them apart from the windows alone. THIS RUN PRINTS NO PRICE and stops HERE."
+    bad ""
+    bad "   What it does establish is about the phone: it moved more than ${MARGIN} C every ${ADV}s for"
+    bad "   ${SETTLE_START}s, which is a reading about this device at this load, and it is worth having."
+    bad "   NOTHING WAS WRITTEN: this is refused before window A, and the only write this script has made is"
+    bad "   the same-value proof, which writes back the value the cores already held (state '$(gov_state)')."
+    bad "   To measure anyway: --settle-start 0 runs the old design, and --margin N loosens the bar; both are"
+    bad "   printed by whatever run follows this one."
+    exit 1
+  fi
+fi
 
 hdr "window A -- as installed (every core on '$FIX_GOV', nothing written yet)"
 BUSY_A=$(run_window A)
@@ -518,7 +674,7 @@ fi
 # reading that never comes back is its own result -- about the phone's thermal mass, not about the governor.
 hdr "the wait -- does window A's reading come back before the control window reads it?"
 W_A=$(hot_tsens "$TMP/win.A")
-WAITED=0; W_NOW=; RETURNED=0
+WAITED=0; DEV=; DEV_ABS=; DEV_SGN=; DEV_WHERE=; DIR=; RETURNED=0
 if [ -z "$W_A" ]; then
   bad "   window A had no readable tsens zone at all, so there is no reading for this to come back to. The"
   bad "   wait is skipped and the verdict below cannot be trusted; that is a statement about the instrument."
@@ -528,8 +684,11 @@ elif [ "$SETTLE_BACK" = 0 ]; then
   say "   governor -- which is what the first device run of this instrument measured (docs 170). The verdict"
   say "   below is read with that limitation, and 'contaminated' is a property of THIS setting."
 else
-  say "   window A's hottest tsens zone: ${W_A} C. Waiting up to ${SETTLE_BACK}s (every ${POLL}s) for it to come"
-  say "   back to within ${MARGIN} C of that before window C reads anything."
+  say "   window A's hottest tsens zone: ${W_A} C. Waiting up to ${SETTLE_BACK}s (every ${POLL}s) for EVERY"
+  say "   tsens zone to come back to within ${MARGIN} C of its OWN window A reading before window C reads"
+  say "   anything. Every zone, and not just the hottest one: the hottest zone CHANGES HANDS while a run goes"
+  say "   on, so a test that follows it compares one zone's number with another's and calls it a return"
+  say "   (docs 172 -- the second device run passed that test while being 4.2 C down)."
   # `--poll 0` would spin the loop forever (`WAITED` would never advance), so a sample always costs at least
   # one second -- and the count that goes into the message is that same number, not the one asked for.
   ADV=$POLL
@@ -538,23 +697,26 @@ else
     sleep "$ADV"
     WAITED=$((WAITED + ADV))
     sh "$THERMAL" --seconds "$ADV" --quiet > "$TMP/back" 2>&1
-    W_NOW=$(hot_tsens "$TMP/back")
+    DEV=$(max_dev "$TMP/win.A" "$TMP/back")
     # An unreadable sample is not a returned reading: skipping it (rather than treating "" as 0 or as a
     # return) keeps the loop going, and the bound still ends it.
-    [ -n "$W_NOW" ] || continue
-    if awk -v a="$W_A" -v n="$W_NOW" -v m="$MARGIN" 'BEGIN { exit ((n - a) <= m) ? 0 : 1 }'; then
+    [ -n "$DEV" ] || continue
+    DEV_ABS=$(dev_abs "$DEV"); DEV_SGN=$(dev_signed "$DEV"); DEV_WHERE=$(dev_where "$DEV")
+    case "$DEV_SGN" in -*) DIR="BELOW window A's reading of the SAME zone" ;; *) DIR="ABOVE window A's reading of the SAME zone" ;; esac
+    if awk -v d="$DEV_ABS" -v m="$MARGIN" 'BEGIN { exit (d <= m) ? 0 : 1 }'; then
       RETURNED=1
       break
     fi
   done
   if [ "$RETURNED" = 1 ]; then
-    say "   IT CAME BACK: ${W_NOW} C after ${WAITED}s, against window A's ${W_A} C (margin ${MARGIN} C). Window C"
-    say "   below is therefore a CONTROL and not a second reading of the same heat."
+    say "   IT CAME BACK: every tsens zone is within ${MARGIN} C of its own window A reading after ${WAITED}s"
+    say "   -- the largest difference was ${DEV_ABS} C (${DEV_SGN} C, on ${DEV_WHERE}). Window C below is"
+    say "   therefore a CONTROL and not a second reading of the same heat."
   else
-    bad "   IT DID NOT COME BACK within ${SETTLE_BACK}s: the hottest tsens zone is ${W_NOW:-unreadable} C against"
-    bad "   window A's ${W_A} C, i.e. more than ${MARGIN} C above it. Two things can look like this and this"
-    bad "   instrument cannot tell them apart: the intervention's warming has not decayed (thermal mass), or"
-    bad "   the phone warmed on its own by more than the margin while the run went on. BOTH are statements"
+    bad "   IT DID NOT COME BACK within ${SETTLE_BACK}s: the largest difference from window A is ${DEV_ABS}"
+    bad "   ${DIR} (${DEV_SGN} C, on ${DEV_WHERE}). Two things can look like this and this instrument cannot"
+    bad "   tell them apart: the intervention's warming has not decayed (thermal mass), or the phone moved on"
+    bad "   its own by more than the margin while the run went on -- in EITHER direction. BOTH are statements"
     bad "   about this RUN and about the phone. Neither is a price for the governor, so THIS RUN PRINTS NO"
     bad "   PRICE: there is no control window to compare against, and window C is not read at all."
     bad ""
@@ -600,16 +762,18 @@ if [ "$NO_RETURN" = 1 ]; then
     bad "   no zone was readable in both windows either, so not even the two-window table exists."
   fi
   hdr "the verdict"
-  say "   -> NO RETURN: the reading did not come back to within ${MARGIN} C of window A within ${SETTLE_BACK}s,"
-  say "      so window C would not have read window A's state -- it would have read the heat the intervention"
-  say "      left behind. This run therefore PRINTS NO PRICE for the second heat cause, and that is the"
-  say "      correct answer: the number the old design would have printed from A and B alone (the largest"
-  say "      warming above) is not the governor's cost, it is the governor's cost PLUS whatever part of the"
-  say "      phone's own warming had not decayed."
+  say "   -> NO RETURN: some tsens zone did not come back to within ${MARGIN} C of its own window A reading"
+  say "      within ${SETTLE_BACK}s (the largest difference was ${DEV_ABS} C ${DIR}), so window C would not"
+  say "      have read window A's state -- it would have read whatever the run did to the phone after A."
+  say "      This run therefore PRINTS NO PRICE for the second heat cause, and that is the correct answer:"
+  say "      the number the old design would have printed from A and B alone (the largest warming above) is"
+  say "      not the governor's cost, it is the governor's cost PLUS however far the phone moved on its own"
+  say "      -- and this instrument has just measured that the phone moved further than it can resolve."
   say ""
-  say "   What this run DOES establish is about the phone: the intervention's warming (or the phone's own"
-  say "   drift) outlasted ${SETTLE_BACK}s at a ${MARGIN} C bar. That is the number a longer wait or a bigger"
-  say "   margin would have to beat, and it is printed with the setting that produced it."
+  say "   What this run DOES establish is about the phone: after the intervention was undone, the zones were"
+  say "   still ${DEV_ABS} C away from their window A readings ${SETTLE_BACK}s later. That is the number a"
+  say "   longer wait or a bigger margin would have to beat, and it is printed with the setting that produced"
+  say "   it."
   say ""
   say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
   exit 1
@@ -715,11 +879,12 @@ fi
 
 say ""
 say "   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the"
-say "   battery's charging state is not controlled, and window C is a control only to the extent that the wait"
-say "   above found the reading back (it waited ${SETTLE_BACK}s at a ${MARGIN} C bar, and what it measured is"
-say "   printed above). The zones are the instrument's numbers, normalised by it; this script does not divide."
-say "   This run used: --seconds ${SECONDS_WIN} --settle ${SETTLE} --settle-back ${SETTLE_BACK} --poll ${POLL}"
-say "   --margin ${MARGIN}."
+say "   battery's charging state is not controlled, and BOTH of the other two windows are what the two holds"
+say "   above made them (the pre-hold found the phone still within ${MARGIN} C before window A, and the wait"
+say "   found every zone back within ${MARGIN} C of it before window C; what each measured is printed above)."
+say "   The zones are the instrument's numbers, normalised by it; this script does not divide."
+say "   This run used: --seconds ${SECONDS_WIN} --settle ${SETTLE} --settle-start ${SETTLE_START}"
+say "   --settle-back ${SETTLE_BACK} --poll ${POLL} --margin ${MARGIN}."
 say ""
 say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
 exit "$RC"

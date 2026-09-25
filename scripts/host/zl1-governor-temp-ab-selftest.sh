@@ -38,6 +38,17 @@
 #   9. THE WHOLE TABLE IS PRINTED. The device run printed twelve rows and said the rest were "in the archive"
 #      -- a directory with a random suffix that nothing named. The version with a cap is mutation m8, and the
 #      assertion it has to break is the table's OWN claim that every row is printed.
+#  10. THE TWO HOLDS ARE WHAT MAKE THE WINDOWS STATES RATHER THAN POINTS (docs 172). The second device run
+#      printed COST-MEASURED 3.5 C on a phone that FELL 7.7 C across the run, and the reason is three defects
+#      in one comparison: it was ONE-SIDED (a reading 4.2 C BELOW window A counted as "came back"), it
+#      followed the HOTTEST ZONE (a maximum that changes hands, so it compared one zone with another), and
+#      nothing checked that the phone was holding still BEFORE window A. All three are scenarios here --
+#      `below`, `zonewise`, `plateau`, `no-plateau` -- and all three have a mutation (m11, m12, m13) that
+#      puts the defect back and is driven by the scenario that has it.
+#  11. ONE EXIT OF THIS SCRIPT WRITES NOTHING AT ALL. The pre-hold is refused BEFORE window A, so
+#      `no-plateau` is the only verdict reached with the device untouched (`below` and `no-return` come after
+#      an intervention that was made and undone). The assertion is not a promise: it is that no intervention
+#      line appears and the whole fake device still hashes to what it did before.
 #
 # How it works: **the stub directory IS the device**, the same construction this family's other harnesses
 # use -- the script runs as itself against a fake root, with PATH for the child set to `$STUB:$MINBIN`. TWO
@@ -217,21 +228,48 @@ elif [ "$cool" != n ]; then
 fi
 printf 'window n=%s pinned=%s cool=%s\n' "$n" "$pinned" "$cool" >> "${FP_ACT:-/dev/null}"
 awk -v b="$pinned" -v n="$n" -v base="${FP_BASE:-42.0}" -v diff="${FP_DIFF:-0}" -v drift="${FP_DRIFT:-0}" \
-    -v other="${FP_OTHER_DIFF:-0}" -v cool="$cool" -v ct="${FP_COOL:-1}" -v nz="${FP_ZONES:-4}" '
+    -v other="${FP_OTHER_DIFF:-0}" -v cool="$cool" -v ct="${FP_COOL:-1}" -v nz="${FP_ZONES:-4}" \
+    -v until="${FP_DRIFT_UNTIL:-0}" -v lz="${FP_LATE_ZONE:--1}" -v ld="${FP_LATE_DIFF:-0}" '
   BEGIN {
     # The excess the intervention left behind: full while the cores are pinned, and decaying by one step per
-    # sample afterwards. `ct < 0` is the phone whose heat does not decay inside the window at all -- which is
-    # what the first device run measured (docs 170).
+    # sample afterwards. THREE shapes of "it does not come back", and they are three different findings:
+    #   ct == -1  the heat of the intervention does not decay inside the window at all (docs 170, that phone)
+    #   ct == -2  the phone ends up COLDER than window A and stays there -- which is what the SECOND device
+    #             run did (docs 172: it fell 7.7 C across the run), and it is the shape a one-sided
+    #             comparison reads as "came back", because a negative difference passes `sample - A <= m`
+    #             (an apostrophe anywhere inside this program would close the shell quote around it, and the
+    #             failure is a shell syntax error in the STUB rather than anything about the instrument --
+    #             which is exactly how the first version of this fixture broke)
     if (b)                 exc = diff
     else if (cool == "n")  exc = 0
-    else if (ct < 0)       exc = diff
-    else if (ct == 0)      exc = 0
+    else if (ct == -1)     exc = diff
+    else if (ct == -2)     exc = -diff
+    else if (ct <= 0)      exc = 0
     else                   exc = diff * cool / ct
-    hot = base + drift * (n - 1) + exc
+    # THE DRIFT STOPS, if the scenario says so: a phone that was hot and is COOLING towards a plateau is the
+    # shape both device runs started in, and the pre-hold is the instrument that waits for it. `until` counts
+    # samples, `0` means the drift never stops (every pre-existing scenario).
+    dsteps = (until > 0 && n > until) ? until - 1 : n - 1
+    hot = base + drift * dsteps + exc
     printf "zl1 thermal budget :: window %d :: read-only\n", n
     printf "  busy 0.80 of 4 cores (20%%), of which iowait 0.00 cores\n"
     printf "== thermal zones:\n"
-    for (i = 0; i < nz; i++) printf "   thermal_zone%d tsens_tz_sensor%d             %.1f C\n", i, i, hot + i * 0.5
+    for (i = 0; i < nz; i++) {
+      t = hot + i * 0.5
+      # ONE ZONE OUT OF STEP, after the run has been pinned: the shape the per-zone comparison exists for.
+      # The offset is on a zone that is NOT the hottest, so the maximum over zones is unchanged and a test
+      # that follows the hottest zone cannot see it.
+      if (!b && cool != "n" && i == lz) t += ld
+      # THE NUMBERING IS THE ONE THE DEVICE USES, and the first version of this stub got it wrong: on the real
+      # phone `thermal_zone0` is `bms` (it is in the SECOND device run output, docs 172) and the tsens zones
+      # start at thermal_zone1. Numbering them from 0 made the stub print thermal_zone0 TWICE, and every
+      # reader that keys a zone by its name -- the delta table does -- silently kept the LAST of the two.
+      # Nothing depended on that zone until a scenario whose moving zone WAS that one, and then the movement
+      # disappeared into the collision and the scenario measured nothing.
+      # (NO APOSTROPHE may appear anywhere in this program: one closes the shell quote that wraps it, and the
+      # failure is a shell syntax error in the STUB -- which is how this note came to be written, twice.)
+      printf "   thermal_zone%d tsens_tz_sensor%d             %.1f C\n", i + 1, i, t
+    }
     printf "   thermal_zone0 bms                          35.7 C   <- type not in the unit table; assumed milli-degC (raw 35700)\n"
     printf "   thermal_zone22 pm8994_tz                    %.1f C\n", base + drift * (n - 1) + (b ? other : 0)
     printf "   hottest: tsens_tz_sensor0 %.1f C  (raw %d = deci-degC, of 38 zones; 1 flagged above)\n", hot, hot * 10
@@ -307,9 +345,11 @@ wantsq() { local sq; sq=$(squash "$2"); if grep -Eq -- "$1" <<< "$sq"; then ok "
 tree_hash() { (cd "$FR" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | sha256sum | awk '{print $1}'; }
 
 FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
+FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0
 scen() { # name -- reset the device to the healthy, installed state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
   FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FP_COOL=1; FP_ZONES=4
+  FP_DRIFT_UNTIL=0; FP_LATE_ZONE=-1; FP_LATE_DIFF=0
   gc_mk
   dl_set 0
   rm -f "$W/win.count" "$W/cool.count"
@@ -317,7 +357,8 @@ scen() { # name -- reset the device to the healthy, installed state
 }
 env_for() { printf '%s\n' "FP_GOV=$(gc_path 0)" "FP_COUNT=$W/win.count" "FP_COOLFILE=$W/cool.count" "FP_ACT=$ACT" \
   "FP_DIFF=$FP_DIFF" "FP_COOL=$FP_COOL" "FP_ZONES=$FP_ZONES" \
-  "FP_DRIFT=$FP_DRIFT" "FP_BASE=$FP_BASE" "FP_OTHER_DIFF=$FP_OTHER_DIFF" "FP_INSTRUMENT_RC=$FP_INSTRUMENT_RC"; }
+  "FP_DRIFT=$FP_DRIFT" "FP_BASE=$FP_BASE" "FP_OTHER_DIFF=$FP_OTHER_DIFF" "FP_INSTRUMENT_RC=$FP_INSTRUMENT_RC" \
+  "FP_DRIFT_UNTIL=$FP_DRIFT_UNTIL" "FP_LATE_ZONE=$FP_LATE_ZONE" "FP_LATE_DIFF=$FP_LATE_DIFF"; }
 
 run() { # the script's own args...
   local e; e=$(env_for)
@@ -399,6 +440,17 @@ TARGETS=$(cat "$W/.targets")
                  || bad "$N_BAD redirect target(s) point somewhere else entirely: $(cat "$W/.targets")"
 want '^\$zl1_g$' "$TARGETS" "and the core's governor file IS one of them (so the whitelist is not empty of the point)"
 want '^\$TMP/win\.' "$TARGETS" "and the instrument's output lands in \$TMP, not in a fixed path"
+want '^\$TMP/pre\.' "$TARGETS" "and so does the pre-hold's output, which the same directory has to hold"
+# THE THREE LINES THE SECOND DEVICE RUN'S ARTIFACT IS MADE OF (docs 172). Each is a line that has to BE there
+# rather than a computation that has to come out right, so they are asserted statically -- and each has a
+# mutation that removes it (m11, m12, m13), which is what makes the assertion mean something.
+NC="$W/.nocomments.sh"
+want 'if \(d < 0\) d = -d' "$(cat "$NC")" "the comparison is ABSOLUTE, so 'back' means back in both directions"
+want 'DEV=\$\(max_dev "\$TMP/win\.A" "\$TMP/back"\)' "$(cat "$NC")" \
+  "and the wait decides on EVERY zone (max_dev), not on the hottest one"
+want 'PRE_DEV=\$\(max_dev "\$PRE_PREV" "\$TMP/pre\.\$PRE_PH"\)' "$(cat "$NC")" \
+  "and the pre-hold decides the same way, on two readings of the same phone"
+want '^SETTLE_START=300$' "$(cat "$NC")" "and the pre-hold is ON by default, so window A is a state not a curve"
 # The whitelist accepts a LOOP VARIABLE, which is weaker than accepting one named path -- so what it loops
 # over is checked too: the list must come from the cpufreq glob, and every write must go through the variable
 # that glob fills. Both halves are asserted on the SHIPPED source with comments stripped.
@@ -562,7 +614,7 @@ echo "== 3. the happy path: three proved states, a delta table, and the device b
 scen happy
 FP_DIFF=5.0
 H0=$(tree_hash)
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "the run exits 0" || bad "the run exited $RC"
 want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
@@ -574,7 +626,7 @@ want 'final state.*read .interactive.' "$OUT" "and the final state is checked on
 want 'COST-MEASURED' "$OUT" "the verdict is cost-measured"
 want 'largest warming from A to B on any tsens zone: 5\.0 C' "$OUT" "and the number is the one the fixture put there"
 want 'from A to C \(the control, same state as A\):   0\.0 C' "$OUT" "and the control window came back to where it started"
-want '^   thermal_zone1 tsens_tz_sensor1 +42\.5 +47\.5 +42\.5 +\+5\.0 +\+0\.0' "$OUT" \
+want '^   thermal_zone1 tsens_tz_sensor0 +42\.0 +47\.0 +42\.0 +\+5\.0 +\+0\.0' "$OUT" \
   "the per-zone table carries A, B, C and both deltas"
 want '^   thermal_zone0 bms ' "$OUT" "and a zone the governor did not move is still in the table"
 want 'panic guard: disarmed \(1 parameter\(s\) read 0\)' "$OUT" \
@@ -586,7 +638,7 @@ want 'ambient is not controlled' "$OUT" "and the caveat is printed with the verd
 gc_all interactive && ok "every core is back on interactive" || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the whole fake device is byte-for-byte as it was before the run" || bad "the run left the tree changed"
 [ "$(cat "$W/win.count" 2>/dev/null)" = 3 ] && ok "exactly three windows were taken" || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s), not 3"
-want 'This run used: --seconds 1 --settle 0 --settle-back 0 --poll 10' "$OUT" \
+wantsq 'This run used: --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --poll 10 --margin 0\.5\.' "$OUT" \
   "and the settings it ran with are printed with the caveat, so nobody has to guess which design this was"
 
 # ==================================================================================================
@@ -600,13 +652,15 @@ echo "== 3b. the wait: window C is a CONTROL only if the reading came back first
 scen wait-returns
 FP_DIFF=5.0; FP_COOL=1
 H0=$(tree_hash)
-run --yes --seconds 1 --settle 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "the reading came back, so the run is a measurement: exit 0" || bad "the wait-returns run exited $RC"
 want 'IT CAME BACK' "$OUT" "it says the reading came back"
-want 'IT CAME BACK: 43\.5 C after 1s, against window A.s 43\.5 C' "$OUT" \
-  "and prints HOW LONG it took and both numbers -- the wait is a measurement, not a delay"
-want 'is therefore a CONTROL and not a second reading of the same heat' "$OUT" \
+want 'IT CAME BACK: every tsens zone is within 0\.5 C of its own window A reading after 1s' "$OUT" \
+  "and prints HOW LONG it took, and that the test was EVERY ZONE rather than the hottest one"
+wantsq 'the largest difference was 0\.0 C \(0\.0 C, on thermal_zone[0-9]+ \(tsens_tz_sensor[0-9]+\)\)' "$OUT" \
+  "with the largest difference, its sign, and the zone it was on -- the wait is a measurement, not a delay"
+wantsq 'is therefore a CONTROL and not a second reading of the same heat' "$OUT" \
   "and says what that buys: window C is a control because of it"
 want 'COST-MEASURED' "$OUT" "and the control window then did its job"
 want 'from A to C \(the control, same state as A\):   0\.0 C' "$OUT" "with C back where A was"
@@ -617,7 +671,7 @@ want 'from A to C \(the control, same state as A\):   0\.0 C' "$OUT" "with C bac
 scen no-return
 FP_DIFF=5.0; FP_COOL=-1
 H0=$(tree_hash)
-run --yes --seconds 1 --settle 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 1 ] && ok "a phone whose heat does not decay inside the bound: exit 1" || bad "the no-return run exited $RC, expected 1"
 want 'IT DID NOT COME BACK within 3s' "$OUT" "it says the reading did not come back, and inside which bound"
@@ -629,13 +683,97 @@ notwant 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" "so no other verd
 notwant 'window C -- the CONTROL' "$OUT" "and window C was never read at all"
 want '^   zone       type                        A      B     B-A' "$OUT" \
   "the table is the TWO windows it did take, with its own header"
-want '^   thermal_zone1 tsens_tz_sensor1 +42\.5 +47\.5 +\+5\.0' "$OUT" \
+want '^   thermal_zone1 tsens_tz_sensor0 +42\.0 +47\.0 +\+5\.0' "$OUT" \
   "and it still prints the warming it saw, so the run is not empty"
 [ "$(cat "$W/win.count" 2>/dev/null)" = 5 ] && ok "five instrument calls: A, B and three bounded samples, and NO C" \
   || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and 3 samples were expected"
 gc_all interactive && ok "and the cores are back on interactive -- it stopped early, it did not stop restoring" \
                    || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-return run left the tree changed"
+
+# --- the two shapes the SECOND device run had, and the wait as it was until docs 172 ----------------------
+# fp_cool=-2 is that run's phone: after the undo it did not stay warm and it did not come back -- it went
+# BELOW window A and stayed there (A 49.6 -> C 41.9 on the hottest zone). The old test was one-sided
+# (`sample - A <= MARGIN`), so a reading 5 C DOWN passed it and the run went on to read a control window
+# that was nowhere near window A's state -- and print a price from it. Both halves are asserted here: the
+# verdict is no-return, and the text says which DIRECTION the difference was in.
+scen below
+FP_DIFF=5.0; FP_COOL=-2
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 1 ] && ok "a phone that came back COLDER than window A: exit 1" || bad "the below-A run exited $RC, expected 1"
+wantsq 'the largest difference from window A is 5\.0 BELOW window A.s reading of the SAME zone' "$OUT" \
+  "it says the difference is BELOW -- the direction is the whole finding, and the old test could not see it"
+wantsq '\(-5\.0 C, on thermal_zone[0-9]+' "$OUT" "and prints the signed number beside the absolute one"
+want 'NO RETURN' "$OUT" "so the verdict is no-return, exactly as when the phone stayed too warm"
+notwant 'window C -- the CONTROL' "$OUT" "and window C was never read"
+notwant 'COST-MEASURED|CONTAMINATED' "$OUT" "and no price is printed anywhere"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 6 ] && ok "six instrument calls: A, B and four bounded samples, and NO C" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and 4 samples were expected"
+gc_all interactive && ok "and the cores are back on interactive" || bad "the cores are now$(gc_each)"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the below-A run left the tree changed"
+
+# THE OTHER HALF OF THE SAME DEFECT: which zone the wait is a statement about. Every device run so far has had
+# zones that moved by DIFFERENT amounts, and "the hottest zone" is a maximum over 23 numbers, so it CHANGES
+# HANDS between windows. Here one NON-hottest zone (thermal_zone0, 6 C below the hottest one) comes back 3 C
+# out while every other zone returns exactly -- the maximum over zones is unchanged, and a test that follows
+# the hottest zone would call this a return. That is mutation m12, and it is also why the reported zone in
+# this scenario's own message is a zone the window never names as hot.
+scen zonewise
+FP_DIFF=5.0; FP_COOL=1; FP_ZONES=13; FP_LATE_ZONE=0; FP_LATE_DIFF=3.0
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+[ "$RC" = 1 ] && ok "one non-hottest zone 3.0 C out of place: exit 1" || bad "the zone-wise run exited $RC, expected 1"
+wantsq 'the largest difference from window A is 3\.0 ABOVE window A.s reading of the SAME zone' "$OUT" \
+  "the wait is about EVERY zone, so a zone that is not the hottest one can decide it"
+want 'thermal_zone1 \(tsens_tz_sensor0\)' "$OUT" "and the zone it names is the one that moved"
+want 'window A.s hottest tsens zone: 48\.0 C' "$OUT" \
+  "while the hottest zone -- a DIFFERENT one, 6 C above it -- was back where it started"
+want 'NO RETURN' "$OUT" "so this run prints no price either"
+notwant 'window C -- the CONTROL' "$OUT" "and window C was never read"
+
+# ==================================================================================================
+echo
+echo "== 3d. the pre-hold: a phone that is not holding still is refused BEFORE window A (docs 172) =="
+# ==================================================================================================
+# The second device run's window A was read on a phone falling 4.2 C per ten seconds, and no control window
+# can repair that: the drift is in the FIRST window too. So the run now waits for two readings to agree on
+# every zone before window A -- and because that is before the intervention, refusing here writes nothing.
+scen plateau
+FP_DIFF=5.0; FP_DRIFT=2.0; FP_DRIFT_UNTIL=2
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-start 5 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 0 ] && ok "a phone that stops moving is measured: exit 0" || bad "the plateau run exited $RC"
+wantsq 'IT IS HOLDING STILL: after 3s' "$OUT" \
+  "it waited for the phone to stop moving and says how long that took (2 C per sample, until sample 2)"
+wantsq 'the largest change on any tsens zone in the last 1s was 0\.0 C' "$OUT" \
+  "and prints what it settled at, so the wait is a reading rather than a delay"
+notwant 'NO PLATEAU' "$OUT" "and it did not refuse"
+want 'window A -- as installed' "$OUT" "window A was read, after the hold and not before it"
+want 'COST-MEASURED' "$OUT" "and the run reached a verdict on the state it settled into"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 6 ] && ok "six instrument calls: three pre-hold samples, then A, B, C" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): 3 pre-hold samples and 3 windows were expected"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the plateau run left the tree changed"
+
+scen no-plateau
+FP_DIFF=5.0; FP_DRIFT=2.0
+H0=$(tree_hash)
+run --yes --seconds 1 --settle 0 --settle-start 4 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 1 ] && ok "a phone that never holds still: exit 1" || bad "the no-plateau run exited $RC, expected 1"
+want 'NO PLATEAU within 4s' "$OUT" "the verdict names the hold and the bound that ran out"
+wantsq 'The largest change it still saw was 2\.0 C' "$OUT" "and prints the movement it could not measure through"
+want 'PRINTS NO PRICE' "$OUT" "and it says so, rather than printing the drift as a cost"
+notwant 'window A -- as installed' "$OUT" "window A was never read"
+awk '/the refusals, on their own terms/ { r = NR } /the pre-hold/ { if (!p) p = NR } END { exit !(r && p && r < p) }' <<< "$OUT" \
+  && ok "and the hold runs AFTER the refusals -- a refusal is answered before anything is measured" \
+  || bad "the pre-hold does not come after the refusals in the output"
+notwant "read 'performance' back" "$OUT" "NO INTERVENTION WAS MADE: this exit writes nothing at all"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 4 ] && ok "four instrument calls, all of them pre-hold samples" \
+  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): 4 pre-hold samples were expected"
+gc_all interactive && ok "and the cores are where they were" || bad "the cores are now$(gc_each)"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-plateau run changed the device"
 
 # ==================================================================================================
 echo
@@ -647,14 +785,14 @@ echo "== 3c. what the run leaves behind, and whether it says where (docs 170) ==
 # So both halves are asserted: a plain run removes its directory AND says so, and --keep keeps it AND says where.
 scen cleanup
 FP_DIFF=5.0
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 P=$(awk '/was removed/{ sub(/ was removed.*/, ""); print $NF }' <<< "$OUT")
 [ -n "$P" ] && ok "a plain run says which scratch directory it removed" || bad "nothing in the output names the scratch directory it removed"
 [ -n "$P" ] && [ ! -e "$P" ] && ok "and it really is gone ($P)" || bad "the scratch directory is still on this host: ${P:-<unnamed>}"
 
 scen keep
 FP_DIFF=5.0
-run --yes --seconds 1 --settle 0 --settle-back 0 --keep --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --keep --thermal "$STUB/zl1-thermal.sh"
 P=$(awk '/--keep: this run/{ sub(/ \(deltas.*/, ""); print $NF }' <<< "$OUT")
 [ -n "$P" ] && ok "--keep names the directory" || bad "--keep does not name the directory"
 [ -d "$P" ] && ok "and it is still there ($P)" || bad "the directory --keep promised is not there: ${P:-<unnamed>}"
@@ -669,13 +807,13 @@ rm -rf "$P"
 # the archive"; with the path unnamed that was the same as printing nothing.
 scen wholetable
 FP_DIFF=5.0; FP_ZONES=13
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 NROWS=$(grep -cE '^   thermal_zone[0-9]+ ' <<< "$OUT")
 NCLAIM=$(sed -n 's/.*(\([0-9][0-9]*\) zone(s) in this table.*/\1/p' <<< "$OUT")
 [ -n "$NCLAIM" ] && ok "the table states how many rows it has ($NCLAIM)" || bad "the table states no row count"
 [ -n "$NCLAIM" ] && [ "$NROWS" = "$NCLAIM" ] && ok "and every one of them is printed ($NROWS lines)" \
   || bad "the table claims $NCLAIM row(s) and printed $NROWS"
-want '^   thermal_zone12 tsens_tz_sensor12 ' "$OUT" "including the thirteenth zone, which the old truncation cut"
+want '^   thermal_zone13 tsens_tz_sensor12 ' "$OUT" "including the thirteenth zone, which the old truncation cut"
 notwant 'the whole table is in the archive' "$OUT" "and nothing claims a table is somewhere else"
 notwant 'more; the whole' "$OUT" "and there is no '... N more' line at all"
 
@@ -685,7 +823,7 @@ echo "== 4. the verdict can come out AGAINST the fix, and can be called off by i
 # ==================================================================================================
 scen nocost
 FP_DIFF=0.1
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 [ "$RC" = 0 ] && ok "a governor worth less than the resolution: exit 0" || bad "it exited $RC"
 want 'NO DETECTABLE COST' "$OUT" "and the verdict is no-detectable-cost -- the script coming out against itself"
 want 'coming out AGAINST the fix it was built around' "$OUT" "said out loud, so the verdict is not read as a failure"
@@ -695,7 +833,7 @@ scen drift
 # A/B would report 2.5 C as the governor's price; the control window is the only thing that can tell.
 FP_DIFF=1.5
 FP_DRIFT=1.0
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 [ "$RC" = 1 ] && ok "a drifting phone: exit 1 (a statement about the run)" || bad "the drift scenario exited $RC, expected 1"
 want 'CONTAMINATED' "$OUT" "and the verdict is contaminated"
 want 'the SAME state as A -- is still 2\.0 C' "$OUT" "with the control window's own number beside it"
@@ -706,7 +844,7 @@ scen otherzone
 # is about the SoC's OWN sensors; a rail that follows the charger is not one of them.
 FP_DIFF=5.0
 FP_OTHER_DIFF=10.0
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 want 'largest warming from A to B on any tsens zone: 5\.0 C' "$OUT" \
   "the maximum is taken over the tsens zones, not over every zone in the table"
 notwant 'largest warming from A to B on any tsens zone: 10\.0' "$OUT" "so a hotter rail is not reported as the SoC's answer"
@@ -718,7 +856,7 @@ echo
 echo "== 5. an instrument that answers nothing: no table, no verdict =="
 # ==================================================================================================
 scen empty
-run --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
+run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
 [ "$RC" = 1 ] && ok "an instrument that prints no zones: exit 1" || bad "the empty-instrument run exited $RC, expected 1"
 want 'NO ZONE WAS READABLE IN ALL THREE WINDOWS' "$OUT" "and it says there is no table rather than printing a delta of zeros"
 notwant 'COST-MEASURED|NO DETECTABLE COST' "$OUT" "and it prints no verdict at all"
@@ -730,7 +868,7 @@ echo "== 6. the trap: what is left on a path nobody wrote by hand =="
 # ==================================================================================================
 scen interrupt
 FP_DIFF=5.0
-runbg "$S/interrupt.txt" "$RW" --yes --seconds 1 --settle 3 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+runbg "$S/interrupt.txt" "$RW" --yes --seconds 1 --settle 3 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 kill_pinned
 gc_all performance && ok "the kill landed in the pinned window (every core really reads performance)" \
                    || bad "the kill did not land in the pinned window -- nothing about the trap is being tested"
@@ -760,7 +898,7 @@ fi
 if mut m1-nocontrol 's#if (ca >= ba / 2)                 { print "contaminated"; exit }#if (0)                              { print "contaminated"; exit }#'; then
   scen mut-m1
   FP_DIFF=1.5; FP_DRIFT=1.0
-  mutrun m1-nocontrol --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m1-nocontrol --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   [ "$RC" = 0 ] && ok "mutation 'control ignored': the drifting phone now reads as a result (the check is live)" \
                 || bad "the 'control ignored' mutant exited $RC"
   want 'COST-MEASURED' "$OUT" "and it prints the drift as if the governor had done it"
@@ -770,7 +908,7 @@ fi
 if mut m2-threshold 's#if (ba < 0.2)                     { print "no-detectable-cost"; exit }#if (0)                              { print "no-detectable-cost"; exit }#'; then
   scen mut-m2
   FP_DIFF=0.1
-  mutrun m2-threshold --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m2-threshold --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   want 'COST-MEASURED' "$OUT" "mutation 'no threshold': 0.1 C -- one step of the instrument -- is reported as a cost"
 fi
 # (m3) THE INTERVENTION MADE A NO-OP: the read-back is what catches it, and without it the run would go on to
@@ -779,7 +917,7 @@ fi
 if mut m3-noreadback 's#^    printf .%s. "\$zl1_want" > "\$zl1_g" 2>/dev/null || return 1$#    : #'; then
   scen mut-m3
   FP_DIFF=5.0
-  mutrun m3-noreadback --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m3-noreadback --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   [ "$RC" = 4 ] && ok "mutation 'write that did not land': exit 4, refused to print a verdict" \
                 || bad "the no-op mutant exited $RC, expected 4"
   want 'THE INTERVENTION DID NOT LAND' "$OUT" "and the message is the one that would otherwise hide a real experiment"
@@ -792,7 +930,7 @@ fi
 if mut m4-notrap 's#^  \[ "\$WROTE" = 1 \] || return 0$#  return 0#'; then
   scen mut-m4
   FP_DIFF=5.0
-  runbg "$S/trap.txt" "$W/mut-m4-notrap.rw.sh" --yes --seconds 1 --settle 3 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  runbg "$S/trap.txt" "$W/mut-m4-notrap.rw.sh" --yes --seconds 1 --settle 3 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   kill_pinned
   wait "$BG_PID" 2>/dev/null
   gc_all performance && ok "mutation 'trap disarmed': the interrupt leaves the cores PINNED (the trap is the restorer)" \
@@ -806,7 +944,7 @@ if mut m5-nooffer 's@gov_offered "\$zl1_g" "\$BLOCKED_GOV" ||@: ||@'; then
   scen mut-m5
   gc_offer performance no
   FP_DIFF=5.0
-  mutrun m5-nooffer --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m5-nooffer --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   notwant 'REFUSED \(C\)' "$OUT" "mutation 'no offer check': a governor the kernel does not offer no longer refuses"
   want 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" \
     "and the run proceeds -- which is the whole cost of the mutant, on a device where the write would not land"
@@ -819,7 +957,7 @@ if mut m7-nopanic 's@^  \[ "\$zl1_v" = 0 \] || DL_BAD=@  : || DL_BAD=@'; then
   scen mut-m7
   dl_set 1
   FP_DIFF=5.0
-  mutrun m7-nopanic --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m7-nopanic --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   notwant 'REFUSED \(A\)' "$OUT" "mutation 'no panic gate': an armed panic guard no longer refuses (the gate is live)"
   want 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" \
     "and the run proceeds -- which is the whole cost of the mutant, on a device where it must not"
@@ -828,7 +966,7 @@ fi
 # (m6) the empty-table guard removed: no reading at all becomes a verdict of zeros.
 if mut m6-notable 's#^if \[ ! -s "\$TMP/deltas" \]; then$#if false; then#;s#^if \[ -z "\$TSENS" \]; then$#if false; then#'; then
   scen mut-m6
-  mutrun m6-notable --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
+  mutrun m6-notable --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$W/quiet-instrument.sh"
   want 'COST-MEASURED|NO DETECTABLE COST' "$OUT" \
     "mutation 'no table guard': an instrument that printed nothing still produces a verdict"
   want 'NO DETECTABLE COST' "$OUT" \
@@ -840,7 +978,7 @@ fi
 if mut m8-truncate "s#^sort -k6,6gr \"\$TMP/deltas\" | awk '{#sort -k6,6gr \"\$TMP/deltas\" | awk 'NR <= 2 {#"; then
   scen mut-m8
   FP_DIFF=5.0; FP_ZONES=13
-  mutrun m8-truncate --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m8-truncate --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   NR2=$(grep -cE '^   thermal_zone[0-9]+ ' <<< "$OUT")
   NR2CLAIM=$(sed -n 's/.*(\([0-9][0-9]*\) zone(s) in this table.*/\1/p' <<< "$OUT")
   want 'sorted by B-A; every one is printed' "$OUT" \
@@ -854,7 +992,7 @@ fi
 if mut m9-ignorewait 's#^  if \[ "\$RETURNED" = 1 \]; then$#  if true; then#'; then
   scen mut-m9
   FP_DIFF=5.0; FP_COOL=-1
-  mutrun m9-ignorewait --yes --seconds 1 --settle 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m9-ignorewait --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 3 --poll 1 --thermal "$STUB/zl1-thermal.sh"
   notwant 'NO RETURN' "$OUT" "mutation 'wait ignored': the no-return phone no longer produces that verdict"
   want 'COST-MEASURED|CONTAMINATED|NO DETECTABLE COST' "$OUT" \
     "and it prints a PRICE instead -- the whole cost of the mutant, on a phone where there is no control"
@@ -868,7 +1006,7 @@ if mut m10-nocleanup "s#^trap 'do_restore; cleanup' EXIT\$#trap 'do_restore' EXI
   # FILES, not here-strings: `comm -13 <<< "" <<< "$AFTER"` reports "missing operand" when the first side is
   # empty, which reads as "no leftover" -- a false pass on the one scenario that has to have one.
   find /tmp -maxdepth 1 -type d -name 'zl1-governor-temp-ab.*' 2>/dev/null | sort > "$W/.left.before"
-  mutrun m10-nocleanup --yes --seconds 1 --settle 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  mutrun m10-nocleanup --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
   find /tmp -maxdepth 1 -type d -name 'zl1-governor-temp-ab.*' 2>/dev/null | sort > "$W/.left.after"
   notwant 'was removed' "$OUT" "mutation 'cleanup disarmed': the run no longer says it removed anything"
   comm -13 "$W/.left.before" "$W/.left.after" > "$W/.left.new"
@@ -878,6 +1016,43 @@ if mut m10-nocleanup "s#^trap 'do_restore; cleanup' EXIT\$#trap 'do_restore' EXI
   else
     bad "no directory was left behind, so the cleanup is not what section 3c is testing"
   fi
+fi
+# (m11) THE COMPARISON MADE ONE-SIDED AGAIN -- the second device run's defect, exactly (docs 172). Dropping the
+# absolute value leaves the signed difference, so `d <= MARGIN` is satisfied by a phone that came back 5 C
+# COLDER: the wait says "came back", window C is read, and the run prints the control window's own -5.0 C as
+# if it were the price. Driven by the below-A scenario, because every other phone in this file comes back UP.
+if mut m11-onesided 's#^      if (d < 0) d = -d$##'; then
+  scen mut-m11
+  FP_DIFF=5.0; FP_COOL=-2
+  mutrun m11-onesided --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'NO RETURN' "$OUT" "mutation 'comparison one-sided': the below-A phone no longer produces that verdict"
+  want 'IT CAME BACK' "$OUT" "it says the reading came back -- of a phone that is 5.0 C DOWN"
+  want 'COST-MEASURED' "$OUT" "and it prints a price"
+  wantsq 'from A to C \(the control, same state as A\): -5\.0 C' "$OUT" \
+    "from a control window 5.0 C BELOW window A -- which is the whole cost of the mutant, printed by the mutant"
+fi
+# (m12) THE WAIT FOLLOWING THE HOTTEST ZONE AGAIN -- the other half of the same defect. The zones do not move by
+# equal amounts, so the hottest zone is a maximum that changes hands; taking the deviation of whichever zone is
+# hottest in the SAMPLE, instead of the largest deviation, is how a comparison ends up comparing one zone's
+# number with another's. Driven by the zone-wise scenario: there, the zone that moved is NOT the hottest one.
+if mut m12-hotzone 's#if (!seen || d > m) { m = d; mz = k; mt = type\[k\]; ms = sd; seen = 1 }#if (!seen || ($3 + 0) > bmax) { bmax = $3 + 0; m = d; mz = k; mt = type[k]; ms = sd; seen = 1 }#'; then
+  scen mut-m12
+  FP_DIFF=5.0; FP_COOL=1; FP_ZONES=13; FP_LATE_ZONE=0; FP_LATE_DIFF=3.0
+  mutrun m12-hotzone --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'NO RETURN' "$OUT" "mutation 'hottest zone only': the out-of-place zone no longer decides the wait"
+  want 'CONTAMINATED' "$OUT" "and the run goes on to read window C and print a verdict about a state it never had"
+fi
+# (m13) THE PRE-HOLD'S ANSWER IGNORED: a phone that never held still is measured anyway. Every other scenario
+# either holds still or turns the hold off, so this branch never runs from the passing side -- and the cost of
+# the mutant is not a number, it is that the INTERVENTION HAPPENS on a phone it could not measure.
+if mut m13-ignoreplateau 's#^  if \[ "\$PLATEAU" = 1 \]; then$#  if true; then#'; then
+  scen mut-m13
+  FP_DIFF=5.0; FP_DRIFT=2.0
+  mutrun m13-ignoreplateau --yes --seconds 1 --settle 0 --settle-start 4 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'NO PLATEAU' "$OUT" "mutation 'pre-hold ignored': the never-still phone no longer produces that verdict"
+  want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
+    "and the intervention is made on a phone that was moving 2.0 C per sample -- the cost is the write, not the number"
+  want 'COST-MEASURED|CONTAMINATED|NO DETECTABLE COST' "$OUT" "with a verdict printed on top of it"
 fi
 
 # ==================================================================================================
