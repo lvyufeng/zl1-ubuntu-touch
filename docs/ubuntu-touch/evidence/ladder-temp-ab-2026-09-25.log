@@ -1,0 +1,158 @@
+zl1: what the third heat cause is worth in temperature -- the three-window A/B/C run, 2026-09-25
+================================================================================================
+
+ONE BOOT, read before and after and unchanged: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5.
+Nothing was flashed, no partition was written, no service was started or stopped, and no reboot was
+taken. The run writes ONE file twice -- /sys/module/lpm_levels/parameters/sleep_disabled, `1` for
+window B and `0` again for window C -- and puts it back to the INSTALLED state (0/N) on every exit
+path; the device's own 06-lpm-fix unit also re-applies 0 on every boot, so this cannot outlive one.
+
+The device was identified by SERIAL (33e80afe-v63-usbd-disabled-rndis on 3-3), not by USB id: an
+unrelated device with a Google vendor id shares this bus.
+
+WHY THREE WINDOWS: this phone's idle temperature drifts on its own -- two read-only windows an hour
+apart read the hottest tsens zone at 45.6 C and then 50.9 C with nothing changed in between. So A
+(the ladder allowed, as installed) is followed by B (the ladder blocked) and then by C, which is A's
+state again. C is the CONTROL: if the warming that appears in B is still there in C, the run says
+so instead of reporting the difference as the ladder's price.
+
+
+SECTION 1 -- THE READ-ONLY STATUS, TWICE (before the run, and again after it)
+--------------------------------------------------------------------------------
+--- 1a. --status before the run (writes nothing):
+    Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+    
+    == zl1 ladder temperature A/B -- 1970-02-13T17:54:54Z UTC
+      device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+      parameter:   /sys/module/lpm_levels/parameters/sleep_disabled  (1 match(es) on this device)
+      instrument:  /tmp/zl1-thermal.sh
+      windows:     45s each, 20s after each write
+      panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+      cmdline:     sleep_disabled=1 -- the boot was TOLD to block the ladder
+    
+    == the refusals, on their own terms (nothing is written until all of them have passed)
+       A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+       B. instrument: readable (/tmp/zl1-thermal.sh)
+       C. parameter:  /sys/module/lpm_levels/parameters/sleep_disabled is writable
+       D. as installed: 'N' -- sleep is NOT disabled, the ladder is ALLOWED (this is window A)
+    
+    == a run would do this (--status writes nothing)
+       window A: the zones as installed, 45s
+       write 1, prove it reads ON, wait 20s, window B, 45s
+       write 0, prove it reads OFF, wait 20s, window C, 45s  (the control)
+       then the per-zone deltas B-A and C-A and a verdict; the trap restores 0 on every exit path
+
+--- 1b. the full --yes run (3 x 45 s windows, 20 s settle after each write):
+    Warning: Permanently added '10.15.19.82' (ED25519) to the list of known hosts.
+    
+    == zl1 ladder temperature A/B -- 1970-02-13T17:51:06Z UTC
+      device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+      parameter:   /sys/module/lpm_levels/parameters/sleep_disabled  (1 match(es) on this device)
+      instrument:  /tmp/zl1-thermal.sh
+      windows:     45s each, 20s after each write
+      panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+      cmdline:     sleep_disabled=1 -- the boot was TOLD to block the ladder
+    
+    == the refusals, on their own terms (nothing is written until all of them have passed)
+       A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+       B. instrument: readable (/tmp/zl1-thermal.sh)
+       C. parameter:  /sys/module/lpm_levels/parameters/sleep_disabled is writable
+       D. as installed: 'N' -- sleep is NOT disabled, the ladder is ALLOWED (this is window A)
+       C. write path: wrote 'N' back to itself and read 'N' -- writable.
+    
+    == window A -- as installed (the ladder ALLOWED, nothing written yet)
+       busy 0.80 of 4 cores; 38 zone(s) read
+       wrote 1 and read 'Y' back: the ladder is BLOCKED from here until the undo.
+    
+    == window B -- the ladder BLOCKED (the one change this experiment makes)
+       busy 0.79 of 4 cores
+       wrote 0 and read 'N' back: the ladder is ALLOWED again -- this is the state it started in.
+    
+    == window C -- the CONTROL: the ladder allowed again, so the third window is the same state as the first
+       busy 0.81 of 4 cores
+       final state: /sys/module/lpm_levels/parameters/sleep_disabled reads 'N' -- the fix is where this script found it.
+    
+    == the per-zone deltas (the instrument's OWN numbers, in its own unit -- it normalised them)
+       zone       type                        A      B      C     B-A    C-A
+       thermal_zone9 tsens_tz_sensor8         42.2   47.7   40.9   +5.5   -1.3
+       thermal_zone5 tsens_tz_sensor4         41.2   44.8   40.3   +3.6   -0.9
+       thermal_zone7 tsens_tz_sensor6         41.2   44.5   39.9   +3.3   -1.3
+       thermal_zone4 tsens_tz_sensor3         41.9   44.8   40.9   +2.9   -1.0
+       thermal_zone6 tsens_tz_sensor5         41.9   44.5   41.2   +2.6   -0.7
+       thermal_zone8 tsens_tz_sensor7         41.2   43.8   40.3   +2.6   -0.9
+       thermal_zone25 pa_therm0                34.0   35.0   34.0   +1.0   +0.0
+       thermal_zone22 pm8994_tz                37.7   38.2   37.3   +0.5   -0.4
+       thermal_zone15 tsens_tz_sensor14        39.1   39.1   38.8   +0.0   -0.3
+       thermal_zone20 tsens_tz_sensor19        40.4   40.4   40.4   +0.0   +0.0
+       thermal_zone23 msm_therm                38.0   38.0   38.0   +0.0   +0.0
+       thermal_zone24 emmc_therm               35.0   35.0   35.0   +0.0   +0.0
+       ... 26 more; the whole table is in the archive (it is one line per zone)
+    
+    == the verdict
+       window A was the ladder ALLOWED (the fix as installed); B was the ladder BLOCKED; C was allowed
+       again. Busy: A 0.80, B 0.79, C 0.81 of 4 cores (a READING, not a gate: the ladder works
+       on idle power, and this figure counts busy time, so the two are not expected to track).
+       the largest warming from A to B on any tsens zone: 5.5 C  (thermal_zone9 (tsens_tz_sensor8))
+       and from A to C (the control, same state as A):   0.0 C  (thermal_zone20 (tsens_tz_sensor19))
+       the threshold this experiment calls a cost: 0.2 C -- two steps of the instrument's 0.1 C
+    
+       -> COST-MEASURED: blocking the ladder warmed the hottest tsens zone by 5.5 C (thermal_zone9 (tsens_tz_sensor8)), and
+          putting it back did not leave that warming behind (C is 0.0 C above A). At this load, that is
+          what the third heat cause is worth in temperature.
+    
+       Read it as a READING and not as the ladder's price in general: ambient is not controlled, the
+       battery's charging state is not controlled, and the third window can only catch a drift that
+       outlasts the second -- a drift that happens to peak in window B and vanish in C is indistinguishable
+       from this effect HERE, and is exactly what the control cannot rule out. The zones are the
+       instrument's numbers, normalised by it; this script does not divide anything.
+    
+       The parameter is N (/sys/module/lpm_levels/parameters/sleep_disabled) -- the state it started in.
+
+
+SECTION 2 -- THE STATE AFTER THE RUN (read a minute later, same boot)
+--------------------------------------------------------------------------------
+    boot_id:       2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5   (unchanged -- no reboot)
+    uptime:        8895.69 s at the read (8477.70 s before the run; the run took ~123 s)
+    sleep_disabled: N        <- the INSTALLED state, restored by the script's own undo and re-proved
+    download_mode:  0        <- the panic guard, still disarmed (refusal A's precondition)
+    lpm unit:       active
+    hottest tsens:  42.7 C   <- back in window A's range (42.2), against window B's 47.7
+
+    The instrument's own words, from the run above: "wrote 0 and read 'N' back: the ladder is
+    ALLOWED again -- this is the state it started in." and "final state: ... reads 'N' -- the fix is
+    where this script found it." Both are read-back proofs, not promises.
+
+    There is no --status after the run in this archive because the line above answers the same
+    question from the device itself; the two other readings (download_mode, the unit) are the ones
+    the run does not print.
+
+
+SECTION 3 -- THE READING, AND WHAT IT IS A READING OF
+--------------------------------------------------------------------------------
+    the largest warming from A to B on any tsens zone:  5.5 C  (thermal_zone9, tsens_tz_sensor8)
+    and from A to C (the control, same state as A):     0.0 C  (thermal_zone20, tsens_tz_sensor19)
+    -> COST-MEASURED
+
+    The whole tsens picture, which is the part worth reading rather than the single number:
+
+      zone                       A      B      C     B-A    C-A
+      tsens_tz_sensor8        42.2   47.7   40.9   +5.5   -1.3
+      tsens_tz_sensor4        41.2   44.8   40.3   +3.6   -0.9
+      tsens_tz_sensor6        41.2   44.5   39.9   +3.3   -1.3
+      tsens_tz_sensor3        41.9   44.8   40.9   +2.9   -1.0
+      tsens_tz_sensor5        41.9   44.5   41.2   +2.6   -0.7
+      tsens_tz_sensor7        41.2   43.8   40.3   +2.6   -0.9
+      tsens_tz_sensor19       40.4   40.4   40.4   +0.0   +0.0
+      (six SoC sensors moved together and one did not move at all; the rails moved 0.5 C or less)
+
+    THE CONTROL WENT THE OTHER WAY, and that is what makes this a reading rather than a coincidence:
+    C is 0.7-1.3 C BELOW A on every sensor that B warmed. The phone was cooling during the run (the
+    run is ~2 minutes of a phone that had been idle for two hours, and the ambient had been falling),
+    and window B still landed 2.6-5.5 C above BOTH of the windows taken in A's state. So the effect
+    is larger than the drift available to explain it AND opposite in sign to it.
+
+    What this does NOT say: it is one run, on one boot, at one load, with ambient and charging
+    uncontrolled. The third window can only catch a drift that outlasts window B; a drift that peaks
+    inside B and vanishes by C is indistinguishable from this effect here. It does not say the
+    ladder is worth 5.5 C at any other load -- at a busier load the SoC is warm for other reasons
+    and the deep states may matter less, or more.

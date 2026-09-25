@@ -99,10 +99,19 @@ fp_set() { # a state, written as the DEVICE stores it: `fp_set N` puts a 0 in th
 fp_now() { "$STUB/tr" -d '\n' < "$FP" 2>/dev/null; }   # the DEVICE's alphabet: what a reader gets
 fp_raw() { cat "$FP" 2>/dev/null; }                     # the stored byte, for the one assertion about it
 fp_rm()  { rm -f "$FP"; }
+
+# The panic -> EDL knob, which the instrument reads before anything else now. It is a SECOND parameter
+# under its own module directory, so the instrument's glob (`/sys/module/*/parameters/download_mode`)
+# sees exactly what the device has: ONE. A fixture with none of them is a scenario of its own below.
+mkdir -p "$FR/sys/module/msm_poweroff/parameters"
+DL="$FR/sys/module/msm_poweroff/parameters/download_mode"
+dl_set() { printf '%s' "$1" > "$DL"; }
+dl_rm()  { rm -f "$DL"; }
 printf 'msm8996\0' > "$FR/proc/device-tree/compatible"
 printf 'LeEco zl1\0' > "$FR/proc/device-tree/model"
 printf 'console=tty0 lpm_levels.sleep_disabled=1 androidboot.foo=bar\n' > "$FR/proc/cmdline"
 fp_set N
+dl_set 0
 
 # --- the instrument, which is the load-bearing stub -------------------------------------------------
 # QUOTED heredoc, and the fixture paths arrive as ENVIRONMENT at run time: an unquoted one would have bash
@@ -257,6 +266,7 @@ scen() { # name -- reset the device to the healthy, installed state
   S="$W/out/$1"; rm -rf "$S"; mkdir -p "$S"
   FP_DIFF=0; FP_DRIFT=0; FP_BASE=42.0; FP_OTHER_DIFF=0; FP_INSTRUMENT_RC=0; FAKE_STUCK=""
   fp_set N
+  dl_set 0
   rm -f "$W/win.count"
   : > "$ACT"
 }
@@ -373,44 +383,66 @@ notwant 'COST-MEASURED|NO DETECTABLE COST' "$OUT" "and it prints no verdict from
 echo
 echo "== 2. the refusals: each one on its own, nothing written, and the right one named =="
 # ==================================================================================================
+# A. the panic -> EDL escalation, in TWO shapes: a knob that READS 1, and NO knob at all -- because the
+# instrument treats them the same and they mean different things on the device. "Cannot be checked" is
+# not "satisfied": that sentence is the whole reason the missing case has its own scenario.
 scen refused-a
+dl_set 1
+H0=$(tree_hash)
+run --yes --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 3 ] && ok "a panic that would arm EDL: exit 3 (refused)" || bad "an armed panic guard exited $RC, expected 3"
+want 'REFUSED \(A\)' "$OUT" "and it names A"
+wantsq 'A PANIC WOULD ARM EDL' "$OUT" "and says what the state means"
+want 'install-no-edl-on-panic\.sh --install' "$OUT" "and names the one command that fixes it"
+[ "$H0" = "$H1" ] && ok "and it wrote nothing" || bad "an armed panic guard still wrote to the device"
+
+scen refused-a-none
+dl_rm
+run --yes --thermal "$STUB/zl1-thermal.sh"
+[ "$RC" = 3 ] && ok "no download_mode parameter at all: exit 3 (refused)" || bad "it exited $RC, expected 3"
+want 'REFUSED \(A\)' "$OUT" "and it names A"
+wantsq 'cannot be checked' "$OUT" "and says that 'cannot be checked' is not 'satisfied'"
+want 'install-no-edl-on-panic\.sh --install' "$OUT" "and names the same remedy"
+
+scen refused-b
 H0=$(tree_hash)
 run --yes --thermal "$W/no-such-instrument.sh"
 H1=$(tree_hash)
 [ "$RC" = 3 ] && ok "no instrument: exit 3 (refused)" || bad "no instrument exited $RC, expected 3"
-want 'REFUSED \(A\)' "$OUT" "and it names A"
+want 'REFUSED \(B\)' "$OUT" "and it names B"
 want 'scp zl1-thermal\.sh' "$OUT" "and says how the instrument gets there (it is pushed, not installed)"
 [ "$H0" = "$H1" ] && ok "and it wrote nothing even though --yes was given" || bad "a refusal wrote to the device"
 [ "$(fp_now)" = N ] && ok "the parameter still reads N" || bad "the parameter is now $(fp_now)"
 
-scen refused-b
+scen refused-c
 fp_rm
 H0=$(tree_hash)
 run --yes --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 3 ] && ok "no parameter at all: exit 3" || bad "no parameter exited $RC, expected 3"
-want 'REFUSED \(B\)' "$OUT" "and it names B"
+want 'REFUSED \(C\)' "$OUT" "and it names C"
 wantsq 'no [^ ]*/sys/module/\*/parameters/sleep_disabled' "$OUT" "and says the parameter is not there"
 [ "$H0" = "$H1" ] && ok "and it wrote nothing" || bad "a missing parameter still wrote something"
 fp_set N
 
-scen refused-b-ro
+scen refused-c-ro
 chmod 0444 "$FP"
 run --yes --thermal "$STUB/zl1-thermal.sh"
 chmod 0644 "$FP"
 [ "$RC" = 3 ] && ok "a parameter that is not writable: exit 3" || bad "read-only parameter exited $RC, expected 3"
 want 'not writable' "$OUT" "and it says the file is not writable, before any write"
 
-scen refused-c
+scen refused-d
 fp_set Y
 H0=$(tree_hash)
 run --yes --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 3 ] && ok "the ladder already blocked: exit 3" || bad "ladder-blocked exited $RC, expected 3"
-want 'REFUSED \(C\)' "$OUT" "and it names C"
+want 'REFUSED \(D\)' "$OUT" "and it names D"
 wantsq 'window A would not be the state the fix installs' "$OUT" "and says WHY window A would be the wrong state"
 want 'reboot' "$OUT" "and names the boot-time unit as the other remedy"
-[ "$H0" = "$H1" ] && ok "and it wrote nothing" || bad "refusal C wrote to the device"
+[ "$H0" = "$H1" ] && ok "and it wrote nothing" || bad "refusal D wrote to the device"
 fp_set N
 
 # The same-value proof is the last thing before a run. It is NOT the alphabet check (it passes on any
@@ -447,6 +479,10 @@ want 'from A to C \(the control, same state as A\):   0\.0 C' "$OUT" "and the co
 want '^   thermal_zone1 tsens_tz_sensor1 +42\.5 +47\.5 +42\.5 +\+5\.0 +\+0\.0' "$OUT" \
   "the per-zone table carries A, B, C and both deltas"
 want '^   thermal_zone0 bms ' "$OUT" "and a zone the ladder did not move is still in the table"
+want 'panic guard: disarmed \(1 parameter\(s\) read 0\)' "$OUT" \
+  "a DISARMED panic guard is reported in the header, so the gate is not silent when it passes"
+want 'A\. panic guard: all 1 download_mode parameter\(s\) read 0' "$OUT" \
+  "and the refusal section says which parameter was checked and what it read"
 want 'threshold this experiment calls a cost: 0\.2 C' "$OUT" "and the threshold is printed, so the verdict can be argued with"
 want 'ambient is not controlled' "$OUT" "and the caveat is printed with the verdict, not left to the reader"
 [ "$(fp_now)" = N ] && ok "the parameter is back to N (a render of the stored 0, $(fp_raw))" \
@@ -588,6 +624,21 @@ if mut m5-restorealphabet 's#^  if is_off "\$P_RESTORE"; then$#  if [ "$P_RESTOR
   [ "$(fp_now)" = N ] && ok "and the parameter was in fact restored -- only the message was wrong" \
                       || bad "the restore did not happen at all"
 fi
+# (m7) the panic gate removed: every other scenario has the knob reading 0, so a comparison that can
+# never flag anything is invisible from the passing side -- and the device this experiment would then run
+# on is one where a mistake costs a 10-20 s power hold instead of a reboot. The mutant must therefore be
+# driven by the scenario that HAS something to flag (dl_set 1) and must be seen to stop refusing.
+if mut m7-nopanic 's@^  \[ "\$zl1_v" = 0 \] || DL_BAD=@  : || DL_BAD=@'; then
+  scen mut-m7
+  dl_set 1
+  FP_DIFF=5.0
+  mutrun m7-nopanic --yes --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'REFUSED \(A\)' "$OUT" "mutation 'no panic gate': an armed panic guard no longer refuses (the gate is live)"
+  want 'COST-MEASURED|NO DETECTABLE COST|CONTAMINATED' "$OUT" \
+    "and the run proceeds -- which is the whole cost of the mutant, on a device where it must not"
+  dl_set 0
+fi
+
 # (m6) the empty-table guard removed: no reading at all becomes a verdict of zeros.
 if mut m6-notable 's#^if \[ ! -s "\$TMP/deltas" \]; then$#if false; then#;s#^if \[ -z "\$TSENS" \]; then$#if false; then#'; then
   scen mut-m6

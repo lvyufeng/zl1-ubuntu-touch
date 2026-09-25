@@ -34,15 +34,24 @@
 #   Nothing is written until every refusal has passed, and each one names a way this reading could mean
 #   something other than what it says:
 #
-#     A. THE INSTRUMENT IS ON THE DEVICE. `zl1-thermal.sh` owns the zone table and its units -- three
+#     A. THE PANIC -> EDL ESCALATION IS DISARMED. `download_mode` (a 0644 module param of the poweroff
+#        driver, = 1 at boot) decides whether a kernel panic reboots the phone or drops it into EDL,
+#        where the only exit is a physical 10-20 s power hold. This script writes the SAME parameter
+#        the trial writes, under the SAME risk, and it was shipped WITHOUT this gate -- the trial has
+#        had it since docs 122, and a copy of an experiment that drops a safety gate is not a copy.
+#        EVERY `download_mode` parameter is read rather than the first one found, because the unit
+#        that arms this policy loops the same glob and fails itself if any of them did not clear:
+#        a gate satisfied by the first match can be satisfied by a knob the policy does not clear,
+#        and what it then buys is exactly the finger it exists to save.
+#     B. THE INSTRUMENT IS ON THE DEVICE. `zl1-thermal.sh` owns the zone table and its units -- three
 #        conventions at the same instant, and docs 96 records this repository dividing them all by 1000
 #        and reporting the hottest SoC zone as 0.6 C. `scripts/host/zl1-heat-fix-chain.sh` scp's it to
 #        /tmp/zl1-thermal.sh; if it is not readable this script has nothing to measure WITH.
-#     B. THE PARAMETER EXISTS AND IS WRITABLE. A sysfs file that cannot be written is a fact to discover
+#     C. THE PARAMETER EXISTS AND IS WRITABLE. A sysfs file that cannot be written is a fact to discover
 #        BEFORE the experiment and not in the middle of it. (`sleep_disabled` is mode 0664 -- writable
 #        while the device runs -- and that asymmetry with `cpuidle.off`'s 0444 is the whole reason the fix
 #        is a write and not a flash, docs 121/153.)
-#     C. WINDOW A IS THE FIX AS INSTALLED, i.e. the parameter is OFF (it reads `N`, the ladder allowed).
+#     D. WINDOW A IS THE FIX AS INSTALLED, i.e. the parameter is OFF (it reads `N`, the ladder allowed).
 #        If it reads `Y` then the ladder is blocked, the 06 unit has not applied on this boot or something
 #        wrote it back, and window A would not be the state this experiment exists to price. The remedy is
 #        named: `--revert` here, or the boot-time unit, which re-applies on every boot.
@@ -201,7 +210,11 @@ if [ "$MODE" = explain ]; then
 zl1 ladder temperature A/B -- what each reading decides
 
   1. THE REFUSALS, checked before anything is written. Each is a way this experiment could produce a
-     reading that means something else:
+     reading that means something else -- except the first, which is about whether a mistake is
+     survivable:
+       a panic does NOT arm EDL     every download_mode parameter reads 0. This writes a live power
+                                    knob, so without it 'a hang reboots the phone' becomes 'a hang
+                                    costs a finger'. Arming it: install-no-edl-on-panic.sh --install
        the instrument is readable   otherwise there is no thermostat and no units, only raw sysfs numbers
                                     whose three conventions this repository has already got wrong once.
        the parameter is writable    a file that cannot be written is a fact to learn BEFORE the write.
@@ -229,11 +242,35 @@ EOF
   exit 0
 fi
 
+# --- the panic -> EDL escalation, read HERE because the header reports it ----------------------------
+# A. It is checked first because it is about whether a hang is SURVIVABLE rather than about whether the
+# reading is good: this script writes a live power knob, and `download_mode` decides whether a mistake is
+# a reboot or a phone sitting in EDL waiting for a 10-20 s power hold.
+# EVERY `download_mode` parameter is read rather than the first one found: the unit that arms this policy
+# (`install-no-edl-on-panic.sh`) loops the same glob and fails itself if any of them did not clear, so a
+# gate satisfied by the first match can be satisfied by a knob the policy does not clear -- and what that
+# buys is exactly the finger this gate exists to save. The device as measured has ONE such parameter
+# (`/sys/module/msm_poweroff/parameters/download_mode`), which is why the harness needs fixture scenarios
+# rather than a memory here.
+# An UNREADABLE knob is not a disarmed escalation, so it lands in the same bucket as a knob that reads 1
+# (this is why `rd` answers UNREADABLE rather than 0 for a file it cannot read).
+DL_N=0; DL_BAD=
+for zl1_d in /sys/module/*/parameters/download_mode; do
+  [ -e "$zl1_d" ] || continue
+  DL_N=$((DL_N + 1))
+  zl1_v=$(rd "$zl1_d")
+  [ "$zl1_v" = 0 ] || DL_BAD="$DL_BAD $zl1_d=$zl1_v"
+done
+DL_BAD=${DL_BAD# }
+
 hdr "zl1 ladder temperature A/B -- $(date -u +%Y-%m-%dT%H:%M:%SZ) UTC"
 say "  device:      $(cat /proc/device-tree/model 2>/dev/null || echo unknown)"
 say "  parameter:   $PARAM  ($PARAM_N match(es) on this device)"
 say "  instrument:  $THERMAL"
 say "  windows:     ${SECONDS_WIN}s each, ${SETTLE}s after each write"
+say "  panic guard: $(if [ "$DL_N" = 0 ]; then echo "NO download_mode PARAMETER -- a panic would arm EDL"; \
+                     elif [ -n "$DL_BAD" ]; then echo "ARMED ($DL_BAD) -- a panic would arm EDL"; \
+                     else echo "disarmed ($DL_N parameter(s) read 0) -- a panic reboots"; fi)"
 case "$(rd /proc/cmdline)" in
 *sleep_disabled=1*) say "  cmdline:     sleep_disabled=1 -- the boot was TOLD to block the ladder" ;;
 *)                  say "  cmdline:     no sleep_disabled=1 in /proc/cmdline" ;;
@@ -267,34 +304,53 @@ hdr "the refusals, on their own terms (nothing is written until all of them have
 
 REFUSED=0
 
-if [ -r "$THERMAL" ]; then
-  say "   A. instrument: readable ($THERMAL)"
+# A. the panic -> EDL escalation; the values were read above, before the header, because the header
+#    reports them. Nothing is written on any path that reaches here before this block passes.
+if [ "$DL_N" = 0 ]; then
+  bad "   REFUSED (A): no /sys/module/*/parameters/download_mode on this device, so the panic -> EDL"
+  bad "   escalation cannot be checked, and 'cannot be checked' is not satisfied. A hang while this"
+  bad "   experiment has the ladder blocked would then be an EDL trip rather than a reboot. Arm it"
+  bad "   first: scripts/install-no-edl-on-panic.sh --install"
+  REFUSED=1
+elif [ -n "$DL_BAD" ]; then
+  bad "   REFUSED (A): A PANIC WOULD ARM EDL -- $DL_BAD  (1 = the image default). Writing this"
+  bad "   parameter is a write to a live power knob, and the difference is 'a hang reboots the phone'"
+  bad "   versus 'a hang costs a finger'. Arm it first:"
+  bad "   scripts/install-no-edl-on-panic.sh --install     # then re-run this"
+  [ "$DL_N" -gt 1 ] && bad "   ($DL_N download_mode parameter(s) exist; the unit that arms this clears ALL of them.)"
+  REFUSED=1
 else
-  bad "   REFUSED (A): no readable instrument at $THERMAL. It owns the zone table AND its units --"
+  say "   A. panic guard: all $DL_N download_mode parameter(s) read 0 -- a panic reboots, not EDL"
+fi
+
+if [ -r "$THERMAL" ]; then
+  say "   B. instrument: readable ($THERMAL)"
+else
+  bad "   REFUSED (B): no readable instrument at $THERMAL. It owns the zone table AND its units --"
   bad "   three conventions at the same instant -- and a second copy of that is a second chance to get"
   bad "   it wrong (docs 96). Push it first, over the host: scp zl1-thermal.sh root@<device>:/tmp/"
   REFUSED=1
 fi
 
 if [ "$PARAM_N" -lt 1 ] 2>/dev/null; then
-  bad "   REFUSED (B): no /sys/module/*/parameters/sleep_disabled on this device at all. Either this is"
+  bad "   REFUSED (C): no /sys/module/*/parameters/sleep_disabled on this device at all. Either this is"
   bad "   not the kernel this repository measured (docs 121/153 read the module_param statement out of"
   bad "   the tree that built it), or the driver is not built in. Nothing can be priced here."
   REFUSED=1
 elif [ ! -w "$PARAM" ]; then
-  bad "   REFUSED (B): $PARAM is not writable (mode 0664 is what makes this fix a write and not a flash)."
+  bad "   REFUSED (C): $PARAM is not writable (mode 0664 is what makes this fix a write and not a flash)."
   REFUSED=1
 else
-  say "   B. parameter:  $PARAM is writable"
+  say "   C. parameter:  $PARAM is writable"
 fi
 
 P_BEFORE=$(rd "$PARAM")
 if [ "$PARAM_N" -lt 1 ] 2>/dev/null; then
   : # B already refused; nothing to read
 elif is_off "$P_BEFORE"; then
-  say "   C. as installed: '$P_BEFORE' -- sleep is NOT disabled, the ladder is ALLOWED (this is window A)"
+  say "   D. as installed: '$P_BEFORE' -- sleep is NOT disabled, the ladder is ALLOWED (this is window A)"
 else
-  bad "   REFUSED (C): $PARAM reads '$P_BEFORE', which is ON (1/Y): the ladder is BLOCKED, so window A"
+  bad "   REFUSED (D): $PARAM reads '$P_BEFORE', which is ON (1/Y): the ladder is BLOCKED, so window A"
   bad "   would not be the state the fix installs. Either 06-lpm-fix has not applied on this boot, or"
   bad "   something wrote it back. The remedy is --revert here and now, or just reboot: the boot's own"
   bad "   cmdline says 1 and the unit writes 0 again after it."
@@ -309,11 +365,11 @@ if [ "$REFUSED" = 0 ] && [ "$MODE" = run ]; then
   printf '%s' "$P_PROOF_BEFORE" > "$PARAM" 2>/dev/null
   P_PROOF=$(rd "$PARAM")
   if [ "$P_PROOF" != "$P_PROOF_BEFORE" ]; then
-    bad "   REFUSED (B, proved): writing '$P_PROOF_BEFORE' back to $PARAM read back '$P_PROOF'. The file"
+    bad "   REFUSED (C, proved): writing '$P_PROOF_BEFORE' back to $PARAM read back '$P_PROOF'. The file"
     bad "   is not writable in fact, whatever its mode says, and nothing has been changed."
     REFUSED=1
   else
-    say "   B. write path: wrote '$P_PROOF_BEFORE' back to itself and read '$P_PROOF' -- writable."
+    say "   C. write path: wrote '$P_PROOF_BEFORE' back to itself and read '$P_PROOF' -- writable."
   fi
 fi
 
