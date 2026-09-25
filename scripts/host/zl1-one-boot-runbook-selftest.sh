@@ -837,7 +837,7 @@ echo
 echo "== 7d. the two ARCHIVING steps' bounds are COMPUTED from the callee, and the flag is a FLOOR =="
 # The requirement was PROSE -- "--step-limit has to be looser than the heat chain's own total" -- and
 # nothing measured it, so the number went 5x stale while every check in this file stayed green: the
-# capture has eighteen device steps now and was bounded by a flag chosen when it had six. Cutting either
+# capture has nineteen device steps now and was bounded by a flag chosen when it had six. Cutting either
 # archiving callee off mid-flight does not fail it, it throws away the rest of what that boot was going to
 # read, on a boot that cannot be re-run. So three things are asserted, and none of them is the subject
 # agreeing with itself:
@@ -1207,7 +1207,7 @@ fi
 
 echo
 # The computed bound on the two ARCHIVING steps. Removing it puts both back on the flat flag -- which is
-# exactly the state this whole change came out of: 900 s over a callee whose own worst case is 4530 s. What
+# exactly the state this whole change came out of: 900 s over a callee whose own worst case is thousands of seconds. What
 # the mutant must do is stop the number from being COMPUTED, so the only assertion that can see it is the
 # one that names the arithmetic.
 if mutate noboundshape 's#^    CAP_BOUND=\$(( _n \* (_l + 5) + 120 ))$#    CAP_BOUND=""#'; then

@@ -555,6 +555,24 @@ step 04m-fm             device "$HERE/../device/zl1-fm-radio-probe.sh"
 # The harness carries a second static guard for exactly that, with its own teeth.
 step 04n-eeprom          device "$HERE/../device/zl1-eeprom-probe.sh"
 
+# 04o-fp-kernel: the fingerprint blocks AT THE KERNEL LAYER -- the layer every fingerprint document in this
+# project sits ABOVE (docs 83/98/101/126 are all about the store directory, the HAL and the trust store).
+# This board's device tree declares TWO fingerprint blocks, `/soc/spi@7579000/goodixfp@0`
+# (`goodix,fingerprint`, the Goodix sensor the container's HAL opens `/dev/goodix_fp` for) and
+# `/soc/qcom,qbt1000` (an ultrasonic QBT1000 on an SSC SPI port), and the config the RUNNING kernel was built
+# with -- read out of `/proc/config.gz`, i.e. out of the kernel image itself -- builds a driver for exactly
+# ONE of them (`CONFIG_MSM_QBT1000=y`; `CONFIG_INPUT_GP5XX8` is NOT SET). So the answer this step produces is
+# per-block and the two are OPPOSITE, which is why it exists: "there is a fingerprint driver in this kernel"
+# is TRUE here and "the fingerprint sensor the HAL opens has a driver" is FALSE, and a single sentence about
+# "the fingerprint driver" averages them.
+#
+# READ-ONLY IN THE STRONGEST SENSE THIS PROJECT HAS: it opens NO device node at all, not even to look.
+# qbt1000's `open()` runs an SNS QMI open + keep-alive and then an `scm_call2(TZ_BLSP_MODIFY_OWNERSHIP)` that
+# HANDS THE SPI BLSP BLOCK TO THE SECURE WORLD (release() gives it back), and secure-world calls are the
+# shape that has already cost this project a boot (docs 58). Its harness carries a canary in four fake device
+# nodes, so a future revision that reads one is caught by the fixture rather than by the phone.
+step 04o-fp-kernel       device "$HERE/../device/zl1-fp-kernel-probe.sh"
+
 if [ "$SKIP_PROBES" = 0 ]; then
   step 05-gps-probe        device "$HERE/../device/zl1-gps-probe.sh"
   step 06-fingerprint      device "$HERE/../device/zl1-fingerprint-probe.sh"
@@ -564,8 +582,8 @@ else
   say "   a correlation of two and NOT an attribution -- nothing here has read a cause -- but the boot"
   say "   this script runs on is the one that cost a finger, so the default is the evidence above."
   say "   (04b-modem DID run, and so did 04c-sleep-throttle, 04d-lmh, 04e-leds, 04f-vibrator,"
-  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd, 04l-nfc, 04m-fm and 04n-eeprom: all thirteen"
-  say "   are read-only and write nothing, so they are not in this group.)"
+  say "   04g-video, 04h-sdcard, 04i-usbpd, 04j-hdmi, 04k-wfd, 04l-nfc, 04m-fm, 04n-eeprom and"
+  say "   04o-fp-kernel: all fourteen are read-only and write nothing, so they are not in this group.)"
   say
 fi
 

@@ -67,7 +67,7 @@
 #
 #                  THAT SENTENCE USED TO BE PROSE AND NOTHING MEASURED IT. Two steps here are ARCHIVING
 #                  callees -- 01-capture and 03-heat-chain -- and each bounds its own steps from the
-#                  inside, so each has a worst case that 900 s does not cover: the capture runs eighteen
+#                  inside, so each has a worst case that 900 s does not cover: the capture runs nineteen
 #                  device steps at --step-limit 240 (4x over) and the chain's own total is larger still.
 #                  Cutting either one off mid-flight does not fail it: it throws away the rest of what
 #                  that boot was going to read, on a boot that cannot be re-run. So those two steps get a
@@ -549,18 +549,18 @@ fi
 # --- the two ARCHIVING callees' own worst cases, READ OUT OF THE CALLEES ---------------------------
 #
 # The header states the requirement ("it has to be looser than the heat chain's own total") and nothing
-# measured it. It was written when the capture had SIX device steps; it has EIGHTEEN now, because every
+# measured it. It was written when the capture had SIX device steps; it has NINETEEN now (docs 157 added 04o), because every
 # gap-closing stage since docs 138 added one, and no one re-read a number on another file. Measured:
 #
-#   capture  18 device steps, each bounded on the DEVICE at STEP_LIMIT 240 -> 18 x 245 + 120 = 4530 s
+#   capture  19 device steps, each bounded on the DEVICE at STEP_LIMIT 240 -> 19 x 245 + 120 = 4775 s
 #   chain    settle 90 + 5 step sites x 305 + 2 bounded scps x 305 + the proof 180 + the A/B 240
 #            + 4 read-backs x 65 + slack = 3145 s
-#   runbook  one timeout(1) of 900 s over the WHOLE of either invocation -> 5.0x and 3.5x over
+#   runbook  one timeout(1) of 900 s over the WHOLE of either invocation -> 5.3x and 3.5x over
 #
 # and the consequence is not a failure, which is what makes it dangerous: a step inside either callee that
 # HANGS is handled by the callee itself (it records it and moves on), so 900 s buys only the first three
-# or four of the capture's eighteen readings and then SIGKILLs the rest -- including 04-health-check and
-# the whole 04b..04n probe group -- on a boot that cost a finger and cannot be re-run.
+# or four of the capture's nineteen readings and then SIGKILLs the rest -- including 04-health-check and
+# the whole 04b..04o probe group -- on a boot that cost a finger and cannot be re-run.
 #
 # So the bound for these two steps is COMPUTED, from the callee's own numbers, the same way step 03's host
 # preconditions are read out of the chain: a second copy of the arithmetic here would be a second thing to

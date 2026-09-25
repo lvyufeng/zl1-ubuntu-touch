@@ -460,11 +460,18 @@ else
   RA=$(bash "$SRC" --snapshot "$SNAP" --board all 2>/dev/null)
   want 'nodes in the device tree: 699 distinct paths, 725 path/compatible pairs' "$RA" \
     "--board all is the whole blob -- the unfiltered number is 11 paths larger, which is the other phone"
-  # The LAST gap closed, and this is the line the whole table was built to be able to print: every one of
-  # the 29 hardware rows now has a named instrument. The number is typed by hand and must be edited by
-  # whoever closes a gap -- which is exactly why closing the last one had to change it.
-  want '^blocks: 30 hardware -- 29 with a named instrument, \*\*1 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "30 hardware blocks, 29 read by something, and ONE gap -- the block docs 156 found by measuring what the table leaves out"
+  # The row docs 156 found, and the gap it closed (docs 157). This one is different from every other
+  # closure recorded in this file: the other rows were written by hand and got an instrument later,
+  # while `fingerprint-spi` was found by a READING (every `compatible` no row claims) and then given
+  # one. So this assertion is the whole shape in one line -- a derived reading produced a row, the row
+  # gained an instrument, and the hand-typed count had to be edited by whoever wrote it. The bound
+  # docs 156 put on the report survives the count going back to 0: **0 gaps is still a statement about
+  # the ROWS**, and the same report prints, two lines down, how many compatibles on this board no row
+  # claims at all.
+  want '^blocks: 30 hardware -- 30 with a named instrument, \*\*0 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "30 hardware blocks and all 30 read by something -- because the block docs 156 found now has an instrument"
+  want '^fingerprint-spi +1 +zl1-fp-kernel-probe\.sh' "$R" \
+    "by name: the row a measurement created, covered by the probe written for it (docs 157)"
   want '^eeprom +[0-9]+ +zl1-eeprom-probe\.sh' "$R" \
     "with the last one -- eeprom, nothing missing -- covered by name"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
@@ -527,17 +534,22 @@ else
   # kernels and the tree leaves the node enabled), and the gap list reaches zero because of it.
   want '^eeprom +1 +zl1-eeprom-probe\.sh' "$R" \
     "eeprom -- one node, nothing missing, the last block with no instrument -- is covered, by name"
-  # THE GAP LIST REACHED ZERO ON 2026-09-24 (docs 148) -- and it did not stay there, which is the point
-  # of docs 156. `fingerprint-spi` was added to the table BY THE NEW READING, and it is a gap: the driver
-  # is built into both kernels and creates the device, this project has SEEN its input device on the
-  # screen (docs 70/73), and no script in this tree reads it. So the section that had emptied prints a
-  # gap again, and this assertion is what makes that visible rather than a number nobody re-reads.
-  want 'No script in this tree names these blocks:' "$R" \
-    "the gap section is printed, with its own heading"
-  want '^  fingerprint-spi +1 dtb node\(s\), in F R S$' "$R" \
-    "and the gap is named: the block docs 156 found by measuring what the table leaves out"
-  want '^fingerprint-spi +1 +\*\*NONE\*\*' "$R" "which the table itself reports as unread"
-  want '1 with none' "$R" "with the count at one -- a report that can print a gap is the only one whose zero means anything"
+  # THE GAP LIST IS EMPTY AGAIN, AND THIS TIME IT IS EARNED. It reached zero on 2026-09-24 (docs 148),
+  # stopped being zero when docs 156 added `fingerprint-spi` to the table BY MEASURING what the table
+  # leaves out, and is zero again because docs 157 wrote the probe that reads that block. The three
+  # assertions below are the closure, stated in the direction that can fail: the section is NOT printed,
+  # the row is NOT a NONE, and the summary says 0 -- where a report that had simply lost the ability to
+  # print a gap would pass a "0 gaps" check for the wrong reason.
+  #
+  # That last risk is why the fixture sections above matter more than this one: `blocks: 8 hardware --
+  # 1 with a named instrument, **6 with none**` and the `fgap` rows are a report printing gaps on demand.
+  # A report that CAN print a gap is the only one whose zero means anything, and that is asserted there,
+  # on a fixture this file controls, rather than hoped for here.
+  notwant 'No script in this tree names these blocks:' "$R" \
+    "the gap section is NOT printed -- the block docs 156 found is read now (docs 157)"
+  notwant 'fingerprint-spi +1 +\*\*NONE\*\*' "$R" "and the row it created is not reported as unread"
+  want '30 with a named instrument, \*\*0 with none\*\*' "$R" \
+    "with the count at zero -- and this zero is bounded by the reading two lines below it, which says how many compatibles on this board NO ROW CLAIMS AT ALL"
   notwant '^  eeprom +[0-9]+ dtb node\(s\), in ' "$R" \
     "and eeprom no longer appears among the gaps -- a gap that is closed must leave the section"
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came

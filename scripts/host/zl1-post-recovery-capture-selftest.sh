@@ -222,6 +222,7 @@ callee device/zl1-wfd-probe.sh             WFD
 callee device/zl1-nfc-probe.sh             NFC
 callee device/zl1-fm-radio-probe.sh        FM
 callee device/zl1-eeprom-probe.sh          EEPROM
+callee device/zl1-fp-kernel-probe.sh       FPKERNEL
 callee device/zl1-gps-probe.sh             GPS
 callee device/zl1-fingerprint-probe.sh     FP
 callee device/zl1-orientation-axes.sh      ORIENT
@@ -289,7 +290,7 @@ scpacts()  { grep -E '^scp ' "$ACT" 2>/dev/null; }
 # adding MODEM here made a six-step run read as "exactly five steps" while a step really did run -- the
 # extractor-drops-an-item shape this tree has recorded before. So the list is checked against the
 # markers that actually appear: an unknown CALLEE name is a setup failure, not a silent omission.
-CALLEE_NAMES='EDLPM|BOOTADDR|KEEPER|HEALTH|MODEM|SLEEP|LMH|LEDS|VIBR|VIDEO|SDCARD|USBPD|HDMI|WFD|NFC|FM|EEPROM|GPS|FP|ORIENT|NOEDL'
+CALLEE_NAMES='EDLPM|BOOTADDR|KEEPER|HEALTH|MODEM|SLEEP|LMH|LEDS|VIBR|VIDEO|SDCARD|USBPD|HDMI|WFD|NFC|FM|EEPROM|FPKERNEL|GPS|FP|ORIENT|NOEDL'
 order()    { grep -E "^CALLEE ($CALLEE_NAMES) args=" "$ACT" 2>/dev/null; }
 callee_names_ok() { # every CALLEE <NAME> line in $ACT must be one this file knows how to look for
   local unknown
@@ -473,8 +474,9 @@ want '^CALLEE WFD$' "$(printf '%s\n' "$O" | sed -n '14p')" "then the writeback /
 want '^CALLEE NFC$' "$(printf '%s\n' "$O" | sed -n '15p')" "then the NFC probe (docs 146) -- one node, two property namespaces, and a config line outside its own menu"
 want '^CALLEE FM$' "$(printf '%s\n' "$O" | sed -n '16p')" "then the FM radio probe (docs 147) -- one node the tree itself switches off, and a driver built in BOTH kernels"
 want '^CALLEE EEPROM$' "$(printf '%s\n' "$O" | sed -n '17p')" "then the EEPROM probe (docs 148) -- the LAST gap list row, and the only block whose reading is that nothing is missing"
-want '^CALLEE ORIENT$' "$(printf '%s\n' "$O" | sed -n '18p')" "then the orientation survey"
-[ "$(order | wc -l)" = 18 ] && ok "exactly eighteen steps -- the thirteen read-only probes ARE among them and the 05/06 pair are NOT" \
+want '^CALLEE FPKERNEL$' "$(printf '%s\n' "$O" | sed -n '18p')" "then the fingerprint KERNEL-layer probe (docs 157) -- the layer BELOW every fingerprint document in this project, and the one that says the sensor the HAL opens has no driver at all"
+want '^CALLEE ORIENT$' "$(printf '%s\n' "$O" | sed -n '19p')" "then the orientation survey"
+[ "$(order | wc -l)" = 19 ] && ok "exactly nineteen steps -- the fourteen read-only probes ARE among them and the 05/06 pair are NOT" \
   || { bad "it ran $(order | wc -l) steps:"; order | sed 's/^/        | /'; }
 # docs 116: the probes are skipped by default. This is the assertion that makes the default a fact
 # rather than a comment, and it is on the ORDER list rather than on stdout, so a default that flipped
@@ -513,8 +515,9 @@ want 'zl1-wfd-probe\.sh' "$(scpacts)" "and the writeback / WFD probe (docs 145),
 want 'zl1-nfc-probe\.sh' "$(scpacts)" "and the NFC probe (docs 146), which names the NFC_SET_PWR ioctl on /dev/pn544 as the move it does not make"
 want 'zl1-fm-radio-probe\.sh' "$(scpacts)" "and the FM radio probe (docs 147), which names opening /dev/radioN and writing the v4l2 debug attribute as the moves it does not make"
 want 'zl1-eeprom-probe\.sh' "$(scpacts)" "and the EEPROM probe (docs 148), which reads the attribute.s EXISTENCE and never its contents -- the same path serves both directions"
+want 'zl1-fp-kernel-probe\.sh' "$(scpacts)" "and the fingerprint KERNEL-layer probe (docs 157), which OPENS NOTHING -- not /dev/goodix_fp, not /dev/qbt1000: qbt1000.s open() hands the SPI BLSP block to the secure world, which is the shape that has cost this project a boot"
 want 'sh /tmp/zl1-edl-postmortem\.sh' "$(sshacts)" "and run from /tmp, which is where the health check sends them too"
-[ "$(scpacts | wc -l)" = 16 ] && ok "sixteen pushes: the sixteen DEVICE steps, and no more" \
+[ "$(scpacts | wc -l)" = 17 ] && ok "seventeen pushes: the seventeen DEVICE steps, and no more" \
   || { bad "it pushed $(scpacts | wc -l) files:"; scpacts | sed 's/^/        | /'; }
 
 # ==================================================================================================
@@ -524,7 +527,7 @@ echo "== 4. the archive: everything survives as a file, with an index and a chec
 [ -f "$OD/INDEX.txt" ] && ok "the index exists" || bad "no INDEX.txt"
 [ -f "$OD/SHA256SUMS" ] && ok "and the checksums" || bad "no SHA256SUMS"
 [ -f "$OD/00-identity.txt" ] && ok "the identity block is archived" || bad "no 00-identity.txt"
-for f in 01-edl-postmortem 02-boot-address 03-keeper-status 04-health-check 04b-modem 04c-sleep-throttle 04d-lmh 04e-leds 04f-vibrator 04g-video 04h-sdcard 04i-usbpd 04j-hdmi 04k-wfd 04l-nfc 04m-fm 04n-eeprom 07-orientation; do
+for f in 01-edl-postmortem 02-boot-address 03-keeper-status 04-health-check 04b-modem 04c-sleep-throttle 04d-lmh 04e-leds 04f-vibrator 04g-video 04h-sdcard 04i-usbpd 04j-hdmi 04k-wfd 04l-nfc 04m-fm 04n-eeprom 04o-fp-kernel 07-orientation; do
   [ -s "$OD/$f.txt" ] && ok "step output archived: $f.txt" || bad "missing or empty $f.txt"
 done
 for f in 05-gps-probe 06-fingerprint; do
@@ -543,7 +546,7 @@ echo
 echo "   -- and a second capture of the SAME boot lands in the same directory:"
 run "$OD"
 [ -f "$OD/INDEX.txt" ] && ok "the index is rewritten in place" || bad "the second run lost the index"
-[ "$(find "$OD" -name '*-*.txt' | wc -l)" = 19 ] && ok "and the file set does not grow (19 archived outputs, not 38)" \
+[ "$(find "$OD" -name '*-*.txt' | wc -l)" = 20 ] && ok "and the file set does not grow (20 archived outputs, not 40)" \
   || { bad "the second run added files:"; find "$OD" -name '*-*.txt' | sed 's/^/        | /'; }
 
 # ==================================================================================================
@@ -558,12 +561,12 @@ OD2="$W/out/skip"
 run "$OD2"
 printf '%s\n' "$OUT" > "$W/out.skip"
 [ "$RC" = 0 ] && ok "a plain run exits 0" || bad "it exited $RC"
-notwant '^CALLEE (GPS|FP)' "$(order)" "the two probes are not run BY DEFAULT"
+notwant '^CALLEE (GPS|FP) args=' "$(order)" "the two probes are not run BY DEFAULT -- and the newest step's name (FPKERNEL) is not one of them"
 # docs 120: the MODEM probe is in the default set, and this pair of assertions is the whole point of
 # putting it there -- it must RUN by default, and the flag whose NAME says it skips probes must not
 # silently skip this one either. A default that only exists in a comment is not a default (docs 116).
 want '^CALLEE MODEM args=' "$(order)" "the modem probe IS run by default (read-only, opens no block device)"
-[ "$(order | wc -l)" = 18 ] && ok "leaving eighteen steps" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 19 ] && ok "leaving nineteen steps" || bad "$(order | wc -l) steps ran"
 want 'SKIPPED \(the default; --with-probes runs them\)' "$OUT" "and the skip is SAID, not silent"
 want '04b-modem DID run' "$OUT" "and that this skip does NOT cover the modem probe is said too"
 [ ! -e "$OD2/05-gps-probe.txt" ] && ok "and no file pretends the probe ran" || bad "an empty probe file was written"
@@ -574,9 +577,9 @@ OD2b="$W/out/skip2"
 run "$OD2b" --skip-probes
 printf '%s\n' "$OUT" > "$W/out.skip2"
 [ "$RC" = 0 ] && ok "--skip-probes exits 0" || bad "it exited $RC"
-notwant '^CALLEE (GPS|FP)' "$(order)" "and also skips them (the four documents that spell it out still work)"
+notwant '^CALLEE (GPS|FP) args=' "$(order)" "and also skips them (the four documents that spell it out still work)"
 want '^CALLEE MODEM' "$(order)" "while the modem probe still runs (the flag selects the DEFAULT set, which contains it)"
-[ "$(order | wc -l)" = 18 ] && ok "leaving the same eighteen steps" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 19 ] && ok "leaving the same nineteen steps" || bad "$(order | wc -l) steps ran"
 
 echo
 echo "   -- --with-probes is how the two probes ARE run, and it says so:"
@@ -600,7 +603,7 @@ run "$OD4" --with-capture
 printf '%s\n' "$OUT" > "$W/out.withcapture"
 [ "$RC" = 0 ] && ok "--with-capture exits 0" || bad "it exited $RC"
 want '^CALLEE NOEDL args=--capture-only$' "$(order)" "the writing step runs, in its read-only-looking mode"
-[ "$(order | wc -l)" = 19 ] && ok "nineteen steps -- the eighteen of the default plus the one that writes" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 20 ] && ok "twenty steps -- the nineteen of the default plus the one that writes" || bad "$(order | wc -l) steps ran"
 want '^08-no-edl-capture +0' "$(cat "$OD4/INDEX.txt")" "and it is listed in the index"
 want '^with_capture: 1' "$(cat "$OD4/INDEX.txt")" "with the index recording that the archive is not read-only-only"
 
@@ -637,7 +640,7 @@ want '^02-boot-address +1' "$(cat "$OD5/INDEX.txt")" "and the index carries the 
 [ -s "$OD5/02-boot-address.txt" ] && ok "its output is still archived" || bad "a failed step's output was dropped"
 want 'CALLEE BOOTADDR: done rc=1' "$(cat "$OD5/02-boot-address.txt")" "and it is the step's own output"
 want '^CALLEE HEALTH' "$(order)" "the steps AFTER it still ran -- the evidence is not thrown away"
-[ "$(order | wc -l)" = 18 ] && ok "all eighteen ran (the default set; no 05/06 probe is in it)" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 19 ] && ok "all nineteen ran (the default set; no 05/06 probe is in it)" || bad "$(order | wc -l) steps ran"
 want 'FAILED \(their output is archived' "$OUT" "and the summary says the archive is still worth reading"
 want 'netwatch-configured' "$OUT" "while the next-move text still explains what 02 decides"
 notwant 'capture complete: 6 steps ran, 0 failed' "$OUT" "and it does not claim a clean capture"
@@ -713,7 +716,7 @@ OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_STUB_PATH="$BINONLY" \
 printf '%s\n' "$OUT" > "$W/out.notimeout"
 [ "$RC" = 0 ] && ok "with no timeout(1) the capture still completes (exit 0)" || bad "it exited $RC"
 want 'THIS STEP IS NOT TIME-BOUNDED' "$(cat "$ODN/01-edl-postmortem.txt")" "and the step's own output says the bound is missing"
-[ "$(order | wc -l)" = 17 ] && ok "all seventeen steps still ran (the default set minus the orientation survey)" || bad "$(order | wc -l) steps ran"
+[ "$(order | wc -l)" = 18 ] && ok "all eighteen steps still ran (the default set minus the orientation survey)" || bad "$(order | wc -l) steps ran"
 
 echo
 echo "   -- an interrupt mid-step: the archive is written anyway"

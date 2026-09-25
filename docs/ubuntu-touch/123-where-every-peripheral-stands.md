@@ -40,7 +40,7 @@
 | **传感器 · 压力** | **不存在** | `pressuresensor` **连 bus object 都没有**，尽管它的 plugin 加载了 | **`availableSensorPlugins` 列的是 plugin，不是硬件** —— 这台设备没有这个传感器 |
 | **摄像头** | **部分** | **预览上过屏**（doc 77）：显示点亮时，合成器空转 2 ticks/s、`test_camera` 渲染预览时 20–26 ticks/s。UT 相机 app **第一次跑起来**（doc 80）：`Added camera "0"/"1"` + `Application is now active` | **app 自己的窗口有没有到屏幕上、有没有出帧**。仪器 `zl1-camera-app-test.sh` 就是量这个的，**它还从来没在设备上跑过**。**注意**：`file` 会把截断的 PNG 报成合法 PNG |
 | **GPS** | **只量过离线** | 仪器 `zl1-gps-probe.sh`（只读）；**第一个客户端有名字了**：预装的天气 app 的 QML 里 `PositionSource { active: settings.detectCurrentLocation }`，它自己的 AppArmor profile 带 `location` | **从来没有拿到过一次定位。**`u_hardware_gps_start` **一次都没被调用过**。文档 82 的两根杠杆都是死的（v63 的 boot hook 把 `/usr/bin/getprop` 换成没有 `custom.*` 分支的 stub）。**2026-09-25 又量了一条：它在内核这一层什么都没有**——`drivers/` 里没有 GNSS 驱动、`msm8996.dtsi` 里没有 GNSS 节点、配置里没有 `CONFIG_*GNSS*`，整个 `--dump-compatibles`（1499 行）里 `gnss`/`gps` **一条都不匹配**。GNSS 引擎在调制解调器（MSS）里，而固件从来没被挂上（doc 120/154）。**所以它不可能出现在任何从设备树派生的覆盖率报告里**——见 §1.1 |
-| **指纹** | **只量过离线** | 仪器 `zl1-fingerprint-probe.sh`；**根因找到了（离线，doc 83）：是一个缺失的目录**，不是坏的 HAL。修法存在（`install-fingerprint-store-dir.sh`，doc 106） | **修法一次都没在设备上跑过。**唯一的判据是 `journalctl -b -u biometryd \| grep -c "setActiveGroup failed"` **变成 0**。**2026-09-24 之前的探针输出不要信**：它的存在性测试是 `nsenter -m -- test`，在这台设备上跑不起来，每次都答"missing" |
+| **指纹** | **只量过离线** | 两个仪器：`zl1-fingerprint-probe.sh`（**驱动以上的层**：存目录、HAL、信任库）和 `zl1-fp-kernel-probe.sh`（docs 157，**驱动这一层**）。**根因之一找到了（离线，doc 83）：是一个缺失的目录**，不是坏的 HAL。修法存在（`install-fingerprint-store-dir.sh`，doc 106） | **两个读数都一次都没在设备上跑过。**存目录的判据是 `journalctl -b -u biometryd | grep -c "setActiveGroup failed"` **变成 0**。**2026-09-25 又量了一条（离线，doc 157）：这块板的设备树声明两个指纹块，而内核只为其中一个编了驱动**——HAL 开的那一个（`/dev/goodix_fp`）**没有驱动**（`# CONFIG_INPUT_GP5XX8 is not set`，从**镜像自己嵌的那份配置**里读出来的），板上另一个块有（`CONFIG_MSM_QBT1000=y`）。**所以"指纹不工作"必须按块说**，而补上那个驱动 = 重新编译 + 刷 boot，**还没做**。**2026-09-24 之前的探针输出不要信**：它的存在性测试是 `nsenter -m -- test`，在这台设备上跑不起来，每次都答"missing" |
 | **modem / telephony** | **只量过离线** | 仪器 `zl1-modem-probe.sh`（只读、从不打开块设备，已经在 capture 的默认集里当 04b） | **一次真机读数都没取过。**离线结论是：cmdline **一直**带着 `firmware_class.path=/vendor/firmware_mnt/image`（指对了），而 UT 的 `/vendor` 是**指向 `/android/vendor` 的软链**，所以问题从"路径"变成了"**那个挂载**"。要做的是读四行（doc 120 §7.1） |
 | **发热** | **三个原因，一个修复都没装上** | ① v63 debug keeper 每秒 `systemctl` 一次（约一个核）；② 镜像把四个核**全钉在 `performance`**；③ **SoC 被禁止用自己低功耗阶梯**（每条 cmdline 都带 `lpm_levels.sleep_disabled=1`）。仪器：`zl1-thermal.sh`、`zl1-sleep-and-throttle.sh`（capture 04c）、`zl1-lpm-ladder-trial.sh` | **三个修复都要一个 boot。**① 和 ② 由 `zl1-heat-fix-chain.sh --yes` 一条命令做；③ 的答案是 `sleep_disabled` 上的一次**写入**（0664 可写，不用 flash），**而"写下去有没有用"要设备上的前后对比**（doc 122） |
 | **网络（RNDIS）** | **已证明，而且原因是宿主侧的** | 宿主手动 bind `rndis_host` + 设 IP（**Option C**，`V63-OPTIONC-CONFIRMED-WORKING.md`）。35 s 失联是**宿主侧**的，设备一直没问题 | 无。**链路卡住时从宿主侧重新枚举 gadget**（`authorized` 0→1）：不用重启、不用插拔、不用按键 |
@@ -72,10 +72,12 @@ DTB pattern 拼成一条 alternation，再问**这一块板上每一个 `path/co
 |---|---|
 | 这块板上**没有任何一行认领**的 `compatible` | **142 个不同值 / 242 个 path-compatible 对** → 表改过之后 **135 / 230** |
 | 报告的表 | **29 → 30** 行 `HW` |
-| 缺口 | **0 → 1**——**自 docs 148 把清单清零以来第一次不为零** |
+| 缺口 | **0 → 1 → 0**——docs 156 的读数加上那一行时**自 docs 148 清零以来第一次不为零**，而 docs 157 写了读它的探针，于是**又回到 0**：这个 0 仍然是**关于"行"的**，见这段下面两句 |
 | 那一个缺口是 | **`fingerprint-spi`**：`/soc/qcom,qbt1000`，驱动**编进了内核**（`CONFIG_MSM_QBT1000=y`），它自己建出 `/dev/qbt1000` **和一个输入设备 `qbt1000_key_input`**（这个工程**在屏幕上见过**那个输入设备，doc 70/73）——而**这棵树里没有任何脚本读过它**。它的设备树子节点是 **`qcom,fingerprint-sensor-ssc-spi-conn`**：**指纹的 SPI 通路在这一块里** |
 
 这一条读数值得记住的**不是那个数**，是它的**形状**：那 30 行里，**1 行是这次读数找出来的**，
+
+**而这一行现在是活的**：docs 157 为它写了仪器（`zl1-fp-kernel-probe.sh`，采集链的 04o，只读，一个设备节点都不打开），于是**缺口列表回到 0**。所以那 30 行里**唯一一行不是手写的**，也是**唯一一行从"被测量找出来"到"被读上"走完全程的**。回到 0 这件事**不改变 §1.1 的上限**：那个 0 仍然是关于行的，而同一份报告在它下面两行仍然印着"这块板上有多少个 compatible 没有任何一行认领"，以及那句"没有设备树节点的硬件永远进不来"（GPS 就是那一个，见再下一段）。
 其余 29 行是过去十二轮里一行一行手写进去的。**手写的清单不会报告自己漏了什么**——
 所以缺口的判据从"谁忘了写探针"变成了"**读数说这里有一块没名字**"。
 
@@ -112,6 +114,7 @@ GPS 就是那个例子（§1 那行）：它在**内核这一层什么都没有*
 * **不声称"硬件都驱动了"。**表里 14 项：**5 项已证明**、**4 项部分**、**1 项不存在**、
   **3 项只量过离线**、**1 项（发热）三个修复一个都没装**。
 * **不声称这一页是完备的。**它是"已经有人查过的那些"。**没出现在表里的东西没被查过**，那不是"没问题"。
+  2026-09-25 起这句话**有一个数字**：设备树派生出来 **30 个块**，30 个都有人读了（`fingerprint-spi` 是 docs 156 的读数找出来的那一行，docs 157 给它写了仪器）——**而这个 0 只是关于行的**，因为**没有设备树节点的硬件（GPS）连在这份派生里都不会出现**——见 §1.1。
   2026-09-25 起这句话**有一个数字**：设备树派生出来 **30 个块**，其中 **1 个（`fingerprint-spi`）没有任何脚本读过**，
   而**没有设备树节点的硬件（GPS）连在这份派生里都不会出现**——见 §1.1。
 * **不声称任何"部分"那一栏是好的。**"链路的一段被量过"和"它能用"是两件事，

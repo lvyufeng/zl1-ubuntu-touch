@@ -129,6 +129,18 @@ esac
 # that cannot be found, which is why a row whose pattern matches no node at all is reported
 # separately instead of counted as covered.
 #
+# The `fingerprint-spi` row is the only row here that was NOT written by hand: docs 156 added the
+# reading this table never had -- every `compatible` on the board that no row claims -- and this block
+# (`/soc/qcom,qbt1000`) came out of it on the first run, as a row that did not exist before. It is worth
+# keeping in view for two reasons. First, the reading is what found it: a hand-written list cannot
+# report what it left out, so a block with no row was not a gap, it was invisible. Second, the row then
+# got an instrument (docs 157, `zl1-fp-kernel-probe.sh`), which is why the gap count is 0 again -- and
+# that number is about ROWS, which is the same bound docs 156 put on the whole report. Its instrument
+# reads the block's kernel-side state (its node in the LIVE tree, the config the running kernel was
+# built with, whether its platform device exists, what the log says) and **opens nothing**: this
+# driver's `open()` runs an SNS QMI open and then an `scm_call2` that hands the SPI BLSP block to the
+# secure world. A probe that read the block by opening it would be a state change dressed as a reading.
+#
 # The `vibrator` row is the one this table has already got wrong, and the correction is worth keeping
 # in view: it used to be `ti,drv2604`, which is the X2's second haptics chip and is declared by that
 # phone's trees ONLY. The row therefore read "1 node, only in the rebuilt set" -- a reading that
@@ -143,7 +155,7 @@ gpu	kgsl-3d0|kgsl-iommu|kgsl-smmu|kgsl-busmon|kgsl-hyp|gpucc|gpu-mempool	kgsl|/d
 touch	focaltech|synaptics|atmel_mxt|hideep	/dev/input|ABS_MT|BTN_TOUCH|event[0-9]	HW	scripts/device/zl1-watch-input.py
 keys	gpio-keys|gpio_keys|qpnp-power-on|pmic-reset-reason	/dev/input|BTN_TOUCH|KEY_|BTN_POWER	HW	scripts/device/zl1-input-devices.py
 fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/device/zl1-fingerprint-probe.sh
-fingerprint-spi	qcom,qbt1000	qbt1000|qbt1000_key_input	HW	-
+fingerprint-spi	qcom,qbt1000	qbt1000|qbt1000_key_input	HW	scripts/device/zl1-fp-kernel-probe.sh
 nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	scripts/device/zl1-nfc-probe.sh
 fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	scripts/device/zl1-fm-radio-probe.sh
 vibrator	qcom,qpnp-haptic|qcom,haptic	qpnp.hap|qpnp_haptic|haptic|timed_output|vibrat	HW	scripts/device/zl1-vibrator-probe.sh
