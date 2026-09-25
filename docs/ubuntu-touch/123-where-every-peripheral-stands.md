@@ -1,7 +1,7 @@
 # 123 — 每个外设现在到底在哪儿（一页，写给自己看的）
 
-**日期**: 2026-09-24
-**状态**: 整轮**没有碰设备**（设备仍在 EDL，见 §5）。这一篇**不是一个阶段**，是一件本来早该有的东西：
+**日期**: 2026-09-25（**更新过**：新增 **§1.1**——"这一页不完备"这句话现在**有一个数字**了）
+**状态**: 整轮**没有碰设备**（设备现在在 **fastboot**，见 §5）。这一篇**不是一个阶段**，是一件本来早该有的东西：
 把每个外设的当前状态、**它是怎么被证明的**、以及**还没证明的那部分**收在一页上。
 写它的理由很直接：仓库里最近一份"状态"文档是 [`25`](25-status-2026-09-17.md)，8 天前，
 而且它整篇讲的是一个**已经解决了的问题**（网络断流）。
@@ -39,7 +39,7 @@
 | **传感器 · 光（ALS）** | **部分** | **它不是一个"从不"**：时间戳永远是 0（任何按年龄判断的测试都读成"从不"），**而 lux 字段在动**（94 → 96 → 98 → 97）。探针现在说的是"值在动，adaptor 从不给样本打时间戳" | 它有没有被**任何东西消费**（屏幕亮度策略） |
 | **传感器 · 压力** | **不存在** | `pressuresensor` **连 bus object 都没有**，尽管它的 plugin 加载了 | **`availableSensorPlugins` 列的是 plugin，不是硬件** —— 这台设备没有这个传感器 |
 | **摄像头** | **部分** | **预览上过屏**（doc 77）：显示点亮时，合成器空转 2 ticks/s、`test_camera` 渲染预览时 20–26 ticks/s。UT 相机 app **第一次跑起来**（doc 80）：`Added camera "0"/"1"` + `Application is now active` | **app 自己的窗口有没有到屏幕上、有没有出帧**。仪器 `zl1-camera-app-test.sh` 就是量这个的，**它还从来没在设备上跑过**。**注意**：`file` 会把截断的 PNG 报成合法 PNG |
-| **GPS** | **只量过离线** | 仪器 `zl1-gps-probe.sh`（只读）；**第一个客户端有名字了**：预装的天气 app 的 QML 里 `PositionSource { active: settings.detectCurrentLocation }`，它自己的 AppArmor profile 带 `location` | **从来没有拿到过一次定位。**`u_hardware_gps_start` **一次都没被调用过**。文档 82 的两根杠杆都是死的（v63 的 boot hook 把 `/usr/bin/getprop` 换成没有 `custom.*` 分支的 stub） |
+| **GPS** | **只量过离线** | 仪器 `zl1-gps-probe.sh`（只读）；**第一个客户端有名字了**：预装的天气 app 的 QML 里 `PositionSource { active: settings.detectCurrentLocation }`，它自己的 AppArmor profile 带 `location` | **从来没有拿到过一次定位。**`u_hardware_gps_start` **一次都没被调用过**。文档 82 的两根杠杆都是死的（v63 的 boot hook 把 `/usr/bin/getprop` 换成没有 `custom.*` 分支的 stub）。**2026-09-25 又量了一条：它在内核这一层什么都没有**——`drivers/` 里没有 GNSS 驱动、`msm8996.dtsi` 里没有 GNSS 节点、配置里没有 `CONFIG_*GNSS*`，整个 `--dump-compatibles`（1499 行）里 `gnss`/`gps` **一条都不匹配**。GNSS 引擎在调制解调器（MSS）里，而固件从来没被挂上（doc 120/154）。**所以它不可能出现在任何从设备树派生的覆盖率报告里**——见 §1.1 |
 | **指纹** | **只量过离线** | 仪器 `zl1-fingerprint-probe.sh`；**根因找到了（离线，doc 83）：是一个缺失的目录**，不是坏的 HAL。修法存在（`install-fingerprint-store-dir.sh`，doc 106） | **修法一次都没在设备上跑过。**唯一的判据是 `journalctl -b -u biometryd \| grep -c "setActiveGroup failed"` **变成 0**。**2026-09-24 之前的探针输出不要信**：它的存在性测试是 `nsenter -m -- test`，在这台设备上跑不起来，每次都答"missing" |
 | **modem / telephony** | **只量过离线** | 仪器 `zl1-modem-probe.sh`（只读、从不打开块设备，已经在 capture 的默认集里当 04b） | **一次真机读数都没取过。**离线结论是：cmdline **一直**带着 `firmware_class.path=/vendor/firmware_mnt/image`（指对了），而 UT 的 `/vendor` 是**指向 `/android/vendor` 的软链**，所以问题从"路径"变成了"**那个挂载**"。要做的是读四行（doc 120 §7.1） |
 | **发热** | **三个原因，一个修复都没装上** | ① v63 debug keeper 每秒 `systemctl` 一次（约一个核）；② 镜像把四个核**全钉在 `performance`**；③ **SoC 被禁止用自己低功耗阶梯**（每条 cmdline 都带 `lpm_levels.sleep_disabled=1`）。仪器：`zl1-thermal.sh`、`zl1-sleep-and-throttle.sh`（capture 04c）、`zl1-lpm-ladder-trial.sh` | **三个修复都要一个 boot。**① 和 ② 由 `zl1-heat-fix-chain.sh --yes` 一条命令做；③ 的答案是 `sleep_disabled` 上的一次**写入**（0664 可写，不用 flash），**而"写下去有没有用"要设备上的前后对比**（doc 122） |
@@ -50,6 +50,39 @@
 它的 TLS drop-in 被写到了 `…-from-deviceinfo.d` 而不是 `…service.d`，systemd 不读那个名字。
 `hostnamectl` 现在报 `Pretty hostname: LeEco Pro3`（镜像本身在 `/etc/machine-info` 里放了 "Generic device" 这个占位符，
 而那个 unit **只在当前值为空时**才写）。
+
+---
+
+## 1.1 这张表的上限：覆盖率的两个半边
+
+§3 写着"这一页**不声称**完备"，而**不声称**在过去是一个姿态。2026-09-25 它变成了**一个数字**。
+
+`zl1-hardware-inventory.sh` 回答的是"**哪一块硬件没有任何脚本读过**"，而这个句子里有**两个名词**——
+**行**（表里写的块）和**块**（板上真有的硬件）。它过去只量第一个：报告里的每一行、每一个计数、
+连"**0 gaps**"那句总结，数的都是**表里的行**，而表是**手写的**。所以**一行都没写的块**在那份报告里
+不是"缺口"，而是**根本不存在**——缺口是"一行失败了"，而**缺了一行，什么都不会失败**
+（这个形状在同一个文件里已经修过一次：那份报告曾经**搜到自己的源码**，于是每个块都被自己"覆盖"，
+总结印出 **34 covered / 0 gaps**——一份**不可能报缺口**的报告；那一次修的是"**谁算仪器**"，见
+[`137`](137-a-boot-should-answer-the-question-nobody-asked.md)）。
+
+[`156`](156-the-coverage-is-about-the-table-and-nothing-measured-the-table.md) 补上了第二个半边：把表里每一行的
+DTB pattern 拼成一条 alternation，再问**这一块板上每一个 `path/compatible` 是不是有人认领**。第一次跑：
+
+| 读数 | 值 |
+|---|---|
+| 这块板上**没有任何一行认领**的 `compatible` | **142 个不同值 / 242 个 path-compatible 对** → 表改过之后 **135 / 230** |
+| 报告的表 | **29 → 30** 行 `HW` |
+| 缺口 | **0 → 1**——**自 docs 148 把清单清零以来第一次不为零** |
+| 那一个缺口是 | **`fingerprint-spi`**：`/soc/qcom,qbt1000`，驱动**编进了内核**（`CONFIG_MSM_QBT1000=y`），它自己建出 `/dev/qbt1000` **和一个输入设备 `qbt1000_key_input`**（这个工程**在屏幕上见过**那个输入设备，doc 70/73）——而**这棵树里没有任何脚本读过它**。它的设备树子节点是 **`qcom,fingerprint-sensor-ssc-spi-conn`**：**指纹的 SPI 通路在这一块里** |
+
+这一条读数值得记住的**不是那个数**，是它的**形状**：那 30 行里，**1 行是这次读数找出来的**，
+其余 29 行是过去十二轮里一行一行手写进去的。**手写的清单不会报告自己漏了什么**——
+所以缺口的判据从"谁忘了写探针"变成了"**读数说这里有一块没名字**"。
+
+**而这个读数有它自己的盲区，同一轮也量了**：**没有设备树节点的硬件，它永远看不见。**
+GPS 就是那个例子（§1 那行）：它在**内核这一层什么都没有**——没有驱动、没有节点、没有 `CONFIG_*`、
+在整个 dump 里一条都不匹配。**所以"所有的硬件都能驱动"这句话里的 GPS 那一格，必须靠这一页来回答**，
+而不是靠那份报告。这就是这一页存在的理由，现在它是**量出来的**，不是感觉出来的。
 
 ---
 
@@ -79,6 +112,8 @@
 * **不声称"硬件都驱动了"。**表里 14 项：**5 项已证明**、**4 项部分**、**1 项不存在**、
   **3 项只量过离线**、**1 项（发热）三个修复一个都没装**。
 * **不声称这一页是完备的。**它是"已经有人查过的那些"。**没出现在表里的东西没被查过**，那不是"没问题"。
+  2026-09-25 起这句话**有一个数字**：设备树派生出来 **30 个块**，其中 **1 个（`fingerprint-spi`）没有任何脚本读过**，
+  而**没有设备树节点的硬件（GPS）连在这份派生里都不会出现**——见 §1.1。
 * **不声称任何"部分"那一栏是好的。**"链路的一段被量过"和"它能用"是两件事，
   这一页把两者分开写就是为了这个。
 * **不声称离线结论在真机上成立。**"只量过离线"那一栏的三项（GPS、指纹、modem）
@@ -98,16 +133,24 @@ GPS    让天气 app 的 "detect current location" 打开（zl1-gps-first-client
 
 三条都不需要 flash、不需要写分区，而且**前两条各有一个已经写好的、离线验证过的修法**在等着。
 
-**但那需要设备回来**，而设备现在在 EDL —— 唯一的出口是**物理长按电源 10–20 秒**（只有用户能做）。
+**但那需要设备回来**，而设备现在在 **fastboot**（`33e80afe`，`18d1:d00d`，端口 3-3，2026-09-25 复核）——
+它已经出了 EDL，代价是**用户的一次物理长按**——而**一次按键只买回一次开机**，所以那一次开机的证据必须
+**当场抓完**：只读链是**一条命令**，顺序被强制执行（[`107`](107-one-physical-press-buys-one-command.md)、
+[`124`](124-the-boot-a-finger-bought-is-one-command.md)）。
+**挡在这一切前面的仍然是电**：这一次开机的每一项都压在电池能不能撑住开机上，而那个闸门的仪器是
+[`150`](150-the-gate-the-rest-of-the-project-waits-behind.md) 的 `zl1-battery-gate.sh`——
+插**墙充**，然后 `bash scripts/host/zl1-battery-gate.sh --samples 9 --interval 60`。
 
 ---
 
 ## 5. 设备状态
 
-设备仍在 **Qualcomm EDL**（`05c6:9008`，`Bus 003 Device 020`，无序列号），本轮复核过。
+设备在 **fastboot**：`fastboot devices` → `33e80afe\tfastboot`，`getvar product` → `MSM8996`（2026-09-25 复核）。
+**注意按序列号认它，不按 USB ID**：同一条总线上有一个无关的 Xiaomi `4a2fe00b`（`18d1:4ee7`），
+而 fastboot 的 `18d1:d00d` 是两个品牌共用的 ID（`[[ignore-xiaomi-4a2fe00b]]`）。
 整轮没有写任何分区或 boot，没有跑 QDL/QFIL，没有重启，没有绕过权限。
 
-**出来之后是一条命令**（[`124`](124-the-boot-a-finger-bought-is-one-command.md)：顺序被强制执行，
+**一次开机仍然是一条命令**（[`124`](124-the-boot-a-finger-bought-is-one-command.md)：顺序被强制执行，
 不是靠记性）：
 
 ```

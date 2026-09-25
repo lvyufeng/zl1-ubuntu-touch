@@ -329,7 +329,8 @@ python3 "$W/fdtbuild.py" '{"name":"","props":{},"children":[
   {"name":"f@6","props":{"compatible":"fstale,dev"},"children":[]},
   {"name":"g@7","props":{"compatible":"finfra,dev"},"children":[]},
   {"name":"h@8","props":{"compatible":"fmissing,dev"},"children":[]},
-  {"name":"i@9","props":{"compatible":"fgap,dev"},"children":[]}]}' "$FR/tmp-dtb-analysis/stock/dtbs/fixture.dtb" \
+  {"name":"i@9","props":{"compatible":"fgap,dev"},"children":[]},
+  {"name":"j@10","props":{"compatible":"funclaimed,dev"},"children":[]}]}' "$FR/tmp-dtb-analysis/stock/dtbs/fixture.dtb" \
   || { echo "the fixture repo DTB could not be built" >&2; exit 2; }
 
 R=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table.txt" 2>/dev/null)
@@ -358,7 +359,34 @@ want '^  fbackup +1 dtb node\(s\), in S -- backup-partitions-adb\.sh names it on
 want '^  fmissing +scripts/does-not-exist\.sh$' "$R" "and the STALE list names the file the table points at, so the broken path is visible"
 want '^  fgap +1 dtb node\(s\), in S$' "$R" "and a row that names no instrument at all is a plain gap -- the report says nothing about a file it was never given"
 notwant '^  fcode ' "$R" "and the COVERED block is not in the gap list"
-want 'the device tree: 9 distinct paths, 9 path/compatible pairs' "$R" "the fixture tree's own totals are counted, not assumed"
+want 'the device tree: 10 distinct paths, 10 path/compatible pairs' "$R" "the fixture tree's own totals are counted, not assumed"
+# ---------------------------------------------------------------------------------------------
+# THE PART OF THE BOARD THE TABLE DOES NOT NAME (docs 156). Every count above is about the rows,
+# and the rows are a hand-written claim -- so a block nobody wrote a row for was not a gap, it was
+# invisible. `j@10` is exactly that: it is in the fixture tree and NO row claims it. Before this
+# reading existed there was nothing in the report that could have said so.
+want 'the board this TABLE does not name' "$R" "the report carries the reading that bounds its own table"
+want '1 distinct compatible\(s\) on this board are claimed by NO row \(1 path/compatible' "$R" \
+  "and it counts the one compatible nothing claims -- ONE, not the number of DTB files the fixture has"
+UN=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table.txt" --unclaimed 2>/dev/null)
+want '/tmp-dtb-analysis/stock/dtbs/j@10|j@10' "$UN" "and --unclaimed lists the node, with its path, so it can be triaged"
+want 'funclaimed,dev' "$UN" "naming the compatible a human would have to write a row for"
+notwant '^fcode' "$UN" "and it is NOT the block table -- a claimed row is not in this list"
+# THE COUNTER-CASE, and it is what makes the reading able to be zero rather than always nonzero: with a
+# row that claims the same node, the count falls to 0 and the report says so in words. A reading that
+# cannot reach its own empty value is a reading whose non-empty value means nothing.
+cp "$W/table.txt" "$W/table-claimed.txt"
+printf '%s\n' 'funclaimed	funclaimed,dev	FCODE_TOKEN	HW	scripts/instr-code.sh' >> "$W/table-claimed.txt"
+R0=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table-claimed.txt" 2>/dev/null)
+want '0 distinct compatible\(s\) on this board are claimed by NO row \(0 path/compatible' "$R0" \
+  "a row that claims the node takes the count to zero -- the reading is a count, not a constant"
+UN0=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table-claimed.txt" --unclaimed 2>/dev/null)
+want '\(none: every path/compatible pair on this board is claimed by some row\)' "$UN0" \
+  "and the empty list says so out loud, because an empty list and a reading that did not run look the same"
+# THE REFUSAL. The rows are joined into ONE alternation to measure what they do not cover, and an empty
+# alternative in an ERE matches everything -- so a row with a blank pattern would report the whole board
+# as named. It is refused for the same reason the empty instrument field was: it inverts the answer.
+
 
 # A malformed table must be refused. A four-field row puts the instrument where `kind` belongs, leaves
 # the instrument empty -- and an empty pattern makes `grep -x` match every line, so the row is reported
@@ -368,6 +396,16 @@ OUT=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table-bad.tx
 if [ "$rc" = 2 ]; then ok "a table row that is not 5 fields exits 2"; else bad "a malformed table row exited $rc, not 2"; fi
 want '4 field\(s\)' "$OUT" "and says which row and how many fields"
 notwant 'with a named instrument' "$OUT" "and produces no report at all"
+
+# The OTHER malformed table, and the one the reading above made dangerous: five fields, but the DTB
+# PATTERN is blank. An empty alternative in the joined alternation matches every string, so this row
+# would report the whole board as named -- "0 compatibles claimed by no row" -- while the row itself
+# would read as covering every node. Both halves of that are the answer inverted, so it is refused.
+printf 'y\t\tTOK\tHW\t-\n' > "$W/table-nopat.txt"
+OUT=$(bash "$FR/scripts/host/zl1-hardware-inventory.sh" --table "$W/table-nopat.txt" 2>&1); rc=$?
+if [ "$rc" = 2 ]; then ok "a table row with no DTB pattern exits 2"; else bad "a blank pattern exited $rc, not 2"; fi
+want 'no DTB pattern' "$OUT" "and says which row it is"
+want 'would report the whole board as named' "$OUT" "and why an empty pattern is worse than a wrong one"
 
 # The refusal must be about the harness's own seam too: no DTBs and no snapshot is a refusal with the
 # two ways forward, not an empty table. Run it from the fake root, which has a DTB, and then from one
@@ -391,6 +429,26 @@ else
   nonempty "the report has content" "$R"
   want 'nodes in the device tree: 688 distinct paths, 705 path/compatible pairs' "$R" \
     "THIS PHONE's enumeration, counted (the two numbers differ: a node can carry several compatibles, and a path can appear twice in one DTB)"
+  # THE BOUND ON "0 GAPS" (docs 156). Every count in this report is about the rows, and the rows are a
+  # hand-written claim; this reading measures what the claim leaves out, against the same trees. The two
+  # numbers are typed here on purpose -- if the table grows, or a pattern widens, they move and this
+  # harness says so.
+  want 'The part of the board this TABLE does not name' "$R" \
+    "the report carries the reading that bounds its own summary, in the default mode and not behind a flag"
+  want '135 distinct compatible\(s\) on this board are claimed by NO row \(230 path/compatible' "$R" \
+    "and the bound is a number: 135 compatibles this table does not claim"
+  want 'cannot appear in the gap list at all' "$R" \
+    "with the reason it exists: a gap is a row that failed, and a missing row fails nothing"
+  want 'cannot be complete in the other direction' "$R" \
+    "and the reading's OWN blind spot is stated, so the number is not read as 'this is everything left'"
+  # The reading is where the block CAME FROM, and the pair of assertions below is that story end to end:
+  # `qcom,qbt1000` is on this board in every set, no row claimed it, and it is now a row -- so it is a
+  # GAP in the table and NOT in the unclaimed list any more. `qcom,msm_tspp` is the one that was found
+  # and left out, and the reason it is left out is written down in docs 156 rather than implied here.
+  want 'qcom,msm_tspp' "$(bash "$SRC" --snapshot "$SNAP" --unclaimed 2>/dev/null)" \
+    "the list names the blocks that were found and not taken: qcom,msm_tspp is one, on purpose"
+  notwant 'qcom,qbt1000' "$(bash "$SRC" --snapshot "$SNAP" --unclaimed 2>/dev/null)" \
+    "and it no longer names the one that became a row -- a claimed block leaves the list"
   # The board filter is not a detail of this report, it is the correction it exists to carry: the
   # flashed boot image's appended blob holds the LeEco X2's device trees too, and the two boards' root
   # `compatible` is byte-identical, so an unfiltered report credits this phone with another phone's
@@ -405,8 +463,8 @@ else
   # The LAST gap closed, and this is the line the whole table was built to be able to print: every one of
   # the 29 hardware rows now has a named instrument. The number is typed by hand and must be edited by
   # whoever closes a gap -- which is exactly why closing the last one had to change it.
-  want '^blocks: 29 hardware -- 29 with a named instrument, \*\*0 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
-    "29 hardware blocks, 29 read by something, and NO gaps left"
+  want '^blocks: 30 hardware -- 29 with a named instrument, \*\*1 with none\*\*, 0 STALE; plus 6 infrastructure rows' "$R" \
+    "30 hardware blocks, 29 read by something, and ONE gap -- the block docs 156 found by measuring what the table leaves out"
   want '^eeprom +[0-9]+ +zl1-eeprom-probe\.sh' "$R" \
     "with the last one -- eeprom, nothing missing -- covered by name"
   # Two more gaps closed on 2026-09-24 (docs 139): the notification LED and the camera torch, by
@@ -469,13 +527,17 @@ else
   # kernels and the tree leaves the node enabled), and the gap list reaches zero because of it.
   want '^eeprom +1 +zl1-eeprom-probe\.sh' "$R" \
     "eeprom -- one node, nothing missing, the last block with no instrument -- is covered, by name"
-  # ZERO GAPS. This is the line that has to be looked at rather than trusted: the loop that used to assert
-  # the remaining gaps would now assert nothing at all, so the reading is that the section prints its OWN
-  # sentence for the empty case -- a report that cannot show a gap and one with no gaps read the same
-  # otherwise, and this is the last row that made the difference visible.
-  want 'Every hardware block in this table is named by a script: 29 of 29 rows, 0 gaps' "$R" \
-    "and the gap section says in words that it is empty, rather than simply not appearing"
-  want '0 with none' "$R" "with the count at zero -- the number the whole table was built to reach"
+  # THE GAP LIST REACHED ZERO ON 2026-09-24 (docs 148) -- and it did not stay there, which is the point
+  # of docs 156. `fingerprint-spi` was added to the table BY THE NEW READING, and it is a gap: the driver
+  # is built into both kernels and creates the device, this project has SEEN its input device on the
+  # screen (docs 70/73), and no script in this tree reads it. So the section that had emptied prints a
+  # gap again, and this assertion is what makes that visible rather than a number nobody re-reads.
+  want 'No script in this tree names these blocks:' "$R" \
+    "the gap section is printed, with its own heading"
+  want '^  fingerprint-spi +1 dtb node\(s\), in F R S$' "$R" \
+    "and the gap is named: the block docs 156 found by measuring what the table leaves out"
+  want '^fingerprint-spi +1 +\*\*NONE\*\*' "$R" "which the table itself reports as unread"
+  want '1 with none' "$R" "with the count at one -- a report that can print a gap is the only one whose zero means anything"
   notwant '^  eeprom +[0-9]+ dtb node\(s\), in ' "$R" \
     "and eeprom no longer appears among the gaps -- a gap that is closed must leave the section"
   # Both device-tree sets are in play, and one block exists in only one of them: the DTB a block came
@@ -487,11 +549,11 @@ else
   want '^vibrator +1 +zl1-vibrator-probe\.sh \(\+1\) +F R S$' "$R" \
     "the vibrator is this board's PMI8994 haptics block, in every set -- not the X2's ti,drv2604l -- and exactly one other file names it (the capture chain that runs it)"
   want '^touch +3 ' "$R" "three touch controllers on this phone's trees (one is the one the user's finger proved)"
-  want '^audio-codec +66 +zl1-audio-test\.sh' "$R" "the audio block's 66 nodes are read by one named probe"
+  want '^audio-codec +69 +zl1-audio-test\.sh' "$R" "the audio block's 69 nodes are read by one named probe -- 66 until docs 156, when the row's pattern was found to miss the codec's own SLIM bus and the sound card, which its token list had named all along"
   # The same two rows under --board all: the difference IS the other phone. This is the reading that
   # makes "the filter is doing something" visible on the real data and not only in a fixture.
   want '^touch +6 ' "$RA" "the other phone adds three more touch controllers to the same row"
-  want '^audio-codec +67 +zl1-audio-test\.sh' "$RA" "and one more audio node -- its second amplifier"
+  want '^audio-codec +70 +zl1-audio-test\.sh' "$RA" "and one more audio node -- its second amplifier"
   want '^modem +7 +zl1-modem-probe\.sh' "$R" "and the modem by its own, not by whichever file alphabetically mentions 'modem' first"
   want '^usb +10 +zl1-rndis-recover\.sh' "$R" "the USB block is credited to the RNDIS recovery, which actually rebinds it"
   # Symmetry: under the other board's filter, this phone's own fingerprint node is the one that lands in
@@ -499,7 +561,7 @@ else
   RX=$(bash "$SRC" --snapshot "$SNAP" --board x2 2>/dev/null)
   want '^  fingerprint +1 node\(s\), in .* -- declared by the LE_ZL1 \(this phone\)$' "$RX" \
     "and under --board x2 this phone's fingerprint node is the one listed as the other board's"
-  notwant '^fingerprint' "$RX" "so it is not in the other board's own table -- the row moved, it did not disappear"
+  notwant '^fingerprint +1 +goodix' "$RX" "so it is not in the other board's own table -- the row moved, it did not disappear"
   notwant '^  fingerprint +1 dtb node' "$RX" "and not in its gap list either -- a block in the other phone's trees is neither covered nor missing here"
 
   # The modes have to be modes: --gaps is the tail of the full report, and --block is one row.

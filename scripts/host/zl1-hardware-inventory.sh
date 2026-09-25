@@ -44,6 +44,7 @@
 # Usage:
 #   zl1-hardware-inventory.sh                      # all blocks + summary
 #   zl1-hardware-inventory.sh --gaps               # only the blocks nothing reads
+#   zl1-hardware-inventory.sh --unclaimed          # every compatible on this board no row claims
 #   zl1-hardware-inventory.sh --block audio        # one block, in full
 #   zl1-hardware-inventory.sh --dump-compatibles   # path<TAB>compatible<TAB>set<TAB>board, plus provenance
 #   zl1-hardware-inventory.sh --snapshot FILE      # read that dump instead of the DTBs (no DTBs needed)
@@ -74,6 +75,7 @@ BOARD_FILTER=zl1
 while [ $# -gt 0 ]; do
   case "$1" in
   --gaps) MODE=gaps ;;
+  --unclaimed) MODE=unclaimed ;;
   --block) MODE=block; ONLY_BLOCK="${2:-}"; shift ;;
   --dump-compatibles) MODE=dump ;;
   --snapshot) SNAPSHOT="${2:-}"; shift ;;
@@ -136,18 +138,19 @@ esac
 # ---------------------------------------------------------------------------------------------
 BLOCKS=$(cat <<'TABLE'
 display-panel	mdss_dsi|dsi-display|sde_dsi|dsi-ctrl-hw|dsi-phy|mdss-fb	compositor|/dev/dri|DSI|dsi_ctrl|mdss-fb	HW	scripts/device/zl1-egl-probe.py
-display-mdp	mdss_mdp|mdss_rotator|mdss_wb|mdss-fb|smmu_mdp|smmu_rot	EGL|compositor|hwcomposer|mdss	HW	scripts/host/zl1-camera-app-test.sh
+display-mdp	mdss_mdp|mdss_rotator|mdss_wb|mdss-fb|smmu_mdp|smmu_rot|sde_kms	EGL|compositor|hwcomposer|mdss	HW	scripts/host/zl1-camera-app-test.sh
 gpu	kgsl-3d0|kgsl-iommu|kgsl-smmu|kgsl-busmon|kgsl-hyp|gpucc|gpu-mempool	kgsl|/dev/kgsl|/dev/dri|EGL|vsimd	HW	scripts/device/zl1-egl-probe.py
 touch	focaltech|synaptics|atmel_mxt|hideep	/dev/input|ABS_MT|BTN_TOUCH|event[0-9]	HW	scripts/device/zl1-watch-input.py
 keys	gpio-keys|gpio_keys|qpnp-power-on|pmic-reset-reason	/dev/input|BTN_TOUCH|KEY_|BTN_POWER	HW	scripts/device/zl1-input-devices.py
 fingerprint	goodix|fingerprint	goodix|fpdata|biometryd|fingerprint	HW	scripts/device/zl1-fingerprint-probe.sh
+fingerprint-spi	qcom,qbt1000	qbt1000|qbt1000_key_input	HW	-
 nfc	qcom,nq-nci|nq@28	nfcnci|nq-nci|nfc_	HW	scripts/device/zl1-nfc-probe.sh
 fm-radio	silabs,si4705	si4705|fm_radio|fmradio	HW	scripts/device/zl1-fm-radio-probe.sh
 vibrator	qcom,qpnp-haptic|qcom,haptic	qpnp.hap|qpnp_haptic|haptic|timed_output|vibrat	HW	scripts/device/zl1-vibrator-probe.sh
 torch	qcom,camera-flash|qpnp-flash-led	camera-flash|flash-led|torch|leds@d300	HW	scripts/device/zl1-leds-probe.sh
 backlight	qpnp-wled	backlight|wled|brightness	HW	scripts/hybris-shims/free-container-display.sh
 notification-led	qcom,leds-qpnp	leds-qpnp|led_classdev|/sys/class/leds	HW	scripts/device/zl1-leds-probe.sh
-audio-codec	msm-dai|wcd9|max98927|tfa9890|audio-codec|msm-cpe|msm-audio-ion|audio-ref-clk	max98927|tasha|smartpa|mixer_paths|pulseaudio|tinymix|snd_device|TERT_MI2S	HW	scripts/device/zl1-audio-test.sh
+audio-codec	msm-dai|wcd9|max98927|tfa9890|audio-codec|msm-cpe|msm-audio-ion|audio-ref-clk|tasha|slim-ngd	max98927|tasha|smartpa|mixer_paths|pulseaudio|tinymix|snd_device|TERT_MI2S	HW	scripts/device/zl1-audio-test.sh
 camera	cci@|csiphy|csid|vfe|jpeg@|cpp@|actuator|eeprom|ois|ispif|camera@	camera|ICameraProvider|cameraserver|camapp	HW	scripts/host/zl1-camera-app-test.sh
 video-codec	msm-vidc|vidc@|venus@	vidc|venus|v4l2|mediacodec	HW	scripts/device/zl1-video-probe.sh
 wifi	qcom,cnss|qcom,pci-msm|qca6174|wlan_en	cnss|qca6174|wlan|fwpath|wifi|icnss	HW	scripts/hybris-shims/install-wlan-bringup.sh
@@ -169,7 +172,7 @@ coresight	coresight|etm@|etm0|tpda|tpdm	coresight|stm_|etm|trace	INFRA	-
 interconnect	qcom,rpm-smd-regulator|qcom,gcc@|qcom,mmsscc|qcom,gpucc|qcom,cpr3|rpm-glink|rpm-log	clk|regulator	INFRA	-
 ipc	qcom,glink|qcom,ipc_router|qcom,smem|qcom,smp2p|qcom,smd	glink|ipc_router|smem|smp2p|qmi	INFRA	-
 pinctrl	pinctrl|qcom,tlmm	pinctrl|gpio	INFRA	-
-iommu	arm,smmu|qcom,kgsl-smmu|qcom,smmu	smmu|iommu	INFRA	-
+iommu	arm,smmu|qcom,kgsl-smmu|qcom,smmu|cam-smmu	smmu|iommu	INFRA	-
 TABLE
 )
 # `--table` replaces the table above. It is a real option, not a test hook: the block patterns are the
@@ -189,6 +192,18 @@ if [ -n "$TABLE_BAD" ]; then
   echo "the block table is not 5 tab-separated fields per row:" >&2
   printf '  %s\n' "$TABLE_BAD" >&2
   echo "  NAME <TAB> DTB-pattern <TAB> instrument-tokens <TAB> kind <TAB> instrument" >&2
+  exit 2
+fi
+# An EMPTY pattern is refused for the same reason an empty instrument field was: it is the one value
+# that inverts this report instead of degrading it. The rows above are joined into a single alternation
+# to measure what the table does NOT name, and an empty alternative in an ERE matches every string --
+# so one blank pattern would make the table look as if it named the entire board. The loop over the
+# rows would meanwhile read it as "this row covers everything", which is a false COVERED as well.
+TABLE_NOPAT=$(printf '%s\n' "$BLOCKS" | awk -F'\t' 'NF == 5 && $2 !~ /[^[:space:]]/ {print NR": "$1}')
+if [ -n "$TABLE_NOPAT" ]; then
+  echo "the block table has a row with no DTB pattern:" >&2
+  printf '  %s\n' "$TABLE_NOPAT" >&2
+  echo "  An empty pattern matches everything, so it would report the whole board as named." >&2
   exit 2
 fi
 
@@ -598,6 +613,42 @@ main_report() {
   *)   this_board='every board'            other_board='another board' ;;
   esac
   local covered=0 gap=0 infra=0 nstale=0 nboard=0 gapwall="" nodewall="" stalewall="" x2wall=""
+  # ---------------------------------------------------------------------------------------------
+  # THE PART OF THE BOARD THIS TABLE DOES NOT NAME.
+  #
+  # Every count below is a statement about the rows above, and the rows are a CURATED CLAIM about which
+  # hardware exists. So the report's strongest sentence -- "every hardware block in this table is named
+  # by a script, 0 gaps" -- is bounded by that claim, and until this reading existed nothing measured the
+  # bound: a block nobody wrote a row for was not a gap, it was invisible, because a gap is a row that
+  # failed and a missing row fails nothing. That is the same defect this file already records one level
+  # down, where the report once counted its OWN TABLE and read "34 covered, 0 gaps".
+  #
+  # This is derived, not curated: every path/compatible pair on this board that no row's pattern matches,
+  # counted. It cannot be complete either -- a peripheral whose hardware has no device-tree node at all
+  # (the GNSS engine lives inside the modem; this kernel has no GPS driver and the board has no GNSS
+  # node) cannot appear here or anywhere else in a DTB-derived report -- and saying so is part of the
+  # reading, because the number is otherwise read as "this is everything left".
+  #
+  # The patterns are joined into ONE alternation, which is why an empty one is refused above: an empty
+  # alternative matches everything, and the count would come out 0 -- "this table names the whole board".
+  # Counted by PATH/COMPATIBLE PAIR, the same unit the block counts above use -- the raw rows are one
+  # per (pair, set), so counting rows would report the number of sets a node appears in. The first
+  # version did exactly that and read 725 pairs on a board with 705 rows.
+  local UNCLAIMED_ERE UNCLAIMED_PAIRS n_unc_paths n_unc_compat uncwall=""
+  UNCLAIMED_ERE=$(printf '%s\n' "$BLOCKS" | cut -f2 | tr '\n' '|' | sed 's/|$//')
+  UNCLAIMED_PAIRS=$(printf '%s\n' "$data" | awk -F'\t' -v p="$UNCLAIMED_ERE" \
+    'tolower($1" "$2) !~ tolower(p) {print $1"\t"$2}' | sort -u)
+  n_unc_paths=$(printf '%s\n' "$UNCLAIMED_PAIRS" | grep -c . || true)
+  n_unc_compat=$(printf '%s\n' "$UNCLAIMED_PAIRS" | cut -f2 | sort -u | grep -c . || true)
+  # The sets, merged per pair the same way the snapshot merges them -- only built for the listing, which
+  # is why it is behind the flag rather than in every report.
+  if [ "$n_unc_paths" -gt 0 ] && [ "$MODE" = unclaimed ]; then
+    uncwall=$(while IFS=$'\t' read -r p c; do
+      [ -n "$p" ] || continue
+      printf '%s\t%s\t%s\n' "$p" "$c" \
+        "$(printf '%s\n' "$data" | awk -F'\t' -v a="$p" -v b="$c" '$1 == a && $2 == b {print $3}' | norm_sets)"
+    done <<< "$UNCLAIMED_PAIRS")
+  fi
   while IFS=$'\t' read -r block dtbpat toks kind named; do
     [ -n "$block" ] || continue
     if [ "$MODE" = block ] && [ "$block" != "${ONLY_BLOCK:-}" ]; then continue; fi
@@ -715,8 +766,40 @@ $(printf '%s' "$x2wall" | while IFS='|' read -r b n s; do
 Rows whose DTB pattern matched no node -- a broken pattern, not a missing block:
 $(printf '%s' "$nodewall" | while IFS='|' read -r b p; do [ -n "$b" ] && printf '  %-16s %s\n' "$b" "$p"; done)"
   fi
+  # Printed in EVERY report, because it is a bound on the sentence above rather than an exception to it.
+  report="${report}
+
+The part of the board this TABLE does not name -- what bounds every count above:
+  $n_unc_compat distinct compatible(s) on this board are claimed by NO row ($n_unc_paths path/compatible
+  pair(s)). The rows above are a hand-written CLAIM about which hardware exists, and this reading is
+  what the claim leaves out, measured against the same device trees. It matters because a gap is a row
+  that FAILED: a block nobody wrote a row for cannot appear in the gap list at all.
+  Nothing above CLASSIFIES these: the list is the raw material a reader triages (--unclaimed prints it,
+  most-nodes-first), and calling any of them infrastructure is a judgement this report does not make.
+
+  This reading cannot be complete in the other direction either: a peripheral whose hardware has no
+  device-tree node cannot appear in it, or anywhere else in a report derived from device trees. (The
+  GNSS engine is that case -- see docs/ubuntu-touch/123.)"
   if [ "$MODE" = gaps ]; then
     printf '%s\n' "$report" | sed -n '/with none/,$p'
+  elif [ "$MODE" = unclaimed ]; then
+    printf '%s\n' "$report" | sed -n '/^The part of the board this TABLE does not name/,$p'
+    printf '\n'
+    if [ "$n_unc_paths" -gt 0 ]; then
+      # Grouped by COMPATIBLE, with the paths under it, because that is the unit a row is written in
+      # and the unit a reader triages: 24 nodes of one compatible is one decision, not 24. (A per-path
+      # count would print the number of DTB files each pair appears in -- 15 -- which is a fact about
+      # the blob and not about the board. The first version of this listing did that.)
+      printf '%s\n' "$uncwall" | sort -k2,2 -k1,1 |
+        awk -F'\t' '{ n[$2]++; paths[$2] = paths[$2] "  " $1 " [" $3 "]" }
+          END { for (c in n) printf "%s\t%s\t%s\n", n[c], c, paths[c] }' |
+        sort -rn -k1,1 |
+        awk -F'\t' '{ printf "  %-34s %2s pair(s)%s\n", $2, $1, $3 }'
+    else
+      # SAID OUT LOUD, for the same reason the gap section is: a list that prints nothing is
+      # indistinguishable from a reading that did not run.
+      printf '  (none: every path/compatible pair on this board is claimed by some row)\n'
+    fi
   else
     printf '%s\n' "$report"
   fi
