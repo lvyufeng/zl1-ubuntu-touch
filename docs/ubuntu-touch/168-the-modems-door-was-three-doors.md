@@ -27,7 +27,7 @@
 | 门二：命名空间 | 同一条 ofonod 命令行，只换命名空间：宿主里 `[gbinder] WARNING: registerForNotifications(...) failed`；容器里 `Connected to android.hardware.radio@1.1::IRadio/slot1` 和 `/slot2`。**同一堵墙的第五次**，修法一样：走 `zl1-ns-exec`。 |
 | 门三：配置 | 插件和命名空间都对之后，它还是要 `/etc/ofono/binder.conf`，否则 `Missing path for slot slot1`——`path`（ofono 的 modem 对象路径）必须逐 slot 给出。另外插件的 `radioInterface` **默认 1.2**，而这台机器只注册到 **1.1**。 |
 | 装上了吗？ | 装上了，**不用重启**：一个 drop-in（`ExecStart` 换成 `zl1-ns-exec` + 正确的 `-P`，`BindPaths=` 给 ofonod 一个私有的 `/etc/ofono`）+ `/userdata/zl1-ofono/etc/binder.conf`。`systemctl restart ofono` 之后 system bus 上 `GetModems` 就是两个 modem。 |
-| SIM 呢？ | **没有 SIM**：`SimManager.GetProperties` 对 `/ril_0` 只答 `"Present" b false`。是空卡槽还是"有卡但没认出来"，**这一页没有判定**（见 §6）。 |
+| SIM 呢？ | **modem 报"没有卡"，而且是它自己说的**：`getIccCardStatusResponse` 回 `card_state=0`（HIDL `ABSENT`）、`num_apps=0`，两个卡槽各一次。这条读数**证明了整条路径是通的**（请求进、`CardStatus` 回、ofono 状态出）；它分不出"空卡槽"和"有卡但 modem 认不出来"——那要人看一眼卡槽（见 §6）。 |
 
 ---
 
@@ -247,12 +247,41 @@ systemd[1]: Started ofono.service - oFono Mobile telephony stack.
 
 ## 6. 这一页**没有**成立的东西
 
-* **没有 SIM。**`org.ofono.SimManager.GetProperties` 对 `/ril_0` 只答 `a{sv} 1 "Present" b false`。
-  **是空卡槽还是"有卡没认出来"，这一页没有判定**，也没法从这一页判定。唯一故意没动的旋钮是
-  `extPlugin`（QTI 扩展，`qtibinderpluginext.so` 已装、且当前是被加载的），在 Qualcomm 设备上它
-  承载 IMS/VoLTE 的具体行为——**如果确认插了卡，下一个该试的就是它**。Android 那一侧也没法作证：
-  容器里 `getprop` 能答 695 条属性，但**没有一条**匹配 `gsm.sim.*` / `gsm.operator.*`，而"没有这个键"
-  不是"关于 SIM 的答案"（docs 149 那条规矩的另一面）。
+* **没有 SIM——而且这一条现在是 modem 自己说的，不是推论。**（同日第二次读数，同一次开机。）
+  第一次只有 ofono 的概括 `"Present" b false`，**分不出"空卡槽"和"有卡没认出来"**。这个问题不属于
+  ofono 的配置，它属于 radio HAL，所以把 ofonod 用 **debug 打开**在私有总线上又跑了一次（同样的
+  tmpfs 覆盖、跑完 umount），插件自己的 RPC 轨迹就在日志里，答案是 modem 的真回复：
+
+  ```
+  slot1 < [00000003] 2 getIccCardStatus
+  slot1 > [00000003] 1 getIccCardStatusResponse
+  src/binder_sim_card.c:binder_sim_card_status_new()
+      card_state=0, universal_pin_state=0, gsm_umts_index=-1, ims_index=-1, num_apps=0
+  src/binder_plugin.c:binder_plugin_slot_sim_state_changed() No SIM in slot 0
+  （slot2 完全相同，`No SIM in slot 1`）
+  ```
+
+  一次运行里 4 次 `getIccCardStatus`，**每一次都有回复**。`card_state=0` 是 HIDL 的
+  `CardState::ABSENT`，`num_apps=0` 且两个 app 索引都是 -1：**两个卡槽上都没有 ICC 应用**。
+
+  于是 SIM 这一半在软件上已经走到底了，它说的是：**modem 报没有卡**。
+  **这条读数证明了整条路径是通的**——`IRadio::getIccCardStatus` 进、`CardStatus` 回、ofono 状态出，
+  这正是"modem 被驱动起来了"的含意。它**不能**定的只有一件事：卡槽里到底有没有一张卡——
+  卡槽插着而卡没插，和卡插着但 modem 认不出来，**报的都是这个**，而唯一的证人就是 modem，
+  它的答案是"absent"。要分开这两者需要人看一眼卡槽；这台机器上没有任何软件读数能分开。
+  唯一能改变 ofono 行为的旋钮是 `extPlugin`，**它不是这个的原因**（它管的是 IMS/VoLTE 的细节，
+  不是卡检测）。
+
+* **顺带看到的一个真实缺陷（不是新的）**：容器的 `vsimservice` 在崩溃循环——
+  `init.svc.vendor.vsimservice: [restarting]`，logcat 里每 5 秒一行
+  `F linker: CANNOT LINK EXECUTABLE "/vendor/bin/vsimd": library "libQSEEComAPI.so" not found`
+  ——就是那条已经离线定过的 ELF class 不匹配（32 位的 `/vendor/bin/vsimd`，只有 64 位的
+  `libQSEEComAPI.so`）。它是**虚拟 SIM** 的守护进程，不在物理卡要走的路上；代价是每 5 秒一次失败的
+  exec 加一行 logcat。
+
+* **跨重启的持久性没有量过。** 它写的两个东西都在会持久的分区上（`/etc/systemd/system` 是
+  `/userdata/system-data/etc/systemd/system` 的 bind，`/userdata` 是 `/dev/sda10`），而且这就是
+  十几个 `zl1-*` 单元早就在用的机制——但**装完之后没有冷启动过**。
 * `Power request failed`：ofono 起来 30 秒后出现过一次（binder 插件）。`Online` 还是变成了 `true`，
   `Powered` 没掉过。记下来，不解释。
 * **跨重启的持久性没有量过。** 它写的两个东西都在会持久的分区上（`/etc/systemd/system` 是
@@ -293,6 +322,8 @@ systemd[1]: Started ofono.service - oFono Mobile telephony stack.
 | ofono 用的插件 | ril（socket 不存在） | **binder**（`binderplugin.so` 已加载） |
 | ofonod 的命名空间 | 宿主 | **容器**（与容器 `ns/pid` 相同） |
 
-还没成立的是 **SIM**（§6）和**跨重启的持久性**（§6）。下一个阶段在这两个里挑一个：
-`extPlugin=qtibinderpluginext` 看 `Present` 是否翻成 true（如果确认插了卡），或者一次冷启动确认
-drop-in 和 `/userdata` 载荷在开机时生效——后者本来就是 `--install` 之后的自然下一步。
+还没成立的是**跨重启的持久性**（§6）：写的东西都在持久分区上、机制和十几个 `zl1-*` 单元一样，
+但装完之后没有冷启动过。**SIM 那一格已经填上了**——填的是 modem 自己的答案（没有卡），
+以及一句更重要的话：**整条路径是通的**，这是"modem 被驱动起来了"的含意。
+下一个阶段回到硬件清单上还没驱动起来的那几项：**相机 app 上没上屏**、**GPS 一次定位都没有过**、
+**指纹的驱动编进了镜像但没刷**，以及**散热那三条里第 ② 条（cpufreq governor）的效果从没单独量过**。

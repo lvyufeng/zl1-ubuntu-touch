@@ -318,3 +318,55 @@ H. WHAT IS NOT ESTABLISHED
 
   * Nothing else was re-read while this was being done: camera, GPS and fingerprint are where
     the previous reading left them (docs 123, 166, 167).
+
+--------------------------------------------------------------------------------
+I. THE SIM QUESTION, ANSWERED BY THE MODEM ITSELF (second look, same boot)
+--------------------------------------------------------------------------------
+
+boot_id still 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5, uptime 11156 s.
+
+The first look only had ofono's summary (`"Present" b false`) and could not say whether that was an
+empty tray or a detection gap. The question is not about ofono's configuration -- it is a question
+for the radio HAL -- so ofonod was run with its debug output on, on a private bus, in the container
+namespace, with the same binder.conf (pure tmpfs overlay on /etc/ofono, umounted afterwards, the
+image's files copied back first). The binder plugin's own RPC trace is in that log, and the answer
+is a real response from the modem, not an inference:
+
+    slot1 < [00000003] 2 getIccCardStatus
+    slot1 > [00000003] 1 getIccCardStatusResponse
+    src/binder_sim_card.c:binder_sim_card_status_new()
+        card_state=0, universal_pin_state=0, gsm_umts_index=-1, ims_index=-1, num_apps=0
+    src/binder_plugin.c:binder_plugin_slot_sim_state_changed() No SIM in slot 0
+
+    slot2 < [0000000b] 2 getIccCardStatus
+    slot2 > [0000000b] 1 getIccCardStatusResponse
+    ... card_state=0, ... num_apps=0
+    src/binder_plugin.c:binder_plugin_slot_sim_state_changed() No SIM in slot 1
+
+Four `getIccCardStatus` calls in the run, each answered. `card_state=0` is HIDL's
+`CardState::ABSENT`; `num_apps=0` with both app indices at -1 means there is no ICC application at
+all on either slot.
+
+So the SIM half is now as far as software can take it, and it says: **the modem reports no card**.
+Both slots, from a live request, in the modem's own words. `SimManager`'s `"Present" b false` was
+not a plugin or config artefact.
+
+WHAT THIS DOES AND DOES NOT DECIDE. It establishes that the whole path works --
+IRadio::getIccCardStatus in, CardStatus back, ofono state out -- which is what "the modem is driven"
+means. It does NOT establish that no card is physically in the tray: a tray can be inserted with no
+card, and a card the modem cannot see reports exactly this. Deciding "empty tray" vs "card present
+but undetectable" needs the tray looked at by a person; no software reading on this port can separate
+them, because the only witness is the modem and its answer is "absent". The one knob that would
+change ofono's behaviour (not the modem's answer) is `extPlugin`; it is NOT the reason for this, and
+`extPlugin` is for IMS/VoLTE specifics rather than card detection.
+
+A real, unrelated defect seen while asking, and it is not new: the container's `vsimservice` is
+crash-looping --
+
+    init.svc.vendor.vsimservice: [restarting]
+    F linker: CANNOT LINK EXECUTABLE "/vendor/bin/vsimd": library "libQSEEComAPI.so" not found
+    (a fresh line every 5 s)
+
+-- which is the ELF-class mismatch already recorded offline (32-bit `/vendor/bin/vsimd`, only a
+64-bit `libQSEEComAPI.so`). It is the virtual-SIM daemon and is not on the path a physical card
+takes. Its cost is one failed exec and a logcat line every 5 s.
