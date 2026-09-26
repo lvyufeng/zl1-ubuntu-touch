@@ -49,7 +49,12 @@ printf '412.55 300.10\n' > "$FR/proc/uptime"
 # A netwatch process, so the /proc walk and the process-age arithmetic (field 22 after stripping the
 # parenthesised comm -- the doc 81 trap) are exercised too. starttime 10000 ticks = 100 s, so against
 # an uptime of 412 the age must read 312 s.
-printf '#!/bin/sh\x00/usr/bin/sh\x00/etc/systemd/system/zl1-netwatch.sh\x00' > "$FR/proc/812/cmdline"
+# The REAL shape, as argv elements: a shebang script is exec'd as <interpreter> <script> (docs 94), and
+# the reader now compares whole argv elements against its own path -- so this fixture must carry the path
+# the REWRITTEN copy compares with ($FR/...), and it used to begin with a literal `#!/bin/sh` element,
+# which is not an argv[0] any kernel produces and matched only because the reader was a substring match
+# (docs 179).
+printf '/bin/sh\x00%s\x00' "$FR/etc/systemd/system/zl1-netwatch.sh" > "$FR/proc/812/cmdline"
 printf '812 (sh) S 1 812 812 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 10000 0 0 0 0 0 0\n' \
   > "$FR/proc/812/stat"
 printf '#!/bin/sh\n# the installed build\nensure_addrs() {\n  :\n}\n' \
@@ -212,7 +217,10 @@ esac
 printf '1.10s netwatch start pid=812 heal=1 stall=45s\n5.00s sample rx=1 tx=1 frozen=0\n' \
   > "$FR/userdata/I.log"
 mkdir -p "$FR/proc/813"
-printf '#!/bin/sh\x00/usr/bin/sh\x00/usr/local/sbin/zl1-debug-net.sh\x00' > "$FR/proc/813/cmdline"
+# The keeper's real argv (the v63 hook runs `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &`, so the
+# kernel execs `/bin/sh <path>`). This path is NOT rewritten by the sed above -- unlike the netwatch's,
+# it is the same on the device and here.
+printf '/bin/sh\x00/usr/local/sbin/zl1-debug-net.sh\x00' > "$FR/proc/813/cmdline"
 printf '813 (sh) S 1 813 813 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 1 0 10000 0 0 0 0 0 0\n' \
   > "$FR/proc/813/stat"
 out=$(sh "$W/check.sh" --log "$FR/userdata/I.log" 2>/dev/null); rc=$?

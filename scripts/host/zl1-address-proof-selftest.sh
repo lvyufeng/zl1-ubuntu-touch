@@ -40,6 +40,10 @@ mkdir -p "$FR/proc" "$FR/sys/class/net/rndis0" "$FR/etc/systemd/system" "$FR/use
 
 printf 'LE_ZL1\x00' > "$FR/proc/model"
 
+# Where the two fixture processes live. Defined BEFORE the sed below, because the copy under test is
+# rewritten to compare against THESE paths (see that rewrite's comment).
+FIX="$W/bin"
+
 # The script under test with every device path pointed into the fake root. The /proc/<pid>/stat reads
 # are deliberately NOT rewritten: the pids below are real, so their state is read from the real /proc,
 # which is the only way "SIGSTOPped -> T -> resumed -> S" can be true rather than asserted.
@@ -49,8 +53,32 @@ sed -e "s#/proc/device-tree/model#$FR/proc/model#g" \
     -e "s#/sys/class/net/\$i#$FR/sys/class/net/\$i#g" \
     -e "s#^LOG=/userdata/zl1-netwatch.log#LOG=$FR/userdata/zl1-netwatch.log#" \
     -e "s#^INST=/etc/systemd/system/zl1-netwatch.sh#INST=$FR/etc/systemd/system/zl1-netwatch.sh#" \
+    -e "s#^NW_PATH=/etc/systemd/system/zl1-netwatch.sh#NW_PATH=$FIX/zl1-netwatch.sh#" \
+    -e "s#^KEEPER_PATH=/usr/local/sbin/\$KEEPER_NAME#KEEPER_PATH=$FIX/\$KEEPER_NAME#" \
     "$SRC" > "$W/proof.sh" || exit 2
 sh -n "$W/proof.sh" || { echo "the rewritten copy does not parse -- fix that first" >&2; exit 2; }
+
+# The two paths the reader COMPARES AGAINST are rewritten too, and that needs saying (docs 179). It is not
+# the same move as the /proc rewrite: the reader now matches a whole argv element against its own literal,
+# so a fixture process has to carry EXACTLY that string -- and the device's literal
+# (/etc/systemd/system/zl1-netwatch.sh, /usr/local/sbin/zl1-debug-net.sh) cannot exist on this laptop
+# without writing to the real /etc. The rewrite is asserted below, because a rename in the shipped file
+# would otherwise turn this sed into a no-op and the fixture into something the reader agrees with for
+# the wrong reason.
+for m in zl1-netwatch.sh zl1-debug-net.sh; do
+  # THE SHAPE THE DEVICE HAS, not a copy of /bin/sleep under a similar name (which is what this fixture
+  # was, and it passed only because the reader was a substring match). A shebang script is exec'd as
+  # <interpreter> <script> (docs 94), so this process's argv is `/bin/sh <this path>` -- the shape the
+  # probe looks for. It is NOT `exec sleep 300`: dash rewrites argv[0] when it optimises an exec and the
+  # path disappears; and the loop leaves at most one `sleep 5` behind when the shell is killed, which
+  # exits on its own.
+  printf '#!/bin/sh\nwhile : ; do sleep 5; done\n' > "$FIX/$m" || exit 2
+  chmod +x "$FIX/$m" || exit 2
+done
+grep -q "NW_PATH=$FIX/zl1-netwatch.sh" "$W/proof.sh" \
+  || { echo "the rewritten copy does not carry the fixture's netwatch path -- the fixture would agree with the reader by accident" >&2; exit 2; }
+grep -q "KEEPER_PATH=$FIX/" "$W/proof.sh" \
+  || { echo "the rewritten copy does not carry the fixture's keeper path -- same defect" >&2; exit 2; }
 
 # --- the fake device's two moving parts: `ip` and the process table --------------------------------
 #
@@ -103,26 +131,20 @@ PATH="$W/bin:$PATH"; export PATH
 PROBE=192.168.2.15/24
 
 serial=0
-mk_netwatch() {   # a real process whose cmdline carries the name the script looks for
+mk_netwatch() {   # a real process whose ARGV the script under test must recognise
   # The installed file is written FIRST, before the process starts -- which is the real order (the
   # install happens, then a reboot starts the watchdog) and the order that does NOT trip the
   # file-is-newer-than-the-process warning. S10 is the other order on purpose.
   printf '#!/bin/sh\n# the installed build\nensure_addrs() {\n  :\n}\n' > "$FR/etc/systemd/system/zl1-netwatch.sh"
-  # A fresh copy per scenario, with a unique suffix. `cp` onto a binary that a previous scenario's
-  # process is still exec'ing fails with ETXTBSY ("Text file busy"), and the copy is what makes the
-  # process's /proc/<pid>/stat real, so a silently stale copy is a silently stale scenario. The name
-  # still CONTAINS zl1-netwatch.sh, which is all the script under test matches on.
-  serial=$((serial + 1))
-  cp /bin/sleep "$W/zl1-netwatch.sh.$serial" || return 1
-  "$W/zl1-netwatch.sh.$serial" 300 >/dev/null 2>&1 &
+  # Started BY ITS OWN PATH, which is now the path in the rewritten copy (see the sed above): the
+  # process's argv[1] is that exact string, so the real /proc/<pid>/stat below is a real process's.
+  "$FIX/zl1-netwatch.sh" >/dev/null 2>&1 &
   nw=$!
   wait_for_proc "$nw"
   ln -sfn "/proc/$nw" "$FR/proc/$nw"
 }
 mk_keeper() {
-  serial=$((serial + 1))
-  cp /bin/sleep "$W/zl1-debug-net.sh.$serial" || return 1
-  "$W/zl1-debug-net.sh.$serial" 300 >/dev/null 2>&1 &
+  "$FIX/zl1-debug-net.sh" >/dev/null 2>&1 &
   kp=$!
   wait_for_proc "$kp"
   ln -sfn "/proc/$kp" "$FR/proc/$kp"

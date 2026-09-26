@@ -221,6 +221,17 @@ say "   ssh: ok"
 # --- the self-check -----------------------------------------------------------------------------
 
 # One SSH round trip for everything cheap, so a slow link does not turn this into a two-minute wait.
+# THE KEEPER IS MATCHED BY ARGV, and this program is its own worst case (docs 179). The field below used
+# to be a SUBSTRING test over the whole cmdline of every process -- and every word of this blob is passed
+# to `sh -c` as ONE argv element, so the reader matches the string it is searching for. Measured on the
+# phone 2026-09-26 with the delimiter split so the probe could not match itself: the first match was the
+# reader, reported as a keeper in state S, on a boot where the argv-matched count was zero (the heat
+# chain's read-back said `keeper: gone` the same minute). Every keeper-less boot printed "RUNNING ... it
+# costs ~a core". The rule here is the one `zl1-one-boot-runbook.sh` and the heat chain's read-back use: a
+# whole argv element EQUALS the path, or argv[0] is a shell and argv[1] is the path (the v63 hook runs
+# `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &` and a shebang script is exec'd as
+# <interpreter> <script>, docs 94), with this shell's own pid skipped. A shell that merely MENTIONS the
+# path -- which is what this program is -- no longer matches.
 CHK="$(ssh_d '
   echo "model=$(tr -d "\0" < /proc/device-tree/compatible 2>/dev/null | tr -d "\n")"
   echo "modelname=$(tr -d "\0" < /proc/device-tree/model 2>/dev/null | tr -d "\n")"
@@ -233,7 +244,7 @@ CHK="$(ssh_d '
   for u in sensorfwd repowerd lightdm; do
     echo "unit_$u=$(systemctl is-active $u 2>/dev/null)"
   done
-  echo "keeper=$(for p in /proc/[0-9]*; do c=$(tr "\0" " " < $p/cmdline 2>/dev/null); case \"$c\" in *zl1-debug-net.sh*) echo \"$(awk "{print \$3}" $p/stat)\"; break ;; esac; done)"
+  echo "keeper=$(for p in /proc/[0-9]*; do [ -d "$p" ] || continue; q=${p#/proc/}; [ "$q" = "$$" ] && continue; set -- $(tr "\0" "\n" < $p/cmdline 2>/dev/null); a0=${1:-}; a1=${2:-}; hit=0; case "$a1" in */zl1-debug-net.sh) hit=1 ;; esac; if [ "$hit" = 0 ]; then case "$a0" in */zl1-debug-net.sh) hit=1 ;; */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in */zl1-debug-net.sh) hit=1 ;; esac ;; esac; fi; if [ "$hit" = 1 ]; then awk "{print \$3}" $p/stat; break; fi; done)"
   echo "thermal=$(for z in /sys/class/thermal/thermal_zone*; do [ -r "$z/temp" ] || continue; printf "%s:%s " "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"; done)"
   echo "gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
   echo "load=$(cut -d\" \" -f1-3 /proc/loadavg)"
@@ -331,7 +342,7 @@ say "   cpu0 governor: $(field gov)"
 always "   BEFORE ANY OF IT, and with no device involved at all -- every command below is a script,"
 always "   and every script here documents itself in its own header. This checks that it can:"
 always "       scripts/host/zl1-cli-usage-selftest.sh,"
-always "   226 checks. It sweeps every script THIS page names (92 of them -- 87 the page spells out as a"
+always "   228 checks. It sweeps every script THIS page names (92 of them -- 87 the page spells out as a"
 always "   path, 5 it names by bare basename) and requires --help to print that script's"
 always "   own header and nothing else (docs 113). Two were printing something else before it existed:"
 always "   install-retire-debug-keeper.sh printed 12 lines of its own shell code, and zl1-thermal.sh"
@@ -714,6 +725,32 @@ always "       stop the keeper, take an address away, require the NETWATCH to pu
 always "       only \"proof-obtained\" proceeds. It also distinguishes \"SIGKILL did not take\" from"
 always "       \"something RESTARTED the keeper\" -- the second would mean only a boot-image change"
 always "       retires it. Measure the effect with item 4)"
+always "      **AND THE KEEPER IS MATCHED BY ARGV IN ALL FOUR PROGRAMS THAT ASK (docs 179).** The rule"
+always "      this page's own field uses was NOT in the other three: the governor installer's --status"
+always "      block, the quiet keeper's keeper_pids() (the list --stop SIGNALS) and the retire installer's"
+always "      --status heredoc each compared a SUBSTRING over the whole cmdline. The defect is a property"
+always "      of these particular programs: every one of them carries the keeper's path in its own text,"
+always "      and two are handed to sh -c as ONE argv element, so the reader matches ITSELF. Measured on"
+always "      the phone 2026-09-26, with the delimiter split so the probe could not match itself: the first"
+always "      match was pid 3545508 and my pid was 3545508 -- the reader, in state S, on a boot where the"
+always "      argv-matched keeper count was ZERO (the heat chain's own read-back said keeper: gone the same"
+always "      minute). Every keeper-less boot printed 'debug keeper: RUNNING -- it costs ~a core' about"
+always "      nothing, and the other half of the governor installer's reading could never find a real"
+always "      keeper at all: ps -C matches the COMMAND NAME, and the keeper is a shebang script exec'd as"
+always "      <interpreter> <script> (docs 94), so its comm is sh. A reading that names the wrong process"
+always "      is a bad number; in the quiet keeper it is worse, because --stop SIGSTOPs what --status"
+always "      reports, so a phantom there is a signal aimed at the wrapper that asked. All six sites now"
+always "      use the rule install-retire-debug-keeper.sh's is_keeper_cmdline() and"
+always "      zl1-one-boot-runbook.sh's read_keeper() already followed (a whole argv element EQUALS the"
+always "      path, or argv[0] is a shell and argv[1] is the path, with the reader's own pid skipped),"
+always "      and a harness enforces it by RUNNING each extracted program against a fake /proc in six"
+always "      shapes (none / the hook's sh <path> / the unit's <path> / the NETWATCH, which is the other"
+always "      name two of these programs ask about / a shell that merely mentions the path / the reader's"
+always "      own sh -c shape), with a sweep over the rest of the tree for the substring idiom under ANY"
+always "      script's name -- the same pathology was shipped under the netwatch's name in the same three"
+always "      files, and a sweep keyed on one name would have passed over all three -- and five mutations"
+always "      that each put it back:"
+always "       scripts/host/zl1-keeper-detect-selftest.sh, 105 checks."
 always "   0e. THE BACK HALF OF ALL OF THE ABOVE, AS ONE COMMAND (docs 118). Steps 0b2, 0b2a, 0b1, 0d and"
 always "       the governor are a licence CHAIN, and a boot is not free -- half-run, this chain leaves"
 always "       the addresses owned by nothing. So it is one command, and it is the intended way to run"

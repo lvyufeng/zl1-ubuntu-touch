@@ -186,6 +186,20 @@ echo "--- thermal zones (units differ per driver: tsens_* are deci-degC, pm8994_
 for z in /sys/class/thermal/thermal_zone*; do printf "%-22s %s\n" "$(cat $z/type)" "$(cat $z/temp)"; done | grep -vE "LLM_|DLMt_"'
     echo
     echo "=== and the thing that is still burning CPU on purpose (see the header) ==="
-    $SSH 'ps -o pid=,stat=,time=,cmd= -C zl1-debug-net.sh 2>/dev/null; pgrep -f zl1-debug-net.sh >/dev/null && echo "(v63 debug keeper is running; so are its daemon-reloads)"'
+    # MATCHED BY ARGV, and this line had TWO defects until 2026-09-26 (docs 179):
+    #
+    #   * `ps -C zl1-debug-net.sh` matches the COMMAND NAME, and the keeper is a shebang script started as
+    #     `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &` from the v63 boot hook -- so the kernel
+    #     exec's <interpreter> <script> and the keeper's comm is `sh` (docs 94). That half could not find
+    #     a running keeper at all.
+    #   * `pgrep -f zl1-debug-net.sh` is a substring match over the WHOLE cmdline, and the string is in
+    #     the argv of the shell that runs it -- so this line's second half matched ITSELF. Measured on the
+    #     phone 2026-09-26, on a boot with no keeper: `ps -C` printed nothing and `pgrep -f` matched
+    #     exactly one pid, comm=bash, which was the reading shell. The line then printed "(v63 debug
+    #     keeper is running; so are its daemon-reloads)" about nothing.
+    #
+    # The rule is the one the runbook and the heat chain's read-back use: a whole argv element EQUALS the
+    # path, or argv[0] is a shell and argv[1] is the path, with the reading shell's own pid skipped.
+    $SSH 'n=0; for d in /proc/[0-9]*; do [ -d "$d" ] || continue; p=${d#/proc/}; [ "$p" = "$$" ] && continue; set -- $(tr "\000" "\n" < "$d/cmdline" 2>/dev/null); a0=${1:-}; a1=${2:-}; hit=0; case "$a1" in */zl1-debug-net.sh) hit=1 ;; esac; if [ "$hit" = 0 ]; then case "$a0" in */zl1-debug-net.sh) hit=1 ;; */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in */zl1-debug-net.sh) hit=1 ;; esac ;; esac; fi; if [ "$hit" = 1 ]; then n=$((n + 1)); ps -o pid=,stat=,time=,cmd= -p "$p" 2>/dev/null; fi; done; if [ "$n" = 0 ]; then echo "(the v63 debug keeper is NOT running -- nothing has its path in argv; the daemon-reloads it causes are not happening either)"; else echo "(v63 debug keeper is running, $n process(es), so are its daemon-reloads)"; fi'
     ;;
 esac

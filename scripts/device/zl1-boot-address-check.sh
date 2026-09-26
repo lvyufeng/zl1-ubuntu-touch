@@ -44,6 +44,11 @@ set -u
 
 QUIET=0
 NETLOG=/userdata/zl1-netwatch.log
+# The keeper's FULL path, because the rule at section 4 compares whole argv elements against it rather
+# than searching for the name (docs 179).
+KEEPER_PATH=/usr/local/sbin/zl1-debug-net.sh
+# The netwatch's, for the same rule in section 2 (its unit execs exactly this, scripts/install-netwatch-service.sh).
+NW_PATH=/etc/systemd/system/zl1-netwatch.sh
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -94,10 +99,24 @@ done
 
 say ""
 say "== the netwatch service (the thing that is supposed to own this now)"
+# MATCHED BY ARGV TOO, and for the same reason as the keeper below (docs 179): this decides whether the
+# page says "running, pid N" or "NOT RUNNING -- install it before anything else", and a process that
+# merely MENTIONS the netwatch is not it. The path is what the unit execs (ExecStart in
+# scripts/install-netwatch-service.sh), and a shebang script is exec'd as <interpreter> <script>.
 nw_pid=""
 for p in /proc/[0-9]*; do
-  c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-  case "$c" in *zl1-netwatch.sh*) nw_pid="${p#/proc/}"; break ;; esac
+  [ -d "$p" ] || continue
+  [ "${p#/proc/}" = "$$" ] && continue
+  set -- $(tr '\0' '\n' < "$p/cmdline" 2>/dev/null)
+  a0=${1:-}; a1=${2:-}; hit=0
+  case "$a1" in "$NW_PATH") hit=1 ;; esac
+  if [ "$hit" = 0 ]; then
+    case "$a0" in
+    "$NW_PATH") hit=1 ;;
+    */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$NW_PATH") hit=1 ;; esac ;;
+    esac
+  fi
+  [ "$hit" = 1 ] && { nw_pid="${p#/proc/}"; break; }
 done
 if [ -n "$nw_pid" ]; then
   # field 22 of /proc/<pid>/stat is starttime in clock ticks; HZ is 100 on this kernel, so the
@@ -225,10 +244,30 @@ fi
 
 say ""
 say "== the keeper (stage 1 expects it to still be running; that is the safety net)"
+# MATCHED BY ARGV, NOT BY SUBSTRING (docs 179). This is a READING, and the reading it produces goes into
+# the verdict below -- a phantom keeper would be printed as "still running its 1 Hz loop" and would make
+# the netwatch look like it had a safety net it does not have (or, in the other direction, hide the
+# keeper's absence). The substring form matched any process whose command line merely MENTIONS the name,
+# including whatever shell is running this program over ssh. Measured on the phone 2026-09-26: the health
+# check's twin of this loop reported the reader's own pid (`keeper pid 3545508` beside `my pid: 3545508`)
+# on a boot with no keeper at all.
+#
+# The rule is the one install-retire-debug-keeper.sh's is_keeper_cmdline() uses: a whole argv element
+# EQUALS the path, or argv[0] is a shell and argv[1] is the path (docs 94), with this shell's pid skipped.
 k_pids=""
 for p in /proc/[0-9]*; do
-  c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-  case "$c" in *zl1-debug-net.sh*) k_pids="$k_pids ${p#/proc/}" ;; esac
+  [ -d "$p" ] || continue
+  [ "${p#/proc/}" = "$$" ] && continue
+  set -- $(tr '\0' '\n' < "$p/cmdline" 2>/dev/null)
+  a0=${1:-}; a1=${2:-}; hit=0
+  case "$a1" in "$KEEPER_PATH") hit=1 ;; esac
+  if [ "$hit" = 0 ]; then
+    case "$a0" in
+    "$KEEPER_PATH") hit=1 ;;
+    */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$KEEPER_PATH") hit=1 ;; esac ;;
+    esac
+  fi
+  [ "$hit" = 1 ] && k_pids="$k_pids ${p#/proc/}"
 done
 if [ -z "$k_pids" ]; then
   say "   not running"

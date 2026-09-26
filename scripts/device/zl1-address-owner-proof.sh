@@ -61,6 +61,11 @@ KEEP_ADDR=10.15.19.82/24        # the SSH address (ZL1_HOST). Named so the rule 
 LOG=/userdata/zl1-netwatch.log
 INST=/etc/systemd/system/zl1-netwatch.sh
 KEEPER_NAME=zl1-debug-net.sh
+# The FULL path, because the rule below compares whole argv elements against it rather than searching for
+# the name (docs 179). `KEEPER_NAME` stays for the prose; this is what is matched.
+KEEPER_PATH=/usr/local/sbin/$KEEPER_NAME
+# The netwatch's path, for the same rule in the arm gate above (the unit execs exactly this one).
+NW_PATH=/etc/systemd/system/zl1-netwatch.sh
 HZ=100                          # this kernel's USER_HZ, as scripts/device/zl1-boot-address-check.sh assumes
 
 QUIET=0
@@ -151,10 +156,25 @@ if [ -z "$IFACE" ]; then
   exit 2
 fi
 
+# MATCHED BY ARGV (docs 179). This is the ARM GATE of the whole probe: a process that merely mentions the
+# netwatch would satisfy it, and the probe would then stop the keeper and wait for an address that nothing
+# is going to put back -- a failure it would report as the netwatch having failed. The path is what the
+# unit execs (scripts/install-netwatch-service.sh), and a shebang script is exec'd as
+# <interpreter> <script>.
 nw_pid=""
 for p in /proc/[0-9]*; do
-  c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-  case "$c" in *zl1-netwatch.sh*) nw_pid="${p#/proc/}"; break ;; esac
+  [ -d "$p" ] || continue
+  [ "${p#/proc/}" = "$$" ] && continue
+  set -- $(tr '\0' '\n' < "$p/cmdline" 2>/dev/null)
+  a0=${1:-}; a1=${2:-}; hit=0
+  case "$a1" in "$NW_PATH") hit=1 ;; esac
+  if [ "$hit" = 0 ]; then
+    case "$a0" in
+    "$NW_PATH") hit=1 ;;
+    */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$NW_PATH") hit=1 ;; esac ;;
+    esac
+  fi
+  [ "$hit" = 1 ] && { nw_pid="${p#/proc/}"; break; }
 done
 if [ -z "$nw_pid" ]; then
   always "   the netwatch is NOT RUNNING, and it is the thing under test. Install it first:"
@@ -210,9 +230,30 @@ fi
 
 # --- 2. the keeper ---------------------------------------------------------------------------------
 
+# MATCHED BY ARGV, NOT BY SUBSTRING (docs 179). This loop decides which pids the step below SIGSTOPs, so
+# a wrong answer is not a bad reading -- it is a signal sent to the wrong process. The substring form
+# (`case "$c" in *"$KEEPER_NAME"*)` over the whole cmdline) matches ANY process whose command line merely
+# MENTIONS the name, and this script is one: it is run from an ssh one-liner or from the heat chain, and
+# both put their own text -- which names the keeper -- into their own argv. Measured on the phone
+# 2026-09-26, the health check's twin of this loop reported `keeper pid 3545508` and `my pid: 3545508`.
+#
+# The rule is the one install-retire-debug-keeper.sh's is_keeper_cmdline() uses, and it is the same rule
+# for the same reason: a whole argv element EQUALS the keeper's path, or argv[0] is a shell and argv[1]
+# is the path (the v63 hook starts it as `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &` and a
+# shebang script is exec'd as <interpreter> <script>, docs 94), with this shell's own pid skipped.
 for p in /proc/[0-9]*; do
-  c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-  case "$c" in *"$KEEPER_NAME"*) KEEPER_PIDS="$KEEPER_PIDS ${p#/proc/}" ;; esac
+  [ -d "$p" ] || continue
+  [ "${p#/proc/}" = "$$" ] && continue
+  set -- $(tr '\0' '\n' < "$p/cmdline" 2>/dev/null)
+  a0=${1:-}; a1=${2:-}; hit=0
+  case "$a1" in "$KEEPER_PATH") hit=1 ;; esac
+  if [ "$hit" = 0 ]; then
+    case "$a0" in
+    "$KEEPER_PATH") hit=1 ;;
+    */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$KEEPER_PATH") hit=1 ;; esac ;;
+    esac
+  fi
+  [ "$hit" = 1 ] && KEEPER_PIDS="$KEEPER_PIDS ${p#/proc/}"
 done
 
 if [ -z "$KEEPER_PIDS" ]; then

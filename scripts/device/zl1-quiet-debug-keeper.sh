@@ -40,15 +40,51 @@
 set -u
 
 KEEPER_NAME=zl1-debug-net.sh
+KEEPER_PATH=/usr/local/sbin/$KEEPER_NAME
+# The netwatch this keeper's retirement is licensed by, and the path its unit execs (install-netwatch-service.sh).
+NW_PATH=/etc/systemd/system/zl1-netwatch.sh
 FAILS=0
 
-keeper_pids() {
+# MATCHED BY ARGV, AND NOT BY SUBSTRING -- because `--stop` SIGNALS what this returns (docs 179).
+#
+# This used to be `case "$c" in *"$KEEPER_NAME"*)` over the whole cmdline of every process, and that is a
+# rule which can match THE CALLER: any wrapper whose command line merely mentions the keeper's path (a
+# `sh -c "… zl1-debug-net.sh …"`, an ssh one-liner with the name in it, a log line passed as an argument)
+# puts that string in its own argv, and the first /proc entry that matches wins. Measured on the phone
+# 2026-09-26 with no keeper running at all: called plainly `--status` correctly said "not running", and
+# called from a wrapper whose argv mentioned the name it reported "keeper pid 3550125: state=S cpu over
+# 20s=0 ticks RUNNING" -- the wrapper shell itself. `--status` printing a phantom is a bad reading;
+# `--stop` acting on one is a SIGSTOP aimed at whoever called it.
+#
+# The rule is the one the runbook and the heat chain's read-back use: a whole argv element EQUALS the
+# keeper's path, or argv[0] is a shell and argv[1] is the path (the v63 boot hook starts the keeper as
+# `/usr/local/sbin/zl1-debug-net.sh >/dev/kmsg 2>&1 &`, and a shebang script is exec'd as <interpreter>
+# <script>, docs 94 -- so argv[0] is `sh` and argv[1] is the path), with this shell's own pid skipped.
+# ONE RULE, TWO SUBJECTS. This file asks "who is the keeper" (and --stop SIGNALS the answer) and also
+# "is the netwatch there instead", and both used to be answered by searching the whole cmdline for a NAME
+# -- which in a program handed to `sh -c` matches the program itself (docs 179). The rule is the one
+# install-retire-debug-keeper.sh's is_keeper_cmdline() uses: a whole argv element EQUALS the path, or
+# argv[0] is a shell and argv[1] is the path (a shebang script is exec'd as <interpreter> <script>,
+# docs 94), with this shell's own pid skipped.
+pids_matching() { # PATH -> pids, one per line
+  mp=$1
   for p in /proc/[0-9]*; do
     [ -r "$p/cmdline" ] || continue
-    c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-    case "$c" in *"$KEEPER_NAME"*) printf '%s\n' "${p#/proc/}" ;; esac
+    [ "${p#/proc/}" = "$$" ] && continue
+    set -- $(tr '\0' '\n' < "$p/cmdline" 2>/dev/null)
+    a0=${1:-}; a1=${2:-}; hit=0
+    case "$a1" in "$mp") hit=1 ;; esac
+    if [ "$hit" = 0 ]; then
+      case "$a0" in
+      "$mp") hit=1 ;;
+      */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "$a1" in "$mp") hit=1 ;; esac ;;
+      esac
+    fi
+    [ "$hit" = 1 ] && printf '%s\n' "${p#/proc/}"
   done
 }
+
+keeper_pids() { pids_matching "$KEEPER_PATH"; }
 
 state_of() {
   awk '{print $3}' "/proc/$1/stat" 2>/dev/null
@@ -74,7 +110,9 @@ show_status() {
       printf 'keeper pid %s: state=%s  cpu over 20s=%s ticks  %s\n' "$p" "$st" "$((b - a))" "$verdict"
     done
   fi
-  echo "netwatch (the reactive self-heal that replaces it): $(pgrep -f zl1-netwatch.sh | tr '\n' ' ')"
+  # By the same rule, not by `pgrep -f` (a reading that matches the reader, docs 179): the list this
+  # printed used to be able to hold the pid of the shell that asked.
+  echo "netwatch (the reactive self-heal that replaces it): $(pids_matching "$NW_PATH" | tr '\n' ' ')"
   echo "last daemon-reload: $(journalctl -b -o short-monotonic --no-pager -n 2000 2>/dev/null | grep 'Reloading requested' | tail -1 | sed 's/.*systemd\[1\]: //')"
   echo "load: $(cut -d' ' -f1 /proc/loadavg)"
 }

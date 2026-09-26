@@ -431,9 +431,22 @@ for d in /proc/[0-9]*; do
   [ -d "\$d" ] || continue
   p=\${d#/proc/}
   [ "\$p" = 1 ] && continue
-  c=\$(tr '\\000' ' ' < "\$d/cmdline" 2>/dev/null || true)
-  case "\$c" in
-  *$KEEPER*)
+  # MATCHED BY ARGV, and this heredoc is the one place where the rule had to be written twice: the
+  # host-side is_keeper_cmdline() above already uses it (that is what the KILL uses), while this device
+  # side -- the READING -- still compared a substring, so --status could list a process the applier then
+  # refused to touch. Same rule, same reason (docs 179): a shell that merely MENTIONS the path is not the
+  # keeper, and the reading must agree with the acting or the operator sees a contradiction.
+  set -- \$(tr '\\000' '\\n' < "\$d/cmdline" 2>/dev/null)
+  a0=\${1:-}; a1=\${2:-}; hit=0
+  case "\$a1" in "$KEEPER") hit=1 ;; esac
+  if [ "\$hit" = 0 ]; then
+    case "\$a0" in
+    "$KEEPER") hit=1 ;;
+    */sh|*/dash|*/bash|*/busybox|sh|dash|bash|busybox) case "\$a1" in "$KEEPER") hit=1 ;; esac ;;
+    esac
+  fi
+  case "\$hit" in
+  1)
     found=1
     ppid=\$(awk '{print \$4}' "\$d/stat" 2>/dev/null)
     pc=\$(tr -d '\\n' < "/proc/\$ppid/comm" 2>/dev/null || echo '?')
