@@ -1146,7 +1146,7 @@ always "       lines, not just the two numbers: the app's OWN state decides what
 always "       started / died before window B / NO VERDICT if a window could not be read), because a"
 always "       launcher failure and \"the app is not being composited\" look identical otherwise. Its"
 always "       logic is host-verifiable with no device: scripts/host/zl1-camera-app-test-selftest.sh"
-always "       (126 checks, transport stubs are the device; 23 of them go red against the old script)."
+always "       (137 checks, transport stubs are the device; 23 of them go red against the old script)."
 always "       doc 104)"
 always "      AND THE APP'S OWN BURN IS MEASURED NOW, because one number cannot tell two failures apart."
 always "       The first device run (2026-09-26) printed \"NO extra compositor work: the app is not being"

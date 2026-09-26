@@ -83,15 +83,24 @@ mkdir -p "$REPO/scripts/host" "$REPO/scripts/device" "$STUB" \
 # path (`/tmp/zl1-camapp-launch.py`, a `-`) out of the rewrite.
 #
 # The kill rewrite is single-quoted, and not for style: the line it targets sits INSIDE a double-quoted
-# ssh command, so the file really contains `\${p%/cmdline}` with a backslash -- and in a double-quoted
-# sed script the shell eats that backslash, leaving a pattern that matches nothing. Silently: the sed
-# exits 0, and the only symptom would be a REAL kill signalling a host process.
+# ssh command, so the file really contains `\$q` with a backslash -- and in a double-quoted sed script
+# the shell eats that backslash, leaving a pattern that matches nothing. Silently: the sed exits 0, and
+# the only symptom would be a REAL kill signalling a host process.
+#
+# **It replaced BOTH kill lines, and it is the reason a real defect got as far as the device.** The
+# instrument used to send `kill \${p%/cmdline}`, i.e. `kill /proc/3957277`; the device's /bin/sh is dash
+# and its kill builtin takes PROCESS IDS (`kill: /proc/3957277: arguments must be process or job IDs`,
+# rc=1). The rewrite turned that into `"$STUB/kill" /proc/<pid>`, and the stub -- which this file writes --
+# accepted anything, so the fixture AGREED with a form the device rejects, and the assertions below even
+# REQUIRED it (`^kill /[^ ]*proc/[0-9]+$`). The stub now refuses a non-numeric pid the way dash does, and
+# those assertions require `^kill [0-9]+$`: the fixture has the device's shape, not the shape the script
+# happened to write.
 sed -e "s#/proc/#$FR/proc/#g" \
     -e "s#/tmp/zl1-camapp\.#$FR/tmp/zl1-camapp.#g" \
     -e "s#/userdata/zl1-hybris/#$FR/userdata/zl1-hybris/#g" \
     -e "s#/usr/share/click/preinstalled/camera.ubports#$FR/usr/share/click/preinstalled/camera.ubports#g" \
-    -e 's#\*) kill \\${p%/cmdline}#*) \\"'"$STUB"'/kill\\" \\${p%/cmdline}#' \
-    -e 's#kill -9 \\${p%/cmdline}#\\"'"$STUB"'/kill\\" -9 \\${p%/cmdline}#g' \
+    -e 's#kill \\$q 2>/dev/null#"'"$STUB"'/kill" \\$q 2>/dev/null#g' \
+    -e 's#kill -9 \\$q 2>/dev/null#"'"$STUB"'/kill" -9 \\$q 2>/dev/null#g' \
     "$SRC" > "$REPO/scripts/host/zl1-camera-app-test.sh"
 cp "$LAUNCHER" "$REPO/scripts/device/zl1-camapp-launch.py"
 bash -n "$REPO/scripts/host/zl1-camera-app-test.sh" || { echo "the rewritten script does not parse" >&2; exit 2; }
@@ -250,24 +259,37 @@ EOF
 cat > "$STUB/kill" <<EOF
 #!/bin/sh
 printf 'kill %s\n' "\$*" >> "$ACT"
-# **SIGTERM is IGNORED and SIGKILL is not** -- the asymmetry measured on the device on 2026-09-26, where
-# an app launched by an earlier run was still in state S with 11 threads 22 minutes later, after both
-# the instrument's bare kill and its own timeout had fired. A stub that killed on either signal would
-# make stop_app's escalation untestable: the "stopped by SIGTERM" branch would always win.
+# **A NON-NUMERIC OPERAND IS REFUSED, because that is what the device does.** dash's kill builtin is not
+# bash's: \`kill /proc/3957277\` answers \`kill: /proc/3957277: arguments must be process or job IDs\` and
+# exits 1, signalling nothing. Measured on the zl1 on 2026-09-26 (docs 180). A stub that accepted a path
+# would make the instrument's own stop look like it worked while nothing was ever signalled -- which is
+# exactly how a real device run reported \`STILL RUNNING after SIGKILL\` about a process a numeric kill
+# ends in the same second. The instrument's \`2>/dev/null\` is modelled too: the operand is checked, not
+# the message.
+for a in "\$@"; do
+  case "\$a" in
+  -9|-15|-TERM|-KILL|-[A-Za-z]*) continue ;;
+  ''|*[!0-9]*) exit 1 ;;
+  esac
+done
+# **THE STUB IS WHERE A HOST'S \`timeout\` CANNOT REACH -- the instrument's stop always escalates, and the
+# stub's job is to make BOTH branches of that escalation reachable.** Which branch a device takes is a
+# reading, not a fixture's business: the run of 2026-09-26 printed \`app stopped: stopped by SIGTERM\`, so
+# on the device the FIRST signal is the one that works. The 22 minutes of leftover that made an earlier
+# version of this tree claim the app "ignores SIGTERM" was a stop that never sent a signal at all (docs
+# 180's operand defect), not a signal the app shrugged off -- so \`FAKE_SIGTERM_WORKS=1\` reproduces the
+# DEVICE, and the default (0) is the harder fixture, kept because "stopped by SIGTERM" would otherwise
+# always win and the escalation below would be untestable.
 #
-# SIGKILL also makes the /proc entry (and with it the stat and the Mir connection) disappear, which is
-# what the "after" count and the NEXT run's premise check read.
+# Whichever signal ends it, the /proc entry goes with it (and with it the stat and the Mir connection),
+# which is what the "after" count and the NEXT run's premise check read.
+if [ "\$FAKE_SIGTERM_WORKS" != 0 ] && [ "\$1" != -9 ]; then
+  rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null
+  exit 0
+fi
 case "\$1" in
 -9) rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null ;;
 esac
-exit 0
-EOF#!/bin/sh
-printf 'kill %s\n' "\$*" >> "$ACT"
-# The real stop makes the app's /proc entry disappear, and with it its stat and its Mir connection --
-# which is the "after" count the instrument reads. A kill stub that only logged would leave the
-# fixture's connection up, and the after-count would equal the during-count for a reason that has
-# nothing to do with the instrument.
-rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null
 exit 0
 EOF
 cat > "$STUB/identify" <<EOF
@@ -416,6 +438,7 @@ run() { # $1 = extra arguments for the script (may be empty)
       FAKE_CONTAINER="$S_CONTAINER" FAKE_SHELL="$S_SHELL" FAKE_ALIVE="$S_ALIVE" \
       FAKE_APP_PID="$APP_PID" FAKE_APP_STAT="$S_APP_STAT" FAKE_COM_STAT="$S_COM_STAT" \
       FAKE_LAUNCH="$S_LAUNCH" W_COM_PID="$COMP_PID" \
+      FAKE_SIGTERM_WORKS="${SIGTERM_WORKS:-0}" \
       bash "$REPO/scripts/host/zl1-camera-app-test.sh" \
         --seconds 12 --run-seconds "$RUN_SECS" --outdir "$OUTDIR" \
         --extra-args "--mode=x" $1 2>&1 )"
@@ -729,8 +752,10 @@ echo "== 11. the premise (an app may already be running) and the stop that keeps
 # Measured on the device 2026-09-26: a run reported "the app's own rate: 0.1/s ... THE APP NEVER
 # PAINTED" about a process started 22 minutes earlier by the run BEFORE it, while the evidence table
 # printed the new process's first two lines. Two things made that possible: the launch step's walk takes
-# the FIRST match, and this app IGNORES SIGTERM (the stop step used a bare kill; `timeout` sends nothing
-# else either). So the premise is now a reading, and the stop escalates and reports what it needed.
+# the FIRST match, and the stop that was supposed to have ended the previous process HAD NEVER SIGNALLED
+# ANYTHING (its operand was a /proc path and the device's shell is dash -- see the operand case below),
+# while `timeout` sends SIGTERM and nothing else. So the premise is now a reading, and the stop escalates
+# and reports what it needed -- an outcome the fixture below pins from BOTH sides.
 env_reset
 printf '%s\0--foo\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"    # a leftover from an earlier run
 run ""
@@ -750,18 +775,88 @@ env_reset
 printf '%s\0--foo\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"
 run "--clean-first"
 [ "$RC" = 0 ] && ok "--clean-first runs instead of refusing" || bad "--clean-first exited $RC"
-want 'stopped by SIGKILL \(it ignored SIGTERM\)' "$OUT" "and reports that SIGKILL is what worked"
-want '^kill /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill' "$ACT")" "SIGTERM is tried FIRST (a bare kill, no signal flag)"
-want '^kill -9 /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "and SIGKILL only after SIGTERM did not work"
+want 'stopped by SIGKILL \(SIGTERM did not end it\)' "$OUT" "and reports that SIGKILL is what worked"
+want '^kill [0-9]+$' "$(grep -m1 '^kill' "$ACT")" "SIGTERM is tried FIRST (a bare kill, no signal flag) and the operand is a NUMBER"
+want '^kill -9 [0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "and SIGKILL only after SIGTERM did not work, also numeric"
 want 'launched pid' "$OUT" "then the run proceeds and launches its own app"
+
+# **And the fixture can reproduce the DEVICE'S own outcome.** With FAKE_SIGTERM_WORKS=1 the first signal
+# ends the process -- which is what the run of 2026-09-26 printed -- so the same assertions that require
+# the escalation above also have a fixture on the other side. Without this scenario, "stopped by
+# SIGTERM" would be a string this harness could not produce at all, and the two branches of the stop
+# would be one measured branch plus one invented one.
+env_reset
+SIGTERM_WORKS=1 run ""
+want 'app stopped: stopped by SIGTERM' "$OUT" "and a device that dies to the FIRST signal says so (this is what the 2026-09-26 run printed)"
+notwant '^kill -9 ' "$(cat "$ACT")" "and no SIGKILL is sent at all when SIGTERM was enough (the stub logs ^kill, so this is an invocation, not the text of the ssh command)"
+notwant 'STILL RUNNING after SIGKILL' "$OUT" "so there is nothing to warn about"
+SIGTERM_WORKS=0
 
 # A healthy run still has to END the app: this is what makes the next run's premise true.
 env_reset
 run ""
-want 'app stopped: stopped by SIGKILL \(it ignored SIGTERM\)' "$OUT" "a normal run reports the escalation too"
+want 'app stopped: stopped by SIGKILL \(SIGTERM did not end it\)' "$OUT" "a normal run reports the escalation too"
 notwant 'STILL RUNNING after SIGKILL' "$OUT" "and the app is really gone"
-want '^kill -9 /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "the SIGKILL goes through the stub by path (kill is a builtin)"
+want '^kill -9 [0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "the SIGKILL goes through the stub by path (kill is a builtin)"
 notwant 'the stop at the end:' "$OUT" "so the verdict carries no warning about a leftover"
+
+printf '%s\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"
+"$STUB/kill" "$FR/proc/$APP_PID" >/dev/null 2>&1
+[ "$?" = 1 ] && ok "the kill stub REFUSES a path operand the way dash does (exit 1, signalling nothing)" \
+             || bad "the kill stub accepted a path: a fixture that cannot say no cannot catch the mutant"
+[ -e "$FR/proc/$APP_PID/cmdline" ] && ok "and a path-shaped kill leaves the process alive -- which is what the device printed" \
+                                   || bad "a path-shaped kill removed the fixture's process; that is not the device's behaviour"
+FAKE_APP_PID="$APP_PID" "$STUB/kill" -9 "$APP_PID" >/dev/null 2>&1
+[ ! -e "$FR/proc/$APP_PID/cmdline" ] && ok "while a NUMERIC pid is signalled: the operand is the difference, not the signal" \
+                                     || bad "a numeric pid was not signalled"
+rm -f "$FR/proc/$APP_PID/stat" "$FR/proc/$APP_PID/cmdline" 2>/dev/null
+# AND THE MUTANT IS RUN, not described: put the path-shaped operand back in the copy of the script
+# under test and drive the same scenario. On the device the stop printed "STILL RUNNING after SIGKILL"
+# while the process died to a numeric kill in the same second; here the mutant has to print the same
+# thing, and the shipped run right above it must not.
+cp "$REPO/scripts/host/zl1-camera-app-test.sh" "$W/shipped.sh"
+# THE OPERAND IS THE WHOLE DEFECT, so the check on it is proved live from BOTH SIDES rather than being
+# a pattern that looks right (the memory this tree already carries: "a sweep keyed on one name misses the
+# rest" -- a predicate is only known to work if a fixture on each side has been put through it).
+#
+# `kill /proc/3957277` on the zl1 answers `kill: /proc/3957277: arguments must be process or job IDs`,
+# rc=1, signalling nothing: the device's /bin/sh is dash, whose kill builtin takes process ids. The first
+# device run of this version printed `STILL RUNNING after SIGKILL: /proc/3957277` for exactly that
+# reason, and the stop's own `2>/dev/null` kept it quiet -- so the run reported "this app survives
+# SIGKILL", which was not what happened. Before this, the stub accepted a path AND the assertions
+# REQUIRED one (`^kill /[^ ]*proc/[0-9]+$`), i.e. the fixture agreed with a form the device rejects and
+# the defect was invisible offline.
+#
+# This is why the mutant is not written as one here: `sed` cannot be trusted with this file's quoting
+# (the operand is `\$q` inside a double-quoted ssh command, and the harness's own rewrite rules had to
+# be single-quoted for the same reason). A mutation that silently fails to land is the defect the
+# sections above are about, so the predicate is demonstrated on a string fixture instead.
+printf 'kill %s\n' "$FR/proc/$APP_PID" > "$W/pathform.action"
+printf 'kill %s\n' "$APP_PID"          > "$W/numform.action"
+if grep -qE '^kill [0-9]+$' "$W/pathform.action"; then
+  bad "the numeric-operand pattern matches a /proc path: the assertion on the stop is decoration"
+else
+  ok "the numeric-operand pattern REJECTS a path operand -- so the assertion on the stop is a check"
+fi
+grep -qE '^kill [0-9]+$' "$W/numform.action" \
+  && ok "and accepts the numeric one, so it is not simply never matching" \
+  || bad "the numeric-operand pattern does not match a numeric operand"
+
+# The other half, live: the STUB refuses a non-numeric operand the way dash does and signals nothing.
+env_reset
+printf '%s\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"
+"$STUB/kill" "$FR/proc/$APP_PID" >/dev/null 2>&1
+[ "$?" = 1 ] && ok "the kill stub REFUSES a path operand the way dash does (exit 1, signalling nothing)" \
+             || bad "the kill stub accepted a path: a fixture that cannot say no cannot catch the mutant"
+[ -e "$FR/proc/$APP_PID/cmdline" ] && ok "and a path-shaped kill leaves the process alive -- which is what the device printed" \
+                                   || bad "a path-shaped kill removed the fixture's process; that is not the device's behaviour"
+FAKE_APP_PID="$APP_PID" "$STUB/kill" -9 "$APP_PID" >/dev/null 2>&1
+[ ! -e "$FR/proc/$APP_PID/cmdline" ] && ok "while a NUMERIC pid is signalled: the operand is the difference, not the signal" \
+                                     || bad "a numeric pid was not signalled"
+rm -f "$FR/proc/$APP_PID/stat" "$FR/proc/$APP_PID/cmdline" 2>/dev/null
+env_reset
+env_reset
+env_reset
 
 # An app that will not die is not measured around -- it is reported.
 env_reset

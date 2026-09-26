@@ -56,10 +56,21 @@
 # it is the thing this run would measure. Measured 2026-09-26: a run reported "the app's own rate:
 # 0.1/s ... THE APP NEVER PAINTED" about a process started **22 minutes earlier** by the run before it
 # (same pid, ppid = a `timeout` that had already fired), while the evidence table printed the NEW
-# process's first two lines. The app **ignores SIGTERM** -- `timeout` sends nothing else, and the stop
-# step used a bare `kill` -- so a leftover survives every run that does not escalate. The premise is
-# therefore a reading (`--clean-first` stops a leftover with SIGTERM, then SIGKILL, and verifies),
-# and the stop itself escalates and says which signal was needed.
+# process's first two lines. The stop step used a bare `kill`, `timeout` sends SIGTERM and nothing else,
+# and the stop's OPERAND was a /proc path -- so on that build nothing was signalled at all (see below),
+# and a leftover survives every run that does not escalate. The premise is therefore a reading
+# (`--clean-first` stops a leftover with SIGTERM, then SIGKILL, and verifies), and the stop itself
+# escalates and says which signal was needed -- an outcome that is READ rather than assumed.
+#
+# **AND THE STOP HAD NEVER SENT A SIGNAL AT ALL, which the escalation above is what found.** The first
+# device run of THIS version (the second of the day) printed `STILL RUNNING after SIGKILL: /proc/3957277`,
+# i.e. an app that survives SIGKILL -- read that way. The operand was the fault: the stop sent `kill /proc/3957277`, and the device's
+# /bin/sh is **dash**, whose kill builtin takes process ids (`kill: /proc/3957277: arguments must be
+# process or job IDs`, rc=1, measured on the phone the same minute), so nothing was ever signalled and
+# the `2>/dev/null` on that line swallowed the message. The same pid died to a numeric `kill -9`
+# immediately afterwards. So every signal in `stop_app` now goes to a bare NUMBER -- and the offline
+# harness, which had a stub that accepted a path and assertions that REQUIRED one, was agreeing with a
+# form the device rejects; it refuses one now, the way dash does.
 #
 # Two supporting readings come with it, both cheap and both things the earlier verdict assumed away:
 # the app's threads' `/proc/<pid>/task/*/wchan`, which says *where* an app that is not painting is
@@ -181,28 +192,43 @@ app_first() { # -> "/proc/<pid>" of the first match, empty if none
     done" 2>/dev/null | tr -d '\r' | grep -E '^/proc/[0-9]+$' | tail -1
 }
 # Stop the app and PROVE it went: SIGTERM, a walk, SIGKILL, a walk again -- and report which signal was
-# needed. This app ignores SIGTERM (2026-09-26: an app launched 22 minutes earlier was still in state S
-# with 11 threads, long after the run that started it had "stopped" it and after its own `timeout` had
-# fired), so a stop that does not escalate leaves a process behind that the NEXT run will measure. The
-# two sleeps are also what the offline harness indexes its rate fixture by, which is why they are inside
-# this function rather than sprinkled at the call sites.
+# needed, so a stop that does not escalate can leave a process behind that the NEXT run will measure.
+# The two sleeps are also what the offline harness indexes its rate fixture by, which is why they are
+# inside this function rather than sprinkled at the call sites.
+#
+# **WHAT THE APP DOES WITH SIGTERM HAD NEVER BEEN MEASURED BY THIS SCRIPT, AND THE EARLIER CLAIM IS
+# WITHDRAWN.** This file used to say the app "ignores SIGTERM", from a leftover that was still in state
+# S long after a stop -- but on every build up to 2026-09-26 the stop's operand was `kill ${p%/cmdline}`,
+# a /proc PATH, so no signal had ever been sent (see below). Once the operand was a number, the first
+# run that could answer printed `app stopped: stopped by SIGTERM`: **a numeric SIGTERM ends it**, in well
+# under the 2 s this function waits. The escalation is kept anyway, and not as a courtesy -- it is what
+# lets this script SAY which signal worked instead of assuming one, and `STILL RUNNING after SIGKILL`
+# stays its own verdict (that is what the device printed, and with the operand fixed it would be about
+# the app). One run on one boot is a reading, not a rule: the offline harness therefore pins BOTH
+# outcomes (the default fixture makes SIGTERM ineffective and `FAKE_SIGTERM_WORKS=1` makes it enough),
+# so neither branch is the invented one.
+#
+# **AND THE PID MUST BE A NUMBER.** The first device run of THIS version sent `kill ${p%/cmdline}`, i.e.
+# `kill /proc/3957277`, and the device's /bin/sh is **dash** (/usr/bin/dash), whose kill builtin wants
+# process IDs and nothing else: `kill: /proc/3957277: arguments must be process or job IDs`, rc=1. The
+# `2>/dev/null` on that line hid the message and the process was never signalled at all, so the stop
+# reported `STILL RUNNING after SIGKILL: /proc/3957277` -- TRUE, and read as "this app survives SIGKILL",
+# which is not what happened. Measured on the device the same minute: the same pid died to a numeric
+# `kill -9`. So `pids()` strips BOTH the /cmdline suffix and the /proc/ prefix, and every signal goes to
+# a bare number. (The premise message below was always numeric, which is why the by-hand advice worked.)
 stop_app() { # -> one line: nothing to stop / stopped by SIGTERM / stopped by SIGKILL (...) / STILL RUNNING
-  ssh_d "gone() { for p in /proc/[0-9]*/cmdline; do
-        case \"\$(tr '\0' ' ' < \"\$p\" 2>/dev/null)\" in \"$APP_BIN \"*) echo \"\${p%/cmdline}\"; return 0 ;; esac
-      done; return 1; }
-    [ -n \"\$(gone)\" ] || { echo 'nothing to stop'; exit 0; }
-    for p in /proc/[0-9]*/cmdline; do
-      case \"\$(tr '\0' ' ' < \"\$p\" 2>/dev/null)\" in \"$APP_BIN \"*) kill \${p%/cmdline} 2>/dev/null ;; esac
-    done
+  ssh_d "pids() { for p in /proc/[0-9]*/cmdline; do
+        case \"\$(tr '\0' ' ' < \"\$p\" 2>/dev/null)\" in \"$APP_BIN \"*) q=\${p%/cmdline}; echo \"\${q#/proc/}\" ;; esac
+      done; }
+    [ -n \"\$(pids)\" ] || { echo 'nothing to stop'; exit 0; }
+    for q in \$(pids); do kill \$q 2>/dev/null; done
     sleep 2
-    left=\"\$(gone)\"
+    left=\"\$(pids)\"
     if [ -n \"\$left\" ]; then
-      for p in /proc/[0-9]*/cmdline; do
-        case \"\$(tr '\0' ' ' < \"\$p\" 2>/dev/null)\" in \"$APP_BIN \"*) kill -9 \${p%/cmdline} 2>/dev/null ;; esac
-      done
+      for q in \$(pids); do kill -9 \$q 2>/dev/null; done
       sleep 1
-      left=\"\$(gone)\"
-      if [ -n \"\$left\" ]; then echo \"STILL RUNNING after SIGKILL: \$left\"; else echo 'stopped by SIGKILL (it ignored SIGTERM)'; fi
+      left=\"\$(pids)\"
+      if [ -n \"\$left\" ]; then echo \"STILL RUNNING after SIGKILL: \$left\"; else echo 'stopped by SIGKILL (SIGTERM did not end it)'; fi
     else
       echo 'stopped by SIGTERM'
     fi" 2>/dev/null | tail -1
@@ -236,8 +262,9 @@ if [ -n "$PRE_APP" ]; then
     say "   finds the app with a walk that returns the FIRST match, so this run would report numbers"
     say "   about $PRE_APP -- a process it did not start -- and the app it launches would be measured by"
     say "   nobody. Nothing has been touched: the display is as it was found and no app was signalled."
-    say "   Either stop it by hand (kill -9 ${PRE_APP#/proc/}; this app ignores SIGTERM), or re-run with"
-    say "   --clean-first, which stops it (SIGTERM, then SIGKILL), verifies, and then measures."
+    say "   Either stop it by hand (kill ${PRE_APP#/proc/} -- a NUMBER, not the /proc path, or the shell"
+    say "   will refuse it and nothing is signalled), or re-run with --clean-first, which stops it"
+    say "   (SIGTERM, then SIGKILL), verifies, and then measures."
     exit 1
   fi
   say "   --clean-first: $(stop_app)"
