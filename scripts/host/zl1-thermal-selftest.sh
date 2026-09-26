@@ -117,6 +117,47 @@ mkzone() { # zone-dir-name type raw
 clear_zones() { rm -rf "$FR"/sys/class/thermal/thermal_zone*; }
 hot_zones
 
+# --- the fixture's clock -------------------------------------------------------------------------
+#
+# /proc/uptime used to sit at ONE value for the whole harness, and that is not a shape this phone has.
+# It silently disabled the clock half of docs 177: every window measured 0.00 s and fell back to the
+# requested length, so the fallback was the only path any scenario ever exercised, and the measurement
+# itself was never run. Both tickers write .new + mv: the instrument reads these files at arbitrary
+# instants, and a torn read of the clock would hand it a window of 9892 seconds.
+#
+# `clock_loop` moves only the clock (the mean scenario needs nothing else). `rate_loop` also ticks
+# /proc/stat and burns ticks in four processes -- but it does NOT walk the whole fake process table on
+# every tick, because with 450 fake workers on disk the harness's own ticker would spend the window
+# forking, and that load is not the thing being measured. `rate_loop 0` leaves the clock where it is,
+# which is how the fallback path gets its own scenario.
+clock_loop() {
+  cl_n=0
+  while [ -f "$W/ticking" ]; do
+    printf '%s 0.00\n' "$(cut -d' ' -f1 /proc/uptime)" > "$FR/proc/uptime.new"
+    mv "$FR/proc/uptime.new" "$FR/proc/uptime"
+    cl_n=$((cl_n + 1))
+    sleep 0.05
+  done
+}
+rate_loop() { # $1 = 1 to move the clock too, 0 to leave it frozen
+  rl_clock="$1"; rl_n=0
+  while [ -f "$W/ticking" ]; do
+    if [ "$rl_clock" = 1 ]; then
+      printf '%s 0.00\n' "$(cut -d' ' -f1 /proc/uptime)" > "$FR/proc/uptime.new"
+      mv "$FR/proc/uptime.new" "$FR/proc/uptime"
+    fi
+    rl_n=$((rl_n + 1))
+    printf 'cpu  %d 0 %d %d %d 0 0 0\nctxt %d\n' \
+      $((200 + rl_n * 40)) $((100 + rl_n * 20)) $((4000 + rl_n * 100)) 20 $((50000 + rl_n * 100)) \
+      > "$FR/proc/stat.new"
+    mv "$FR/proc/stat.new" "$FR/proc/stat"
+    for rl_p in 1 812 8885 1696; do
+      [ -f "$FR/proc/$rl_p/stat" ] && bump_proc "$FR/proc/$rl_p/stat" 12 6
+    done
+    sleep 0.05
+  done
+}
+
 # --- the scripts under test, with only their operational paths moved ------------------------------
 #
 # `-e "s#/proc/stat#...#"` also rewrites the two /proc/stat literals inside read_stat, which is where
@@ -338,6 +379,216 @@ case "$order" in
 *) bad "expected the battery last, got: [$order]" ;;
 esac
 want '^ +-[0-9]+ +keeper ' "$AB" "a process that STOPPED burning is reported (it is absent from window B's top list)"
+
+# ==================================================================================================
+echo
+echo "== 3b. the window's temperature is a MEAN over the window, not its last instant (docs 176/177) =="
+# ==================================================================================================
+# Six device runs of the paired governor instrument used this table to price the second heat cause and
+# printed +2.03 / -0.58 / +2.48 / +5.88 / +2.27 / +2.30 C on one phone on one boot. The table was a
+# SINGLE sample of the window's last instant, and thermal_zone18 walked 41.7 -> 45.6 -> 43.7 inside its
+# own 48 s window. The fixture below is that shape, made deterministic: the zone steps 800 -> 400
+# halfway through a six-sample window, so the mean has to land STRICTLY between them while a snapshot
+# can only ever print one end. The span line is alignment-proof -- 400 raw = 40.0 C whatever the
+# samples landed on -- which is why the span is asserted exactly and the value only by its range.
+mean_scenario() { # $1 = the script to run; leaves the tsens8 value in MEAN_V, the walk in MEAN_W, the output in MEAN_OUT
+  clear_zones; hot_zones
+  mkzone thermal_zone8 tsens_tz_sensor8 800
+  (
+    n=0
+    while [ "$n" -lt 8 ]; do
+      n=$((n + 1))
+      if [ "$n" -ge 4 ]; then printf '400\n' > "$FR/sys/class/thermal/thermal_zone8/temp"
+      else                   printf '800\n' > "$FR/sys/class/thermal/thermal_zone8/temp"; fi
+      sleep 1
+    done
+  ) &
+  ZT=$!
+  : > "$W/ticking"
+  clock_loop & ZC=$!
+  sleep 0.2
+  MEAN_OUT=$(timeout 90 sh "$1" --seconds 6 --quiet 2>&1); MEAN_RC=$?
+  rm -f "$W/ticking"; wait "$ZC" 2>/dev/null
+  wait "$ZT" 2>/dev/null
+  MEAN_V=$(printf '%s\n' "$MEAN_OUT" | grep -E '^ +thermal_zone8 ' | awk '{print $3}' | head -1)
+  MEAN_W=$(printf '%s\n' "$MEAN_OUT" | sed -n 's/.*walked over \([0-9]*\)s of this window.*/\1/p')
+}
+
+mean_scenario "$W/th.sh"
+[ "$MEAN_RC" = 0 ] && ok "a window whose zones move still exits 0 (rc=$MEAN_RC)" || bad "that run exited $MEAN_RC"
+want '^ +thermal_zone8 +tsens_tz_sensor8 +[0-9.]+ C$' "$MEAN_OUT" "the zone is reported at all"
+case "$MEAN_V" in
+40.0|80.0) bad "the window reports its LAST instant ($MEAN_V) -- that is the defect docs 177 fixes" ;;
+"")        bad "no value for thermal_zone8 at all" ;;
+*)         ok "the window reports neither end of the step ($MEAN_V) -- it is an average, not a sample" ;;
+esac
+awk -v v="$MEAN_V" 'BEGIN { exit !(v + 0 > 40.0 && v + 0 < 80.0) }' \
+  && ok "and that value is strictly inside the range the zone moved through" \
+  || bad "the value $MEAN_V is not between 40.0 and 80.0"
+want 'mean of 6 sample\(s\) walked over [0-9]+s of this window' "$MEAN_OUT" \
+     "the table says it is a mean, of how many samples, over how many seconds"
+[ "$MEAN_W" = 6 ] && ok "and the walk really spanned the 6s it was asked for (the fixture's clock moves now)" \
+                  || bad "the walk spanned ${MEAN_W}s, not 6s -- the fixture's clock is not moving, or a sample's cost was added to its sleep"
+want 'the widest zone moved 40\.0 C -- thermal_zone8' "$MEAN_OUT" \
+     "and how far the widest zone moved across those samples (400 raw = 40.0 C, alignment-proof)"
+want '1 zone\(s\) moved 0\.2 C or more across it' "$MEAN_OUT" \
+     "a zone whose own scatter is 40 C is called out, not left for the reader to notice"
+# One sample long: the mean has to degrade to exactly the old behaviour rather than to something new.
+clear_zones; hot_zones
+run_th --seconds 1 --quiet
+want 'mean of 1 sample\(s\)'                                   "$OUT" "a one-second window is one sample, and says so"
+want '^ +thermal_zone8 +tsens_tz_sensor8 +58\.0 C$'            "$OUT" "and that sample is the reading it always was (58.0 C)"
+
+# ... and the mutation that puts the snapshot back must be caught by the assertions above. The
+# mutation is one command NAME: `zone_mean` becomes `zone_read`, which ignores the samples file and
+# takes one reading. Proved to have landed before it is trusted (a mutation that silently does not
+# apply is a green run that tested nothing).
+sed 's#^  zone_mean "\$zmean" > "\$TMP/zones.now"$#  zone_read > "$TMP/zones.now"#' \
+  "$W/th.sh" > "$W/th.snapshot.sh"
+if grep -q '^  zone_read > "\$TMP/zones.now"$' "$W/th.snapshot.sh"; then
+  ok "the snapshot mutation landed in the copy under test"
+  mean_scenario "$W/th.snapshot.sh"
+  case "$MEAN_V" in
+  40.0|80.0) ok "the mutant IS caught: reading one instant prints an end of the step ($MEAN_V)" ;;
+  *)         bad "the mutant was NOT caught (it read $MEAN_V) -- these assertions cannot fail" ;;
+  esac
+else
+  bad "the snapshot mutation did not apply -- the run below would prove nothing"
+fi
+clear_zones; hot_zones
+
+# ==================================================================================================
+echo
+echo "== 3c. every rate is divided by the seconds the window MEASURED (docs 177) =="
+# ==================================================================================================
+# The ticks are the difference of two /proc/stat reads that bracket a window made of the zone walk AND
+# two walks of /proc; the divisor used to be the number the caller typed. On the device the 38-zone walk
+# costs 0.30 s and one walk of 621 processes costs 4.58 s, so `--seconds 10` read /proc/stat 20.7 s apart
+# and divided by 10 -- every "/s" this instrument printed was 2.07x the truth. Offline that is visible
+# only if the fixture has the two things the device has: a clock that MOVES, and a table worth walking.
+# 450 extra pids cost about 1.4 s per walk here, and 400 extra zones make one sample cost about 0.8 s --
+# which is also what turns the sample loop's own correction (the sleep is reduced by the sample's cost)
+# into a difference rather than a rounding error.
+many_procs() {
+  i=0
+  while [ "$i" -lt "$1" ]; do
+    i=$((i + 1))
+    mkdir -p "$FR/proc/$((9000 + i))"
+    fake_proc "$((9000 + i))" "worker$i" 3 1 S
+  done
+}
+drop_many_procs() { rm -rf "$FR"/proc/9[0-9][0-9][0-9]; }
+bulk_zones() {
+  i=0
+  while [ "$i" -lt "$1" ]; do
+    i=$((i + 1))
+    mkzone "thermal_zone$((100 + i))" "tsens_tz_sensor$((100 + i))" 450
+  done
+}
+measured_scenario() { # $1 = the script to run, $2 = the seconds to ask for -> MEAS_RC/SUM/TOP/WALK/OUT
+  : > "$W/ticking"
+  rate_loop 1 & RLP=$!
+  sleep 0.3
+  MEAS_OUT=$(timeout 120 sh "$1" --seconds "$2" --top 3 2>&1); MEAS_RC=$?
+  rm -f "$W/ticking"; wait "$RLP" 2>/dev/null
+  MEAS_SUM=$(printf '%s\n' "$MEAS_OUT" | grep -E '^  user .*ticks,')
+  MEAS_TOP=$(printf '%s\n' "$MEAS_OUT" | grep -E '^ +[0-9]+ ticks +[0-9.]+/s ' | head -1)
+  MEAS_WALK=$(printf '%s\n' "$MEAS_OUT" | sed -n 's/.*walked over \([0-9]*\)s of this window.*/\1/p')
+}
+
+many_procs 450
+bulk_zones 400
+measured_scenario "$W/th.sh" 3
+MEAS_X=$(printf '%s\n' "$MEAS_SUM" | sed -n 's/.*ticks, \([0-9.]*\) s measured).*/\1/p')
+MEAS_T=$(printf '%s\n' "$MEAS_TOP" | awk '{print $1}')
+MEAS_R=$(printf '%s\n' "$MEAS_TOP" | awk '{print $3}' | tr -d '/s')
+# The mutants below re-run `measured_scenario`, which overwrites every MEAS_* variable, so the real
+# run's walk is kept here before the first mutation can reach it (a mutant compared against itself is
+# a check that cannot fail).
+REAL_WALK=$MEAS_WALK
+
+[ "$MEAS_RC" = 0 ] && ok "a run on a moving clock exits 0 (rc=$MEAS_RC)" || bad "that run exited $MEAS_RC"
+want '\([0-9]+ ticks, [0-9]+\.[0-9] s measured\)' "$MEAS_SUM" \
+     "the window prints the seconds it MEASURED, to a decimal -- not the whole number it was asked for"
+awk -v x="$MEAS_X" 'BEGIN { exit !(x + 0 > 3.5) }' \
+  && ok "and that number is longer than the 3s asked for (${MEAS_X}s): the two walks are inside the window" \
+  || bad "the window measured ${MEAS_X}s -- not longer than the 3s it was asked for, so the walks are not being counted"
+[ "$MEAS_WALK" = 3 ] \
+  && ok "while the SAMPLE walk is the 3s asked for (each sample's cost is subtracted from its own sleep)" \
+  || bad "the sample walk spanned [${MEAS_WALK}]s, not 3s"
+case "$MEAS_T" in
+''|*[!0-9]*) bad "no per-process rate line to check the divisor on" ;;
+*) if [ "$MEAS_T" -gt 20 ]; then ok "the fixture's own process burned $MEAS_T ticks in the window"
+   else bad "the top row burned only [$MEAS_T] ticks -- too few to divide"; fi ;;
+esac
+awk -v r="$MEAS_R" -v t="$MEAS_T" -v x="$MEAS_X" 'BEGIN { exit !(r * x > t * 0.99 && r * x < t * 1.01) }' \
+  && ok "the printed rate reproduces those ticks over the MEASURED ${MEAS_X}s, and not over anything else" \
+  || bad "the printed rate ${MEAS_R}/s x ${MEAS_X}s does not reproduce $MEAS_T ticks -- the divisor is wrong"
+awk -v r="$MEAS_R" -v t="$MEAS_T" 'BEGIN { exit !(r * 3 < t * 0.9) }' \
+  && ok "and the 3s it was ASKED for would not reproduce them -- the divisor is the measurement, not the request" \
+  || bad "the printed rate is the ticks over the 3s asked for, not over the window measured"
+
+# ... and the mutation that puts the wrong bar back, caught by TWO of the assertions above. It is the
+# faithful one: the pre-fix source said `secs="$SECONDS_WIN"` in `verdict` and `s="$SECONDS_WIN"` in
+# `top_list`, and this restores exactly those two. (It moves the printed number as well as the divisor,
+# because `verdict` prints the same variable it divides by -- so both are asserted, and a mutation that
+# only moved one of them could not exist here.)
+sed -e 's#-v secs="$(wsecs "$label")" #-v secs="$SECONDS_WIN" #' \
+    -e 's#awk -v s="$(wsecs "$label")" #awk -v s="$SECONDS_WIN" #' \
+    "$W/th.sh" > "$W/th.req.sh"
+if grep -q 'secs="\$SECONDS_WIN"' "$W/th.req.sh" && grep -q 'awk -v s="\$SECONDS_WIN"' "$W/th.req.sh"; then
+  ok "the requested-bar mutation landed in the copy under test"
+  measured_scenario "$W/th.req.sh" 3
+  MR_X=$(printf '%s\n' "$MEAS_SUM" | sed -n 's/.*ticks, \([0-9.]*\) s measured).*/\1/p')
+  MR_T=$(printf '%s\n' "$MEAS_TOP" | awk '{print $1}')
+  MR_R=$(printf '%s\n' "$MEAS_TOP" | awk '{print $3}' | tr -d '/s')
+  # The mutant's rate must be EXACTLY the ticks over the 3 s it asked for -- and that same rate over the
+  # ${MEAS_X}s the window really measured would be a very different number, which is what makes the
+  # divisor visible. (Compared as ratios against the REAL run's window, because the two runs have
+  # different tick counts; an absolute comparison here would be two numbers about two different runs.)
+  awk -v r="$MR_R" -v t="$MR_T" -v real="$MEAS_X" \
+      'BEGIN { exit !(r * 3 > t * 0.99 && r * 3 < t * 1.01 && r * real > t * 1.4) }' \
+    && ok "the mutant IS caught: its rate (${MR_R}/s) is exactly the $MR_T ticks over the 3s asked for (over the ${MEAS_X}s measured it would be far higher)" \
+    || bad "the mutant was NOT caught (rate ${MR_R}/s, ticks ${MR_T}, real window ${MEAS_X}s) -- these assertions cannot fail"
+  awk -v x="$MR_X" -v real="$MEAS_X" 'BEGIN { exit !(x + 0 < real + 0) }' \
+    && ok "and the window it PRINTS is the request too ([${MR_X}]s where the real run measured ${MEAS_X}s)" \
+    || bad "the mutant printed [${MR_X}]s -- wrong mutation"
+else
+  bad "the requested-bar mutation did not apply -- the run below would prove nothing"
+fi
+
+drop_many_procs
+sed 's#^    sleep "\$zl1_rest"$#    sleep 1#' "$W/th.sh" > "$W/th.nosleep.sh"
+if grep -q '^    sleep 1$' "$W/th.nosleep.sh"; then
+  ok "the uncorrected-sleep mutation landed in the copy under test"
+  measured_scenario "$W/th.nosleep.sh" 3
+  NS_WALK=$(printf '%s\n' "$MEAS_OUT" | sed -n 's/.*walked over \([0-9]*\)s of this window.*/\1/p')
+  case "$NS_WALK" in
+  ''|*[!0-9]*) bad "the uncorrected-sleep mutant printed no walk at all" ;;
+  *) if [ "$NS_WALK" -ge $((REAL_WALK + 1)) ]; then
+       ok "the mutant IS caught: its window walks ${NS_WALK}s for the same 3s asked for (the real one walked ${REAL_WALK}s)"
+     else bad "the mutant was NOT caught (walk ${NS_WALK}s vs the real ${REAL_WALK}s) -- the fixture's samples are too cheap to tell"; fi ;;
+  esac
+else
+  bad "the uncorrected-sleep mutation did not apply -- the sample's cost is not being tested"
+fi
+
+# Last: the path a STOPPED clock has to take. Everything above runs with a clock that moves, so this is
+# the one scenario that leaves it where it is -- and the fixture's own ticker (stat only, no clock) keeps
+# the CPU side moving so a rate line still exists to be read. A clock that does not move must not become
+# a division by zero, and it must not be reported as a measurement either.
+clear_zones; hot_zones
+: > "$W/ticking"
+tick_loop & TICKER=$!
+sleep 0.5
+run_th --seconds 2
+rm -f "$W/ticking"; wait $TICKER 2>/dev/null
+want '\([0-9]+ ticks, 2\.0 s REQUESTED -- the clock did not advance\)' "$OUT" \
+     "on a stopped clock the window says REQUESTED, not 'measured'"
+want 'REQUESTED length, 2s, and not by a measured one' "$OUT" \
+     "and it names the fallback on stderr, where a bar that is not the window has to be visible"
+want 'context switches [0-9]+/s' "$OUT" "and it still prints a rate -- a stopped clock is not a division by zero"
+[ "$RC" = 0 ] && ok "the stopped-clock run exits 0 (rc=$RC)" || bad "the stopped-clock run exited $RC"
 
 # ==================================================================================================
 echo

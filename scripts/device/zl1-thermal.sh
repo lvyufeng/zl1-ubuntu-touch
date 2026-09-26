@@ -36,6 +36,51 @@
 #                                         # per-process and per-zone *differences* -- the doc 72 shape
 #   zl1-thermal.sh --quiet                # summary only, no per-process table
 #
+# *** THE WINDOW'S TEMPERATURE IS A MEAN, AND IT USED TO BE ONE INSTANT (docs 176/177). ***
+#
+# The zone table was read ONCE, after the window's sleep, so every number under "== thermal zones:"
+# was a snapshot of the window's LAST INSTANT. On 2026-09-26 six device runs of the paired governor
+# instrument used that table to price the second heat cause and printed +2.03 / -0.58 / +2.48 / +5.88 /
+# +2.27 / +2.30 C on the same phone on the same boot -- and an independent sampler reading the same
+# files BY NAME every 2 s during one of those runs showed why: thermal_zone18 walked 41.7 -> 45.6 ->
+# 43.7 INSIDE its own 48 s window. A window has no single temperature, so "one sample" was a lottery
+# and its prize was the whole reading: the same run and the same pairing gave +2.30 from the snapshot
+# and +0.61 from the window means -- 1.7 C, three quarters of the effect being priced.
+#
+# Nothing about the CPU side changed: /proc/stat and the per-process table are still two snapshots and
+# their difference, because a tick count IS a delta over a window. This is the temperature side
+# catching up with that idea. `take_window` now walks the zones once a second for the length of the
+# window, and `thermal_summary` reports the MEAN of those samples per zone -- printed with how many
+# samples it took, how many seconds it actually walked, and how far the widest zone moved across them,
+# so a zone whose own scatter is bigger than the difference being measured says so in the output
+# instead of in a reviewer's head.
+#
+# The unit table, the flags and the `hottest:` line are untouched: the mean is computed on the RAW
+# values per (name, type) and then scaled by the same table, so the printed layout is byte-identical
+# in shape and every existing reader -- including device/zl1-governor-temp-ab.sh, which parses `$4 ==
+# "C"` -- keeps working.
+#
+# *** AND EVERY "/s" IN HERE WAS DIVIDED BY THE WRONG BAR (docs 177, second half). ***
+#
+# The CPU side is two snapshots and their difference, and the difference was divided by the number of
+# seconds the caller ASKED for -- `--seconds 10` -- while the two snapshots are separated by the zone
+# walk AND two walks of /proc, all three of which happen INSIDE the window. Measured on the device on
+# 2026-09-26 with 621 processes: the 38-zone walk costs 0.30 s, one walk of /proc costs 4.58 s, so
+# `--seconds 10` reads /proc/stat 20.7 s apart and runs 23.8 s end to end -- and every rate this script
+# printed (`context switches N/s`, `N ticks  X/s`, `busy N of 4 cores`) was therefore about 2.07x too
+# big. A core-count is a ratio and the ratio was between two different units, which is docs 174's
+# mistake one file over.
+#
+# Three changes, each of them measured rather than argued:
+#   * the sample loop SUBTRACTS a sample's own cost from its sleep, so a window is `--seconds` long
+#     instead of 1.3-1.4x it (the zone walk is per-second work, and `sleep 1` sat on top of it);
+#   * the window's own clock interval (fractional /proc/uptime -- the RTC on this board reads 1970) is
+#     measured between the two /proc/stat reads and used as the divisor for every rate, per window, so
+#     the A/B mode's two windows each use their own;
+#   * when that interval cannot be read the script says REQUESTED instead of "measured" and prints to
+#     stderr what it fell back to, because a rate divided by the wrong bar is exactly the defect this
+#     fixes -- and a device whose clock is stuck must not turn into a division by zero.
+#
 # --ab is meant to be driven from the host like this:
 #
 #   ssh root@10.15.19.82 'sh /tmp/zl1-thermal.sh --ab --hold 30' &
@@ -103,10 +148,60 @@ snap_procs() {
 }
 
 take_window() {
+  # The window is bracketed by two CLOCK readings, and the seconds between them are what every rate
+  # below is divided by -- not the seconds the caller asked for (docs 177, see the long note at the end
+  # of this function). zl1_wa is fractional and comes from /proc/uptime, which is the only clock on this
+  # phone that does not read 1970.
+  zl1_wa=$(cut -d' ' -f1 /proc/uptime)
   read_stat "$TMP/stat.$1a"; snap_procs "$TMP/proc.$1a"
-  sleep "$SECONDS_WIN"
+  # The zones are walked ONCE A SECOND ACROSS THE WINDOW, and the window's temperature is their mean
+  # (docs 177): a window has no single temperature, and taking one sample of it was a lottery whose
+  # prize was the whole reading. The count is the bound -- one sample per second for SECONDS_WIN
+  # seconds -- so the loop cannot hang on a stuck clock, and both the count and the seconds actually
+  # walked are printed, because inside a clock bound a count is a range and not a constant
+  # (docs 175's lesson about the pre-hold's samples, learned the same way).
+  ZS="$TMP/zones.samples.$1"
+  : > "$ZS"
+  zl1_zs=0
+  zl1_t0=$(uptime_s)
+  while [ "$zl1_zs" -lt "$SECONDS_WIN" ]; do
+    # One sample per second, and the sample's own cost is SUBTRACTED from the sleep (docs 177). Reading
+    # 38 zones is 76 forks on this phone -- measured at 0.4 s -- so a plain `sleep 1` makes a 30 s
+    # window a 42 s one, and every rate below is divided by the seconds this script says it watched.
+    zl1_s0=$(cut -d' ' -f1 /proc/uptime)
+    zone_raw >> "$ZS"
+    zl1_zs=$((zl1_zs + 1))
+    zl1_rest=$(awk -v s="$zl1_s0" '{ r = 1 - ($1 - s); if (r < 0.05) r = 0.05; printf "%.2f", r }' /proc/uptime)
+    sleep "$zl1_rest"
+  done
+  ZSAMPLES=$zl1_zs
+  ZSAMPLE_SECS=$(( $(uptime_s) - zl1_t0 ))
   read_stat "$TMP/stat.$1b"; snap_procs "$TMP/proc.$1b"
+  # *** THE WINDOW'S RATES ARE DIVIDED BY THE SECONDS IT MEASURED (docs 177). ***
+  #
+  # Everything downstream divides tick counts by SECONDS_WIN -- the seconds the script was ASKED for --
+  # while the ticks themselves are the difference between two /proc/stat snapshots that bracket the
+  # zone walk AND the /proc process walk. Measured on the device on 2026-09-26 (621 processes, 38 zones):
+  # `--seconds 10` read /proc/stat 20.7 s apart while dividing by 10, so every "/s" this script printed
+  # was 2.07x the truth; the same run took 23.8 s end to end. That is docs 174's mistake in a new place:
+  # a number in one unit divided by a bar in another. The interval is now measured (fractional
+  # /proc/uptime, which is the only clock here that does not read 1970) and used for every rate.
+  zl1_wb=$(cut -d' ' -f1 /proc/uptime)
+  WIN_SECS=$(awk -v a="$zl1_wa" -v b="$zl1_wb" 'BEGIN { printf "%.2f", b - a }')
+  case "$WIN_SECS" in
+  ''|0|0.*) WIN_SECS="$SECONDS_WIN"; WIN_CLOCK_STUCK=1 ;;
+  *)        WIN_CLOCK_STUCK=0 ;;
+  esac
+  # Kept per window rather than in one global: the A/B mode prints window A's table AFTER window B has
+  # been taken, so a single global would divide A's ticks by B's seconds.
+  printf '%s\n' "$WIN_SECS" > "$TMP/wsecs.$1"
+  printf '%s\n' "$WIN_CLOCK_STUCK" > "$TMP/wstuck.$1"
 }
+
+# The seconds a window actually measured. Anything dividing a tick count uses THIS, and a window whose
+# clock could not be read (or read as zero) falls back to the requested length rather than dividing by
+# zero -- and says so, because a rate divided by the wrong bar is exactly the defect this fixes.
+wsecs() { cat "$TMP/wsecs.$1" 2>/dev/null || printf '%s' "$SECONDS_WIN"; }
 
 # Per-process deltas between two snapshots, biggest first, this script's own pid excluded.
 proc_delta() {
@@ -138,19 +233,28 @@ verdict() {
   busy=$(( dt - (b_i-a_i) - (b_w-a_w) ))
   awk -v dt="$dt" -v busy="$busy" -v n="$n" -v u="$((b_u-a_u))" -v sy="$((b_s-a_s))" \
       -v iow="$((b_w-a_w))" -v irq="$((b_r-a_r))" -v soft="$((b_q-a_q))" -v c="$((b_c-a_c))" \
-      -v secs="$SECONDS_WIN" -v la="$(loadavg)" -v d="$dstate" '
+      -v secs="$(wsecs "$label")" -v stuck="$(cat "$TMP/wstuck.$label" 2>/dev/null || echo 0)" \
+      -v la="$(loadavg)" -v d="$dstate" '
     BEGIN {
       if (dt <= 0) { print "  (no CPU ticks in the window -- too short?)"; exit }
       printf "  busy %.2f of %d cores (%.0f%%), of which iowait %.2f cores\n", busy/dt*n, n, 100*busy/dt, iow/dt*n
-      printf "  user %.0f%%  sys %.0f%%  irq %.0f%%  softirq %.0f%%  iowait %.0f%%   (%d ticks, %d s)\n",
-             100*u/dt, 100*sy/dt, 100*irq/dt, 100*soft/dt, 100*iow/dt, dt, secs
+      printf "  user %.0f%%  sys %.0f%%  irq %.0f%%  softirq %.0f%%  iowait %.0f%%   (%d ticks, %.1f s%s)\n",
+             100*u/dt, 100*sy/dt, 100*irq/dt, 100*soft/dt, 100*iow/dt, dt, secs,
+             (stuck == 1 ? " REQUESTED -- the clock did not advance" : " measured")
       printf "  context switches %.0f/s   loadavg %s   D-state threads %s\n", c/secs, la, d
     }' > "$TMP/summary.$label"
+  if [ "$(cat "$TMP/wstuck.$label" 2>/dev/null)" = 1 ]; then
+    echo "  (NOTE: /proc/uptime did not advance across this window, so its rates are divided by the" >&2
+    echo "   REQUESTED length, ${SECONDS_WIN}s, and not by a measured one)" >&2
+  fi
   proc_delta "$TMP/proc.${label}a" "$TMP/proc.${label}b" > "$TMP/top.$label"
 }
 
+# The label is derived from the file the caller hands in ($TMP/top.A -> A) so that each window's ticks
+# are divided by that window's own measured seconds.
 top_list() {
-  awk -v s="$SECONDS_WIN" '{ printf "   %7d ticks  %6.2f/s  %-6s %s\n", $1, $1/s, $2, $3 }' "$1"
+  label=${1##*/top.}
+  awk -v s="$(wsecs "$label")" '{ printf "   %7d ticks  %6.2f/s  %-6s %s\n", $1, $1/s, $2, $3 }' "$1"
 }
 
 # --- temperature, frequency, memory ------------------------------------------------------------
@@ -208,11 +312,50 @@ zl1_scale_awk='
 
 # One "name=type:milli:raw:flag:unit" line per zone, so two readings can be diffed by name and every
 # value downstream is in ONE unit no matter which driver registered it.
-zone_read() {
+zone_raw() {
   for z in /sys/class/thermal/thermal_zone*; do
     [ -r "$z/temp" ] || continue
     printf '%s %s %s\n' "${z##*/}" "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"
-  done | awk "$zl1_scale_awk"
+  done
+}
+
+zone_read() {
+  zone_raw | awk "$zl1_scale_awk"
+}
+# zone_read is the SINGLE-INSTANT reading and NOTHING in a window calls it any more (docs 177): the
+# window reports zone_mean's average of what take_window walked. It stays because it is the shape every
+# reader of this output binds to -- `name=type:milli:raw:flag:unit`, with `raw` and the unit printed so
+# the scaling can be checked by hand -- and zone_mean is defined as that shape with an average in it.
+# A one-line samples file gives exactly this function's answer, which is how the mean degrades to the
+# old behaviour if a window is ever one sample long.
+
+# The mean of many samples, in zone_read's format. $1 = a file of repeated "name type raw" triples.
+# The average is taken on the RAW values and scaled once at the end, which is the same arithmetic in
+# either order because the factor is a constant per zone -- but it keeps the printed `raw` field
+# consistent with the printed milli value, which is the property that lets a reader check the scaling
+# by hand. Zones that appear in some samples and not others (a driver that registers late, a file that
+# goes unreadable) are averaged over the samples that HAVE them, and their count is their own.
+zone_mean() {
+  awk '
+    { k = $1 " " $2
+      if (n[k]++ == 0) ord[++z] = k
+      s[k] += $3 + 0 }
+    END { for (i = 1; i <= z; i++) { split(ord[i], p, " "); printf "%s %s %.1f\n", p[1], p[2], s[ord[i]] / n[ord[i]] } }
+  ' "$1" | awk "$zl1_scale_awk"
+}
+
+# How far each zone moved across the samples, in milli-degC -- the same unit as the table, computed by
+# scaling first and subtracting after, because the raw units differ per driver (a spread in raw numbers
+# would compare deci-degC with milli-degC). "name milli_span samples". Printed so that a zone whose own
+# scatter is the size of the thing being measured cannot be read as a quiet number (docs 176:
+# thermal_zone12 moved 412 -> 480 -> 406 in 4 s at IDLE).
+zone_spread() {
+  awk "$zl1_scale_awk" "$1" | awk -F'[:=]' '
+    { k = $1
+      if (n[k]++ == 0) { mn[k] = $3 + 0; mx[k] = $3 + 0; ord[++z] = k }
+      if ($3 + 0 < mn[k]) mn[k] = $3 + 0
+      if ($3 + 0 > mx[k]) mx[k] = $3 + 0 }
+    END { for (i = 1; i <= z; i++) printf "%s %d %d\n", ord[i], mx[ord[i]] - mn[ord[i]], n[ord[i]] }'
 }
 
 # $1 = a zones file. Fields, split on [:=] : 1 name 2 type 3 milli 4 raw 5 flag 6 unit.
@@ -226,7 +369,15 @@ zone_print() {
 }
 
 thermal_summary() {
-  zone_read > "$TMP/zones.now"
+  # The window's temperature is the MEAN of the samples `take_window` walked across it (docs 177), not
+  # the last instant -- see the header. `zone_mean` keeps zone_read's exact output shape, so `hottest:`,
+  # the flags and every reader of this table are unchanged.
+  zmean="${ZS:-$TMP/zones.samples}"
+  if [ ! -s "$zmean" ]; then
+    echo "== thermal zones: none readable"
+    return
+  fi
+  zone_mean "$zmean" > "$TMP/zones.now"
   if [ ! -s "$TMP/zones.now" ]; then
     echo "== thermal zones: none readable"
     return
@@ -248,6 +399,27 @@ thermal_summary() {
       if (skip) printf "; %d implausible, left out of the pick", skip
       print ")"
     }' "$TMP/zones.now"
+  # ... and how much each zone moved while it was being averaged. A zone whose own swing approaches the
+  # difference this run is trying to measure is not a quiet number, and the reader can only know that if
+  # it is printed here (docs 176: thermal_zone12 moved 5 C in 4 s on an idle phone).
+  zone_spread "$zmean" > "$TMP/zones.spread"
+  if [ -s "$TMP/zones.spread" ]; then
+    # The span is timed by /proc/uptime, and on a machine whose clock does not move there is no span to
+    # print -- but the SAMPLE COUNT is still a count (the loop is bounded by it), so it is printed either
+    # way and the missing second is named rather than printed as 0 (a zero here reads as "the walk was
+    # instantaneous", which is the opposite of what a stuck clock means).
+    if [ "${ZSAMPLE_SECS:-0}" -gt 0 ] 2>/dev/null; then
+      zl1_wstr="${ZSAMPLE_SECS}s"
+    else
+      zl1_wstr="an untimed span (the clock did not advance)"
+    fi
+    awk -v s="$ZSAMPLES" -v w="$zl1_wstr" '
+      { if ($2 + 0 > m) { m = $2 + 0; n = $1 }
+        if ($2 + 0 >= 200) big++ }
+      END { printf "   (mean of %s sample(s) walked over %s of this window; the widest zone moved %.1f C -- %s", s, w, m/1000, n
+            if (big) printf "; %d zone(s) moved 0.2 C or more across it", big
+            print ")" }' "$TMP/zones.spread"
+  fi
 }
 
 cpufreq_state() {
@@ -354,7 +526,7 @@ if [ "$AB" = 1 ]; then
   echo "== window B, top $TOP by CPU:"
   top_list "$TMP/top.B"
 
-  echo "== B minus A per process (ticks in the same ${SECONDS_WIN}s window; + = hotter, sorted by size):"
+  echo "== B minus A per process (ticks in windows of $(wsecs A)s and $(wsecs B)s respectively; + = hotter, sorted by size):"
   # Two things this section has to get right. The union of the two top lists, not just B's: a process
   # that went quiet is by definition no longer in B's top list, so differencing only B's list hides the
   # answer to the question the mode exists for -- "did the thing I just stopped actually stop?". (Doc 81
@@ -384,7 +556,10 @@ if [ "$AB" = 1 ]; then
   fi
 
   echo "== B minus A per thermal zone (sorted by the size of the change, either direction):"
-  zone_read > "$TMP/zones.B"
+  # Window B's side is the MEAN of the samples window B walked, exactly like window A's (docs 177).
+  # Before that this line re-read the zones once, AFTER window B was over -- so the A/B compared a mean
+  # with an instant, which is the same defect the single-window table had.
+  zone_mean "$TMP/zones.samples.B" > "$TMP/zones.B"
   # Both sides are already in milli-degC (zone_read), so this diff is in one unit whatever the driver --
   # which is what makes the doc 72 numbers reproduce here. Zones flagged implausible in B are left out
   # rather than differenced against a number this script has just called unbelievable, and a zone that

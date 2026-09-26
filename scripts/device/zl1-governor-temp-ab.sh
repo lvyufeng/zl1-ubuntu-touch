@@ -110,7 +110,8 @@
 #                                                 of it is waiting or reading -- the device is written twice.
 #                                                 The run PRINTS the wall clock it actually took, because the
 #                                                 instrument's own samples are inside these bounds (a 10 s
-#                                                 window costs this device about 23 s: docs 173, section 5).
+#                                                 window costs this device about 23 s: docs 173, section 5;
+#                                                 re-measured at 23.8 s for --seconds 10 on 2026-09-26).
 #     zl1-governor-temp-ab.sh --pairs N           THE ALTERNATING DESIGN (docs 175): N pairs of
 #                                                 (fix window, pinned window), back to back, with the
 #                                                 ORDER INSIDE A PAIR ALTERNATING (pair 1 fix-then-pinned,
@@ -255,7 +256,9 @@ if [ "$PAIRS" -gt 0 ] 2>/dev/null; then
 fi
 # The paired design's own arithmetic, printed by `--status` and quoted in the verdict's caveat: 2N windows,
 # each one costing its own length plus this instrument's walk of /proc (measured at about 13 s on a 10 s
-# sample: docs 173, section 5), plus a settle after every one of the 2N writes.
+# sample: docs 173, section 5 -- and RE-MEASURED at 13.8 s on 2026-09-26, when docs 177 stopped the samples
+# from being added to the window on top of that walk and made this `length + 13` the true model rather than
+# an understatement of `1.4 x length + 13`), plus a settle after every one of the 2N writes.
 PAIR_SPAN=$((PAIRS * 2 * (SECONDS_WIN + SETTLE + 13)))
 # The three-window design's span: from the start of window A to the end of window C. It is left at 0 in the
 # paired mode rather than computed from settings that will never be used, and the header prints it only then.
@@ -717,8 +720,8 @@ if [ "$MODE" != run ]; then
   fi
   say "   window C, ${SECONDS_WIN}s (the control); then the per-zone deltas B-A and C-A and a verdict"
   say "   BOUNDS ARE WALL CLOCK and the run prints what it spent. Every sample costs its own window PLUS this"
-  say "   instrument's walk of /proc, which a 10 s sample measured at about 13 s more (docs 173, section 5),"
-  say "   so a ${SECONDS_WIN}s window costs about $((SECONDS_WIN + 13))s end to end -- the old bound counted sleeps and"
+  say "   instrument's walk of /proc, which a 10 s sample measured at about 13 s more (docs 173, section 5;"
+  say "   re-measured at 13.8 s on 2026-09-26), so a ${SECONDS_WIN}s window costs about $((SECONDS_WIN + 13))s end to end -- the old bound counted sleeps and"
   say "   --settle-back 240 cost 798 s."
   say "   the trap restores '$FIX_GOV' on every exit path, and removes $TMP unless --keep"
   exit 0

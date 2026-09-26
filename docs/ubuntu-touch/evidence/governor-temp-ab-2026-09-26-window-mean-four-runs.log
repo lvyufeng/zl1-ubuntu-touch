@@ -1,0 +1,795 @@
+zl1 -- the SECOND heat cause (cpufreq governor), the ALTERNATING design, FOUR device runs with the
+WINDOW-MEAN reading, 2026-09-26
+====================================================================================================
+
+ONE BOOT THROUGHOUT: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5 -- re-read before the series and
+after the last run: UNCHANGED, and it is the SAME boot the six snapshot runs of docs 176 used (the
+series started at /proc/uptime 32056 and ended at 33657, 1601 s = about 27 minutes for four runs of
+4 pairs). Four cores read `interactive` after every run (each run restores it in its own EXIT trap
+and re-reads it), and they read `interactive` at the end of the series. Nothing was flashed, no
+partition was written, no block device was opened, no service was restarted, the container was never
+stopped.
+
+WHAT THE FOUR RUNS ARE. The alternating design (docs 175) -- 4 pairs of (fix window, pinned window),
+order alternating inside each pair, 30 s windows, 5 s settle -- on the real phone, four times back to
+back, with the two docs-177 fixes in place in the thermal instrument.
+
+WHY THIS RUN EXISTS. The same design ran six times on this phone on this boot with the OLD reading
+(docs 176) and printed +2.03, -0.58, +2.48, +5.88, +2.27, +2.30 C -- four different numbers and one
+of them negative -- because the instrument's zone table was a single sample of the window's LAST
+INSTANT and a tsens zone moves 3-4 C inside a 48 s window. docs 176's closing line named the fix and
+this stage is it: the window's temperature is now the MEAN of samples walked once a second across it.
+
+THE HEADLINE -- FOUR RUNS, AND THEY SAY THE SAME THING.
+
+  run   primary zone (pre-registered)       reading     se     2-se interval     verdict
+  ---   ------------------------------      -------   -----   --------------    ----------------
+   1    thermal_zone12 (tsens_tz_sensor11)  +2.65 C   0.10   [2.45, 2.85]      cost-measured
+   2    thermal_zone9  (tsens_tz_sensor8)   +2.20 C   0.12   [1.96, 2.44]      cost-measured
+   3    thermal_zone12 (tsens_tz_sensor11)  +2.73 C   0.14   [2.45, 3.01]      cost-measured
+   4    thermal_zone9  (tsens_tz_sensor8)   +2.10 C   0.18   [1.74, 2.46]      cost-measured
+
+  range of the four readings: 2.10 .. 2.73 C; all four intervals are above the 0.2 C this experiment
+  resolves, and none of them contains it.
+
+  THE SAME DESIGN, THE SAME PHONE, THE SAME BOOT, WITH THE OLD READING (docs 176):
+    +2.03 (se 0.38)   -0.58   +2.48   +5.88 (se 0.97)   +2.27   +2.30 C
+  -- four different numbers, a sign flip, and four different primary zones. The difference between
+  the two sets is the READING, and that was measured during that series: on its run 6 a 2 s by-name
+  sampler running BESIDE the instrument read the window MEANS on the same windows and got +0.61
+  where the snapshot got +2.30 on thermal_zone18.
+
+  What the mean did NOT change: the sign. Every reading in either set that was a reading (rather than
+  an artifact) is positive. What it changed is the ERROR BAR: 0.10-0.18 now against 0.38-0.97 then.
+
+SECTION 1 -- INSTRUMENT IDENTITY, AND WHAT THE FOUR RUNS ACTUALLY EXECUTED
+====================================================================================================
+
+  governor instrument  /tmp/zl1-governor-temp-ab.sh  md5 a148b614c35e59c640676c5f27c7b368
+  thermal instrument   /tmp/zl1-thermal.sh           md5 f42f0785ee0eb4033e51227d9ef684bf
+  launcher             /tmp/gov-mean-quad.sh         (copied back verbatim, section 6)
+
+The governor instrument is byte-identical to scripts/device/zl1-governor-temp-ab.sh as committed
+before this stage. The repository copy has since gained three comment lines and one `say` string
+carrying the re-measured wall-clock figures (13.8 s / 23.8 s). That the difference is text and not
+code was checked with `diff` between the deployed copy and the repository copy: three hunks, each of
+them a comment sentence continued or one `say` string split across two lines. No code line differs,
+so the four runs below used the instrument as committed.
+
+The thermal instrument is the NEW one: `zone_mean`/`zone_spread`, the once-a-second sample loop with
+the sample's cost subtracted from its own sleep, and `wsecs` (each window's own measured seconds) as
+the divisor of every rate. Its first window on this phone, before the series:
+
+zl1 thermal budget :: Fri Feb 13 07:19:50 PM EST 1970 :: uptime 31998 s :: window 10s :: read-only
+  busy 1.34 of 4 cores (33%), of which iowait 0.00 cores
+  user 6%  sys 25%  irq 1%  softirq 1%  iowait 0%   (5873 ticks, 20.7 s measured)
+  context switches 5746/s   loadavg 4.27 4.06 4.06   D-state threads 3
+== thermal zones:
+   thermal_zone0 bms                          34.6 C   <- type not in the unit table; assumed milli-degC (raw 34620)
+   thermal_zone1 tsens_tz_sensor0             41.3 C
+   thermal_zone10 tsens_tz_sensor9             43.2 C
+   thermal_zone11 tsens_tz_sensor10            43.8 C
+   thermal_zone12 tsens_tz_sensor11            44.4 C
+   thermal_zone13 tsens_tz_sensor12            44.0 C
+   thermal_zone14 tsens_tz_sensor13            41.4 C
+   thermal_zone15 tsens_tz_sensor14            39.6 C
+   thermal_zone16 tsens_tz_sensor15            39.5 C
+   thermal_zone17 tsens_tz_sensor16            42.9 C
+   thermal_zone18 tsens_tz_sensor17            43.8 C
+   thermal_zone19 tsens_tz_sensor18            39.9 C
+   thermal_zone2 tsens_tz_sensor1             42.7 C
+   thermal_zone20 tsens_tz_sensor19            41.2 C
+   thermal_zone21 tsens_tz_sensor20            41.9 C
+   thermal_zone22 pm8994_tz                    38.8 C
+   thermal_zone23 msm_therm                    39.0 C
+   thermal_zone24 emmc_therm                   36.0 C
+   thermal_zone25 pa_therm0                    35.0 C
+   thermal_zone26 pa_therm1                    32.0 C
+   thermal_zone27 quiet_therm                  39.0 C
+   thermal_zone28 xo_therm_buf                  0.0 C   <- type not in the unit table; assumed milli-degC (raw 37)
+   thermal_zone29 battery                      34.6 C
+   thermal_zone3 tsens_tz_sensor2             41.9 C
+   thermal_zone30 DLMt_APC1                     0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone31 LLM_cp00                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone32 LLM_cp01                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone33 LLM_cp10                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone34 LLM_cp11                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone35 LLM_m4m0                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone36 LLM_l21-                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone37 LLM_l20-                      0.0 C   <- type not in the unit table; assumed milli-degC (raw 0)
+   thermal_zone4 tsens_tz_sensor3             42.5 C
+   thermal_zone5 tsens_tz_sensor4             41.7 C
+   thermal_zone6 tsens_tz_sensor5             42.3 C
+   thermal_zone7 tsens_tz_sensor6             41.3 C
+   thermal_zone8 tsens_tz_sensor7             41.9 C
+   thermal_zone9 tsens_tz_sensor8             44.5 C
+   hottest: tsens_tz_sensor8 44.5 C  (raw 444 = deci-degC, of 38 zones; 10 flagged above)
+   (mean of 10 sample(s) walked over 10s of this window; the widest zone moved 9.0 C -- thermal_zone11; 24 zone(s) moved 0.2 C or more across it)
+== cpufreq:
+   cpu0/cpufreq           governor=interactive  cur=307200   kHz  max=1440000 kHz
+   cpu1/cpufreq           governor=interactive  cur=307200   kHz  max=1440000 kHz
+   cpu2/cpufreq           governor=interactive  cur=902400   kHz  max=1900800 kHz
+   cpu3/cpufreq           governor=interactive  cur=902400   kHz  max=1900800 kHz
+== memory:
+   MemTotal:      3867268 kB
+   MemAvailable:  2585840 kB
+   SwapTotal:     2306044 kB
+   SwapFree:      2303316 kB
+   cgroup memory  : NO memory cgroup mounted on this kernel
+                    -> a container-side `free` reports THIS device's MemTotal, not a
+                       container quota (doc 87). Read MemAvailable above as the phone's
+                       headroom, and remember nothing isolates UT's processes from
+                       Android's when the OOM killer chooses.
+
+  (that run: `--seconds 10` on the same phone with 621 processes. `20.7 s measured` is the window and
+   `10s` is what it was asked for -- the two differed by 2.07x before this stage, which is how much
+   every rate it printed was too high by. The last line of its zone table is the new one: the mean,
+   the sample count, the seconds walked, and the widest zone's own swing.)
+
+====================================================================================================
+SECTION 2 -- THE THREE COSTS, MEASURED ON THIS PHONE (why the second fix was needed at all)
+====================================================================================================
+
+Read on the same boot, with /proc/uptime as the clock (the RTC reads 1970):
+
+  one walk of the 38 thermal zones (76 forks)                  0.30 s
+  one walk of /proc for all 621 processes                      4.58 s
+  `zl1-thermal.sh --seconds 10`, end to end                    23.8 s   (28.1 s before the fix)
+  the interval between its two /proc/stat reads                20.7 s   (printed by the fixed instrument)
+
+So the numerator of every rate was a 20.7 s window while the denominator was 10 s. The zone walk and
+BOTH process walks are inside the window -- which is why the two numbers differ by a factor of two
+rather than by a few percent.
+
+====================================================================================================
+SECTION 3 -- THE FOUR VERDICTS, VERBATIM, IN FULL
+====================================================================================================
+
+Each run's own log follows, untouched. The per-pair tables, the control (the phone's own drift,
+measured between the fix windows), the balance line, the pre-registration and the verdict are all in
+them; the four logs have the same shape because they are the same design.
+
+----------------------------------------------------------------------------------------------------
+### RUN 1 -- 30 s windows, 4 pairs (--pairs 4), window-mean reading
+----------------------------------------------------------------------------------------------------
+
+== zl1 governor temperature A/B -- 1970-02-14T00:20:47Z UTC
+  device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+  cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor)
+  instrument:  /tmp/zl1-thermal.sh
+  design:      the ALTERNATING design (docs 175): 4 pair(s) of (fix window, pinned window) with the order alternating inside each pair, and the scatter of the per-pair differences is the error bar
+  windows:     30s each, 5s after each write
+  the run:     2 x 4 = 8 window(s) and the same number of proved writes; estimated wall clock 384s (each window costs its 30s plus this instrument's walk of /proc, about 13s)
+  not used:    --settle-start, --settle-back, --poll and --margin belong to the three-window design. This one does NOT need the phone to hold still -- that is the whole point -- so it has no pre-hold and no wait.
+  states:      the two halves of every pair: fix 'interactive' (installed) versus pinned 'performance' (the image's own value)
+  panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+  now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+== the refusals, on their own terms (nothing is written until all of them have passed)
+   A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+   B. instrument: readable (/tmp/zl1-thermal.sh)
+   C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+   D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+   C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                  back -- writable in fact, and every core agrees on what it read.
+
+== the alternating design -- 4 pair(s) of (fix 'interactive', pinned 'performance')
+   Every pair is two proved writes and two windows of 30s, with 5s after each write. The
+   reading is the difference 'performance' minus 'interactive' WITHIN a pair, so whatever the phone does
+   over the ~6 minutes of this run it does to both halves of a pair and cancels in the difference.
+   NO pre-hold and NO wait: neither window has to be a STATE, because the comparison is between two
+   windows 30s apart rather than between readings taken 8 windows apart.
+   The risk is held the other way round from the three-window design: pinning is written, settled and
+   held for exactly ONE window, then the fix is written back -- so the phone is never more than one
+   window away from the state this script found it in.
+   pair 1/4: fix window first, then the other one
+      A.1: 'interactive' proved on all 4 core(s), 30s, busy 1.21 of 4
+      B.1: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+   pair 2/4: pinned window first, then the other one
+      B.2: 'performance' proved on all 4 core(s), 30s, busy 0.75 of 4
+      A.2: 'interactive' proved on all 4 core(s), 30s, busy 1.28 of 4
+   pair 3/4: fix window first, then the other one
+      A.3: 'interactive' proved on all 4 core(s), 30s, busy 1.25 of 4
+      B.3: 'performance' proved on all 4 core(s), 30s, busy 0.74 of 4
+   pair 4/4: pinned window first, then the other one
+      B.4: 'performance' proved on all 4 core(s), 30s, busy 0.75 of 4
+      A.4: 'interactive' proved on all 4 core(s), 30s, busy 1.26 of 4
+   the pairs are done: all 4 core(s) read 'interactive' -- the state this run started in.
+
+== the per-pair differences (the reading) -- tsens zones only, and the primary zone is marked
+   zone       type                    mean    se     n
+   thermal_zone12 tsens_tz_sensor11       +2.65  0.10   4  <- PRE-REGISTERED (hottest zone of window A.1, before any write)
+   thermal_zone11 tsens_tz_sensor10       +2.33  0.13   4
+   thermal_zone4 tsens_tz_sensor3        +2.30  0.00   4
+   thermal_zone5 tsens_tz_sensor4        +2.25  0.09   4
+   thermal_zone8 tsens_tz_sensor7        +2.22  0.06   4
+   thermal_zone7 tsens_tz_sensor6        +2.05  0.09   4
+   thermal_zone6 tsens_tz_sensor5        +2.00  0.04   4
+   thermal_zone9 tsens_tz_sensor8        +1.93  0.19   4
+   thermal_zone13 tsens_tz_sensor12       +1.87  0.08   4
+   thermal_zone2 tsens_tz_sensor1        +1.82  0.05   4
+   thermal_zone10 tsens_tz_sensor9        +1.77  0.08   4
+   thermal_zone14 tsens_tz_sensor13       +1.17  0.09   4
+   thermal_zone3 tsens_tz_sensor2        +1.17  0.11   4
+   thermal_zone17 tsens_tz_sensor16       +1.10  0.09   4
+   thermal_zone1 tsens_tz_sensor0        +1.10  0.07   4
+   thermal_zone18 tsens_tz_sensor17       +0.95  0.12   4
+   thermal_zone19 tsens_tz_sensor18       +0.95  0.09   4
+   thermal_zone16 tsens_tz_sensor15       +0.90  0.09   4
+   thermal_zone21 tsens_tz_sensor20       +0.87  0.09   4
+   thermal_zone20 tsens_tz_sensor19       +0.85  0.06   4
+   thermal_zone15 tsens_tz_sensor14       +0.75  0.10   4
+   (21 tsens zone(s) in this table; every one is printed. The scatter above is the error bar this
+   design has and the three-window one did not: it is MEASURED from the pairs, not assumed to be zero.)
+
+== the control: how fast the phone was moving on its OWN, measured between the 'interactive' windows
+   zone       type                    C per window   n
+   thermal_zone18 tsens_tz_sensor17               +0.22   3
+   thermal_zone9 tsens_tz_sensor8                +0.22   3
+   thermal_zone8 tsens_tz_sensor7                +0.19   3
+   thermal_zone7 tsens_tz_sensor6                +0.18   3
+   thermal_zone4 tsens_tz_sensor3                +0.17   3
+   thermal_zone14 tsens_tz_sensor13               +0.16   3
+   thermal_zone5 tsens_tz_sensor4                +0.16   3
+   thermal_zone6 tsens_tz_sensor5                +0.16   3
+   thermal_zone13 tsens_tz_sensor12               +0.14   3
+   thermal_zone2 tsens_tz_sensor1                +0.14   3
+   thermal_zone16 tsens_tz_sensor15               +0.13   3
+   thermal_zone12 tsens_tz_sensor11               +0.12   3
+   thermal_zone19 tsens_tz_sensor18               +0.12   3
+   thermal_zone1 tsens_tz_sensor0                +0.12   3
+   thermal_zone20 tsens_tz_sensor19               +0.12   3
+   thermal_zone10 tsens_tz_sensor9                +0.11   3
+   thermal_zone15 tsens_tz_sensor14               +0.11   3
+   thermal_zone17 tsens_tz_sensor16               +0.11   3
+   thermal_zone21 tsens_tz_sensor20               +0.11   3
+   thermal_zone3 tsens_tz_sensor2                +0.10   3
+   thermal_zone11 tsens_tz_sensor10               +0.08   3
+   The fastest is +0.22 C per window on thermal_zone18, over 3 interval(s) between fix windows. This is
+   the drift the pairing removes from the reading, and it is the number that says the pairing is doing
+   work rather than decorating the answer: it is measured over the same minutes as the reading.
+
+   THE DESIGN'S BALANCE: the fix windows sat at mean position 4.50 in the run and the pinned
+   windows at 4.50, so the imbalance is 0.00 window(s). Every difference above is taken between a
+   fix window and a pinned window whose ORDER ALTERNATES, which is what keeps that number small: with
+   a FIXED order inside the pair it would be 1.00 window, and every difference would carry one window
+   of the drift.
+   At the fastest drift measured above (0.22 C per window), 0.00 window(s) of imbalance is worth
+   about 0.00 C of the reading.
+
+== the verdict (the alternating design)
+   the primary zone was PRE-REGISTERED, in the first window of the run and before any 'performance'
+   write: thermal_zone12 (tsens_tz_sensor11). Nothing below chose it from the data -- and that matters, because the largest of
+   the 21 means above would sit about two standard errors above zero with no effect at all. That is the
+   shape docs 172 printed as a price.
+   the mean of 4 pair difference(s) on it:  2.65 C   (standard error 0.10 C)
+   so the two-standard-error interval is [2.45, 2.85] C, and this experiment calls 0.2 C a cost.
+   the control, over the same minutes: the phone moved up to 0.22 C per window on its own (on thermal_zone18), and the pairing removes that.
+
+   -> COST-MEASURED: pinning all four cores is worth 2.65 C on thermal_zone12 (tsens_tz_sensor11), and the whole two-standard-error
+      interval [2.45, 2.85] is above the 0.2 C this experiment can resolve. At this load, and with the
+      phone's own drift cancelled by the pairing rather than assumed absent, that is what the second
+      heat cause costs in temperature.
+
+   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the
+   battery's charging state is not controlled, and the load is whatever the phone was doing -- which is
+   why the busy figure is printed for every window above. What this design DOES control is the phone's
+   own drift, two ways: the two halves of a pair are 30s apart instead of a run apart,
+   and they sat at mean positions 4.50 and 4.50 in the run, an imbalance of 0.00 window(s) -- the alternating order is what keeps those together, and the balance line above is the check.
+   What it cannot control is LAG: 30s may be short against the SoC's thermal time constant (still
+   unmeasured), so this design can UNDER-report the cost. A longer window trades that bias for more
+   drift inside a pair, and the control above is how the trade is checked.
+   The zones are the instrument's numbers, normalised by it; this script does not divide.
+   This run used: --pairs 4 --seconds 30 --settle 5.
+   The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state it started in.
+   WALL CLOCK: this attempt took 370s: 330s in 8 window(s), 0s in
+   the holds -- and this design has NONE (--pairs): the 8 window(s) above are the whole run, 41s each
+   against the 30s asked for. Every bound above is in THESE seconds.
+
+   --keep: this run's scratch directory is /tmp/zl1-governor-temp-ab.CLHLis (deltas, deltas.note, win.A/B/C, back).
+
+----------------------------------------------------------------------------------------------------
+### RUN 2 -- 30 s windows, 4 pairs (--pairs 4), window-mean reading
+----------------------------------------------------------------------------------------------------
+
+== zl1 governor temperature A/B -- 1970-02-14T00:27:28Z UTC
+  device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+  cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor)
+  instrument:  /tmp/zl1-thermal.sh
+  design:      the ALTERNATING design (docs 175): 4 pair(s) of (fix window, pinned window) with the order alternating inside each pair, and the scatter of the per-pair differences is the error bar
+  windows:     30s each, 5s after each write
+  the run:     2 x 4 = 8 window(s) and the same number of proved writes; estimated wall clock 384s (each window costs its 30s plus this instrument's walk of /proc, about 13s)
+  not used:    --settle-start, --settle-back, --poll and --margin belong to the three-window design. This one does NOT need the phone to hold still -- that is the whole point -- so it has no pre-hold and no wait.
+  states:      the two halves of every pair: fix 'interactive' (installed) versus pinned 'performance' (the image's own value)
+  panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+  now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+== the refusals, on their own terms (nothing is written until all of them have passed)
+   A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+   B. instrument: readable (/tmp/zl1-thermal.sh)
+   C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+   D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+   C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                  back -- writable in fact, and every core agrees on what it read.
+
+== the alternating design -- 4 pair(s) of (fix 'interactive', pinned 'performance')
+   Every pair is two proved writes and two windows of 30s, with 5s after each write. The
+   reading is the difference 'performance' minus 'interactive' WITHIN a pair, so whatever the phone does
+   over the ~6 minutes of this run it does to both halves of a pair and cancels in the difference.
+   NO pre-hold and NO wait: neither window has to be a STATE, because the comparison is between two
+   windows 30s apart rather than between readings taken 8 windows apart.
+   The risk is held the other way round from the three-window design: pinning is written, settled and
+   held for exactly ONE window, then the fix is written back -- so the phone is never more than one
+   window away from the state this script found it in.
+   pair 1/4: fix window first, then the other one
+      A.1: 'interactive' proved on all 4 core(s), 30s, busy 1.25 of 4
+      B.1: 'performance' proved on all 4 core(s), 30s, busy 0.75 of 4
+   pair 2/4: pinned window first, then the other one
+      B.2: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+      A.2: 'interactive' proved on all 4 core(s), 30s, busy 1.26 of 4
+   pair 3/4: fix window first, then the other one
+      A.3: 'interactive' proved on all 4 core(s), 30s, busy 1.23 of 4
+      B.3: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+   pair 4/4: pinned window first, then the other one
+      B.4: 'performance' proved on all 4 core(s), 30s, busy 0.75 of 4
+      A.4: 'interactive' proved on all 4 core(s), 30s, busy 1.24 of 4
+   the pairs are done: all 4 core(s) read 'interactive' -- the state this run started in.
+
+== the per-pair differences (the reading) -- tsens zones only, and the primary zone is marked
+   zone       type                    mean    se     n
+   thermal_zone12 tsens_tz_sensor11       +2.70  0.21   4
+   thermal_zone11 tsens_tz_sensor10       +2.40  0.14   4
+   thermal_zone8 tsens_tz_sensor7        +2.28  0.05   4
+   thermal_zone4 tsens_tz_sensor3        +2.20  0.09   4
+   thermal_zone9 tsens_tz_sensor8        +2.20  0.12   4  <- PRE-REGISTERED (hottest zone of window A.1, before any write)
+   thermal_zone5 tsens_tz_sensor4        +2.12  0.05   4
+   thermal_zone6 tsens_tz_sensor5        +2.07  0.06   4
+   thermal_zone7 tsens_tz_sensor6        +1.93  0.03   4
+   thermal_zone13 tsens_tz_sensor12       +1.88  0.09   4
+   thermal_zone10 tsens_tz_sensor9        +1.73  0.11   4
+   thermal_zone2 tsens_tz_sensor1        +1.70  0.09   4
+   thermal_zone14 tsens_tz_sensor13       +1.12  0.07   4
+   thermal_zone17 tsens_tz_sensor16       +1.10  0.04   4
+   thermal_zone1 tsens_tz_sensor0        +1.07  0.09   4
+   thermal_zone3 tsens_tz_sensor2        +1.00  0.07   4
+   thermal_zone19 tsens_tz_sensor18       +0.95  0.06   4
+   thermal_zone16 tsens_tz_sensor15       +0.83  0.07   4
+   thermal_zone18 tsens_tz_sensor17       +0.83  0.09   4
+   thermal_zone21 tsens_tz_sensor20       +0.80  0.08   4
+   thermal_zone20 tsens_tz_sensor19       +0.78  0.09   4
+   thermal_zone15 tsens_tz_sensor14       +0.62  0.10   4
+   (21 tsens zone(s) in this table; every one is printed. The scatter above is the error bar this
+   design has and the three-window one did not: it is MEASURED from the pairs, not assumed to be zero.)
+
+== the control: how fast the phone was moving on its OWN, measured between the 'interactive' windows
+   zone       type                    C per window   n
+   thermal_zone9 tsens_tz_sensor8                +0.13   3
+   thermal_zone4 tsens_tz_sensor3                +0.12   3
+   thermal_zone18 tsens_tz_sensor17               +0.09   3
+   thermal_zone5 tsens_tz_sensor4                +0.09   3
+   thermal_zone6 tsens_tz_sensor5                +0.09   3
+   thermal_zone8 tsens_tz_sensor7                +0.09   3
+   thermal_zone7 tsens_tz_sensor6                +0.08   3
+   thermal_zone16 tsens_tz_sensor15               +0.07   3
+   thermal_zone2 tsens_tz_sensor1                +0.07   3
+   thermal_zone3 tsens_tz_sensor2                +0.07   3
+   thermal_zone15 tsens_tz_sensor14               +0.06   3
+   thermal_zone17 tsens_tz_sensor16               +0.06   3
+   thermal_zone20 tsens_tz_sensor19               +0.06   3
+   thermal_zone21 tsens_tz_sensor20               +0.06   3
+   thermal_zone14 tsens_tz_sensor13               +0.04   3
+   thermal_zone19 tsens_tz_sensor18               +0.04   3
+   thermal_zone1 tsens_tz_sensor0                +0.04   3
+   thermal_zone13 tsens_tz_sensor12               +0.03   3
+   thermal_zone12 tsens_tz_sensor11               -0.02   3
+   thermal_zone10 tsens_tz_sensor9                -0.01   3
+   thermal_zone11 tsens_tz_sensor10               -0.01   3
+   The fastest is +0.13 C per window on thermal_zone9, over 3 interval(s) between fix windows. This is
+   the drift the pairing removes from the reading, and it is the number that says the pairing is doing
+   work rather than decorating the answer: it is measured over the same minutes as the reading.
+
+   THE DESIGN'S BALANCE: the fix windows sat at mean position 4.50 in the run and the pinned
+   windows at 4.50, so the imbalance is 0.00 window(s). Every difference above is taken between a
+   fix window and a pinned window whose ORDER ALTERNATES, which is what keeps that number small: with
+   a FIXED order inside the pair it would be 1.00 window, and every difference would carry one window
+   of the drift.
+   At the fastest drift measured above (0.13 C per window), 0.00 window(s) of imbalance is worth
+   about 0.00 C of the reading.
+
+== the verdict (the alternating design)
+   the primary zone was PRE-REGISTERED, in the first window of the run and before any 'performance'
+   write: thermal_zone9 (tsens_tz_sensor8). Nothing below chose it from the data -- and that matters, because the largest of
+   the 21 means above would sit about two standard errors above zero with no effect at all. That is the
+   shape docs 172 printed as a price.
+   the mean of 4 pair difference(s) on it:  2.20 C   (standard error 0.12 C)
+   so the two-standard-error interval is [1.96, 2.44] C, and this experiment calls 0.2 C a cost.
+   the control, over the same minutes: the phone moved up to 0.13 C per window on its own (on thermal_zone9), and the pairing removes that.
+
+   -> COST-MEASURED: pinning all four cores is worth 2.20 C on thermal_zone9 (tsens_tz_sensor8), and the whole two-standard-error
+      interval [1.96, 2.44] is above the 0.2 C this experiment can resolve. At this load, and with the
+      phone's own drift cancelled by the pairing rather than assumed absent, that is what the second
+      heat cause costs in temperature.
+
+   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the
+   battery's charging state is not controlled, and the load is whatever the phone was doing -- which is
+   why the busy figure is printed for every window above. What this design DOES control is the phone's
+   own drift, two ways: the two halves of a pair are 30s apart instead of a run apart,
+   and they sat at mean positions 4.50 and 4.50 in the run, an imbalance of 0.00 window(s) -- the alternating order is what keeps those together, and the balance line above is the check.
+   What it cannot control is LAG: 30s may be short against the SoC's thermal time constant (still
+   unmeasured), so this design can UNDER-report the cost. A longer window trades that bias for more
+   drift inside a pair, and the control above is how the trade is checked.
+   The zones are the instrument's numbers, normalised by it; this script does not divide.
+   This run used: --pairs 4 --seconds 30 --settle 5.
+   The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state it started in.
+   WALL CLOCK: this attempt took 370s: 330s in 8 window(s), 0s in
+   the holds -- and this design has NONE (--pairs): the 8 window(s) above are the whole run, 41s each
+   against the 30s asked for. Every bound above is in THESE seconds.
+
+   --keep: this run's scratch directory is /tmp/zl1-governor-temp-ab.C4mZdR (deltas, deltas.note, win.A/B/C, back).
+
+----------------------------------------------------------------------------------------------------
+### RUN 3 -- 30 s windows, 4 pairs (--pairs 4), window-mean reading
+----------------------------------------------------------------------------------------------------
+
+== zl1 governor temperature A/B -- 1970-02-14T00:34:08Z UTC
+  device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+  cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor)
+  instrument:  /tmp/zl1-thermal.sh
+  design:      the ALTERNATING design (docs 175): 4 pair(s) of (fix window, pinned window) with the order alternating inside each pair, and the scatter of the per-pair differences is the error bar
+  windows:     30s each, 5s after each write
+  the run:     2 x 4 = 8 window(s) and the same number of proved writes; estimated wall clock 384s (each window costs its 30s plus this instrument's walk of /proc, about 13s)
+  not used:    --settle-start, --settle-back, --poll and --margin belong to the three-window design. This one does NOT need the phone to hold still -- that is the whole point -- so it has no pre-hold and no wait.
+  states:      the two halves of every pair: fix 'interactive' (installed) versus pinned 'performance' (the image's own value)
+  panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+  now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+== the refusals, on their own terms (nothing is written until all of them have passed)
+   A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+   B. instrument: readable (/tmp/zl1-thermal.sh)
+   C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+   D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+   C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                  back -- writable in fact, and every core agrees on what it read.
+
+== the alternating design -- 4 pair(s) of (fix 'interactive', pinned 'performance')
+   Every pair is two proved writes and two windows of 30s, with 5s after each write. The
+   reading is the difference 'performance' minus 'interactive' WITHIN a pair, so whatever the phone does
+   over the ~6 minutes of this run it does to both halves of a pair and cancels in the difference.
+   NO pre-hold and NO wait: neither window has to be a STATE, because the comparison is between two
+   windows 30s apart rather than between readings taken 8 windows apart.
+   The risk is held the other way round from the three-window design: pinning is written, settled and
+   held for exactly ONE window, then the fix is written back -- so the phone is never more than one
+   window away from the state this script found it in.
+   pair 1/4: fix window first, then the other one
+      A.1: 'interactive' proved on all 4 core(s), 30s, busy 1.24 of 4
+      B.1: 'performance' proved on all 4 core(s), 30s, busy 0.77 of 4
+   pair 2/4: pinned window first, then the other one
+      B.2: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+      A.2: 'interactive' proved on all 4 core(s), 30s, busy 1.25 of 4
+   pair 3/4: fix window first, then the other one
+      A.3: 'interactive' proved on all 4 core(s), 30s, busy 1.28 of 4
+      B.3: 'performance' proved on all 4 core(s), 30s, busy 0.77 of 4
+   pair 4/4: pinned window first, then the other one
+      B.4: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+      A.4: 'interactive' proved on all 4 core(s), 30s, busy 1.24 of 4
+   the pairs are done: all 4 core(s) read 'interactive' -- the state this run started in.
+
+== the per-pair differences (the reading) -- tsens zones only, and the primary zone is marked
+   zone       type                    mean    se     n
+   thermal_zone12 tsens_tz_sensor11       +2.73  0.14   4  <- PRE-REGISTERED (hottest zone of window A.1, before any write)
+   thermal_zone11 tsens_tz_sensor10       +2.43  0.15   4
+   thermal_zone8 tsens_tz_sensor7        +2.35  0.16   4
+   thermal_zone4 tsens_tz_sensor3        +2.30  0.09   4
+   thermal_zone5 tsens_tz_sensor4        +2.22  0.12   4
+   thermal_zone6 tsens_tz_sensor5        +2.17  0.10   4
+   thermal_zone7 tsens_tz_sensor6        +2.10  0.12   4
+   thermal_zone9 tsens_tz_sensor8        +2.03  0.19   4
+   thermal_zone13 tsens_tz_sensor12       +1.85  0.12   4
+   thermal_zone2 tsens_tz_sensor1        +1.80  0.09   4
+   thermal_zone10 tsens_tz_sensor9        +1.77  0.13   4
+   thermal_zone14 tsens_tz_sensor13       +1.15  0.06   4
+   thermal_zone3 tsens_tz_sensor2        +1.15  0.06   4
+   thermal_zone17 tsens_tz_sensor16       +1.12  0.07   4
+   thermal_zone18 tsens_tz_sensor17       +1.12  0.13   4
+   thermal_zone1 tsens_tz_sensor0        +1.12  0.03   4
+   thermal_zone19 tsens_tz_sensor18       +1.00  0.06   4
+   thermal_zone21 tsens_tz_sensor20       +0.85  0.06   4
+   thermal_zone20 tsens_tz_sensor19       +0.82  0.02   4
+   thermal_zone16 tsens_tz_sensor15       +0.78  0.09   4
+   thermal_zone15 tsens_tz_sensor14       +0.70  0.04   4
+   (21 tsens zone(s) in this table; every one is printed. The scatter above is the error bar this
+   design has and the three-window one did not: it is MEASURED from the pairs, not assumed to be zero.)
+
+== the control: how fast the phone was moving on its OWN, measured between the 'interactive' windows
+   zone       type                    C per window   n
+   thermal_zone12 tsens_tz_sensor11               +0.11   3
+   thermal_zone18 tsens_tz_sensor17               +0.11   3
+   thermal_zone11 tsens_tz_sensor10               +0.10   3
+   thermal_zone13 tsens_tz_sensor12               +0.09   3
+   thermal_zone1 tsens_tz_sensor0                +0.09   3
+   thermal_zone10 tsens_tz_sensor9                +0.08   3
+   thermal_zone14 tsens_tz_sensor13               +0.08   3
+   thermal_zone16 tsens_tz_sensor15               +0.08   3
+   thermal_zone21 tsens_tz_sensor20               +0.08   3
+   thermal_zone2 tsens_tz_sensor1                +0.08   3
+   thermal_zone3 tsens_tz_sensor2                +0.08   3
+   thermal_zone20 tsens_tz_sensor19               +0.07   3
+   thermal_zone15 tsens_tz_sensor14               +0.06   3
+   thermal_zone6 tsens_tz_sensor5                +0.06   3
+   thermal_zone17 tsens_tz_sensor16               +0.04   3
+   thermal_zone19 tsens_tz_sensor18               +0.04   3
+   thermal_zone7 tsens_tz_sensor6                +0.04   3
+   thermal_zone9 tsens_tz_sensor8                +0.03   3
+   thermal_zone4 tsens_tz_sensor3                +0.02   3
+   thermal_zone5 tsens_tz_sensor4                +0.02   3
+   thermal_zone8 tsens_tz_sensor7                +0.01   3
+   The fastest is +0.11 C per window on thermal_zone12, over 3 interval(s) between fix windows. This is
+   the drift the pairing removes from the reading, and it is the number that says the pairing is doing
+   work rather than decorating the answer: it is measured over the same minutes as the reading.
+
+   THE DESIGN'S BALANCE: the fix windows sat at mean position 4.50 in the run and the pinned
+   windows at 4.50, so the imbalance is 0.00 window(s). Every difference above is taken between a
+   fix window and a pinned window whose ORDER ALTERNATES, which is what keeps that number small: with
+   a FIXED order inside the pair it would be 1.00 window, and every difference would carry one window
+   of the drift.
+   At the fastest drift measured above (0.11 C per window), 0.00 window(s) of imbalance is worth
+   about 0.00 C of the reading.
+
+== the verdict (the alternating design)
+   the primary zone was PRE-REGISTERED, in the first window of the run and before any 'performance'
+   write: thermal_zone12 (tsens_tz_sensor11). Nothing below chose it from the data -- and that matters, because the largest of
+   the 21 means above would sit about two standard errors above zero with no effect at all. That is the
+   shape docs 172 printed as a price.
+   the mean of 4 pair difference(s) on it:  2.73 C   (standard error 0.14 C)
+   so the two-standard-error interval is [2.45, 3.01] C, and this experiment calls 0.2 C a cost.
+   the control, over the same minutes: the phone moved up to 0.11 C per window on its own (on thermal_zone12), and the pairing removes that.
+
+   -> COST-MEASURED: pinning all four cores is worth 2.73 C on thermal_zone12 (tsens_tz_sensor11), and the whole two-standard-error
+      interval [2.45, 3.01] is above the 0.2 C this experiment can resolve. At this load, and with the
+      phone's own drift cancelled by the pairing rather than assumed absent, that is what the second
+      heat cause costs in temperature.
+
+   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the
+   battery's charging state is not controlled, and the load is whatever the phone was doing -- which is
+   why the busy figure is printed for every window above. What this design DOES control is the phone's
+   own drift, two ways: the two halves of a pair are 30s apart instead of a run apart,
+   and they sat at mean positions 4.50 and 4.50 in the run, an imbalance of 0.00 window(s) -- the alternating order is what keeps those together, and the balance line above is the check.
+   What it cannot control is LAG: 30s may be short against the SoC's thermal time constant (still
+   unmeasured), so this design can UNDER-report the cost. A longer window trades that bias for more
+   drift inside a pair, and the control above is how the trade is checked.
+   The zones are the instrument's numbers, normalised by it; this script does not divide.
+   This run used: --pairs 4 --seconds 30 --settle 5.
+   The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state it started in.
+   WALL CLOCK: this attempt took 370s: 329s in 8 window(s), 0s in
+   the holds -- and this design has NONE (--pairs): the 8 window(s) above are the whole run, 41s each
+   against the 30s asked for. Every bound above is in THESE seconds.
+
+   --keep: this run's scratch directory is /tmp/zl1-governor-temp-ab.V63joq (deltas, deltas.note, win.A/B/C, back).
+
+----------------------------------------------------------------------------------------------------
+### RUN 4 -- 30 s windows, 4 pairs (--pairs 4), window-mean reading
+----------------------------------------------------------------------------------------------------
+
+== zl1 governor temperature A/B -- 1970-02-14T00:40:49Z UTC
+  device:      Letv Technologies, Inc. MSM 8996pro + PMI8996 LE_ZL1-DVT1
+  cores:       4 (/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor /sys/devices/system/cpu/cpu2/cpufreq/scaling_governor /sys/devices/system/cpu/cpu3/cpufreq/scaling_governor)
+  instrument:  /tmp/zl1-thermal.sh
+  design:      the ALTERNATING design (docs 175): 4 pair(s) of (fix window, pinned window) with the order alternating inside each pair, and the scatter of the per-pair differences is the error bar
+  windows:     30s each, 5s after each write
+  the run:     2 x 4 = 8 window(s) and the same number of proved writes; estimated wall clock 384s (each window costs its 30s plus this instrument's walk of /proc, about 13s)
+  not used:    --settle-start, --settle-back, --poll and --margin belong to the three-window design. This one does NOT need the phone to hold still -- that is the whole point -- so it has no pre-hold and no wait.
+  states:      the two halves of every pair: fix 'interactive' (installed) versus pinned 'performance' (the image's own value)
+  panic guard: disarmed (1 parameter(s) read 0) -- a panic reboots
+  now:        interactive cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive
+
+== the refusals, on their own terms (nothing is written until all of them have passed)
+   A. panic guard: all 1 download_mode parameter(s) read 0 -- a panic reboots, not EDL
+   B. instrument: readable (/tmp/zl1-thermal.sh)
+   C. cores:      all 4 are writable and offer both 'interactive' and 'performance'
+   D. as installed: all 4 core(s) read 'interactive' -- the fix is in place (this is window A)
+   C. write path: wrote 'interactive' back to all 4 core(s) and read 'interactive'
+                  back -- writable in fact, and every core agrees on what it read.
+
+== the alternating design -- 4 pair(s) of (fix 'interactive', pinned 'performance')
+   Every pair is two proved writes and two windows of 30s, with 5s after each write. The
+   reading is the difference 'performance' minus 'interactive' WITHIN a pair, so whatever the phone does
+   over the ~6 minutes of this run it does to both halves of a pair and cancels in the difference.
+   NO pre-hold and NO wait: neither window has to be a STATE, because the comparison is between two
+   windows 30s apart rather than between readings taken 8 windows apart.
+   The risk is held the other way round from the three-window design: pinning is written, settled and
+   held for exactly ONE window, then the fix is written back -- so the phone is never more than one
+   window away from the state this script found it in.
+   pair 1/4: fix window first, then the other one
+      A.1: 'interactive' proved on all 4 core(s), 30s, busy 1.29 of 4
+      B.1: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+   pair 2/4: pinned window first, then the other one
+      B.2: 'performance' proved on all 4 core(s), 30s, busy 0.76 of 4
+      A.2: 'interactive' proved on all 4 core(s), 30s, busy 1.27 of 4
+   pair 3/4: fix window first, then the other one
+      A.3: 'interactive' proved on all 4 core(s), 30s, busy 1.27 of 4
+      B.3: 'performance' proved on all 4 core(s), 30s, busy 0.77 of 4
+   pair 4/4: pinned window first, then the other one
+      B.4: 'performance' proved on all 4 core(s), 30s, busy 0.77 of 4
+      A.4: 'interactive' proved on all 4 core(s), 30s, busy 1.25 of 4
+   the pairs are done: all 4 core(s) read 'interactive' -- the state this run started in.
+
+== the per-pair differences (the reading) -- tsens zones only, and the primary zone is marked
+   zone       type                    mean    se     n
+   thermal_zone12 tsens_tz_sensor11       +2.60  0.16   4
+   thermal_zone11 tsens_tz_sensor10       +2.45  0.09   4
+   thermal_zone4 tsens_tz_sensor3        +2.17  0.10   4
+   thermal_zone8 tsens_tz_sensor7        +2.17  0.09   4
+   thermal_zone5 tsens_tz_sensor4        +2.10  0.11   4
+   thermal_zone9 tsens_tz_sensor8        +2.10  0.18   4  <- PRE-REGISTERED (hottest zone of window A.1, before any write)
+   thermal_zone6 tsens_tz_sensor5        +1.95  0.09   4
+   thermal_zone13 tsens_tz_sensor12       +1.92  0.06   4
+   thermal_zone10 tsens_tz_sensor9        +1.88  0.13   4
+   thermal_zone7 tsens_tz_sensor6        +1.75  0.13   4
+   thermal_zone2 tsens_tz_sensor1        +1.72  0.07   4
+   thermal_zone17 tsens_tz_sensor16       +1.15  0.03   4
+   thermal_zone3 tsens_tz_sensor2        +1.15  0.05   4
+   thermal_zone1 tsens_tz_sensor0        +1.13  0.03   4
+   thermal_zone14 tsens_tz_sensor13       +1.12  0.03   4
+   thermal_zone18 tsens_tz_sensor17       +0.97  0.06   4
+   thermal_zone19 tsens_tz_sensor18       +0.92  0.06   4
+   thermal_zone16 tsens_tz_sensor15       +0.87  0.02   4
+   thermal_zone20 tsens_tz_sensor19       +0.85  0.03   4
+   thermal_zone21 tsens_tz_sensor20       +0.82  0.06   4
+   thermal_zone15 tsens_tz_sensor14       +0.70  0.04   4
+   (21 tsens zone(s) in this table; every one is printed. The scatter above is the error bar this
+   design has and the three-window one did not: it is MEASURED from the pairs, not assumed to be zero.)
+
+== the control: how fast the phone was moving on its OWN, measured between the 'interactive' windows
+   zone       type                    C per window   n
+   thermal_zone10 tsens_tz_sensor9                +0.13   3
+   thermal_zone2 tsens_tz_sensor1                +0.12   3
+   thermal_zone12 tsens_tz_sensor11               +0.11   3
+   thermal_zone11 tsens_tz_sensor10               +0.10   3
+   thermal_zone6 tsens_tz_sensor5                +0.10   3
+   thermal_zone8 tsens_tz_sensor7                +0.10   3
+   thermal_zone9 tsens_tz_sensor8                +0.10   3
+   thermal_zone4 tsens_tz_sensor3                +0.09   3
+   thermal_zone14 tsens_tz_sensor13               +0.08   3
+   thermal_zone3 tsens_tz_sensor2                +0.08   3
+   thermal_zone13 tsens_tz_sensor12               +0.07   3
+   thermal_zone19 tsens_tz_sensor18               +0.06   3
+   thermal_zone1 tsens_tz_sensor0                +0.06   3
+   thermal_zone20 tsens_tz_sensor19               +0.06   3
+   thermal_zone21 tsens_tz_sensor20               +0.06   3
+   thermal_zone5 tsens_tz_sensor4                +0.06   3
+   thermal_zone7 tsens_tz_sensor6                +0.06   3
+   thermal_zone15 tsens_tz_sensor14               +0.04   3
+   thermal_zone17 tsens_tz_sensor16               +0.04   3
+   thermal_zone16 tsens_tz_sensor15               +0.03   3
+   thermal_zone18 tsens_tz_sensor17               +0.02   3
+   The fastest is +0.13 C per window on thermal_zone10, over 3 interval(s) between fix windows. This is
+   the drift the pairing removes from the reading, and it is the number that says the pairing is doing
+   work rather than decorating the answer: it is measured over the same minutes as the reading.
+
+   THE DESIGN'S BALANCE: the fix windows sat at mean position 4.50 in the run and the pinned
+   windows at 4.50, so the imbalance is 0.00 window(s). Every difference above is taken between a
+   fix window and a pinned window whose ORDER ALTERNATES, which is what keeps that number small: with
+   a FIXED order inside the pair it would be 1.00 window, and every difference would carry one window
+   of the drift.
+   At the fastest drift measured above (0.13 C per window), 0.00 window(s) of imbalance is worth
+   about 0.00 C of the reading.
+
+== the verdict (the alternating design)
+   the primary zone was PRE-REGISTERED, in the first window of the run and before any 'performance'
+   write: thermal_zone9 (tsens_tz_sensor8). Nothing below chose it from the data -- and that matters, because the largest of
+   the 21 means above would sit about two standard errors above zero with no effect at all. That is the
+   shape docs 172 printed as a price.
+   the mean of 4 pair difference(s) on it:  2.10 C   (standard error 0.18 C)
+   so the two-standard-error interval is [1.74, 2.46] C, and this experiment calls 0.2 C a cost.
+   the control, over the same minutes: the phone moved up to 0.13 C per window on its own (on thermal_zone10), and the pairing removes that.
+
+   -> COST-MEASURED: pinning all four cores is worth 2.10 C on thermal_zone9 (tsens_tz_sensor8), and the whole two-standard-error
+      interval [1.74, 2.46] is above the 0.2 C this experiment can resolve. At this load, and with the
+      phone's own drift cancelled by the pairing rather than assumed absent, that is what the second
+      heat cause costs in temperature.
+
+   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the
+   battery's charging state is not controlled, and the load is whatever the phone was doing -- which is
+   why the busy figure is printed for every window above. What this design DOES control is the phone's
+   own drift, two ways: the two halves of a pair are 30s apart instead of a run apart,
+   and they sat at mean positions 4.50 and 4.50 in the run, an imbalance of 0.00 window(s) -- the alternating order is what keeps those together, and the balance line above is the check.
+   What it cannot control is LAG: 30s may be short against the SoC's thermal time constant (still
+   unmeasured), so this design can UNDER-report the cost. A longer window trades that bias for more
+   drift inside a pair, and the control above is how the trade is checked.
+   The zones are the instrument's numbers, normalised by it; this script does not divide.
+   This run used: --pairs 4 --seconds 30 --settle 5.
+   The cores read 'interactive' cpu0=interactive cpu1=interactive cpu2=interactive cpu3=interactive -- the state it started in.
+   WALL CLOCK: this attempt took 370s: 330s in 8 window(s), 0s in
+   the holds -- and this design has NONE (--pairs): the 8 window(s) above are the whole run, 41s each
+   against the 30s asked for. Every bound above is in THESE seconds.
+
+   --keep: this run's scratch directory is /tmp/zl1-governor-temp-ab.UOveiK (deltas, deltas.note, win.A/B/C, back).
+
+
+SECTION 4 -- WHAT THE FOUR RUNS DID NOT ESTABLISH
+====================================================================================================
+
+(a) THE HEAT IS NOT FIXED. These are four readings of one cause at an uncontrolled load, ambient
+    temperature and charge state. The busy figure is printed for every window inside every run, and
+    it is not the same in the two halves (fix windows about 1.21-1.28 cores of 4, pinned about
+    0.74-0.76) -- that is a property of this phone under `performance` and it is printed rather than
+    corrected for. The control line says the phone was moving 0.11-0.22 C per window on its own
+    during each run; the pairing removes that, and the balance line says the two halves sat at the
+    same mean position (4.50 and 4.50, imbalance 0.00 -- which is the alternating order doing work).
+
+(b) LAG IS STILL UNMEASURED. The SoC's thermal time constant is unknown, so if it is comparable to
+    the 30 s window the design UNDERSTATES the effect. Nothing here bounds that.
+
+(c) THE PRIMARY ZONE CHANGED HANDS AGAIN. It was zone12 on runs 1 and 3 and zone9 on runs 2 and 4,
+    because the pre-registered zone is the hottest sensor of window A.1 and that changes between
+    runs. What is new is that the reading no longer depends on which one was picked: in run 1 all 21
+    tsens zones read +0.75 to +2.65 C (every one positive), so the spread across zones is now the
+    shape of the effect rather than noise around it.
+
+(d) 5 s IS THE SETTLE AFTER EACH WRITE. Whether that is long enough for the write to take effect,
+    and whether two adjacent windows of the same state stack, is not measured here. The only
+    evidence that the alternating ORDER is load-bearing is offline (docs 175's m16).
+
+(e) THE WINDOW MEAN IS NOT A CONTINUOUS RECORD. One sample a second replaces one sample per window,
+    and the printed span line (up to 9-10 C on a single zone inside a 10 s window at near-idle) says
+    the second-to-second noise is real. Taking the mean does not remove that noise, it removes the
+    systematic part of the choice of instant.
+
+====================================================================================================
+SECTION 5 -- WHAT WAS NOT DONE
+====================================================================================================
+
+Nothing was flashed. No partition was written. /dev/qbt1000 was never opened. cnss was never
+unbound. No service was restarted and the container was never stopped. The only writes this stage
+made to the phone were `interactive`/`performance` into the four cores' scaling_governor, which is
+what the instrument does by design, each written back to `interactive` by an EXIT trap and re-read;
+all four cores read `interactive` after every run and at the end of the series. boot_id before and
+after the series: 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5, unchanged.
+
+====================================================================================================
+SECTION 6 -- THE LAUNCHER, VERBATIM
+====================================================================================================
+
+#!/bin/sh
+# Four paired runs with the docs-177 window mean, back to back, detached so a dropped ssh does not kill
+# the series. Each run restores `interactive` on all four cores in its own EXIT trap.
+echo "SERIES START :: uptime $(cut -d\" \" -f1 /proc/uptime) :: boot_id $(cat /proc/sys/kernel/random/boot_id)"
+echo "thermal instrument md5: $(md5sum /tmp/zl1-thermal.sh)"
+echo "governor instrument md5: $(md5sum /tmp/zl1-governor-temp-ab.sh)"
+for n in 1 2 3 4; do
+  echo "=== RUN $n START :: uptime $(cut -d\" \" -f1 /proc/uptime)"
+  sh /tmp/zl1-governor-temp-ab.sh --yes --keep --pairs 4 > /tmp/gov-mean-run$n.log 2>&1
+  echo "=== RUN $n END rc=$? :: uptime $(cut -d\" \" -f1 /proc/uptime)"
+  sleep 30
+done
+echo "SERIES END :: uptime $(cut -d\" \" -f1 /proc/uptime) :: boot_id $(cat /proc/sys/kernel/random/boot_id)"
+
+(the `cut: '"': No such file or directory` lines in its output are its own uptime stamps: a
+double-quote escape survived two shells badly. They are harmless -- the value printed is the second
+field of /proc/uptime either way -- and they are left in rather than edited out of the record.)
+
+=== SECTION 7
+====================================================================================================
+
+cut: '"': No such file or directory
+SERIES START :: uptime 32056.06 97759.63 :: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5
+thermal instrument md5: f42f0785ee0eb4033e51227d9ef684bf  /tmp/zl1-thermal.sh
+governor instrument md5: a148b614c35e59c640676c5f27c7b368  /tmp/zl1-governor-temp-ab.sh
+cut: '"': No such file or directory
+=== RUN 1 START :: uptime 32056.08 97759.67
+cut: '"': No such file or directory
+=== RUN 1 END rc=0 :: uptime 32426.30 98857.49
+cut: '"': No such file or directory
+=== RUN 2 START :: uptime 32456.31 98956.24
+cut: '"': No such file or directory
+=== RUN 2 END rc=0 :: uptime 32826.80 100057.75
+cut: '"': No such file or directory
+=== RUN 3 START :: uptime 32856.81 100155.91
+cut: '"': No such file or directory
+=== RUN 3 END rc=0 :: uptime 33227.23 101249.41
+cut: '"': No such file or directory
+=== RUN 4 START :: uptime 33257.23 101348.22
+cut: '"': No such file or directory
+=== RUN 4 END rc=0 :: uptime 33627.39 102440.08
+cut: '"': No such file or directory
+SERIES END :: uptime 33657.41 102537.70 :: boot_id 2fbf9f8e-deea-4955-ad0c-6bddf0fb14f5
