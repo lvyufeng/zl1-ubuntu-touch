@@ -720,8 +720,18 @@ run --yes --seconds 1 --settle 0 --settle-start 0 --settle-back 4 --poll 1 --the
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "the reading came back, so the run is a measurement: exit 0" || bad "the wait-returns run exited $RC"
 want 'IT CAME BACK' "$OUT" "it says the reading came back"
-want 'IT CAME BACK: every tsens zone is within 0\.5 C of its own window A reading after 1s' "$OUT" \
+# THE NUMBER IS THE HOST'S, SO IT IS ASSERTED AS A NUMBER AND PRINTED (the memory this file already carries:
+# a count inside a clock bound is a host number). This assertion pinned `after 1s` -- the seconds the wait
+# happened to spend on a quiet laptop -- and it went red on a loaded one with `after 2s`: the family run of
+# 2026-09-26 reported this harness not green, and the same harness alone was 321/321 green. That is the worst
+# shape a check can have here, because a red that depends on the load is a red nobody can act on. The
+# SUBSTANCE of the claim -- that it prints HOW LONG it took -- is covered by requiring a number at all, and
+# the number itself is printed beside it so a reader can still see what the wait cost.
+wantsq 'IT CAME BACK: every tsens zone is within 0\.5 C of its own window A reading after [0-9]+s' "$OUT" \
   "and prints HOW LONG it took, and that the test was EVERY ZONE rather than the hottest one"
+W723=$(sed -n 's/.*window A reading after \([0-9][0-9]*\)s.*/\1/p' <<< "$OUT")
+[ -n "$W723" ] && ok "and the wait cost ${W723}s of wall clock under a --settle-back 4 (a host number: this run's own seconds, not a value the harness may pin)" \
+             || bad "the 'IT CAME BACK' line printed no seconds at all"
 wantsq 'the largest difference was 0\.0 C \(0\.0 C, on thermal_zone[0-9]+ \(tsens_tz_sensor[0-9]+\)\)' "$OUT" \
   "with the largest difference, its sign, and the zone it was on -- the wait is a measurement, not a delay"
 wantsq 'is therefore a CONTROL and not a second reading of the same heat' "$OUT" \
@@ -807,10 +817,26 @@ H0=$(tree_hash)
 run --yes --seconds 1 --settle 0 --settle-start 5 --poll 1 --settle-back 0 --thermal "$STUB/zl1-thermal.sh"
 H1=$(tree_hash)
 [ "$RC" = 0 ] && ok "a phone that stops moving is measured: exit 0" || bad "the plateau run exited $RC"
-wantsq 'IT IS HOLDING STILL ENOUGH: after 3s' "$OUT" \
+# Both numbers on these two lines are the HOST's -- `${PRE_WAITED}s` is wall clock and `${PRE_GAP}s` is the
+# MEASURED gap between two consecutive samples (`PRE_GAP=$((PRE_NOW_T - PRE_LAST_T))`, never `--poll`) -- and
+# both were pinned to `3s` and `1s` here, which is what a quiet laptop happens to spend. Under load they move,
+# and this scenario went red for it on 2026-09-26 while the same harness alone was 321/321. So they are
+# asserted as numbers, with what was seen printed; the substance (`it says how long that took`, `it prints
+# what it settled at`) is what the assertion is for. The wait has to have REACHED the bound it was given,
+# which is the one part of this that is not the host's to choose -- hence the `>= 3` beside the print.
+wantsq 'IT IS HOLDING STILL ENOUGH: after [0-9]+s of wall clock' "$OUT" \
   "it waited for the phone to stop moving and says how long that took (2 C per sample, until sample 2)"
-wantsq 'the largest change on any tsens zone in the last 1s was 0\.0 C' "$OUT" \
+W820=$(sed -n 's/.*IT IS HOLDING STILL ENOUGH: after \([0-9][0-9]*\)s of wall clock.*/\1/p' <<< "$OUT")
+case "$W820" in
+'') bad "the 'HOLDING STILL ENOUGH' line printed no seconds at all" ;;
+*) [ "$W820" -ge 3 ] && ok "and it waited ${W820}s of wall clock against a --settle-back 5 --poll 1, i.e. the wait ran for at least the 3 s this run's two moves cost (a host number, printed rather than pinned)" \
+                    || bad "the wait reported ${W820}s, less than the 3 s a phone that moves for two samples has to take" ;;
+esac
+wantsq 'the largest change on any tsens zone in the last [0-9]+s was 0\.0 C' "$OUT" \
   "and prints what it settled at, so the wait is a reading rather than a delay"
+W822=$(sed -n 's/^ *in the last \([0-9][0-9]*\)s was .*/\1/p' <<< "$OUT")
+[ -n "$W822" ] && ok "and the interval it compared over is this run's own ${W822}s gap (the same host clock, printed)" \
+             || bad "the settled-at line printed no interval"
 # THE BAR IS SMALL ON PURPOSE, AND THE RUN PRINTS IT (docs 174). This span is 1+0+1+0+0+1 = 3 s, so one 1 s
 # interval may use 0.5 x 1 / 3 = 0.1667 C of the displacement -- below the instrument's own 0.1 C step, which
 # is the whole point of hanging the bar on the run: a bar that permits a rate is a bar that certifies nothing.

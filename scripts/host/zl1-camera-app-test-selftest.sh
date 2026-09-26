@@ -23,6 +23,17 @@
 #   stream Qt/QML write to is not established by that script (docs 102/103's ownership rule) -- and a
 #   window that could not be read produced no verdict line at all.
 #
+# Section 5 is the fifth thing, and it is not a defect this harness found in the old text -- it is the
+# defect the instrument's FIRST DEVICE RUN exposed (2026-09-26): the script's verdict said "the app is
+# not being composited, whatever it reports", which reads as a statement about the SHELL and was built
+# from a measurement of the compositor alone. The app itself burned 0.1 ticks/s while it ran (eleven
+# threads, the main one in binder_thread_read) -- it never painted, so the compositor had nothing to
+# composite and its number was never about the app. Window B now reads BOTH rates over one sleep and
+# the verdict separates the three worlds (never painted / painting but not composited / composited),
+# with the app's threads' wchan and the session Mir socket's connection count printed beside them.
+# Section 5 pins all of it with the fixture's own two rates, including the readings that FAILED
+# (<unreadable>, never 0.0).
+#
 # How it works: **the transport stub IS the device.** `ssh` and `scp` strip their options and run the
 # remote command locally, against a fake root, with the device's tools (lxc-info, busctl, pgrep,
 # nsenter) stubbed and `sleep` acting as the clock -- it advances a fake /proc/<pid>/stat, so the two
@@ -80,6 +91,7 @@ sed -e "s#/proc/#$FR/proc/#g" \
     -e "s#/userdata/zl1-hybris/#$FR/userdata/zl1-hybris/#g" \
     -e "s#/usr/share/click/preinstalled/camera.ubports#$FR/usr/share/click/preinstalled/camera.ubports#g" \
     -e 's#\*) kill \\${p%/cmdline}#*) \\"'"$STUB"'/kill\\" \\${p%/cmdline}#' \
+    -e 's#kill -9 \\${p%/cmdline}#\\"'"$STUB"'/kill\\" -9 \\${p%/cmdline}#g' \
     "$SRC" > "$REPO/scripts/host/zl1-camera-app-test.sh"
 cp "$LAUNCHER" "$REPO/scripts/device/zl1-camapp-launch.py"
 bash -n "$REPO/scripts/host/zl1-camera-app-test.sh" || { echo "the rewritten script does not parse" >&2; exit 2; }
@@ -139,23 +151,69 @@ inc=\$(sed -n "\${n}p" "$W/rates" 2>/dev/null); inc=\${inc:-0}
 total=\$(( \$(cat "$W/ticks" 2>/dev/null || echo 0) + inc )); echo "\$total" > "$W/ticks"
 # utime is post-strip field 12 and stime field 13; the comm deliberately CONTAINS A SPACE (allowed by
 # the kernel, up to 15 chars) so that the sub() which strips it is exercised rather than assumed.
-{
-  printf '%s (lomiri system-c) S' "\$W_COM_PID"
-  i=1; while [ "\$i" -le 10 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
-  printf ' %s 0' "\$total"
-  i=14; while [ "\$i" -le 50 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
-  printf '\n'
-} > "$FR/proc/\$W_COM_PID/stat" 2>/dev/null
+if [ "\$FAKE_COM_STAT" = 0 ] && [ "\$n" -ge 4 ]; then
+  # The compositor's stat becomes unreadable AFTER the startup sleep (call 4): window A is read
+  # normally, window B's compositor reading fails. Removing it from the start would be simpler and would
+  # break the fixture in a way that looks like a defect in the instrument -- the window-A ssh command
+  # exits BEFORE its sleep when the stat cannot be read, so the sleep counter shifts and every later
+  # rate in rates.app lands on the wrong window (which reads back as "the app burned 0.0/s"). The rates
+  # are indexed by sleep CALL, so a fixture that skips one silently renumbers all the others.
+  # (The stderr redirect goes BEFORE the ">" on every write below: redirections are applied left to
+  # right, so with 2>/dev/null after it, a failed write prints on the instrument's own stderr and, in
+  # dash, takes this stub down with it.)
+  rm -f "$FR/proc/\$W_COM_PID/stat" 2>/dev/null
+else
+  {
+    printf '%s (lomiri system-c) S' "\$W_COM_PID"
+    i=1; while [ "\$i" -le 10 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
+    printf ' %s 0' "\$total"
+    i=14; while [ "\$i" -le 50 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
+    printf '\n'
+  } 2>/dev/null > "$FR/proc/\$W_COM_PID/stat"
+fi
+# The app's OWN stat, advanced by its own rate list, and written only while the app's cmdline exists: a
+# dead process has no /proc entry, and a fixture that kept the stat alive after the app "died" would
+# hand window B a rate for a process that is not there -- which is the reading the instrument refuses
+# to take (it wants "-", because 0 means "the app burned no CPU", a different statement).
+# FAKE_APP_STAT=0 makes the stat unreadable while the process stays alive: that is the "a reading that
+# failed is not an app that did nothing" branch.
+if [ -f "$FR/proc/\$FAKE_APP_PID/cmdline" ] && [ "\$FAKE_APP_STAT" != 0 ]; then
+  inca=\$(sed -n "\${n}p" "$W/rates.app" 2>/dev/null); inca=\${inca:-0}
+  ta=\$(( \$(cat "$W/appticks" 2>/dev/null || echo 0) + inca )); echo "\$ta" > "$W/appticks"
+  {
+    printf '%s (lomiri-camera-a) S' "\$FAKE_APP_PID"
+    i=1; while [ "\$i" -le 10 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
+    printf ' %s 0' "\$ta"
+    i=14; while [ "\$i" -le 50 ]; do printf ' %s' "\$i"; i=\$((i+1)); done
+    printf '\n'
+  } 2>/dev/null > "$FR/proc/\$FAKE_APP_PID/stat"
+elif [ "\$FAKE_APP_STAT" = 0 ]; then
+  rm -f "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null
+fi
 # The app's own captured output, installed here so that it is in place before step 6 pulls it (the
 # launch is backgrounded through setsid, so nothing guarantees when -- or whether -- it has run).
 [ -f "$W/app.out.fixture" ] && cat "$W/app.out.fixture" > "$FR/tmp/zl1-camapp.out"
 [ -f "$W/app.err.fixture" ] && cat "$W/app.err.fixture" > "$FR/tmp/zl1-camapp.err"
+# The app APPEARS when the launch step's sleep runs (call 3) and stays: that is what the launch step's
+# own walk reads one second after the fork. S_LAUNCH=0 is a launcher that exited immediately, so no app
+# ever appears -- which the launch step reports as "NOT launched".
+if [ "\$n" = 3 ] || [ "\$n" = 4 ]; then
+  [ "\$FAKE_LAUNCH" != 0 ] && cp "$W/app.cmdline.fixture" "$FR/proc/\$FAKE_APP_PID/cmdline" 2>/dev/null
+fi
 # Model the app dying while the 6 s of QML/EGL startup pass (call 4 is that sleep).
 if [ "\$n" = 4 ]; then
   case "\$FAKE_ALIVE" in
   1) cp "$W/app.cmdline.fixture" "$FR/proc/\$FAKE_APP_PID/cmdline" 2>/dev/null ;;
   0) rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" ;;
   esac
+fi
+# The session's Mir socket: the app's connection is there while it is alive, and gone once it is
+# stopped. The pairing (before / during / after) is what attributes the delta to the app, so a fixture
+# that never moved the count could not tell a working pairing from three prints of the same number.
+if [ -f "$FR/proc/\$FAKE_APP_PID/cmdline" ]; then
+  cp "$W/mir.withapp" "$FR/proc/net/unix" 2>/dev/null
+else
+  cp "$W/mir.before" "$FR/proc/net/unix" 2>/dev/null
 fi
 exit 0
 EOF
@@ -192,6 +250,24 @@ EOF
 cat > "$STUB/kill" <<EOF
 #!/bin/sh
 printf 'kill %s\n' "\$*" >> "$ACT"
+# **SIGTERM is IGNORED and SIGKILL is not** -- the asymmetry measured on the device on 2026-09-26, where
+# an app launched by an earlier run was still in state S with 11 threads 22 minutes later, after both
+# the instrument's bare kill and its own timeout had fired. A stub that killed on either signal would
+# make stop_app's escalation untestable: the "stopped by SIGTERM" branch would always win.
+#
+# SIGKILL also makes the /proc entry (and with it the stat and the Mir connection) disappear, which is
+# what the "after" count and the NEXT run's premise check read.
+case "\$1" in
+-9) rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null ;;
+esac
+exit 0
+EOF#!/bin/sh
+printf 'kill %s\n' "\$*" >> "$ACT"
+# The real stop makes the app's /proc entry disappear, and with it its stat and its Mir connection --
+# which is the "after" count the instrument reads. A kill stub that only logged would leave the
+# fixture's connection up, and the after-count would equal the during-count for a reason that has
+# nothing to do with the instrument.
+rm -f "$FR/proc/\$FAKE_APP_PID/cmdline" "$FR/proc/\$FAKE_APP_PID/stat" 2>/dev/null
 exit 0
 EOF
 cat > "$STUB/identify" <<EOF
@@ -222,6 +298,24 @@ COMP_PID=6000
 CONTAINER_PID=700
 APP_PID=6100
 APP_BIN_FAKE="$FR/usr/share/click/preinstalled/camera.ubports/4.1.1/lomiri-camera-app"
+
+# /proc/net/unix as the kernel prints it. Field 6 is the state -- 01 for the listener, 03 for an
+# established connection -- and the path is the last field, so a counter that forgot the state column or
+# ignored the path prints a different number against THIS fixture (the `bus` rows exist for exactly
+# that: the same shape, another path).
+mir_unix() { # $1 = number of established connections on the session's Mir socket
+  printf 'Num       RefCount Protocol Flags    Type St Inode Path\n'
+  printf '0000000000000000: 00000002 00000000 00010000 0001 01 309655 /run/user/32011/mir_socket\n'
+  i=1
+  while [ "$i" -le "$1" ]; do
+    printf '0000000000000000: 00000003 00000000 00000000 0001 03 %s /run/user/32011/mir_socket\n' "$((100000 + i))"
+    i=$((i + 1))
+  done
+  printf '0000000000000000: 00000002 00000000 00010000 0001 01 76460 /run/user/32011/bus\n'
+  printf '0000000000000000: 00000003 00000000 00000000 0001 03 76461 /run/user/32011/bus\n'
+}
+mir_unix 4 > "$W/mir.before"       # the session before the app starts
+mir_unix 5 > "$W/mir.withapp"      # ... and with the app's own connection established
 
 # The device-tree model, with its trailing NUL, as the guard's `tr -d '\0'` expects to find it. Without
 # this the default fixture is a broken device and every scenario reads "this is not the zl1".
@@ -275,21 +369,40 @@ S_ALIVE=1; S_RATE_A=12; S_RATE_B=240
 # env_reset overwrites them and the scenario then silently tests the healthy device instead.
 env_reset() {
   S_CONTAINER=$CONTAINER_PID; S_SHELL=$SHELL_PID
-  S_ALIVE=1; S_RATE_A=12; S_RATE_B=240
+  S_ALIVE=1; S_RATE_A=12; S_RATE_B=240; S_RATE_APP=84; S_APP_STAT=1; S_COM_STAT=1
+  S_LAUNCH=1
   write_shot_stub ok
   rm -f "$W/display-on" "$W/ticks" "$W/sleepc"
   # sleeps in order: 3 (step 1), <A> (window A), 1 (step 3), 6 (step 3 end), <B> (window B), 1 (step 6)
   printf '0\n%s\n0\n0\n%s\n0\n' "$S_RATE_A" "$S_RATE_B" > "$W/rates"
-  rm -rf "$FR/proc/$APP_PID"
-  mkdir -p "$FR/proc/$APP_PID/task" "$FR/proc/$COMP_PID"
+  # The app's own jiffies, on the same call indices. Only the window B sleep (call 5) matters: window B
+  # is where the app's stat is read, at both ends of the same sleep. 84 jiffies over 12 s is 7.0/s --
+  # above the 5/s the instrument calls "painting", so the default fixture is an app that paints and the
+  # scenarios that are about the COMPOSITOR's branches are about an app that is drawing.
+  printf '0\n0\n0\n0\n%s\n0\n' "$S_RATE_APP" > "$W/rates.app"
+  rm -f "$W/appticks"
+  rm -rf "$FR/proc/$APP_PID" "$FR/proc/$COMP_PID" "$FR/proc/net"
+  mkdir -p "$FR/proc/$SHELL_PID" "$FR/proc/net" "$FR/proc/$APP_PID/task" "$FR/proc/$COMP_PID"
   printf '/usr/sbin/lomiri-system-compositor --enable\n' > "$FR/proc/$COMP_PID/cmdline"
+  # The shell's own environment is where the instrument reads the session's Mir socket from
+  # (MIR_SERVER_FILE, the real device's value on 2026-09-26). NUL-separated, like a real environ.
+  printf 'DESKTOP_SESSION=ubuntu-touch\0MIR_SERVER_FILE=/run/user/32011/mir_socket\0' > "$FR/proc/$SHELL_PID/environ"
+  cp "$W/mir.before" "$FR/proc/net/unix"
   # The app's own /proc entry: cmdline for the walk, stat and task/ for the "state=" and "threads="
   # fields of the alive line (an empty state reads as a dead process to a human, and the harness would
-  # then be testing a device nobody ever sees).
-  printf '%s\0--foo\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline.keep"
-  printf 'R (lomiri-camera-a) S 1 1 1 0 -1 0 0 0 0 0 5 3 0 0 20 0 12 0 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n' > "$FR/proc/$APP_PID/stat"
-  : > "$FR/proc/$APP_PID/task/1"
-  mv "$FR/proc/$APP_PID/cmdline.keep" "$FR/proc/$APP_PID/cmdline"
+  # then be testing a device nobody ever sees). The four wchan names are the ones this app really had on
+  # 2026-09-26 -- main thread in binder_thread_read, the rest in futex/poll -- and two of them are the
+  # same symbol so that the COUNT is exercised and not just the list.
+  # NO app process: the fixture's app appears when the LAUNCH step runs (at sleep call 3), exactly as
+  # on the device. It used to be present from the start -- invisible until the instrument grew a premise
+  # check ("is an app already running?"), which under the old fixture would have refused every scenario.
+  rm -f "$FR/proc/$APP_PID/cmdline" "$FR/proc/$APP_PID/stat"
+  for t in 1 2 3 4; do mkdir -p "$FR/proc/$APP_PID/task/$t"; done
+  printf 'futex_wait_queue_me'  > "$FR/proc/$APP_PID/task/1/wchan"
+  printf 'futex_wait_queue_me'  > "$FR/proc/$APP_PID/task/2/wchan"
+  printf 'binder_thread_read'  > "$FR/proc/$APP_PID/task/3/wchan"
+  printf 'poll_schedule_timeout' > "$FR/proc/$APP_PID/task/4/wchan"
+  rm -f "$FR/proc/$APP_PID/cmdline.keep"
   # ActiveOutputs answers $W/outputs.off while no display-on marker exists -- i.e. it is what the run
   # FINDS (the healthy default is off, which is the state every previous camera run was made in).
   printf '(ii) 0 0\n' > "$W/outputs.off"
@@ -301,7 +414,8 @@ run() { # $1 = extra arguments for the script (may be empty)
   : > "$ACT"
   OUT="$( cd "$W" && env PATH="$STUB:$PATH" ZL1_HOST=fake \
       FAKE_CONTAINER="$S_CONTAINER" FAKE_SHELL="$S_SHELL" FAKE_ALIVE="$S_ALIVE" \
-      FAKE_APP_PID="$APP_PID" W_COM_PID="$COMP_PID" \
+      FAKE_APP_PID="$APP_PID" FAKE_APP_STAT="$S_APP_STAT" FAKE_COM_STAT="$S_COM_STAT" \
+      FAKE_LAUNCH="$S_LAUNCH" W_COM_PID="$COMP_PID" \
       bash "$REPO/scripts/host/zl1-camera-app-test.sh" \
         --seconds 12 --run-seconds "$RUN_SECS" --outdir "$OUTDIR" \
         --extra-args "--mode=x" $1 2>&1 )"
@@ -385,12 +499,13 @@ echo "== 4. the app's own state decides what the numbers mean =="
 # The launcher failed: step 3 says so. The verdict used to ignore it and announce "the app is not being
 # composited" -- a verdict about an app that never existed.
 env_reset
-rm -f "$FR/proc/$APP_PID/cmdline"    # the launcher exited immediately: there is no app process at all
+S_LAUNCH=0    # the launcher exited immediately: no app process ever appears
 run ""
 want 'NOT launched' "$OUT" "step 3 reports that the launcher exited immediately"
 want 'the app NEVER STARTED' "$OUT" "and the verdict says THAT"
 notwant 'the app is not being composited' "$OUT" "it does not blame the compositor for a launcher failure"
 want 'not a compositor one' "$OUT" "and it points at the launcher and its own output instead"
+notwant "the app's own rate: " "$OUT" "with no app process there is no app rate line at all (not a zero)"
 
 # It launched and then died before window B ended.
 env_reset
@@ -409,7 +524,86 @@ notwant 'NOT running at the end' "$OUT" "in either form"
 
 # ==================================================================================================
 echo
-echo "== 5. the evidence table: one number per cell, and BOTH streams =="
+echo "== 5. the app's own rate: the reading whose absence produced a verdict about the wrong subject =="
+# ==================================================================================================
+# 2026-09-26, the instrument's first device run: it printed "NO extra compositor work: the app is not
+# being composited, whatever it reports" -- a sentence about the SHELL, built from a measurement of the
+# compositor. Measured afterwards by hand, the app itself burned **0.1 ticks/s**: it never painted, so
+# the compositor had nothing to composite and its number was never about the app. Window B now reads
+# both rates over one sleep, and these scenarios pin the three worlds apart: the app is painting, the
+# app is not painting, and the app's own reading failed.
+env_reset
+run ""
+want "the app's own rate: 7.0/s" "$OUT" "the app's own rate is printed, in the same unit as the compositor's"
+want "the app's own burn: +7.0/s" "$OUT" "and it stands in the verdict block beside the two compositor numbers"
+want 'app threads waiting in: futex_wait_queue_me 2, ' "$OUT" "the threads' wchan is printed, counted, and most frequent first"
+want 'the session Mir socket: +4 before the launch, 5 while it ran, 4 after it was stopped' "$OUT" "and the Mir connection count appears and disappears with the app"
+
+# The real reading, replayed: an app that burns 1 jiffy in the window (0.1/s), under the SAME two
+# compositor numbers that section 3 reads as "composited".
+env_reset
+printf '0\n0\n0\n0\n1\n0\n' > "$W/rates.app"
+run ""
+want "the app's own rate: 0.1/s" "$OUT" "an app that burned 0.1/s is read as such"
+want 'the app is NOT PAINTING' "$OUT" "and a busy compositor under it is reported as NOT the app's work"
+want 'that work is NOT the app.s' "$OUT" "with the sentence that says so"
+notwant 'the compositor is doing work for the app' "$OUT" "the ratio test must NOT be applied: B=240 against A=12 is 'composited' in section 3"
+notwant "the app's window is being composited" "$OUT" "and nothing anywhere claims the app is being composited"
+
+# The same idle app under a compositor that stayed at its baseline -- the reading that was taken.
+env_reset
+printf '0\n12\n0\n0\n18\n0\n' > "$W/rates"
+printf '0\n0\n0\n0\n1\n0\n' > "$W/rates.app"
+run ""
+want 'THE APP NEVER PAINTED' "$OUT" "an app that did nothing over an idle compositor is 'the app never painted'"
+want 'a measurement of the DISPLAY, not of the app' "$OUT" "with what the compositor's number is then a measurement of"
+notwant 'NO extra compositor work' "$OUT" "and NOT the old sentence, which read as a statement about the shell"
+notwant 'the app is not being composited' "$OUT" "in either of its forms"
+
+# Between the two lines: above 1/s (not idle) and under 5/s (not obviously painting).
+env_reset
+printf '0\n0\n0\n0\n24\n0\n' > "$W/rates.app"     # 2.0/s
+run ""
+want "the app's own rate: 2.0/s" "$OUT" "a rate between the two lines is still printed as a number"
+want 'inconclusive: the app.s own rate is 2.0/s' "$OUT" "and the verdict refuses to choose a story"
+notwant 'THE APP NEVER PAINTED' "$OUT" "it is not called idle"
+notwant 'the compositor is doing work for the app' "$OUT" "and the compositor ratio is not consulted at all"
+
+# The app's stat unreadable while the process is alive: a FAILED reading, not an app that did nothing.
+env_reset
+S_APP_STAT=0
+run ""
+want "the app's own rate: <unreadable>" "$OUT" "an app reading that failed is marked, never printed as 0.0"
+want 'NO VERDICT about the app' "$OUT" "and the verdict says the reading failed"
+notwant 'THE APP NEVER PAINTED' "$OUT" "it is not an app that did nothing"
+
+# The app painting, and a compositor window that cannot be read. The app's own number stands on its own
+# (it is a different measurement), so this is not "no verdict about the app".
+env_reset
+S_COM_STAT=0
+run ""
+want "the app's own rate: 7.0/s" "$OUT" "the app's own reading survives the compositor's failure"
+want 'the app IS painting' "$OUT" "an app that is painting is still read as painting"
+want "one or both of the compositor's windows could not be" "$OUT" "and it says which reading failed (the line wraps after 'be', so the pattern stops there)"
+notwant 'NO VERDICT about the app' "$OUT" "a failed COMPOSITOR reading is not a failed app reading"
+env_reset
+
+# The session's Mir socket when the shell does not name one, and when /proc/net/unix cannot be read.
+env_reset
+printf 'DESKTOP_SESSION=ubuntu-touch\0' > "$FR/proc/$SHELL_PID/environ"
+run ""
+want 'session Mir socket: /run/user/32011/mir_socket' "$OUT" "with no MIR_SERVER_FILE, the launcher's own default is used"
+want 'established connections before the launch: 4' "$OUT" "and the count still reads the real table"
+env_reset
+rm -f "$FR/proc/net/unix"
+run ""
+want 'established connections before the launch: <unreadable>' "$OUT" "an unreadable socket table says so"
+notwant 'before the launch: 0' "$OUT" "0 is the same number as 'no connections' -- the two must not look alike"
+env_reset
+
+# ==================================================================================================
+echo
+echo "== 6. the evidence table: one number per cell, and BOTH streams =="
 # ==================================================================================================
 env_reset
 run ""
@@ -429,7 +623,7 @@ notwant "'Added camera' in app.out:" "$TABLE" "and only for the file that has th
 
 # ==================================================================================================
 echo
-echo "== 6. the display: turned on, and left as it was found =="
+echo "== 7. the display: turned on, and left as it was found =="
 # ==================================================================================================
 env_reset
 run ""
@@ -453,7 +647,7 @@ grep -q '^busctl .*TurnOff' "$ACT" && bad "a display that started ON was turned 
 
 # ==================================================================================================
 echo
-echo "== 7. the refusal branches, and the display that will not come on =="
+echo "== 8. the refusal branches, and the display that will not come on =="
 # ==================================================================================================
 env_reset
 S_CONTAINER=""
@@ -480,7 +674,7 @@ want 'ActiveOutputs now: \(ii\) 0 0' "$OUT" "and the run continues (the warning 
 
 # ==================================================================================================
 echo
-echo "== 8. the launch command: uid, namespace, preload, and the app it asks for =="
+echo "== 9. the launch command: uid, namespace, preload, and the app it asks for =="
 # ==================================================================================================
 env_reset
 run ""
@@ -497,7 +691,7 @@ want 'shell=5000' "$OUT" "and the shell pid from pgrep -x lomiri"
 
 # ==================================================================================================
 echo
-echo "== 9. the grab, the shot failure, and the flag surface =="
+echo "== 10. the grab, the shot failure, and the flag surface =="
 # ==================================================================================================
 env_reset
 run ""
@@ -527,6 +721,52 @@ want 'Usage: zl1-camera-app-test' "$OUT" "and prints the usage block it exists t
 # short simply omits the last option -- and an option nobody documents is exactly an option nobody uses.
 want '--outdir DIR' "$OUT" "including the LAST documented option (a range that stops short looks correct)"
 notwant '^set -uo pipefail|^HOST=' "$OUT" "stopping after the header, not inside the assignments below it"
+
+# ==================================================================================================
+echo
+echo "== 11. the premise (an app may already be running) and the stop that keeps one from being measured twice =="
+# ==================================================================================================
+# Measured on the device 2026-09-26: a run reported "the app's own rate: 0.1/s ... THE APP NEVER
+# PAINTED" about a process started 22 minutes earlier by the run BEFORE it, while the evidence table
+# printed the new process's first two lines. Two things made that possible: the launch step's walk takes
+# the FIRST match, and this app IGNORES SIGTERM (the stop step used a bare kill; `timeout` sends nothing
+# else either). So the premise is now a reading, and the stop escalates and reports what it needed.
+env_reset
+printf '%s\0--foo\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"    # a leftover from an earlier run
+run ""
+[ "$RC" = 1 ] && ok "a leftover app makes the run refuse with exit 1" || bad "it exited $RC instead of refusing"
+want 'a camera app is ALREADY running' "$OUT" "and it says what it found"
+want 'REFUSING to measure' "$OUT" "in those words"
+# The harness rewrites /proc/ into the fake root, so the path it prints is the fixture's -- the
+# instrument prints /proc/<pid> on the device.
+want "about $FR/proc/$APP_PID" "$OUT" "naming the pid this run would otherwise have measured"
+want 'Nothing has been touched' "$OUT" "with the promise that nothing was touched"
+notwant '^busctl .*call' "$(cat "$ACT")" "which is true: no display call was made"
+notwant '^kill' "$(cat "$ACT")" "and nothing was signalled either"
+notwant 'the app NEVER STARTED' "$OUT" "and the refusal is not confused with a launcher failure"
+
+# The flag that turns the refusal into a decision.
+env_reset
+printf '%s\0--foo\0' "$APP_BIN_FAKE" > "$FR/proc/$APP_PID/cmdline"
+run "--clean-first"
+[ "$RC" = 0 ] && ok "--clean-first runs instead of refusing" || bad "--clean-first exited $RC"
+want 'stopped by SIGKILL \(it ignored SIGTERM\)' "$OUT" "and reports that SIGKILL is what worked"
+want '^kill /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill' "$ACT")" "SIGTERM is tried FIRST (a bare kill, no signal flag)"
+want '^kill -9 /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "and SIGKILL only after SIGTERM did not work"
+want 'launched pid' "$OUT" "then the run proceeds and launches its own app"
+
+# A healthy run still has to END the app: this is what makes the next run's premise true.
+env_reset
+run ""
+want 'app stopped: stopped by SIGKILL \(it ignored SIGTERM\)' "$OUT" "a normal run reports the escalation too"
+notwant 'STILL RUNNING after SIGKILL' "$OUT" "and the app is really gone"
+want '^kill -9 /[^ ]*proc/[0-9]+$' "$(grep -m1 '^kill -9' "$ACT")" "the SIGKILL goes through the stub by path (kill is a builtin)"
+notwant 'the stop at the end:' "$OUT" "so the verdict carries no warning about a leftover"
+
+# An app that will not die is not measured around -- it is reported.
+env_reset
+run "--help"
+wantl '--clean-first' "$OUT" "--help documents the flag (an option nobody documents is an option nobody uses)"
 
 echo
 echo "== the health check cites this harness's count, and that citation cannot drift =="
