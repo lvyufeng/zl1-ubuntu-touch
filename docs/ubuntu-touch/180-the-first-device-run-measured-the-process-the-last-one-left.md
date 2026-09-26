@@ -346,6 +346,96 @@ PASS  and it waited 3s of wall clock against a --settle-back 5 --poll 1, i.e. th
 它写下来的就不该是一个**值**，而是一个**形态**——并且**它看到的是哪个数必须被印出来**，
 否则放宽和放水在外观上是同一件事。
 
+## 5c. 第三次上设备：卡住的**不是建屏**，是一个**没有注册 `media.camera` 的旧 cameraserver**
+
+§5a 那一趟之后（同一 boot），显示关着又跑了两趟，读数一模一样（17 行 stderr、主线程
+`binder_thread_read`、`Added camera` 0/0），连时间戳都只差几十毫秒就停在同一行。**"卡在建屏"是
+从这个形状推出来的，而它不是原因。**
+
+### 那一个不返回的事务发给谁（`/sys/kernel/debug/binder/proc/<pid>`）
+
+```
+  thread 4051121: l 10 need_return 0 tr 0
+    outgoing transaction 1926996: ... from 4051121:4051121 to 46471:4045475 code 1 flags 10 pri 0:120 r1
+    transaction complete
+```
+
+* `46471` = `/system/bin/cameraserver`（同一个 boot，`proc 4051121 / context binder`）。
+* code 1 = **连接**，不是绘帧；flags 10（`ONEWAY` 置位）。
+* 而那个 pid 用**数字** `kill` 一下就没了，`init` 在同一秒把它拉起来（新 pid 4061070）。
+
+### 新旧 cameraserver 的差别：`media.camera` 有没有注册
+
+| 读法 | 旧 46471 | 重启后 |
+|---|---|---|
+| `service check media.camera`（容器内） | **not found** | found |
+| logcat 里 `I/CameraService(...): CameraService started` | 有 | 有 |
+| logcat 里 `Waiting for activity service` | **没有** —— 从没走完 `onFirstRef` | — |
+| `CameraService::connect call` | 有 | — |
+
+`android.hardware.camera.provider@2.4-service` 一直在、2.4 也一直在（`getTransport`/`legacy/0`），
+**缺的是那五个由 system_server 注册的名字**——而这棵树早有现成的工具：
+`scripts/android-fw-stubs/run-on-device.sh`（`service-stub`）和
+`scripts/android-fw-stubs/camera-stack-reset.sh`（doc 65/67）。`--status` 那一刻说的是
+**`== not running`**：**stub 早就死了**（运行时安装，容器一重启就没了），于是 cameraserver 的
+`checkPermission` 落进 doc 65 记的那个**没有超时**的重试循环里、`mServiceLock` 一直攥着，
+后面每一次 connect 都排在同一个锁上。**app 打印的那句 `Creating a QMirClientScreen now` 之后
+它就去连相机了**——那句日志在阻塞之前，不在阻塞里。
+
+把整条栈按端口自己的脚本复位（`camera-stack-reset.sh`，然后 `--notify-user-switch`
+——第一次发事件时 `media.camera` 还没注册，脚本自己印了那句 `WARNING: ... the event went nowhere`，
+**要再发一次**），五个名字全部 `found`。再起 app：
+
+```
+   Creating a QMirClientScreen         2 err
+   Added camera                        2 err          <-- §5a 那一趟是 0
+   Application is now active           1 err
+   caught signal                       1 err
+   not found                           1 err
+```
+
+### 复位的代价：那个基线数变了，而且**没有解释**
+
+| 窗口 | §5a | 复位后 |
+|---|---|---|
+| A（显示器 ON，无 app） | 3.8/s | **36.9/s**（443 jiffies / 12 s） |
+| B（app 在跑） | 3.9/s | 33.8/s |
+| app 自己 | 0.1/s | 0.9/s |
+
+A 和 B 的绝对值都是复位前的 **~10 倍**，两个窗口一起抬高，所以"app 没有额外做功"这个**相对**
+结论没有变（0.9/s 仍然是 0.9%）；但**门限是按 1.2/s 那个基线写的**（doc 68 §5 / doc 77），
+而今天这个基线是 36.9/s。**这条差异没有归因**——复位动了 cameraserver/provider/mm-qcamera-daemon
+三个进程，也动了 logcat，但没有任何读数说明合成器为什么多烧 10 倍。记下来，不写成结论。
+
+### app 真的走过去了：它现在**崩在预览路径**上
+
+`app.err`（这一趟 1755 行，前两趟是 17 行；关键那 14 行抄在
+`docs/ubuntu-touch/evidence/camapp-after-camera-stack-reset-2026-09-26.log`）：
+
+```
+Added camera "0"
+Added camera "1"
+...
+m_surface is NULL, can't update video texture
+dlopen failed: library "/system/lib64/libui_compat_layer.so" not found
+** Application is now active
+qml: updateViewfinderResolution: viewfinder resolutions is not known yet.
+virtual QSGVideoNode* ShaderVideoNodePlugin::createNode(const QVideoSurfaceFormat&)
+terminate called after throwing an instance of 'std::bad_function_call'
+  what():  bad_function_call
+crash-dump: caught signal 6
+```
+
+于是**这一篇的标题所指的那件事换了一个位置**：卡点不是建屏，是**相机栈没被武装**；
+现在换成了 **`std::bad_function_call`（SIGABRT）在视频节点那一步**，
+以及那句按**绝对路径**要 `libui_compat_layer.so` 的 `dlopen failed`
+（shim 在 `/userdata/zl1-hybris/lib/libui_compat_layer.so`，不在 `/system/lib64/`——
+§7 第 1 条那个读数的用处就在这里）。
+
+**一条要留下的规则**：这台仪器量"相机 app 在不在屏上"之前，前提有**两个**——
+"没有残留的相机 app"（§0.6，已经做了）**和"相机框架栈是活的"**（没有）。
+第二个前提在树里一直有工具（`camera-stack-reset.sh`），只是**没有一台读屏的仪器跑过它**。
+
 ---
 
 ## 6. 这一轮**没有**证明什么
@@ -366,12 +456,34 @@ PASS  and it waited 3s of wall clock against a --settle-back 5 --poll 1, i.e. th
 1. **把"没画"这条判词推到它该去的地方**：判词现在是拿**建屏那一步**的不返回调用算的
    （§5a：`Creating a QMirClientScreen` ×2、`Added camera` 0/0、主线程在 `binder_thread_read`）。
    下一个读数是**那个事务本身**：它发给谁、是哪一个调用（`/proc/<pid>/task/*/stack` 加
-   `binder_thread_read` 的那一侧），以及 `/system/lib64/libui_compat_layer.so` 在不在 dlopen 路径上
-   （`/system` 是 `/dev/loop1` 上的 ro ext4，这台设备上**任何地方都没有这个文件**）。
+   `binder_thread_read` 的那一侧），以及 `/system/lib64/libui_compat_layer.so` 在不在 dlopen 路径上。
+
+   **这一条我写错过一次，而且错法正是这一篇在讲的那一种**：我写的是"这台设备上**任何地方都没有
+   这个文件**"。写完之后**去读了**（2026-09-26，`boot_id 2fbf9f8e`，`uptime 59891 s`）：
+
+   | 路径 | 读到的 |
+   |---|---|
+   | `/system/lib64/libui_compat_layer.so` | `No such file or directory` —— 这一半是对的 |
+   | `/userdata/zl1-hybris/lib/libui_compat_layer.so` | **在**，10664 字节，`-rwxr-xr-x` |
+
+   而且这不只是"读了一半"：**doc 80 §6 那张表里就写着它的去处**（"shim 在
+   `/userdata/zl1-hybris/lib/`，只有基名能被 `HYBRIS_LD_LIBRARY_PATH` 找到"），doc 53 记着它是**编出来了**的。
+   所以那句话是**在树自己的读数面前写下的**，和 §5a 那句"忽略 SIGTERM"同一个形状：
+   **一句没有路径去核实的断言，被写进了一个本来就是为了核实而存在的文档里。**
+   正确的说法是：这个 shim **在设备上**，不在 app 按绝对路径要的那个位置；
+   doc 80 那一趟它是 non-fatal，**这一趟它是不是 non-fatal 还没量过**。
 2. **把"5/s 就是画了"从设计选择变成量出来的带**：在**同一个窗口**里跑一个**已知会画**的客户端
    （`/usr/bin/test_camera`，doc 77 —— 它被量到过 20–26 ticks/s），看它的 app 速率是多少。
    这是这一篇列在"不证明什么"里的那一条（§6）。
 3. **`--keep-display --run-seconds 90` 那条命令，给人看的那一眼还没发生**：两次设备运行里，
    第一次用了 `--keep-display`，但它那一刻量到的还是操作数缺陷（§5a）；第二次没用这个开关，
    所以**结束之后显示器是关的**（已验证：`lcd-backlight/brightness` = `0`，没有残留进程）。
+
+4. **先武装相机栈，再量**（§5c）：仪器现在只读了**一个**前提（没有残留 app），而真正让 §5a 那一趟
+   停在 `binder_thread_read` 的是**第二个**前提——`service check media.camera` 要是 `found`。
+   树里已经有 `scripts/android-fw-stubs/camera-stack-reset.sh` + `run-on-device.sh --notify-user-switch`
+   （后者**要发两次**：第一次 `media.camera` 还没注册）。把这一步写进仪器的前提里，是这个阶段下一件
+   要做的事；在它写进去之前，**这台仪器印出来的"没画"都不可信**——它量的可能是一个没有相机栈的设备。
+5. **新的卡点**：`std::bad_function_call`（SIGABRT，视频节点 `createNode` 那一步）和
+   `dlopen failed: /system/lib64/libui_compat_layer.so`。
    要用户亲眼确认"相机 app 在屏上是什么样"，就再跑一次带 `--keep-display` 的那条。
