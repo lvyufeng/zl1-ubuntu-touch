@@ -424,6 +424,19 @@ mut() { # name, sed-script -- true only if the sed changes the SHIPPED source an
   ok "mutation '$1': landed (it changes a line of the shipped script, and the mutant parses)"
   return 0
 }
+# A SAMPLE COUNT TAKEN INSIDE A WALL-CLOCK BOUND IS NOT A CONSTANT, and asserting one made this file flaky:
+# under the family run the no-plateau scenario took 3 samples where it takes 4 alone. The cause is the unit
+# docs 174 put both bounds in -- the hold asks the CLOCK for N seconds and each iteration costs its sleep PLUS
+# the instrument -- so a loaded host fits fewer iterations into the same bound, and the same phone with the
+# same settings can take 3 samples or 5. What the check is about is that the hold compared MORE THAN ONE
+# reading (two is what it compares) and that the run did not run away, so the count is asserted as a RANGE and
+# the number it saw is printed. (The counts that ARE exact are the ones where the bound is the fixture's own
+# arithmetic: the sleep-second mutant's 5, and slow-samples' single sample, whose 1 s of sleep plus 2 s of
+# instrument IS the 3 s it was given.)
+between() { # $1 = value, $2 = low, $3 = high, $4 = what is being asserted
+  if [ "$1" -ge "$2" ] 2>/dev/null && [ "$1" -le "$3" ] 2>/dev/null; then ok "$4 (it took $1)"
+  else bad "$4 -- got '$1', expected $2..$3"; fi
+}
 # The whitelist check, as a function, because TWO things run it: the shipped source (section 0) and a mutant
 # that added a write target (m0). Returns the number of targets that are neither the core list nor inside
 # $TMP -- and prints the distinct targets on stdout so the caller can assert on their names.
@@ -480,10 +493,28 @@ want 'while \[ "\$\(\( \$\(now_s\) - WAIT_T0 \)\)" -lt "\$SETTLE_BACK" \]' "$(ca
   "and so does the wait's, which is the one that promised 240 s and spent 798"
 want 'PRE_BAR=\$\(bar_of "\$PRE_GAP" "\$MARGIN" "\$RUN_SPAN"\)' "$(cat "$NC")" \
   "and the pre-hold's bar hangs on the RUN's span, not on the sample interval"
-want '^RUN_SPAN=\$\(\(SECONDS_WIN \* 3 \+ SETTLE \* 2 \+ SETTLE_BACK\)\)$' "$(cat "$NC")" \
-  "with that span defined once, from the settings, rather than typed twice"
+want '^\[ "\$PAIRS" -gt 0 \] \|\| RUN_SPAN=\$\(\(SECONDS_WIN \* 3 \+ SETTLE \* 2 \+ SETTLE_BACK\)\)$' "$(cat "$NC")" \
+  "and that span is defined once, from the settings, and ONLY for the three-window design"
 want '^  cost_line$' "$(cat "$NC")" "and every exit that measured prints what it cost in wall clock"
 want '^    cost_line$' "$(cat "$NC")" "including the refusal that writes nothing, which still says what refusing cost"
+# THE ALTERNATING DESIGN'S OWN SOURCE LINES (docs 175), pinned statically for the same reason: each is a line
+# that has to BE there, and three of them have a mutant that puts the defect back (m16, m17, m18).
+N_PAIRED=$(grep -c '^if \[ "\$PAIRS" -gt 0 \]; then$' "$NC")
+[ "$N_PAIRED" = 3 ] && ok "the paired design is its own branch (--status, the pre-hold's SKIP, and the run itself)" \
+                   || bad "$N_PAIRED 'if [ \$PAIRS -gt 0 ]' guards in the shipped source, expected 3"
+want '^    if \[ \$\(\(zl1_i % 2\)\) = 1 \]; then zl1_first=fix; else zl1_first=pinned; fi$' "$(cat "$NC")" \
+  "and the ORDER inside a pair alternates, which is what puts the two halves at the same mean position in time"
+want 'printf "%s %s %.2f %.2f %d\\n", z, type\[z\], mean, sqrt\(var / m\)' "$(cat "$NC")" \
+  "the reading is a MEAN of the per-pair differences with an error bar measured from their scatter"
+want '\[ -n "\$PZ" \] \|\| PZ=\$\(hot_zone "\$TMP/win\.A\.\$\{zl1_i\}"\)' "$(cat "$NC")" \
+  "and the primary zone is taken from the FIRST window, before any intervention, and never revisited"
+want '^    PRE_REG=0$' "$(cat "$NC")" "so a run that could not pre-register says so rather than choosing its winner"
+want 'BAL=\$\(awk' "$(cat "$NC")" "and the design's balance is computed from the order the run RECORDED taking"
+want 'printf .%s\\n. "\$2" >> "\$TMP/order"' "$(cat "$NC")" \
+  "which is a file the run writes as it takes each window, rather than the design's arithmetic restated"
+want 'if \(lo >= res\) \{ print "cost-measured"; exit \}' "$(cat "$NC")" \
+  "and the verdict is an INTERVAL against the resolution, so it can come out inconclusive"
+want 'print "inconclusive"' "$(cat "$NC")" "which is an answer the three-window design had no way to give"
 # The whitelist accepts a LOOP VARIABLE, which is weaker than accepting one named path -- so what it loops
 # over is checked too: the list must come from the cpufreq glob, and every write must go through the variable
 # that glob fills. Both halves are asserted on the SHIPPED source with comments stripped.
@@ -718,8 +749,7 @@ want '^   zone       type                        A      B     B-A' "$OUT" \
   "the table is the TWO windows it did take, with its own header"
 want '^   thermal_zone1 tsens_tz_sensor0 +42\.0 +47\.0 +\+5\.0' "$OUT" \
   "and it still prints the warming it saw, so the run is not empty"
-[ "$(cat "$W/win.count" 2>/dev/null)" = 5 ] && ok "five instrument calls: A, B and three bounded samples, and NO C" \
-  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and 3 samples were expected"
+between "$(cat "$W/win.count" 2>/dev/null)" 4 6 "the instrument ran A, B and 2..4 bounded samples, and NO C"
 gc_all interactive && ok "and the cores are back on interactive -- it stopped early, it did not stop restoring" \
                    || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-return run left the tree changed"
@@ -742,8 +772,7 @@ wantsq '\(-5\.0 C, on thermal_zone[0-9]+' "$OUT" "and prints the signed number b
 want 'NO RETURN' "$OUT" "so the verdict is no-return, exactly as when the phone stayed too warm"
 notwant 'window C -- the CONTROL' "$OUT" "and window C was never read"
 notwant 'COST-MEASURED|CONTAMINATED' "$OUT" "and no price is printed anywhere"
-[ "$(cat "$W/win.count" 2>/dev/null)" = 6 ] && ok "six instrument calls: A, B and four bounded samples, and NO C" \
-  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): A, B and 4 samples were expected"
+between "$(cat "$W/win.count" 2>/dev/null)" 4 7 "the instrument ran A, B and 2..5 bounded samples, and NO C"
 gc_all interactive && ok "and the cores are back on interactive" || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the below-A run left the tree changed"
 
@@ -794,8 +823,7 @@ want 'WALL CLOCK: this attempt took [0-9]+s' "$OUT" \
 notwant 'NO PLATEAU' "$OUT" "and it did not refuse"
 want 'window A -- as installed' "$OUT" "window A was read, after the hold and not before it"
 want 'COST-MEASURED' "$OUT" "and the run reached a verdict on the state it settled into"
-[ "$(cat "$W/win.count" 2>/dev/null)" = 6 ] && ok "six instrument calls: three pre-hold samples, then A, B, C" \
-  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): 3 pre-hold samples and 3 windows were expected"
+between "$(cat "$W/win.count" 2>/dev/null)" 5 7 "the instrument ran the pre-hold samples, then A, B and C"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the plateau run left the tree changed"
 
 scen no-plateau
@@ -812,8 +840,7 @@ awk '/the refusals, on their own terms/ { r = NR } /the pre-hold/ { if (!p) p = 
   && ok "and the hold runs AFTER the refusals -- a refusal is answered before anything is measured" \
   || bad "the pre-hold does not come after the refusals in the output"
 notwant "read 'performance' back" "$OUT" "NO INTERVENTION WAS MADE: this exit writes nothing at all"
-[ "$(cat "$W/win.count" 2>/dev/null)" = 4 ] && ok "four instrument calls, all of them pre-hold samples" \
-  || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s): 4 pre-hold samples were expected"
+between "$(cat "$W/win.count" 2>/dev/null)" 3 6 "the instrument ran only pre-hold samples, and more than one of them"
 gc_all interactive && ok "and the cores are where they were" || bad "the cores are now$(gc_each)"
 [ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the no-plateau run changed the device"
 wantsq 'projected over this run.s 3s that is [0-9.]+ C, against the 0\.5 C this experiment can attribute' "$OUT" \
@@ -859,6 +886,145 @@ wantsq 'The holds asked for 1s of sleep and spent the rest waiting on the instru
   "naming the difference between the two numbers, which is exactly what the old bound could not see"
 wantsq 'Every bound above is in THESE seconds, not in sleeps' "$OUT" \
   "so an operator planning a run from the bounds is planning in the right unit"
+
+# ==================================================================================================
+# ==================================================================================================
+echo
+echo "== 3e. the alternating design: the drift cancels in the pair, and the scatter IS the error bar (docs 175) =="
+# ==================================================================================================
+# WHY THIS SECTION EXISTS. Section 3d ends with the pre-hold refusing the drifting phone, and that refusal is
+# the three-window design's dead end on this device (docs 174, section 6.1): the design asks for a noise of
+# zero. The paired design does not ask -- it pairs, and then it MEASURES the noise from the pairs. So the
+# scenario below is the same phone 3d REFUSES (1.0 C of drift per window) with a 2.0 C effect, and the number
+# that comes out has to be 2.00: with a fixed order inside the pair it would be 3.00, which is mutation m16.
+scen pairs-cost
+FP_DIFF=2.0; FP_DRIFT=1.0
+H0=$(tree_hash)
+run --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 0 ] && ok "a drifting phone is priced rather than refused: exit 0" || bad "the pairs run exited $RC"
+want 'COST-MEASURED' "$OUT" "and the verdict is a cost"
+want 'the mean of 4 pair difference\(s\) on it:  2\.00 C' "$OUT" \
+  "and the number is the TRUE effect (2.00) and not the effect plus one window of drift"
+notwant 'pair difference\(s\) on it:  3\.00 C' "$OUT" \
+  "which is what the SAME phone prints with a fixed order inside the pair (m16 puts that back)"
+want '\(standard error 0\.58 C\)' "$OUT" "with an error bar that came from the scatter of the pairs"
+wantsq 'the two-standard-error interval is \[0\.84, 3\.16\] C' "$OUT" \
+  "and the interval the verdict was decided on is printed, so the reader can argue with it"
+want 'the primary zone was PRE-REGISTERED, in the first window of the run' "$OUT" \
+  "the primary zone is declared from window A.1, before any intervention"
+want '<- PRE-REGISTERED \(hottest zone of window A\.1, before any write\)' "$OUT" \
+  "and it is marked in the table, so which zone the headline number is about is not something to guess"
+want 'pair 1/4: fix window first' "$OUT" "the run says which order each pair used"
+want 'pair 2/4: pinned window first' "$OUT" \
+  "and the order ALTERNATES -- pair 1 fix-then-pinned, pair 2 the other way round"
+want "THE DESIGN'S BALANCE: the fix windows sat at mean position 4\.50 in the run and the pinned" "$OUT" \
+  "whose result is the balance: the two halves of the run sat at the same mean position in time"
+wantsq 'an imbalance of 0\.00 window\(s\)' "$OUT" "and the imbalance is printed as a number, not asserted to be absent"
+want 'The fastest is \+1\.00 C per window on thermal_zone1, over 3 interval' "$OUT" \
+  "the control measures the phone's OWN drift, in C per window, over the same minutes as the reading"
+want 'C per window' "$OUT" "with the unit said out loud, because a rate over unequal intervals is not one quantity"
+notwant 'NO PLATEAU|is this phone holding still' "$OUT" \
+  "and the pre-hold did NOT run: this design does not ask the phone to hold still"
+wantsq 'the holds -- and this design has NONE \(--pairs\)' "$OUT" \
+  "the cost line says which design spent the run, and that this one has no holds at all"
+[ "$(cat "$W/win.count" 2>/dev/null)" = 8 ] && ok "eight instrument calls, one per window of four pairs" \
+                                          || bad "the instrument ran $(cat "$W/win.count" 2>/dev/null) time(s), not 8"
+gc_all interactive && ok "and every core is back on interactive" || bad "the cores are now$(gc_each)"
+[ "$H0" = "$H1" ] && ok "and the whole fake device is byte-for-byte as it was before the run" \
+                  || bad "the paired run left the tree changed"
+want 'This run used: --pairs 4 --seconds 1 --settle 0\.' "$OUT" \
+  "and the settings it ran with are printed, so nobody has to guess which design this was"
+
+# The SAME design on a phone with no effect and a little drift: this is the script coming out against the fix
+# it was built around, and it has to be a different verdict from `inconclusive`.
+scen pairs-nocost
+FP_DIFF=0; FP_DRIFT=0.1
+run --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+[ "$RC" = 0 ] && ok "a phone with no effect and a little drift: exit 0" || bad "the no-cost pairs run exited $RC"
+want 'the mean of 4 pair difference\(s\) on it:  0\.00 C' "$OUT" "the mean comes back at zero"
+want 'NO DETECTABLE COST' "$OUT" "and the verdict is no-detectable-cost -- the script against its own fix"
+notwant '^   -> COST-MEASURED' "$OUT" "with no price printed anywhere"
+
+# AND THE OUTCOME THE OLD DESIGN COULD NOT REPORT: an interval that spans the resolution. The mean is real
+# (0.50 C) and the scatter is large (0.58 C), so this run cannot separate "nothing" from "something" -- and
+# the answer has to say so AND say what it would take.
+scen pairs-inconclusive
+FP_DIFF=0.5; FP_DRIFT=1.0
+run --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+[ "$RC" = 1 ] && ok "a run whose interval spans the resolution: exit 1 (a statement about the RUN)" \
+              || bad "the inconclusive run exited $RC"
+want 'INCONCLUSIVE' "$OUT" "the verdict names it"
+wantsq 'the interval \[-0\.66, 1\.66\] reaches across the 0\.2 C' "$OUT" "with both ends printed"
+notwant '^   -> COST-MEASURED' "$OUT" "and no price is printed"
+want 'would need about 60 pair\(s\)' "$OUT" \
+  "and it says how many pairs this scatter would need, out of this run's own numbers"
+want 'MORE than the 30 pairs --pairs allows' "$OUT" \
+  "and says when that is outside the design's own range, because 'run 60 pairs' is not advice it can take"
+
+# An instrument that answers nothing: there is no reading, and the RUN says so instead of printing a table of
+# zeros. (Section 5 does this for the three-window design; the paired pathway needs its own guard.)
+scen pairs-quiet
+H0=$(tree_hash)
+run --yes --pairs 4 --seconds 1 --settle 0 --thermal "$W/quiet-instrument.sh"
+H1=$(tree_hash)
+[ "$RC" = 1 ] && ok "an instrument that prints no zones: exit 1" || bad "the quiet pairs run exited $RC"
+want 'NO TSENS ZONE WAS READABLE IN TWO PAIRS' "$OUT" "and it says there is no reading rather than printing zeros"
+notwant '^   -> ' "$OUT" "and it prints no verdict at all"
+gc_all interactive && ok "and the cores were still put back" || bad "the cores are now$(gc_each)"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte as it was" || bad "the run left the tree changed"
+
+# THE TRAP IN THE PAIRED DESIGN: it holds the pinned state once per pair, so a signal has more chances to land
+# while the cores are pinned than in the three-window design. One exit trap covers both -- and this is that
+# claim being tested on the design that will actually run.
+scen pairs-interrupt
+FP_DIFF=5.0
+runbg "$S/interrupt.txt" "$RW" --yes --pairs 4 --seconds 1 --settle 3 --thermal "$STUB/zl1-thermal.sh"
+kill_pinned
+gc_all performance && ok "the kill landed in the pinned window of a PAIR (every core really reads performance)" \
+                   || bad "the kill did not land in a pinned window -- nothing about the trap is being tested here"
+wait "$BG_PID"; BG_RC=$?
+OUT=$(cat "$S/interrupt.txt" 2>/dev/null)
+[ "$BG_RC" != 0 ] && ok "an interrupted paired run comes back non-zero (rc=$BG_RC)" \
+                  || bad "the interrupted paired run exited 0 -- a signal that does not end the run"
+notwant 'the state it started in' "$OUT" "and it did not reach its closing line, so nothing overwrote the restore"
+gc_all interactive && ok "and every core is back on interactive -- the trap, not the happy path, restored it" \
+                   || bad "the paired interrupt left the cores at$(gc_each)"
+want '\[trap\]' "$OUT" "and the trap says so out loud, on the way out"
+
+# --status with --pairs: still read-only, and it describes the design it would run.
+scen pairs-status
+H0=$(tree_hash)
+run --status --pairs 4 --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 0 ] && ok "--status --pairs 4 exits 0" || bad "--status --pairs exited $RC"
+[ "$H0" = "$H1" ] && ok "and the fake device is byte-for-byte identical afterwards" || bad "--status --pairs changed the device"
+want 'ALTERNATING \(--pairs 4\): 8 window\(s\) in 4 pair\(s\)' "$OUT" "it says how many windows and pairs a run would take"
+want 'The ORDER INSIDE A PAIR ALTERNATES' "$OUT" "and describes the alternating order, which is the load-bearing part"
+want 'NO pre-hold and NO wait' "$OUT" "and says which of the other design's settings do not apply"
+notwant 'COST-MEASURED|INCONCLUSIVE' "$OUT" "and it prints no verdict from a run it did not make"
+[ ! -s "$ACT" ] && ok "and it ran no window (the instrument was never called)" || bad "the instrument ran during --status"
+
+# THE DESIGN'S OWN RANGE, refused before anything is written. A range not checked here is a run that starts,
+# writes the cores and only then discovers that two pairs cannot make a scatter.
+for a in 2 99; do
+  scen "pairs-range-$a"
+  H0=$(tree_hash)
+  run --yes --pairs "$a" --thermal "$STUB/zl1-thermal.sh"
+  H1=$(tree_hash)
+  [ "$RC" = 2 ] && ok "--pairs $a: exit 2 (the alternating design needs 3..30)" || bad "--pairs $a exited $RC"
+  want 'needs 3\.\.30 pairs' "$OUT" "and it says the range rather than failing somewhere later ($a)"
+  [ ! -s "$ACT" ] && ok "and no window was read ($a)" || bad "the $a refusal ran the instrument"
+  [ "$H0" = "$H1" ] && ok "and nothing was written ($a)" || bad "the $a refusal changed the device"
+done
+scen pairs-notanumber
+H0=$(tree_hash)
+run --yes --pairs abc --thermal "$STUB/zl1-thermal.sh"
+H1=$(tree_hash)
+[ "$RC" = 2 ] && ok "--pairs abc: exit 2, rather than an abort inside the shell's arithmetic" \
+              || bad "--pairs abc exited $RC (an unvalidated non-number aborts the shell mid-expansion)"
+want '--pairs needs a whole number' "$OUT" "and it says what a whole number means here"
+[ "$H0" = "$H1" ] && ok "and nothing was written" || bad "the refusal changed the device"
 
 # ==================================================================================================
 echo
@@ -1169,6 +1335,49 @@ if mut m15-ratebar 's#^      PRE_BAR=\$(bar_of "\$PRE_GAP" "\$MARGIN" "\$RUN_SPA
   want 'IT IS HOLDING STILL ENOUGH' "$OUT" "and it says the phone is holding still -- of a phone that is not"
   want 'wrote .performance. to all 4 core\(s\) and read .performance. back' "$OUT" \
     "and the intervention is made on it: the cost is the write, not a number"
+fi
+
+# (m16) THE ORDER INSIDE A PAIR FIXED AGAIN -- which is the whole reason the paired design alternates it, and
+# the reason that is not a detail. With every pair in the same order the pinned window is always one window
+# LATER than its own fix window, so one window of the phone's drift lands inside every difference with the
+# same sign and the mean comes out as the effect PLUS that drift. Driven by the pairs-cost phone, whose true
+# effect is 2.0 C and whose drift is 1.0 C per window: the shipped run prints 2.00 and this one prints 3.00.
+if mut m16-orderfixed 's#^    if \[ [$]((zl1_i % 2)) = 1 \]; then zl1_first=fix; else zl1_first=pinned; fi$#    zl1_first=fix#'; then
+  scen mut-m16
+  FP_DIFF=2.0; FP_DRIFT=1.0
+  mutrun m16-orderfixed --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  want 'the mean of 4 pair difference\(s\) on it:  3\.00 C' "$OUT" \
+    "mutation 'the order inside a pair fixed': the reading is now the true effect PLUS one window of drift"
+  notwant 'pair difference\(s\) on it:  2\.00 C' "$OUT" "and not the 2.00 the alternating order produces"
+  wantsq 'the imbalance is 1\.00 window\(s\)' "$OUT" \
+    "and the balance line -- which is computed from the order the run RECORDED -- reports the imbalance it created"
+  wantsq 'worth about 1\.00 C of the reading' "$OUT" \
+    "and the design's own arithmetic prices that imbalance in degrees, which is the size of the error"
+fi
+# (m17) THE ERROR BAR REMOVED: the verdict goes back to comparing the mean against the resolution, which is
+# the three-window design's mistake in a new place. Every OTHER scenario's interval clears the bar on both
+# sides, so this can only be seen on the phone whose interval spans it -- the pairs-inconclusive one, whose
+# scatter is the whole finding.
+if mut m17-noerrorbar 's#^      lo = m - 2 \* se; hi = m + 2 \* se$#      lo = m; hi = m#'; then
+  scen mut-m17
+  FP_DIFF=0.5; FP_DRIFT=1.0
+  mutrun m17-noerrorbar --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'INCONCLUSIVE' "$OUT" "mutation 'the error bar removed': the spanning interval no longer produces that verdict"
+  want 'COST-MEASURED' "$OUT" \
+    "and the run prints a PRICE from a mean whose uncertainty is larger than the mean -- the whole cost of the mutant"
+fi
+# (m18) THE PRIMARY ZONE CHOSEN AFTER THE FACT: the pre-registration dropped, so the headline number is the
+# largest mean in the table. That is docs 172's shape, and the protection is that the zone comes from the
+# FIRST window; with it gone the run still prints a verdict, which is what makes it dangerous.
+if mut m18-posthoc 's#^  if \[ -z "\$PZ" \]; then$#  if true; then#'; then
+  scen mut-m18
+  FP_DIFF=2.0; FP_DRIFT=1.0
+  mutrun m18-posthoc --yes --pairs 4 --seconds 1 --settle 0 --thermal "$STUB/zl1-thermal.sh"
+  notwant 'the primary zone was PRE-REGISTERED' "$OUT" "mutation 'the primary zone chosen post hoc': the pre-registration is gone"
+  want 'WARNING: window A\.1 had no readable tsens zone' "$OUT" \
+    "and the mutant reports a failure that did not happen instead of saying which zone it picked"
+  want 'COST-MEASURED|NO DETECTABLE COST|INCONCLUSIVE' "$OUT" \
+    "while still printing a verdict -- the number is chosen from the data and nothing says so"
 fi
 
 # ==================================================================================================

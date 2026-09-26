@@ -59,6 +59,30 @@
 #       finding (docs 173, section 6.1): on this phone the bar is unreachable, so the thing to change is the
 #       design -- cancel the drift instead of requiring its absence.
 #
+# THE THREE-WINDOW DESIGN CANNOT PRICE THIS PHONE, SO THERE IS A SECOND ONE (docs 175, from docs 173/174).
+# A/B/C requires the phone to HOLD STILL: window C is a control only if it reads window A's state, the pre-hold
+# now enforces what that costs, and on this phone the bar it needs is 0.012 C per interval -- because the
+# phone's own movement inside one run (4 C) is larger than the effect being priced (about 2 C). The third
+# device run's own numbers say what to do about it: that movement is MONOTONE (a phone cooling towards ambient
+# after a load), and a monotone drift that is present in BOTH halves of a PAIR cancels in their difference.
+# So `--pairs N` runs N pairs of (fix window, pinned window), back to back, and reads the per-pair difference
+# d_i = B_i - A_i -- with the ORDER INSIDE A PAIR ALTERNATING (pair 1 fix-then-pinned, pair 2 the other way
+# round), because with every pair in the same order the pinned window is always one window LATER than its own
+# fix window and one window of the phone's drift lands in EVERY difference with the same sign. Two things come
+# with the pairing, and neither was available before:
+#   * AN ERROR BAR, measured. The scatter of d_i across the pairs IS the noise, so the verdict is a mean with
+#     its own standard error against the 0.2 C resolution -- not a threshold that has to be satisfied by a
+#     phone at rest. Three verdicts come out of it: `cost-measured` when mean - 2 se clears the resolution,
+#     `no-detectable-cost` when mean + 2 se is under it, and `inconclusive` when the interval spans it (which
+#     is a statement about the RUN: it says how many more pairs the scatter would allow).
+#   * A CONTROL THAT USES THE SAME SPANS. The FIX windows' own movement, in C per window, is the drift this
+#     design cancels, measured over the very same minutes -- and the design's balance (where each half sat in
+#     time) is computed from the order the run RECORDED taking, so the two numbers beside the reading are a
+#     measurement rather than a claim.
+# WHAT IT DOES NOT GIVE: the lag. The zones follow the power through the SoC's thermal time constant, which is
+# still unmeasured (docs 173, section 8), so if that constant is comparable to the window length the reported
+# effect is SMALLER than the true one. The pairing cancels drift, not lag, and the verdict says so.
+#
 # THE KNOB IS FOUR FILES, NOT ONE, and that is the whole difference from the ladder instrument. There is no
 # `tr` alphabet here (a governor name is stored and read back as itself) and no module parameter: the state
 # is `/sys/devices/system/cpu/cpuN/cpufreq/scaling_governor`, one per core, and "the fix is installed" means
@@ -87,6 +111,20 @@
 #                                                 The run PRINTS the wall clock it actually took, because the
 #                                                 instrument's own samples are inside these bounds (a 10 s
 #                                                 window costs this device about 23 s: docs 173, section 5).
+#     zl1-governor-temp-ab.sh --pairs N           THE ALTERNATING DESIGN (docs 175): N pairs of
+#                                                 (fix window, pinned window), back to back, with the
+#                                                 ORDER INSIDE A PAIR ALTERNATING (pair 1 fix-then-pinned,
+#                                                 pair 2 pinned-then-fix, ...) so that the two halves sit at
+#                                                 the same mean position in time. The verdict is the MEAN of
+#                                                 the per-pair differences with the PAIR-TO-PAIR SCATTER as
+#                                                 its own error bar. It does NOT need the phone to hold still
+#                                                 -- a drift present in both halves of a pair cancels in the
+#                                                 difference -- so it has no pre-hold and no wait, and
+#                                                 --settle-start, --settle-back, --poll and --margin do not
+#                                                 apply to it. Its own defaults are 30 s windows and a 5 s
+#                                                 settle; six pairs is about ten minutes of wall clock, which
+#                                                 the run prints. It needs 3..30 pairs (three for a scatter,
+#                                                 and a bound so the run can be planned).
 #     zl1-governor-temp-ab.sh --keep              leave the run's own files and print where they are
 #     zl1-governor-temp-ab.sh --revert            put every core back on `interactive` and prove it
 #     zl1-governor-temp-ab.sh --explain           what each reading decides, and change nothing
@@ -107,11 +145,32 @@ set -u
 MODE=status
 SECONDS_WIN=45
 SETTLE=20
+SEC_GIVEN=0
+SET_GIVEN=0
 THERMAL=/tmp/zl1-thermal.sh
 YES=0
 WROTE=0
 KEEP=0
 NO_RETURN=0
+# THE ALTERNATING DESIGN (docs 175), and it exists because the three windows above have now been measured to
+# be unable to price this phone (docs 173/174): A/B/C needs the phone to HOLD STILL, this phone moves 4 C
+# inside one run, and the effect being priced is about 2 C. The third run's own numbers say why that is fatal
+# to A/B/C and not to a paired design: the drift is MONOTONE (the phone cools towards ambient after a load),
+# and a monotone drift that is present in both halves of a PAIR cancels in the difference of the pair.
+# So `--pairs N` runs N pairs of (fix window, pinned window) back to back with the ORDER ALTERNATING inside a
+# pair -- A1 B1 B2 A2 A3 B3 ... -- and the reading is the per-pair difference d_i = B_i - A_i. Alternating the
+# order is not decoration: with every pair in the same order the pinned window is always one window LATER than
+# its own fix window, so one window of the phone's drift lands inside every difference with the same sign, and
+# the mean is biased by exactly that much. Alternating puts the two halves at the same mean position in time,
+# and the residual imbalance is printed as a number. What A/B/C could not give and this does is an ERROR BAR:
+# the scatter of d_i across the pairs is a DIRECT estimate of the noise, so the verdict is a mean with its own
+# standard error against the 0.2 C resolution, instead of a threshold that has to be satisfied by a phone at
+# rest. PAIRS=0 keeps the three-window design, which is still the control and the reason this design exists.
+PAIRS=0
+# The paired design's own defaults, used only when --pairs is given and --seconds/--settle are not: it needs
+# MORE windows (2N of them), so each has to be shorter, and the run is sized in the --status text.
+PAIR_SECONDS=30
+PAIR_SETTLE=5
 # THE WAIT. The first device run of this instrument (2026-09-25, docs 170) came back CONTAMINATED for a
 # reason the design had not named: 45 s after the undo the SoC was still ~7 C above window A, so the control
 # window started on a phone that had not shed the intervention's heat -- and a control window can only catch
@@ -162,8 +221,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
   --status) MODE=status; shift ;;
   --yes)    MODE=run; YES=1; shift ;;
-  --seconds) SECONDS_WIN="${2?--seconds needs a number}"; shift 2 ;;
-  --settle)  SETTLE="${2?--settle needs a number}"; shift 2 ;;
+  --seconds) SECONDS_WIN="${2?--seconds needs a number}"; SEC_GIVEN=1; shift 2 ;;
+  --settle)  SETTLE="${2?--settle needs a number}"; SET_GIVEN=1; shift 2 ;;
+  --pairs)   PAIRS="${2?--pairs needs a number}"; shift 2 ;;
   --settle-start) SETTLE_START="${2?--settle-start needs a number}"; shift 2 ;;
   --settle-back) SETTLE_BACK="${2?--settle-back needs a number}"; shift 2 ;;
   --poll)    POLL="${2?--poll needs a number}"; shift 2 ;;
@@ -177,11 +237,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# THE RUN'S OWN SPAN -- from the start of window A to the end of window C, as this run was configured, and
-# computed HERE because every number it is made of arrives as an argument: the version that computed it beside
-# the defaults above reported a span of 415 s for a run whose settings were 1/0/0/1, and the pre-hold's bar is
-# derived from it (docs 174).
-RUN_SPAN=$((SECONDS_WIN * 3 + SETTLE * 2 + SETTLE_BACK))
+# THE TWO DESIGNS' SETTINGS, resolved HERE because every number they are made of arrives as an argument: the
+# version that computed the span beside the defaults above reported 415 s for a run whose settings were
+# 1/0/0/1, and the pre-hold's bar is derived from it (docs 174). "Was it given" is the only way to know which
+# design's defaults the operator wants, and a non-numeric --pairs is validated FIRST and before any arithmetic
+# on it -- otherwise the shell aborts inside the expansion below instead of reaching a message.
+case "$PAIRS" in
+''|*[!0-9]*) echo "--pairs needs a whole number (got '$PAIRS')" >&2; exit 2 ;;
+esac
+if [ "$PAIRS" -gt 0 ] && { [ "$PAIRS" -lt 3 ] || [ "$PAIRS" -gt 30 ]; }; then
+  echo "--pairs $PAIRS: the alternating design needs 3..30 pairs -- at least three so that the scatter of the differences estimates a noise, and no more than thirty so that the run can be planned from its wall clock." >&2
+  exit 2
+fi
+if [ "$PAIRS" -gt 0 ] 2>/dev/null; then
+  [ "$SEC_GIVEN" = 1 ] || SECONDS_WIN="$PAIR_SECONDS"
+  [ "$SET_GIVEN" = 1 ] || SETTLE="$PAIR_SETTLE"
+fi
+# The paired design's own arithmetic, printed by `--status` and quoted in the verdict's caveat: 2N windows,
+# each one costing its own length plus this instrument's walk of /proc (measured at about 13 s on a 10 s
+# sample: docs 173, section 5), plus a settle after every one of the 2N writes.
+PAIR_SPAN=$((PAIRS * 2 * (SECONDS_WIN + SETTLE + 13)))
+# The three-window design's span: from the start of window A to the end of window C. It is left at 0 in the
+# paired mode rather than computed from settings that will never be used, and the header prints it only then.
+RUN_SPAN=0
+[ "$PAIRS" -gt 0 ] || RUN_SPAN=$((SECONDS_WIN * 3 + SETTLE * 2 + SETTLE_BACK))
 
 say() { printf '%s\n' "$*"; }
 hdr() { printf '\n== %s\n' "$*"; }
@@ -405,6 +484,40 @@ zl1 governor temperature A/B -- what each reading decides
      may still be holding the intervention's heat, and 'contaminated' becomes a property of that setting.
      --settle-start 0 turns the PRE-HOLD off and restores the older design still: window A is then a point
      on whatever curve the phone is on, which is the setting that printed docs 172's artifact.
+ 10. THE ALTERNATING DESIGN (`--pairs N`, docs 175), and it exists because steps 1-9 were MEASURED to be
+     unable to price this phone. Three device runs produced a CONTAMINATED, an artifact and a refusal, and
+     the third run's own timing says why: the phone moves about 4 C inside one run (it is cooling towards
+     ambient after a load) while the effect being priced is about 2 C, and A/B/C needs window A and window C
+     to be THE SAME STATE for the control to mean anything. No threshold fixes that -- docs 174's bar makes
+     it exact: a phone that moves at all cannot pass the pre-hold, so the design has to stop requiring the
+     phone to hold still.
+     WHAT CANCELS INSTEAD: the phone's own movement is MONOTONE, and a monotone movement present in both
+     halves of a pair cancels in their difference. So the run takes N pairs, each one window on the fix and
+     one on the pinned value, each window SECONDS_WIN long with SETTLE after every proved write, and reads
+     d_i = B_i - A_i per zone. THE ORDER INSIDE A PAIR ALTERNATES -- pair 1 is fix-then-pinned, pair 2 is
+     pinned-then-fix -- and that is load-bearing: with a fixed order the pinned window is always one window
+     later than its own fix window, so one window of the phone's drift sits inside EVERY difference with the
+     same sign and the mean is biased by it. Alternating the order puts the two halves at the same mean
+     position in time, and the residual imbalance is printed as a number of windows and in C.
+       the verdict      the MEAN of d_i, with the SCATTER of d_i across the pairs as its standard error (se
+                        = sd/sqrt(N)). Three outcomes: `cost-measured` when mean - 2 se clears the 0.2 C
+                        resolution, `no-detectable-cost` when mean + 2 se is under it, `inconclusive` when the
+                        interval spans it. The last one is a statement about the RUN, and it says how many
+                        more pairs the scatter would need.
+       the control      the FIX windows' own movement, in C PER WINDOW: the drift this design cancels,
+                        measured over the very same minutes rather than assumed away. Beside it, the
+                        design's BALANCE -- where each half sat in time -- which is what makes the cancelling
+                        an arithmetic property rather than a hope.
+       the primary zone the hottest tsens zone in the FIRST window, declared before any intervention. The
+                        full per-zone table is printed with every mean and se, and the largest of those means
+                        is marked as chosen AFTER the fact -- the largest of 23 means sits about 2 se above
+                        zero even when nothing is happening, which is exactly the shape that printed docs 172's
+                        3.5 C.
+       what it cannot do the LAG. The zones follow the power through the SoC's thermal time constant, which
+                        is still unmeasured (docs 173, section 8). A window comparable to that constant
+                        reports a SMALLER effect than the truth; the pairing cancels drift, not lag.
+     Only the paired design is affected by `--pairs`: without it this script is the three-window design and
+     nothing about the words above changes.
 EOF
   exit 0
 fi
@@ -428,9 +541,15 @@ hdr "zl1 governor temperature A/B -- $(date -u +%Y-%m-%dT%H:%M:%SZ) UTC"
 say "  device:      $(cat /proc/device-tree/model 2>/dev/null || echo unknown)"
 say "  cores:       $CPU_N (${CPUS:-none})"
 say "  instrument:  $THERMAL"
+say "  design:      $(if [ "$PAIRS" -gt 0 ]; then echo "the ALTERNATING design (docs 175): $PAIRS pair(s) of (fix window, pinned window) with the order alternating inside each pair, and the scatter of the per-pair differences is the error bar"; else echo "the THREE-WINDOW design (docs 169): A (fix) -> B (pinned) -> C (fix again, the control)"; fi)"
 say "  windows:     ${SECONDS_WIN}s each, ${SETTLE}s after each write"
-say "  holds:       $(if [ "$SETTLE_START" = 0 ]; then echo "pre-hold OFF"; else echo "up to ${SETTLE_START}s of wall clock before A"; fi), up to ${SETTLE_BACK}s of wall clock before C, at a ${MARGIN} C displacement bar; run span ${RUN_SPAN}s (one ${POLL}s interval may use $(bar_of "$POLL" "$MARGIN" "$RUN_SPAN") C)"
-say "  states:      A/C '$FIX_GOV' (the fix, installed)  B '$BLOCKED_GOV' (the image's own value)"
+if [ "$PAIRS" -gt 0 ]; then
+  say "  the run:     2 x ${PAIRS} = $((PAIRS * 2)) window(s) and the same number of proved writes; estimated wall clock ${PAIR_SPAN}s (each window costs its ${SECONDS_WIN}s plus this instrument's walk of /proc, about 13s)"
+  say "  not used:    --settle-start, --settle-back, --poll and --margin belong to the three-window design. This one does NOT need the phone to hold still -- that is the whole point -- so it has no pre-hold and no wait."
+else
+  say "  holds:       $(if [ "$SETTLE_START" = 0 ]; then echo "pre-hold OFF"; else echo "up to ${SETTLE_START}s of wall clock before A"; fi), up to ${SETTLE_BACK}s of wall clock before C, at a ${MARGIN} C displacement bar; run span ${RUN_SPAN}s (one ${POLL}s interval may use $(bar_of "$POLL" "$MARGIN" "$RUN_SPAN") C)"
+fi
+say "  states:      $(if [ "$PAIRS" -gt 0 ]; then echo "the two halves of every pair: fix '$FIX_GOV' (installed) versus pinned '$BLOCKED_GOV' (the image's own value)"; else echo "A/C '$FIX_GOV' (the fix, installed)  B '$BLOCKED_GOV' (the image's own value)"; fi)"
 say "  panic guard: $(if [ "$DL_N" = 0 ]; then echo "NO download_mode PARAMETER -- a panic would arm EDL"; \
                      elif [ -n "$DL_BAD" ]; then echo "ARMED ($DL_BAD) -- a panic would arm EDL"; \
                      else echo "disarmed ($DL_N parameter(s) read 0) -- a panic reboots"; fi)"
@@ -557,6 +676,27 @@ fi
 if [ "$MODE" != run ]; then
   # --status: the refusals, the state, and what a run would do. Writes nothing.
   hdr "a run would do this (--status writes nothing)"
+  if [ "$PAIRS" -gt 0 ]; then
+    say "   ALTERNATING (--pairs ${PAIRS}): $((PAIRS * 2)) window(s) in $PAIRS pair(s), each pair one window on the"
+    say "   fix ('${FIX_GOV}') and one on the image's own setting ('${BLOCKED_GOV}'), ${SECONDS_WIN}s each and ${SETTLE}s after every"
+    say "   one of the $((PAIRS * 2)) proved writes. The ORDER INSIDE A PAIR ALTERNATES -- pair 1 is fix-then-pinned,"
+    say "   pair 2 pinned-then-fix, and so on -- which is what puts the two halves at the same mean position in"
+    say "   time; with a fixed order every difference would carry one window of the phone's own drift."
+    say "   The reading is the MEAN of the per-pair difference '${BLOCKED_GOV}' minus '${FIX_GOV}', and its error bar is"
+    say "   their SCATTER: a phone that drifts is priced instead of refused, because the drift cancels in the"
+    say "   mean and the residual is printed beside it (the fix windows' own C-per-window movement, and the"
+    say "   design's balance). So is a phone on which the scatter is too big to resolve anything: the verdict"
+    say "   can be 'inconclusive', which the three-window design had no way to say."
+    say "   Estimated wall clock ${PAIR_SPAN}s (about $((PAIR_SPAN / 60)) minutes): each window costs its ${SECONDS_WIN}s plus this"
+    say "   instrument's walk of /proc, measured at about 13s on a 10s sample (docs 173, section 5). The run"
+    say "   prints what it took."
+    say "   NO pre-hold and NO wait: they exist to make window A a STATE, which a paired difference does not need"
+    say "   (--settle-start, --settle-back, --poll and --margin do not apply to this design). What it cannot fix"
+    say "   is LAG: the zones follow the power through the SoC's thermal time constant, still unmeasured, so a"
+    say "   window comparable to that constant reports a SMALLER effect than the truth."
+    say "   the trap restores '$FIX_GOV' on every exit path, and removes $TMP unless --keep"
+    exit 0
+  fi
   if [ "$SETTLE_START" = 0 ]; then
     say "   pre-hold: OFF (--settle-start 0) -- window A is read immediately, whatever the phone is doing"
   else
@@ -624,6 +764,14 @@ hot_tsens() {
          if (!seen || $3 + 0 > m) { m = $3 + 0; seen = 1 } }
        END { if (seen) printf "%.1f", m }' "$1" 2>/dev/null
 }
+# The NAME of the hottest tsens zone in one instrument output -- the same zone `hot_tsens` returns the
+# temperature of, for the one caller that needs to keep pointing at it (the alternating design's
+# pre-registered zone, docs 175). Empty output means NOT READABLE, as everywhere else here.
+hot_zone() {
+  awk '$1 ~ /^thermal_zone[0-9]+$/ && $2 ~ /^tsens_tz_sensor/ && $4 == "C" {
+         if (!seen || $3 + 0 > m) { m = $3 + 0; z = $1; seen = 1 } }
+       END { if (seen) printf "%s", z }' "$1" 2>/dev/null
+}
 # max_dev FILE_A FILE_B -- how far apart two instrument outputs are, ZONE BY ZONE.
 #
 # This is the comparison both holds are decided on, and it is not the same comparison this script used to
@@ -671,9 +819,19 @@ per_sample() {
 # number is the one this run measured. It is called by the refusals too, so a run that stops early still says
 # what stopping early cost.
 cost_line() {
+  # The per-window figure is computed with a guard rather than a ternary inside the expansion: a run that
+  # took no window at all would divide by zero, and a script that dies on its way out of a refusal loses the
+  # refusal. 0/0 is not 0, so the guard says which case it is.
+  zl1_per=0
+  [ "$WIN_N" -gt 0 ] && zl1_per=$((WIN_WALL / WIN_N))
   say "   WALL CLOCK: this attempt took $(( $(now_s) - RUN_T0 ))s: ${WIN_WALL}s in ${WIN_N} window(s), ${HOLD_WALL}s in"
-  say "   the holds. The holds asked for ${HOLD_SLEEP}s of sleep and spent the rest waiting on the instrument"
-  say "   itself, $(per_sample). Every bound above is in THESE seconds, not in sleeps."
+  if [ "$PAIRS" -gt 0 ]; then
+    say "   the holds -- and this design has NONE (--pairs): the ${WIN_N} window(s) above are the whole run, ${zl1_per}s each"
+    say "   against the ${SECONDS_WIN}s asked for. Every bound above is in THESE seconds."
+  else
+    say "   the holds. The holds asked for ${HOLD_SLEEP}s of sleep and spent the rest waiting on the instrument"
+    say "   itself, $(per_sample). Every bound above is in THESE seconds, not in sleeps."
+  fi
 }
 
 # --- the pre-hold: a phone that is not holding still cannot be priced ----------------------------------
@@ -707,7 +865,15 @@ WIN_N=0
 HOLD_WALL=0
 HOLD_SLEEP=0
 HOLD_SAMPLES=0
-if [ "$SETTLE_START" = 0 ]; then
+# THE PRE-HOLD BELONGS TO THE THREE-WINDOW DESIGN AND IS SKIPPED IN PAIRED MODE (docs 175). It exists to make
+# window A a STATE, and a paired difference does not need one: the comparison is between the two windows of a
+# pair, and the drift it removes is the drift the pairing is FOR. Running it here would spend the phone's
+# whole pre-hold budget establishing that this phone does not hold still -- a fact the paired design has
+# stopped depending on. It is a first branch and not a guard around the section so that the two designs'
+# settings cannot both be half-applied.
+if [ "$PAIRS" -gt 0 ]; then
+  : # the paired design below: no pre-hold, and window A.1 is read before any intervention
+elif [ "$SETTLE_START" = 0 ]; then
   hdr "the pre-hold -- OFF (--settle-start 0)"
   say "   Window A is read immediately, whatever this phone is doing. That is the design that printed a price"
   say "   on a phone falling 4.2 C in ten seconds (docs 172), so 'no-plateau' cannot happen here -- which"
@@ -779,6 +945,355 @@ else
     cost_line
     exit 1
   fi
+fi
+
+# --- the alternating design (docs 175) ------------------------------------------------------------------
+# WHY THERE IS A SECOND DESIGN, in one paragraph. The three-window design below needs window A to be a STATE:
+# it holds the phone still before A and waits for the reading to come back before C. Docs 174 made that
+# requirement executable arithmetic -- on this phone one 10 s interval may use 0.012 C of the 0.5 C bar, which
+# is below the instrument's own 0.1 C step -- so a phone that moves at all is refused in the first interval.
+# The REQUIREMENT is the problem, not the bar: the design asks for a noise of zero, and this phone does not
+# have one. This design does not ask. It pairs, and then it MEASURES the noise.
+#
+# The shape: `A B A B ...`, N pairs of (fix window, pinned window), each write proved by read-back. The
+# reading is the per-pair difference d_i = B_i - A_i. Every slow movement -- the phone warming as the run
+# goes on, the ambient, the battery, the SoC's own timescale -- is in BOTH halves of a pair and cancels in
+# the difference; and the SCATTER of the d_i is a direct estimate of the noise, which is the thing this
+# design has and the three-window one never had. The verdict is then an interval against a bar, and it can
+# come out INCONCLUSIVE -- an answer the old design could not give, because it had no error bar to give it.
+#
+# The primary zone is declared in the FIRST window, before any intervention, because the largest of N means
+# sits a couple of standard errors above zero even when nothing happened: that is exactly the shape docs 172
+# printed as a price, and pre-registering is what stops this design from reprinting it.
+#
+# What it is honest about: this cancels DRIFT, not LAG. The zones follow the power through the SoC's thermal
+# time constant (still unmeasured, docs 173 section 8), so a window comparable to that constant reports a
+# SMALLER effect than the truth -- a bias toward the fix looking cheaper, never dearer.
+#
+# The loop is at the top level and every counter is the script's own, because /bin/sh has no locals and a
+# counter accumulated inside a helper is not a counter (docs 174 section 4.3).
+if [ "$PAIRS" -gt 0 ]; then
+  hdr "the alternating design -- ${PAIRS} pair(s) of (fix '${FIX_GOV}', pinned '${BLOCKED_GOV}')"
+  say "   Every pair is two proved writes and two windows of ${SECONDS_WIN}s, with ${SETTLE}s after each write. The"
+  say "   reading is the difference '${BLOCKED_GOV}' minus '${FIX_GOV}' WITHIN a pair, so whatever the phone does"
+  say "   over the ~$((PAIR_SPAN / 60)) minutes of this run it does to both halves of a pair and cancels in the difference."
+  say "   NO pre-hold and NO wait: neither window has to be a STATE, because the comparison is between two"
+  say "   windows ${SECONDS_WIN}s apart rather than between readings taken $((${PAIRS} * 2)) windows apart."
+  say "   The risk is held the other way round from the three-window design: pinning is written, settled and"
+  say "   held for exactly ONE window, then the fix is written back -- so the phone is never more than one"
+  say "   window away from the state this script found it in."
+
+  # TAKING ONE SLOT: write the slot's governor, prove the read-back, settle, read one window. It is a
+  # function because the two slots of a pair are the same action with a different value, and because the
+  # ORDER they are taken in is what balances the design (see the loop). Every name it uses is prefixed: /bin/sh
+  # has no locals, so an unprefixed loop variable here would be its caller's.
+  take_slot() { # $1 = the governor, $2 = the window label; leaves the busy figure in SLOT_BUSY
+    WROTE=1   # armed BEFORE the write: from here a core may hold a different value, so the trap owes it one
+    if write_gov "$1"; then
+      :
+    else
+      bad "   THE WRITE DID NOT LAND in window ${2}: after writing '$1' the cores read '$(gov_state)'. The rest"
+      bad "   of this run would compare two identical states, which reads as 'the governor costs nothing' --"
+      bad "   the one wrong answer that looks real. Refusing to print a verdict; the trap restores, exit 4."
+      exit 4
+    fi
+    sleep "$SETTLE"
+    win "$2"; SLOT_BUSY=$WIN_BUSY
+    # THE ORDER THE RUN ACTUALLY TOOK, recorded as it goes rather than recomputed from the design. The
+    # balance below is computed from THIS file, so a run that took its pairs in the wrong order reports the
+    # imbalance it created instead of the one its arithmetic expected.
+    printf '%s\n' "$2" >> "$TMP/order"
+    say "      ${2}: '$1' proved on all ${CPU_N} core(s), ${SECONDS_WIN}s, busy ${SLOT_BUSY} of 4"
+  }
+
+  PRE_REG=1
+  PZ=
+  zl1_i=1
+  while [ "$zl1_i" -le "$PAIRS" ]; do
+    # THE ORDER INSIDE A PAIR ALTERNATES -- pair 1 is (fix, pinned), pair 2 is (pinned, fix), pair 3 (fix,
+    # pinned) ... -- and this is not decoration, it is what makes the design BALANCED. With every pair in the
+    # same order, the pinned window is always taken one window LATER than its own fix window, so the phone's
+    # own drift over one window lands inside every difference with the same sign and the mean of the
+    # differences is biased by exactly that: the reading would be the effect PLUS one window of drift.
+    # Alternating the order puts the fix windows and the pinned windows at the SAME mean position in time, so
+    # the drift cancels in the mean of ALL the differences instead of only between pairs -- and the balance is
+    # printed below as a number, so this is checkable rather than asserted.
+    if [ $((zl1_i % 2)) = 1 ]; then zl1_first=fix; else zl1_first=pinned; fi
+    say "   pair ${zl1_i}/${PAIRS}: ${zl1_first} window first, then the other one"
+    if [ "$zl1_first" = fix ]; then
+      take_slot "$FIX_GOV" "A.${zl1_i}"
+      # THE PRE-REGISTERED ZONE, taken from the FIRST window of the run and never revisited: A.1 is a fix
+      # window read before any pinned write, so this is a zone chosen before the intervention, not after it.
+      [ -n "$PZ" ] || PZ=$(hot_zone "$TMP/win.A.${zl1_i}")
+      take_slot "$BLOCKED_GOV" "B.${zl1_i}"
+    else
+      take_slot "$BLOCKED_GOV" "B.${zl1_i}"
+      take_slot "$FIX_GOV" "A.${zl1_i}"
+    fi
+    zl1_i=$((zl1_i + 1))
+  done
+
+  # THE UNDO, proved like every other write here, and `WROTE=0` only once the read-back says it held.
+  if write_gov "$FIX_GOV"; then
+    WROTE=0
+    say "   the pairs are done: all ${CPU_N} core(s) read '${FIX_GOV}' -- the state this run started in."
+  else
+    bad "   THE RESTORE DID NOT HOLD after the last pair: the cores read '$(gov_state)'. The trap will try"
+    bad "   again on exit; refusing to print a verdict from a run whose undo failed. Exiting 4."
+    exit 4
+  fi
+
+  # --- the reading: one difference per pair, TSENS zones only -------------------------------------------
+  # TSENS only, for the reason the three-window verdict takes its maximum over those and not over the whole
+  # table: the battery and the pm8994 rails follow the charger, so a difference there is about the power
+  # supply rather than about the SoC. The pair index is carried so that the scatter is per-zone and the
+  # control (A to A) can be computed from the same file.
+  zl1_i=1
+  : > "$TMP/pair.a"
+  : > "$TMP/pair.b"
+  while [ "$zl1_i" -le "$PAIRS" ]; do
+    awk -v i="$zl1_i" '$1 ~ /^thermal_zone[0-9]+$/ && $2 ~ /^tsens_tz_sensor/ && $4 == "C" { print i, $1, $2, $3 }' \
+      "$TMP/win.A.${zl1_i}" >> "$TMP/pair.a"
+    awk -v i="$zl1_i" '$1 ~ /^thermal_zone[0-9]+$/ && $2 ~ /^tsens_tz_sensor/ && $4 == "C" { print i, $1, $2, $3 }' \
+      "$TMP/win.B.${zl1_i}" >> "$TMP/pair.b"
+    zl1_i=$((zl1_i + 1))
+  done
+
+  # mean, standard error and count per zone -- `se = sd / sqrt(n)`, and `sd` from the sum of squares rather
+  # than a second pass. A zone with fewer than 2 usable pairs has no scatter and is left out with a line
+  # saying so: a mean with no error bar is not a reading this design can use.
+  awk -v A="$TMP/pair.a" -v B="$TMP/pair.b" -v NP="$PAIRS" '
+    {
+      i = $1; z = $2
+      if (FILENAME == A) av[i "|" z] = $4 + 0; else bv[i "|" z] = $4 + 0
+      if (!(z in type)) { type[z] = $3; order[++nz] = z }
+    }
+    END {
+      for (j = 1; j <= nz; j++) {
+        z = order[j]; m = 0; s = 0; s2 = 0
+        for (i = 1; i <= NP; i++) {
+          k = i "|" z
+          if (!((k in av) && (k in bv))) continue
+          d = bv[k] - av[k]; m++; s += d; s2 += d * d
+        }
+        if (m < 2) { few++; continue }
+        mean = s / m
+        var = (s2 - m * mean * mean) / (m - 1)
+        if (var < 0) var = 0
+        printf "%s %s %.2f %.2f %d\n", z, type[z], mean, sqrt(var / m), m
+      }
+      if (few) printf "# %d tsens zone(s) had fewer than 2 usable pair(s) and are not in this table\n", few > "/dev/stderr"
+    }' "$TMP/pair.a" "$TMP/pair.b" > "$TMP/pairs" 2>"$TMP/pairs.note"
+
+  if [ ! -s "$TMP/pairs" ]; then
+    bad "   NO TSENS ZONE WAS READABLE IN TWO PAIRS: there is no reading, so there is no verdict to print."
+    bad "   That is a statement about this run and about the instrument, not about the governor. Exit 1."
+    cost_line
+    exit 1
+  fi
+  [ -s "$TMP/pairs.note" ] && { while IFS= read -r l; do say "   $l"; done < "$TMP/pairs.note"; }
+  NZ=$(wc -l < "$TMP/pairs" | tr -d ' ')
+
+  # The primary zone, or -- if window A.1 had no readable tsens zone at all -- the largest mean AFTER the
+  # fact, said out loud as the weaker evidence it is. Silence here would let every run pick its winner.
+  if [ -z "$PZ" ]; then
+    PRE_REG=0
+    PZ=$(sort -k3,3gr "$TMP/pairs" | head -1 | awk '{ print $1 }')
+  fi
+  PR=$(awk -v z="$PZ" '$1 == z { print; exit }' "$TMP/pairs")
+  if [ -z "$PR" ]; then
+    bad "   the pre-registered zone ${PZ:-<none>} has fewer than 2 usable pairs, so this run has no primary"
+    bad "   reading -- and the whole point of declaring it in the first window is that it cannot be swapped"
+    bad "   for one that does. Nothing is printed as a verdict from this run. Exit 1."
+    cost_line
+    exit 1
+  fi
+  PT=$(printf '%s' "$PR" | awk '{ print $2 }')
+  PM=$(printf '%s' "$PR" | awk '{ print $3 }')
+  PSE=$(printf '%s' "$PR" | awk '{ print $4 }')
+  PN=$(printf '%s' "$PR" | awk '{ print $5 }')
+  PR_STATS=$(awk -v m="$PM" -v se="$PSE" 'BEGIN { printf "%.2f %.2f", m - 2 * se, m + 2 * se }')
+  LO=${PR_STATS%% *}
+  HI=${PR_STATS##* }
+
+  # The control: how fast the FIX windows were moving on their own, pair to pair. This is the drift the
+  # pairing cancels, measured over the same minutes as the reading -- and its size is why the three-window
+  # design could not price this phone at all (docs 174, section 6.1).
+  #
+  # The rate is per WINDOW and not per interval, because the intervals are not all the same length: the
+  # alternating order puts consecutive fix windows 1 or 3 windows apart, and a mean over unequal intervals
+  # would be a mean of two different quantities. Dividing each difference by its own gap turns them all into
+  # the same thing: the phone's C per window. The gap comes from `$TMP/aidx`, WHICH IS THE RUN'S OWN RECORD
+  # of where each fix window sat -- not from the design's arithmetic -- so a run that did not take its pairs
+  # in the intended order gets the rate of the run it actually made.
+  awk '{ n++; if ($1 ~ /^A\./) { sub(/^A\./, "", $1); print $1, n } }' "$TMP/order" > "$TMP/aidx" 2>/dev/null
+  awk -v A="$TMP/pair.a" -v AP="$TMP/aidx" -v NP="$PAIRS" '
+    FILENAME == AP { apos[$1 + 0] = $2 + 0; next }
+    {
+      v[$1 "|" $2] = $4 + 0
+      if (!($2 in seen)) { seen[$2] = 1; order[++nz] = $2; typ[$2] = $3 }
+    }
+    END {
+      for (j = 1; j <= nz; j++) {
+        z = order[j]; m = 0; s = 0
+        for (i = 1; i < NP; i++) {
+          k0 = i "|" z; k1 = (i + 1) "|" z
+          if (!((k0 in v) && (k1 in v))) continue
+          if (!((i in apos) && ((i + 1) in apos))) continue
+          g = apos[i + 1] - apos[i]
+          if (g <= 0) continue
+          d = (v[k1] - v[k0]) / g; m++; s += d
+        }
+        if (m < 1) continue
+        mean = s / m; a = mean; if (a < 0) a = -a
+        printf "%s %s %.2f %d %.2f\n", z, typ[z], mean, m, a
+      }
+    }' "$TMP/aidx" "$TMP/pair.a" > "$TMP/drift"
+
+  hdr "the per-pair differences (the reading) -- tsens zones only, and the primary zone is marked"
+  say "   zone       type                    mean    se     n"
+  sort -k3,3gr "$TMP/pairs" | awk -v pz="$PZ" '{
+    m = ($1 == pz) ? "  <- PRE-REGISTERED (hottest zone of window A.1, before any write)" : ""
+    printf "   %-10s %-22s %+6.2f %5.2f %3d%s\n", $1, $2, $3, $4, $5, m }'
+  say "   (${NZ} tsens zone(s) in this table; every one is printed. The scatter above is the error bar this"
+  say "   design has and the three-window one did not: it is MEASURED from the pairs, not assumed to be zero.)"
+
+  if [ -s "$TMP/drift" ]; then
+    DR_MAX=$(sort -k5,5gr "$TMP/drift" | head -1)
+    DR_RATE=$(printf '%s' "$DR_MAX" | awk '{ printf "%.2f", $5 }')
+    DR_SGN=$(printf '%s' "$DR_MAX" | awk '{ printf "%+.2f", $3 }')
+    DR_ZONE=$(printf '%s' "$DR_MAX" | awk '{ print $1 }')
+    DR_N=$(printf '%s' "$DR_MAX" | awk '{ print $4 }')
+    hdr "the control: how fast the phone was moving on its OWN, measured between the '${FIX_GOV}' windows"
+    say "   zone       type                    C per window   n"
+    sort -k5,5gr "$TMP/drift" | awk '{ printf "   %-10s %-22s %+14.2f %3d\n", $1, $2, $3, $4 }'
+    say "   The fastest is ${DR_SGN} C per window on ${DR_ZONE}, over ${DR_N} interval(s) between fix windows. This is"
+    say "   the drift the pairing removes from the reading, and it is the number that says the pairing is doing"
+    say "   work rather than decorating the answer: it is measured over the same minutes as the reading."
+    DRIFT_LINE="the phone moved up to ${DR_RATE} C per window on its own (on ${DR_ZONE}), and the pairing removes that"
+  else
+    DRIFT_LINE="no two fix windows could be compared, so this run did NOT measure the phone's own drift"
+    DR_RATE=
+    bad "   NOTE: no zone was readable in two consecutive fix windows, so the control above is missing: this"
+    bad "   run prices the governor against a drift it did not measure."
+  fi
+
+  # --- the design's balance, computed rather than asserted -----------------------------------------------
+  # Every claim this design makes about drift rests on the two halves of the run sitting at the same mean
+  # position in TIME. `$TMP/order` is the order the run ACTUALLY took, one line per window, so this is a
+  # reading of the run and not a restatement of the design -- a run whose pairs came out in the wrong order
+  # reports the imbalance it created. The residual is turned into degrees with the drift measured above, so
+  # "balanced" is falsifiable rather than a claim.
+  BAL=$(awk '
+    { n++; if ($1 ~ /^A\./) { sa += n; na++ } else if ($1 ~ /^B\./) { sb += n; nb++ } }
+    END {
+      if (na < 1 || nb < 1) { printf "none none none"; exit }
+      d = sb / nb - sa / na
+      if (d < 0) d = -d
+      printf "%.2f %.2f %.2f", sa / na, sb / nb, d
+    }' "$TMP/order" 2>/dev/null)
+  BAL_A=${BAL%% *}; zl1_r=${BAL#* }; BAL_B=${zl1_r%% *}; BAL_IMB=${BAL##* }
+  say ""
+  if [ "$BAL_A" = none ]; then
+    bad "   THE DESIGN'S BALANCE COULD NOT BE COMPUTED: the run did not record both an A and a B window. The"
+    bad "   drift cancelling below rests on this, so read the reading with that in mind."
+    BAL_SENT="and the balance this design depends on could NOT be computed -- see above"
+  else
+    say "   THE DESIGN'S BALANCE: the fix windows sat at mean position ${BAL_A} in the run and the pinned"
+    say "   windows at ${BAL_B}, so the imbalance is ${BAL_IMB} window(s). Every difference above is taken between a"
+    say "   fix window and a pinned window whose ORDER ALTERNATES, which is what keeps that number small: with"
+    say "   a FIXED order inside the pair it would be 1.00 window, and every difference would carry one window"
+    say "   of the drift."
+    if [ -n "$DR_RATE" ]; then
+      say "   At the fastest drift measured above (${DR_RATE} C per window), ${BAL_IMB} window(s) of imbalance is worth"
+      say "   about $(awk -v i="$BAL_IMB" -v r="$DR_RATE" 'BEGIN { printf "%.2f", i * r }') C of the reading."
+    fi
+    BAL_SENT="and they sat at mean positions ${BAL_A} and ${BAL_B} in the run, an imbalance of ${BAL_IMB} window(s) -- the alternating order is what keeps those together, and the balance line above is the check"
+  fi
+
+  # --- the verdict --------------------------------------------------------------------------------------
+  # Two standard errors, against the same 0.2 C bar the three-window verdict uses -- the bar is the
+  # instrument's resolution and is a property of the phone, not of the design. The three outcomes are
+  # different STATEMENTS, and the middle one is the one the old design could not make:
+  VERDICT=$(awk -v m="$PM" -v se="$PSE" -v res=0.2 '
+    BEGIN {
+      lo = m - 2 * se; hi = m + 2 * se
+      if (lo >= res) { print "cost-measured"; exit }
+      if (hi < res)  { print "no-detectable-cost"; exit }
+      print "inconclusive"
+    }')
+
+  hdr "the verdict (the alternating design)"
+  if [ "$PRE_REG" = 1 ]; then
+    say "   the primary zone was PRE-REGISTERED, in the first window of the run and before any '${BLOCKED_GOV}'"
+    say "   write: ${PZ} (${PT}). Nothing below chose it from the data -- and that matters, because the largest of"
+    say "   the ${NZ} means above would sit about two standard errors above zero with no effect at all. That is the"
+    say "   shape docs 172 printed as a price."
+  else
+    say "   WARNING: window A.1 had no readable tsens zone, so no zone could be pre-registered. The primary"
+    say "   zone below is ${PZ} (${PT}) -- the largest mean AFTER the fact, which is the weakest kind of evidence"
+    say "   this design can produce. Read it as a hypothesis for the next run and not as this run's reading."
+  fi
+  say "   the mean of ${PN} pair difference(s) on it:  ${PM} C   (standard error ${PSE} C)"
+  say "   so the two-standard-error interval is [${LO}, ${HI}] C, and this experiment calls 0.2 C a cost."
+  say "   the control, over the same minutes: ${DRIFT_LINE}."
+  say ""
+  if [ "$VERDICT" = cost-measured ]; then
+    say "   -> COST-MEASURED: pinning all four cores is worth ${PM} C on ${PZ} (${PT}), and the whole two-standard-error"
+    say "      interval [${LO}, ${HI}] is above the 0.2 C this experiment can resolve. At this load, and with the"
+    say "      phone's own drift cancelled by the pairing rather than assumed absent, that is what the second"
+    say "      heat cause costs in temperature."
+    RC=0
+  elif [ "$VERDICT" = no-detectable-cost ]; then
+    say "   -> NO DETECTABLE COST: the whole interval is under the 0.2 C this experiment can resolve -- pinning"
+    say "      all four cores did not warm this phone by anything this run can see. That is this script coming"
+    say "      out AGAINST the fix it was built around: as a reading it says the second heat cause's value is"
+    say "      in the clock and in long-run power, not in these zones at this load."
+    RC=0
+  else
+    say "   -> INCONCLUSIVE: the interval [${LO}, ${HI}] reaches across the 0.2 C this experiment calls a cost, so"
+    say "      these ${PN} pair(s) cannot separate 'the governor costs nothing' from 'it costs something'. That is"
+    say "      a statement about the DATA and not about the governor -- and it is exactly the answer the"
+    say "      three-window design could not give, because it had no error bar to report it with."
+    # What it would take, from this run's own scatter: n scales as (se / target)^2, and the target is the se
+    # that would put the lower end of the interval on the bar. Printed rather than acted on: this design
+    # spends a boot per run, so the number belongs to the operator.
+    NEED=$(awk -v m="$PM" -v se="$PSE" -v n="$PN" -v res=0.2 '
+      BEGIN {
+        target = (m - res) / 2
+        if (target <= 0) { print "the mean is not above the bar at all, so no number of pairs would help: raise the effect (a load) or the window"; exit }
+        if (se <= 0) { print "3 (this run measured no scatter at all, which cannot be right -- treat it as a defect)"; exit }
+        k = n * (se / target) ^ 2
+        printf "%d", (k > int(k) ? int(k) + 1 : int(k))
+      }')
+    case "$NEED" in
+    ''|*[!0-9]*) say "      What it would take: ${NEED}." ;;
+    *)           say "      At this scatter that would need about ${NEED} pair(s); each pair costs about $((2 * (SECONDS_WIN + SETTLE + 13)))s of"
+                 say "      wall clock here, and 3 is the fewest this design allows (--pairs checks that)."
+                 # A number larger than the design's own ceiling is a statement about the RUN and not a plan:
+                 # `--pairs` refuses more than 30, so saying "run 60 pairs" without saying that would be
+                 # advice this instrument cannot take.
+                 if [ "$NEED" -gt 30 ] 2>/dev/null; then
+                   say "      That is MORE than the 30 pairs --pairs allows, so at this scatter the answer is not"
+                   say "      more pairs: it is a bigger effect (a load) or a longer window (which costs lag)."
+                 fi ;;
+    esac
+    RC=1
+  fi
+  say ""
+  say "   Read it as a READING and not as the governor fix's price in general: ambient is not controlled, the"
+  say "   battery's charging state is not controlled, and the load is whatever the phone was doing -- which is"
+  say "   why the busy figure is printed for every window above. What this design DOES control is the phone's"
+  say "   own drift, two ways: the two halves of a pair are ${SECONDS_WIN}s apart instead of a run apart,"
+  say "   ${BAL_SENT}."
+  say "   What it cannot control is LAG: ${SECONDS_WIN}s may be short against the SoC's thermal time constant (still"
+  say "   unmeasured), so this design can UNDER-report the cost. A longer window trades that bias for more"
+  say "   drift inside a pair, and the control above is how the trade is checked."
+  say "   The zones are the instrument's numbers, normalised by it; this script does not divide."
+  say "   This run used: --pairs ${PAIRS} --seconds ${SECONDS_WIN} --settle ${SETTLE}."
+  say "   The cores read '$(gov_state)'$(gov_list) -- the state it started in."
+  cost_line
+  exit "$RC"
 fi
 
 hdr "window A -- as installed (every core on '$FIX_GOV', nothing written yet)"
