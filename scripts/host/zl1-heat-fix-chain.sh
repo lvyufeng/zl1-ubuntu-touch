@@ -61,6 +61,9 @@
 #                    after them, and it says "UNREADABLE" rather than printing nothing: an empty value
 #                    in INDEX.txt would read as "the device was asked and said nothing".
 #   --no-ab          do not measure at all. Printed, never silent: an unmeasured run says so.
+#   --ab-anyway      take the A/B even when its PREMISE has failed -- see "the premise" below. The
+#                    reading is then labelled as not-a-price; this flag exists so that the choice is the
+#                    operator's and is visible in the archive, not because the reading becomes valid.
 #
 # Exit codes: 0 the chain ran to the end; 1 the chain stopped short -- a step failed, or the proof did
 #             not license step 5 -- and the archive says which, and whether the governor half went in;
@@ -83,6 +86,24 @@
 #     by a charging battery and by the phone's own history this boot. It is a READING, printed as one.
 #   * the ALIGNMENT is checkable, so it is checked: if the two fix steps outlast the hold, window B began
 #     while the work was still running and the chain says so instead of printing a number as a result.
+#
+# THE PREMISE, and it is a different question from the alignment (docs 178). Alignment is about TIME --
+# did the work finish before window B began. THE PREMISE IS ABOUT STATE: was window A the phone WITHOUT the
+# fixes? That was never a fact about this script, it is a fact about the DEVICE, and nothing read it. The
+# two fixes are units that run at EVERY boot now, so on a boot that has already run them window A is the
+# FIXED phone, window B is the FIXED phone, and the difference between them is the phone's own drift --
+# printed by an instrument that would look exactly like it had priced something. So the starting state is
+# read off the device BEFORE anything is written (`pre_state`: the keeper, and whether any core still
+# reads the image's `performance`, through the same device-side program `--status` uses), and:
+#
+#   baseline       keeper present AND a core still pinned  -> the A/B runs; the reading is a cost
+#   already-fixed  keeper gone AND no core pinned          -> the A/B is NOT TAKEN, and the archive says
+#                                                             why and what would price them (the INVERSE
+#                                                             experiment: window A with the fixes taken
+#                                                             back OUT, which this chain does not do)
+#   partial        one half in                             -> the A/B runs and the report says which half
+#                                                             it cannot speak for
+#   unknown        the read failed                         -> not `baseline`, and never treated as one
 #
 # What it never does, in any mode: reboot the device, flash anything, run a QDL/firehose tool, write a
 # partition, or touch the forbidden partition set. Step 1's own installer requires a VERIFIED misc
@@ -121,6 +142,9 @@ OUT=""
 NO_AB=0
 AB_HOLD=${ZL1_AB_HOLD:-120}
 AB_WINDOW=${ZL1_AB_WINDOW:-30}
+# The A/B's PREMISE (docs 178): window A must be the phone BEFORE either fix, and that is a fact about the
+# device, not about this script's intentions. `--ab-anyway` runs it even when it is not.
+AB_ANYWAY=0
 # Every step here runs over ONE ssh, on a link that this chain itself re-enumerates, and a boot bought
 # with a finger is the resource that a hang spends. So each step has a wall-clock bound (see `bound()`).
 STEP_LIMIT=${ZL1_STEP_LIMIT:-300}
@@ -143,6 +167,7 @@ while [ $# -gt 0 ]; do
   --ab-limit) AB_LIMIT="${2?--ab-limit needs SECONDS}"; shift 2 ;;
   --state-limit) STATE_LIMIT="${2?--state-limit needs SECONDS}"; shift 2 ;;
   --no-ab) NO_AB=1; shift ;;
+  --ab-anyway) AB_ANYWAY=1; shift ;;
   --outdir) OUT="${2?--outdir needs a DIRECTORY}"; shift 2 ;;
   --help|-h) awk 'NR==1{next} /^#/{print; next} {exit}' "$0" ; exit 0 ;;
   *) echo "unknown argument: $1 (try --help)" >&2; exit 2 ;;
@@ -218,6 +243,22 @@ fi
 
 BOOT_ID=$("${SSH[@]}" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d '\r\n')
 [ -n "$BOOT_ID" ] || BOOT_ID="unknown-$(date -u +%Y%m%dT%H%M%SZ)"
+
+# --- the wall-clock bound, which the STEP RUNNER, the READ-BACK and the PREMISE all use ------------
+# It is defined up here rather than beside the step runner because the premise read below is an ssh too,
+# and an ssh that hangs does not fail: it blocks in read() while the device-side program is still alive.
+# The resource that spends is a boot bought with a 10-20 s power hold, and it spends it silently.
+bound() { # SECS, command...
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 5 "$secs" "$@"
+  else
+    # Not silent: an unbounded step is a fact the reader of the archive has to know, because it is the
+    # difference between "the step failed" and "the step could have hung forever and nobody would know".
+    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (limit was %ss)\n' "$secs" >&2
+    "$@"
+  fi
+}
 
 # --- the end-state reader: ONE device-side program, and three things it must not do (docs 165) -------
 # Both callers below (`--status` and the closing read-back) ask the same four questions, and until
@@ -306,6 +347,80 @@ dev_end_state() { # prints the device-side program on stdout; the caller runs it
 EOF
 }
 
+# --- the A/B's premise, READ OFF THE DEVICE BEFORE IT IS RELIED ON (docs 178) ----------------------
+#
+# The measurement below compares window A with window B, and its verdict line used to assert what window A
+# WAS: "window A is before either fix, window B after both". That sentence was written when the two fixes
+# were a thing you did to a phone that did not have them. They are UNITS now -- `zl1-retire-debug-keeper`
+# and `zl1-cpufreq-governor` both run at every boot -- so on a boot that has already run them window A is
+# the FIXED phone, window B is the FIXED phone, and the difference between them is the phone's own drift.
+# Nothing in the chain read that, and the fixture's own default device state (keeper gone, four cores
+# `interactive`) was already the fixed phone, so no scenario had ever had a true "before" window.
+#
+# So the premise is a READING, taken before the run, through the SAME device-side program `--status` uses
+# (one program, two callers -- the rule that stopped the end-state reader existing twice). It answers one
+# question in two halves: is the keeper still running, and do any of the four cores still read the image's
+# `performance`? Those are exactly the two states step 5 and step 6 change.
+#
+#   baseline      keeper present AND a core still on `performance` -- window A IS the unfixed phone
+#   already-fixed keeper gone AND no core on `performance`         -- window A is the fixed phone
+#   partial       one half in -- the A/B can price the half that is NOT
+#   unknown       the read-back did not answer -- not the same as `baseline`, and never treated as one
+PRE_STATE=unknown; PRE_KEEPER=unknown; PRE_GOV=unknown; PRE_WHY="the device was not read"
+PRE_RAW=""
+# AND `PRE_PRICES` IS INITIALISED HERE, not only where it is computed below. It is read on every path that
+# reports a `premise` state, including the one where the read-back TIMED OUT -- and that path returns
+# before the computation, so the first version of this died with `PRE_PRICES: unbound variable` under
+# `set -u` on exactly the boot the state exists for: no archive, no INDEX, and a chain that stopped in
+# its own report function. The timeout path is the one nobody walks by hand, and it is the one this
+# whole section is here for.
+PRE_PRICES=""
+pre_state() {
+  local raw rc k g
+  raw=$(bound "$STATE_LIMIT" "${SSH[@]}" "$(dev_end_state)" 2>/dev/null)
+  rc=$?
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    PRE_WHY="the read-back did not answer within ${STATE_LIMIT}s (timeout(1) rc=$rc)"
+    PRE_RAW="UNREADABLE: the premise read-back did not answer within ${STATE_LIMIT}s (timeout(1) rc=$rc)."
+    return 0
+  fi
+  PRE_RAW="$raw"
+  k=$(printf '%s\n' "$raw" | sed -n 's/^keeper: \(.*\)$/\1/p' | head -1)
+  g=$(printf '%s\n' "$raw" | sed -n 's/^governors: \(.*\)$/\1/p' | head -1)
+  case "$k" in
+  gone)         PRE_KEEPER=gone ;;
+  ''|*UNKNOWN*) PRE_KEEPER=unknown ;;
+  *[!0-9]*)     PRE_KEEPER=unknown ;;
+  *)            PRE_KEEPER=present ;;
+  esac
+  case "$g" in
+  '') PRE_GOV=unknown ;;
+  *)
+    case " $g " in
+    *" performance "*) PRE_GOV=image ;;
+    *)                 PRE_GOV=fixed ;;
+    esac ;;
+  esac
+  case "$PRE_KEEPER:$PRE_GOV" in
+  present:image)   PRE_STATE=baseline ;;
+  gone:fixed)      PRE_STATE=already-fixed ;;
+  unknown:*)       PRE_STATE=unknown ;;
+  *:unknown)       PRE_STATE=unknown ;;
+  *)               PRE_STATE=partial ;;
+  esac
+  # WHICH HALF IS STILL OUT. Step 5 changes the keeper and step 6 changes the governors, so the half the
+  # A/B can price is the half that is NOT yet in -- and on a partial boot that is exactly one of them.
+  # Computed here rather than described in prose, because "window A is not the unfixed phone" is not a
+  # useful sentence on its own: the reader needs to know which of the two causes the deltas still carry.
+  PRE_PRICES=""
+  [ "$PRE_KEEPER" = present ] && PRE_PRICES="the keeper (cause 1)"
+  if [ "$PRE_GOV" = image ]; then
+    PRE_PRICES="${PRE_PRICES:+$PRE_PRICES and }the governor (cause 2)"
+  fi
+  PRE_WHY="keeper $PRE_KEEPER, governors $PRE_GOV"
+  return 0
+}
+
 # --- --status: where is the chain on this boot? ----------------------------------------------------
 # Read-only, and it answers the four questions the chain is about, in the chain's own order. It is here
 # so that "run it and see" is never the first thing a person does to a phone they cannot easily reboot.
@@ -314,8 +429,20 @@ if [ "$STATUS" = 1 ]; then
   say "  device:  $HOST (serial $DEV)"
   say "  boot_id: $BOOT_ID"
   say
-  ST=$("${SSH[@]}" "$(dev_end_state)" 2>/dev/null | tr -d '\r')
-  printf '%s\n' "$ST" | sed 's/^/  /'
+  # ONE READ, ONE PARSER: the same `dev_end_state` program and the same interpretation the run path uses
+  # (docs 178). Two copies of the parse is how the reader this file warns about came to exist twice, so
+  # `--status` does not get its own -- it calls the same function and prints the token that comes out.
+  pre_state
+  [ -n "$PRE_RAW" ] && printf '%s\n' "$PRE_RAW" | sed 's/^/  /'
+  say
+  say "  this boot, read as the measurement's premise: $PRE_STATE (keeper $PRE_KEEPER, governors $PRE_GOV)"
+  case "$PRE_STATE" in
+  baseline)      say "    -> window A of a run NOW would be the phone BEFORE either fix: the A/B can price both." ;;
+  already-fixed) say "    -> BOTH fixes are already in, so a run would install nothing new AND its A/B would" \
+                    "measure the fixed phone against itself (skipped; see --ab-anyway)." ;;
+  partial)       say "    -> one half is in: the A/B can price at most the half that is still out." ;;
+  *)             say "    -> the premise cannot be read from this output; a run will say so at the A/B." ;;
+  esac
   say
   say "  read it as the chain: the netwatch file must carry ensure_addrs() BEFORE the keeper is retired,"
   say "  and the keeper being gone with BOTH of the device's own addresses still present is the end state"
@@ -414,6 +541,35 @@ say "  boot_id: $BOOT_ID"
 say "  outdir:  $OUT"
 say
 
+# --- where this boot STARTS FROM, before anything is written ----------------------------------------
+# One ssh, through the same device-side program --status uses, and it is read HERE rather than at the A/B
+# so that a boot which already has both fixes says so BEFORE the chain spends its steps installing them
+# again. It is also the only thing that can tell the measurement below whether window A is the unfixed
+# phone (docs 178, and the note above pre_state).
+pre_state
+case "$PRE_STATE" in
+baseline)
+  say "  this boot starts UNFIXED: $PRE_WHY -- window A will be the phone BEFORE either fix, which is the"
+  say "  baseline the measurement needs." ;;
+already-fixed)
+  say "  this boot ALREADY HAS BOTH FIXES IN: $PRE_WHY."
+  say "  Nothing below changes that, so the two fix steps are re-installs of a state that is already there"
+  say "  (they are idempotent and each reads its own write back). AND THE MEASUREMENT CANNOT PRICE THEM:"
+  say "  window A would be the fixed phone and window B the fixed phone, so any delta would be the"
+  say "  phone's own drift printed as a number. The A/B is skipped below rather than run and mislabelled."
+  say "  To price them again on such a boot you need the INVERSE experiment, which this chain does not do:"
+  say "  window A with the fixes taken back OUT (start the keeper, put the four cores back on 'performance',"
+  say "  and for the third cause write sleep_disabled=1), window B after restoring them." ;;
+partial)
+  say "  this boot is HALF-FIXED: $PRE_WHY -- window A is the phone AFTER one of the two fixes and before"
+  say "  the other, so the measurement below prices at most the half that is still out, and its deltas must"
+  say "  not be read as the cost of both." ;;
+*)
+  say "  this boot's starting state is UNKNOWN: $PRE_WHY. The chain runs anyway -- every step reads its own"
+  say "  write back -- but the measurement's premise cannot be checked, and it says so where it matters." ;;
+esac
+say
+
 # --- the read-back the index ends with ------------------------------------------------------------
 # Read-only, and taken at the END (and again on failure). It is the difference between "step 5 failed"
 # and "step 5 failed and the addresses are still there, so the phone is reachable" -- which is the only
@@ -458,11 +614,12 @@ statement about the phone: the fixes above may be installed. --state-limit raise
 # The alignment check uses HOST clocks on both sides (window A begins when ssh is launched, the work
 # ends when the last fix step returns), because the device's own clock is wrong and its timestamps are
 # not orderable (docs 87).
-AB_STATE=none        # none | started | skipped | unusable | failed | empty | timeout | done
+AB_STATE=none        # none | started | skipped | premise | unusable | failed | empty | timeout | done
 AB_PID=""; AB_T0=0
 AB_WORK_T=0; AB_ALIGNED=""
 AB_RC=""
 AB_OUT=""
+AB_OVERRIDE=0        # the premise failed and --ab-anyway ran the A/B anyway (docs 178)
 ab_start() {
   AB_OUT="$OUT/06b-heat-ab.txt"
   : > "$AB_OUT"
@@ -472,6 +629,49 @@ ab_start() {
     printf 'The operator asked for no A/B (--no-ab).\n\nThis is a CHOICE, not a reading: the two fixes run on this boot without anything\nmeasuring their effect, so "the installers returned 0" is all this boot can say.\n' >> "$AB_OUT"
     return 0
   fi
+  # *** THE PREMISE (docs 178). *** This measurement compares window A with window B, and the only thing
+  # that makes the difference the COST OF A FIX is that window A is the phone WITHOUT it. That used to be
+  # guaranteed by where this function is called from; it is not a fact about this script, it is a fact
+  # about the device, and nothing read it. Both fixes are boot units now, so on a boot that has already
+  # run them window A is the fixed phone and the deltas are the phone's own drift printed as a number --
+  # a reading that looks exactly like a price. So the premise is checked before the instrument is even
+  # copied over, and a run that cannot price anything says so instead of measuring anyway.
+  #
+  # `partial` is NOT gated: with one half in, the difference still carries the cost of the half that is
+  # out, and the report says which half it cannot speak for. Gating it would throw that away.
+  case "$PRE_STATE" in
+  already-fixed|unknown)
+    if [ "$AB_ANYWAY" != 1 ]; then
+      AB_STATE=premise; AB_RC=premise
+      {
+        printf 'NO A/B WAS TAKEN: the measurement premise failed on this boot, and it was read off the\n'
+        printf 'device before the instrument was copied over.\n\n'
+        printf '  the premise: window A must be the phone BEFORE either fix, because the reading is the\n'
+        printf '  difference between a window without the fix and a window with it.\n\n'
+        printf '  read on the device: %s\n' "$PRE_WHY"
+        printf '  therefore:          %s\n\n' "$PRE_STATE"
+        case "$PRE_STATE" in
+        already-fixed)
+          printf 'Both fixes are already in on this boot. The two fix steps above re-installed a state that\n'
+          printf 'was already there (each installer reads its own write back, so that half is still checked).\n'
+          printf 'What this boot canNOT say is what either fix is worth in temperature: window A would have\n'
+          printf 'been the fixed phone and window B the fixed phone.\n\n'
+          printf 'WHAT WOULD PRICE THEM ON A BOOT LIKE THIS is the INVERSE experiment, which this chain does\n'
+          printf 'not perform: window A with the fixes taken back OUT (start the keeper, put the four cores\n'
+          printf 'back on performance, and for the third cause write sleep_disabled=1), then window B after\n'
+          printf 'restoring them. This chain installs; it never undoes.\n' ;;
+        *)
+          printf 'The starting state could not be read, and an unreadable premise is not a baseline: this\n'
+          printf 'chain will not call a difference a cost when it cannot show what window A was.\n' ;;
+        esac
+        printf '\n--ab-anyway runs the A/B in this state regardless, and its report says the reading is not a\nprice.\n'
+      } >> "$AB_OUT"
+      note "A/B NOT TAKEN: the premise failed (${PRE_STATE}: ${PRE_WHY}) -- no reading exists in this archive"
+      return 0
+    fi
+    AB_OVERRIDE=1
+  ;;   # `partial` and `baseline` fall through: partial still prices the half that is out
+  esac
   if [ ! -r "$THERMAL" ]; then
     AB_STATE=unusable; AB_RC=unusable
     printf 'The measuring instrument is missing ON THIS HOST: %s\n\nSo no A/B was taken and the effect of these two fixes is UNMEASURED on this boot.\n' "$THERMAL" >> "$AB_OUT"
@@ -488,6 +688,20 @@ ab_start() {
     AB_STATE=unusable; AB_RC=unusable
     printf 'scp of the instrument FAILED (rc=%s; the transport is above), so no A/B was taken and the\neffect of these two fixes is UNMEASURED on this boot.\n' "$scprc" >> "$AB_OUT"
     return 0
+  fi
+  # AND THE OVERRIDE IS RECORDED WHERE THE READING IS, not only where the operator happened to be looking.
+  # `--ab-anyway` makes the chain measure a state it has already read and already says is not a baseline;
+  # the REPORT says so, but the report is stdout -- and 06b-heat-ab.txt is the artefact that outlives the
+  # boot, gets quoted, and (unlike stdout) is a normal-looking A/B with a real number in it. A durable
+  # reading whose qualifying premise is only in a terminal that is gone is the defect this whole vector is
+  # about. It goes AFTER the scp because the scp's own output is redirected with `>` and would erase it.
+  if [ "$AB_OVERRIDE" = 1 ]; then
+    {
+      printf '\nTHE PREMISE FAILED AND --ab-anyway OVERRODE IT. Read the numbers below accordingly:\n'
+      printf '  window A must have been the phone BEFORE either fix; on this boot it was %s (%s).\n' \
+        "$PRE_STATE" "$PRE_WHY"
+      printf '  So every delta here is a before/after of the INSTALL, and NOT the cost of either fix.\n'
+    } >> "$AB_OUT"
   fi
   # The device-side process is what holds the windows; the host only holds the ssh open.
   #
@@ -568,6 +782,12 @@ ab_report() {
     say "   reading here to read. (Return 0 is not a measurement -- see the note in ab_finish.)" ;;
   skipped)
     say "   NOT MEASURED: --no-ab. This boot says the installers returned 0 and nothing about the effect." ;;
+  premise)
+    say "   NOT MEASURED, AND THIS ONE IS ABOUT THE BOOT RATHER THAN THE INSTRUMENT: window A would not have"
+    say "   been the phone before the fixes -- ${PRE_WHY} -- so a difference here could not be read as the"
+    say "   cost of anything ($PRE_STATE). No instrument was copied over and no window was sampled; the"
+    [ -n "$PRE_PRICES" ] && say "   (the half that is still OUT, and that a run WITH a baseline could price, is ${PRE_PRICES})"
+    say "   two-step reason is at the top of 06b-heat-ab.txt, and --ab-anyway overrides it." ;;
   unusable)
     say "   NOT MEASURED: the instrument could not be put on the device -- the effect is UNMEASURED."
     say "   The reason is the first lines of 06b-heat-ab.txt." ;;
@@ -575,8 +795,26 @@ ab_report() {
     say "   the two differences the instrument printed:"
     sed -n '/^== B minus A per process/,/^$/p' "$AB_OUT" | head -14 | sed 's/^/     | /'
     sed -n '/^== B minus A per thermal zone/,$p' "$AB_OUT" | grep -v '^==' | head -10 | sed 's/^/     | /'
+    # TWO questions, and they are not the same one (docs 178). ALIGNMENT is about TIME: did the two fix
+    # steps finish before window B began? The PREMISE is about STATE: was window A the phone without them?
+    # The old line asserted the second from the first, and it printed "window A is before either fix" on a
+    # boot that already had both -- so the sentence has to be earned by the state read taken before the
+    # run, and when it is not, the deltas are a before/after of the INSTALL and nothing more.
     case "$AB_ALIGNED" in
-    1) say "   ALIGNED: window A is before either fix, window B after both." ;;
+    1)
+      case "$PRE_STATE" in
+      baseline)  say "   ALIGNED, AND THE PREMISE HELD: window A was the phone before either fix ($PRE_WHY)," \
+                     "window B after both." ;;
+      partial)   say "   ALIGNED in time, and window A was the phone AFTER one of the two fixes ($PRE_WHY):" \
+                     "these deltas carry at most ${PRE_PRICES} -- the half already in was in BOTH windows" \
+                     "and cancels, so nothing here prices it." ;;
+      already-fixed)
+                 say "   ALIGNED in time, but window A was NOT the unfixed phone ($PRE_WHY) -- read these deltas" \
+                     "as a before/after of the INSTALL and not as the cost of either fix." ;;
+      *)         say "   ALIGNED in time, and window A was NEVER CHECKED: the premise could not be read from" \
+                     "this boot ($PRE_WHY), so nothing here says whether window A was the fixed phone or the" \
+                     "unfixed one. These deltas are NOT a price -- --ab-anyway does not answer the question." ;;
+      esac ;;
     0) say "   NOT ALIGNED: window B still contains part of the work -- see the bookkeeping in 06b-heat-ab.txt." ;;
     *) say "   alignment was not recorded -- read 06b-heat-ab.txt before quoting any of these numbers." ;;
     esac
@@ -606,17 +844,6 @@ FAILED=0
 # different thing: that one bounds a program ON the device, this one bounds the SSH SESSION. A stalled
 # RNDIS link (docs: re-enumerating the gadget from the host is the repair) leaves the local ssh blocked in
 # read() with the device-side process still alive, which is exactly the shape nothing else here catches.
-bound() { # SECS, command...
-  local secs="$1"; shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k 5 "$secs" "$@"
-  else
-    # Not silent: an unbounded step is a fact the reader of the archive has to know, because it is the
-    # difference between "the step failed" and "the step could have hung forever and nobody would know".
-    printf 'NOTE: no timeout(1) on this host -- THIS STEP IS NOT TIME-BOUNDED (limit was %ss)\n' "$secs" >&2
-    "$@"
-  fi
-}
 TIMED_OUT=0
 step() { # name, description, command...
   local name="$1" desc="$2"; shift 2
@@ -741,7 +968,7 @@ say ""
 # the first of the two fix steps, and before the refusal branch -- because that branch still installs
 # the governor, so both branches have something to measure. Window A is therefore the state AFTER the
 # netwatch swap and BEFORE either heat fix, which is the baseline the two named causes need.
-say "== 4b/6  the measurement around the two fixes (window A now)"
+say "== 4b/6  the measurement around the two fixes (window A starts now, IF the premise holds)"
 ab_start
 say ""
 if [ "$PROOF_RC" != 0 ] || [ "$VERDICT" != "proof-obtained" ]; then

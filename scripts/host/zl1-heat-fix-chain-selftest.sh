@@ -281,6 +281,27 @@ proc_selfshape() { mkdir -p "$FR/proc/4244"; printf '/bin/sh\0-c\0KEEPER=%s f=/e
 # is exec'd as <interpreter> <script> -- so the keeper's cmdline is `/bin/sh\0<path>\0`. This is not a
 # hypothetical shape: it is THE shape, which is why the argv rule has two halves and this fixture exists.
 proc_shellrun()  { mkdir -p "$FR/proc/4245"; printf '/bin/sh\0%s\0' "$KEEPER_REAL" > "$FR/proc/4245/cmdline"; }
+# --- the device's HEAT-FIX state, which the A/B's PREMISE is read from (docs 178) ------------------
+# The premise has two halves and it is their COMBINATION that decides whether window A is the unfixed
+# phone: the keeper (step 5 changes it) and the four cores' governor (step 6 changes it). `govs` writes
+# the cpufreq nodes; `proc_keeper`/`proc_none` above are the other half.
+#
+#   dev_baseline  keeper present + `performance`  -- a boot BEFORE either fix, which is what the image
+#                                                    ships and what the A/B needs to price anything
+#   dev_fixed     keeper gone    + `interactive`  -- a boot that has already run BOTH units, which is
+#                                                    what EVERY boot looks like now that they exist
+#
+# The fixture's own DEFAULT is dev_fixed, because that is the state the real phone is in -- which is why
+# no scenario here had ever had a true "before" window. Section 5c is what notices; the scenarios that
+# need a baseline say so.
+govs() {
+  for c in 0 1 2 3; do
+    printf '%s\n' "$1" > "$FR/sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor"
+  done
+}
+dev_baseline() { proc_keeper; govs performance; }
+dev_fixed()    { proc_none;   govs interactive; }
+
 # The netwatch file the program asks about (`ensure_addrs()` present, executable) and the four governors.
 mkdir -p "$FR/etc/systemd/system" "$FR/sys/devices/system/cpu"
 cat > "$FR/etc/systemd/system/zl1-netwatch.sh" <<'NETEOF'
@@ -324,7 +345,7 @@ chmod +x "$STUB/ip" "$STUB/systemctl"
 # operator, so the stub exited with the literal string `netwatch-service:-0` ("Illegal number") and every
 # step failed. A tag with no dash in it is the fix, and the same shape is why the sibling harnesses pass
 # a marker name rather than deriving one.
-callee() { # path-name, TAG
+callee() { # path-name, TAG, [hook -- run only when rc=0]
   cat > "$CAL/host/$1.sh" <<EOF
 #!/bin/sh
 printf 'CALLEE $1 args=%s\n' "\$*" | tee -a "$ACT"
@@ -335,18 +356,33 @@ rc=\$(printf '%s' "\${FP_RC_$2:-0}")
 sl=\$(printf '%s' "\${FP_SLEEP_$2:-0}"); [ -n "\$sl" ] && [ "\$sl" != 0 ] && sleep "\$sl"
 echo "CALLEE $1: done rc=\$rc"
 printf 'CALLEE $1 rc=%s\n' "\$rc" >> "$ACT"
+# THE DEVICE HOOK (\$3), and it has to be BEFORE the exit: written after it -- which is where the first
+# version put it -- it is unreachable, and a stand-in that records but does not CHANGE the device leaves
+# the fixture exactly as the scenario set it up. That makes "was this reading taken before or after the
+# step" unanswerable, which is precisely the question the premise is.
+if [ "\$rc" = 0 ]; then
+${3:-:}
+fi
 exit "\$rc"
 EOF
   chmod +x "$CAL/host/$1.sh"
 }
 callee install-netwatch-service NW
-callee install-retire-debug-keeper RETIRE
-callee install-cpufreq-governor CPUFREQ
+callee install-retire-debug-keeper RETIRE "rm -rf $FR/proc/4242"
+callee install-cpufreq-governor CPUFREQ "for c in 0 1 2 3; do printf 'interactive\n' > $FR/sys/devices/system/cpu/cpu\$c/cpufreq/scaling_governor; done"
 # The retire stand-in carries the ONE line the chain READS OUT OF IT (docs 165): the keeper's path. That
 # read is the whole reason the end-state reader stopped comparing against a guessed name, so the stand-in
 # has to have the line the real one has -- and the value is taken FROM the real one, cross-checked here,
 # rather than typed twice.
 printf 'KEEPER=%s\n' "$KEEPER_REAL" >> "$CAL/host/install-retire-debug-keeper.sh"
+
+# AND THE HOOKS ABOVE CHANGE THE FAKE DEVICE, which is what makes the premise answerable at all. The two
+# halves of the heat fix do here what they do on the phone when they succeed: the retire step stops the
+# keeper, and the governor step puts the four cores on `interactive`. That is what lets a scenario assert
+# that a run which STARTED at the baseline ENDS at `already-fixed` -- the same reading the premise is
+# taken with, on the other side of the steps. (They are hooks rather than appended lines because
+# appending after the stand-in's `exit` is dead code: the first version did exactly that, and the
+# assertion that noticed it was the one that needs the run to have MOVED the device.)
 
 # The proof runs ON the device, so its stand-in is the ssh stub's answer above; what has to exist is the
 # FILE that gets pushed. The chain pushes the real one, so the real one has to be readable -- and it is
@@ -433,6 +469,13 @@ scen() { # name -- a fresh archive dir, and the default device state
   FP_RC_AB=0; FP_SLEEP_RETIRE=0; FP_SLEEP_CPUFREQ=0
   FP_SLEEP_AB=""; FP_SLEEP_STATE=""; FP_RC_SCP=0
   FP_RC_NW=""; FP_RC_RETIRE=""; FP_RC_CPUFREQ=""
+  # The DEVICE is reset too, and for the same reason the archive directory is: a fixture left in the state
+  # a previous scenario put it in is the "leftover state" defect this function exists to prevent, one
+  # layer down. It bit exactly once -- `dev_baseline` (section 5c and the A/B scenarios) leaves a keeper
+  # in the fake /proc and `performance` in the four cpufreq nodes, and two scenarios that run LATER and do
+  # not set a device state of their own then read those and failed. The default is `dev_fixed`, which is
+  # what a boot of this phone looks like now that both fix units exist.
+  dev_fixed
   # The addresses the fake device has, and therefore the answer the end-state reader's `ip` call gets: the
   # empty default is the real device's shape (BOTH of its own addresses on rndis0).
   FP_ADDRS=""
@@ -661,6 +704,7 @@ echo "== 5b. the A/B: the chain measures the two fixes, and says when it could n
 # that it RUNS, that its output is READ, and -- the part a naive version gets wrong -- that a
 # measurement which did not happen is reported as not having happened.
 scen ab
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 run "$S" --yes
 [ "$RC" = 0 ] && ok "the chain with the A/B exits 0" || bad "it exited $RC"
 want 'scp .*device/zl1-thermal.sh /tmp/zl1-thermal.sh|scp .*zl1-thermal.sh' "$(cat "$ACT")" \
@@ -674,7 +718,15 @@ want '^== B minus A per process' "$(cat "$S/06b-heat-ab.txt")" "which holds the 
 want 'ALIGNED: the work finished' "$(cat "$S/06b-heat-ab.txt")" \
   "and the bookkeeping says the windows straddle the work"
 want 'tsens_tz_sensor8.*-5.5 C' "$OUT" "the per-zone difference is printed to the operator, not just archived"
-want 'ALIGNED: window A is before either fix, window B after both' "$OUT" "with the alignment stated"
+# The sentence is EARNED, not asserted from the call site (docs 178): it now names the state the premise
+# was read from, and the old unconditional wording must not survive anywhere -- it was true only while the
+# fixes were something you did to a phone that did not already have them.
+want 'ALIGNED, AND THE PREMISE HELD: window A was the phone before either fix \(keeper present, governors image\)' "$OUT" \
+  "with the alignment stated AND the premise that makes it a price"
+notwant 'ALIGNED: window A is before either fix, window B after both' "$OUT" \
+  "the old sentence, which asserted the premise instead of reading it, is gone"
+want 'read off the device BEFORE anything is written \(.pre_state.: the keeper, and whether any core still' "$(cat "$SRC")" \
+  "and the shipped chain says where the premise comes from, and that it is read before the first write"
 want 'Read it as a READING' "$OUT" "and the caveats printed beside the numbers"
 want 'this chain prints no verdict on the heat itself' "$OUT" \
   "and it says out loud that it prints no verdict on the heat itself"
@@ -700,6 +752,7 @@ notwant 'zl1-thermal.sh' "$(cat "$ACT")" "and nothing was pushed or run"
 echo
 echo "   -- the instrument is not on this host: UNMEASURED, and named:"
 scen ab-noinstrument
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 mv "$DEV_FAKE/zl1-thermal.sh" "$DEV_FAKE/zl1-thermal.sh.hidden"
 run "$S" --yes
 mv "$DEV_FAKE/zl1-thermal.sh.hidden" "$DEV_FAKE/zl1-thermal.sh"
@@ -714,6 +767,7 @@ notwant 'zl1-thermal.sh --ab' "$(sshs)" "and the instrument was never run"
 echo
 echo "   -- the instrument ran, returned 0, and printed nothing: NOT a measurement:"
 scen ab-empty
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 cp "$AB_FIX" "$W/ab.keep"; : > "$AB_FIX"
 run "$S" --yes
 cp "$W/ab.keep" "$AB_FIX"
@@ -726,6 +780,7 @@ want 'Return 0 is not a measurement' "$OUT" "which is the rule this whole tree k
 echo
 echo "   -- the instrument failed: the chain says which code, and still finishes:"
 scen ab-failed
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 FP_RC_AB=7
 run "$S" --yes
 FP_RC_AB=0
@@ -741,6 +796,7 @@ echo "   -- the measurement the HOST gave up on: its own state, and NOT a failed
 # evidence for. (FP_REAL_SLEEP makes the fixture's sleeps real -- without it the stubbed `sleep` returns
 # instantly and nothing can outlast a bound.)
 scen ab-timeout
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 FP_REAL_SLEEP=1
 FP_SLEEP_AB=30
 run "$S" --yes --settle 0 --ab-limit 2
@@ -755,6 +811,7 @@ notwant 'the instrument ran and returned 124' "$OUT" "so it is NOT filed as a fa
 echo
 echo "   -- and the instrument could not be put on the device: which rc, in the archive:"
 scen ab-scprc
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 FP_RC_SCP=7
 run "$S" --yes
 FP_RC_SCP=0
@@ -767,6 +824,7 @@ echo "   -- the measurement's bound is COMPUTED, so widening the measurement wid
 # --ab-hold, and a bound that cannot be satisfied is the defect this tree records in the camera
 # instrument (docs 104: a gate no run could pass). So what is asserted is the ARITHMETIC, printed.
 scen ab-bound
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 run "$S" --yes --ab-window 5 --ab-hold 7
 [ "$RC" = 0 ] && ok "a widened measurement still runs" || bad "it exited $RC"
 want 'bounded at 77s \(2 x 5 \+ 7 \+ 60\)' "$OUT" "window 5 and hold 7 give a 77 s bound, printed as arithmetic"
@@ -798,6 +856,7 @@ echo "   -- the work outlasted the hold: the deltas are declared CONTAMINATED, n
 # makes one step really take time. Without the alignment check the chain would print a temperature
 # difference as the result of the fixes when window B still contained part of them.
 scen ab-misaligned
+dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
 FP_REAL_SLEEP=1
 FP_SLEEP_RETIRE=2
 run "$S" --yes --settle 0 --ab-window 0 --ab-hold 0
@@ -806,6 +865,125 @@ FP_REAL_SLEEP=""; FP_SLEEP_RETIRE=0
 want 'NOT ALIGNED: window B began [0-9]*s BEFORE the work finished' "$(cat "$S/06b-heat-ab.txt")" \
   "the archive says the windows do not straddle the work"
 want 'NOT ALIGNED: window B still contains part of the work' "$OUT" "and so does the operator's read-out"
+
+# ==================================================================================================
+echo
+echo "== 5c. the A/B's PREMISE: window A has to BE the phone without the fixes (docs 178) =="
+# ==================================================================================================
+# The measurement above compares window A with window B, and the only thing that makes the difference the
+# COST OF A FIX is that window A is the phone WITHOUT it. That was never a fact about the chain -- it is a
+# fact about the DEVICE -- and nothing read it. The two fixes are boot units now, so on a boot that has
+# already run them window A is the fixed phone, window B is the fixed phone, and the difference between
+# them is the phone's own drift, printed by an instrument in a shape a reader would take for a price. The
+# sentence that used to be printed unconditionally ("window A is before either fix") is exactly that
+# defect, and the fixture's own default device state -- keeper gone, four cores interactive, which is what
+# the real phone reads today -- is the state it was false in.
+#
+# So the premise is READ (the keeper; whether any core still reads the image's `performance`) and the
+# reading decides: baseline runs the A/B, already-fixed gates it, partial runs it and names the half it
+# cannot speak for, unknown is not a baseline.
+
+echo "   -- the state this phone is actually in (both units have run): the A/B is NOT taken, and it says why"
+scen prem-fixed
+dev_fixed
+run "$S" --yes
+[ "$RC" = 0 ] && ok "an already-fixed boot still runs the chain to the end (exit 0)" || bad "it exited $RC"
+[ -z "$(grep -c 'zl1-thermal.sh' "$ACT")" ] || true
+notwant 'zl1-thermal.sh' "$(cat "$ACT")" "and NOTHING was pushed or sampled -- no instrument was copied over"
+want '^06b-heat-ab *premise' "$(cat "$S/INDEX.txt" 2>/dev/null)" \
+  "the index records the premise failure as its own state, not as a measurement"
+want 'NO A/B WAS TAKEN' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" "and the archive leads with it"
+want 'therefore:          already-fixed' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" "naming the state it read"
+want 'is the INVERSE experiment' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" \
+  "and what WOULD price them on a boot like this, rather than leaving the reader with nothing"
+want 'NOT MEASURED, AND THIS ONE IS ABOUT THE BOOT RATHER THAN THE INSTRUMENT' "$OUT" "said to the operator too"
+notwant 'window A is before either fix' "$OUT" "and the false sentence is not printed anywhere"
+# The chain still did its job: the premise governs the MEASUREMENT, not the installs.
+want 'install-cpufreq-governor' "$(order)" "the governor step still ran (the premise gates the reading, not the fix)"
+want 'install-retire-debug-keeper' "$(order)" "and so did the keeper step"
+
+echo
+echo "   -- a true baseline (keeper running, cores still pinned): the A/B RUNS"
+scen prem-baseline
+dev_baseline
+run "$S" --yes
+[ "$RC" = 0 ] && ok "a baseline boot exits 0" || bad "it exited $RC"
+want 'sh /tmp/zl1-thermal.sh --ab --seconds 30 --hold 120' "$(sshs)" "the measurement WAS taken"
+want '^06b-heat-ab *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and the index lists it as a measurement"
+want 'this boot starts UNFIXED' "$OUT" "the operator is told the premise held"
+# ... and after the steps ran, the SAME reading the premise is taken with says the phone has moved: the
+# two stand-ins do what the two installers do (kill the keeper, un-pin the cores), so the end state is
+# the other one -- which is what makes "read before the step" and "read after it" distinguishable here.
+want '^ *\| keeper: gone$' "$OUT" "the closing read-back shows the keeper gone (the retire step really changed the fixture)"
+want '^ *\| governors: interactive interactive interactive interactive$' "$OUT" "and the four cores un-pinned"
+# BOTH of the above are anchored on the read-back's own `  | ` prefix, and that is not cosmetic: this
+# chain's closing prose also contains the string `keeper: gone` (it explains what the end state IS), so
+# the unanchored version of this assertion was satisfied by the explanation rather than by the reading --
+# it passed while the fixture still had a live keeper at pid 4242.
+want 'this boot starts UNFIXED' "$OUT" "and the premise it started from is on the same page as that end state"
+
+echo
+echo "   -- HALF-fixed: one half is already in, and the report names the half it CANNOT price"
+scen prem-partial-gov
+proc_none; govs performance       # the keeper is retired, the cores are still pinned
+run "$S" --yes
+[ "$RC" = 0 ] && ok "a half-fixed boot still runs" || bad "it exited $RC"
+want 'this boot is HALF-FIXED' "$OUT" "the operator is told before anything is written"
+want 'sh /tmp/zl1-thermal.sh --ab' "$(sshs)" "and the A/B still ran -- the half that is out CAN be priced"
+want 'window A was the phone AFTER one of the two fixes' "$OUT" "with the premise stated at the reading"
+want 'these deltas carry at most the governor \(cause 2\)' "$OUT" \
+  "and with the half that is still OUT named -- here the governor, because the keeper is already gone"
+notwant 'ALIGNED, AND THE PREMISE HELD' "$OUT" "the baseline sentence is not printed on a half-fixed boot"
+
+scen prem-partial-keeper
+proc_keeper; govs interactive     # the keeper runs, the cores are already un-pinned
+run "$S" --yes
+[ "$RC" = 0 ] && ok "the other half-fixed boot runs" || bad "it exited $RC"
+want 'these deltas carry at most the keeper \(cause 1\)' "$OUT" \
+  "and here it names the keeper -- so the sentence is computed from the reading, not typed once"
+
+echo
+echo "   -- the premise could not be READ: not a baseline, and never treated as one"
+scen prem-unknown
+dev_baseline
+# FP_REAL_SLEEP is what makes the delay real: this harness's `sleep` stand-in returns instantly unless it
+# is set (that is how a 90 s settle is tested in seconds), so FP_SLEEP_STATE on its own delays NOTHING --
+# the first version of this scenario set only that, the premise read answered on time, and it read a
+# healthy baseline. The bound was never exercised.
+FP_REAL_SLEEP=1
+FP_SLEEP_STATE=5
+run "$S" --yes --settle 0 --state-limit 2
+FP_SLEEP_STATE=""; FP_REAL_SLEEP=""
+want "this boot's starting state is UNKNOWN" "$OUT" "the operator is told the premise could not be read"
+want '^06b-heat-ab *premise' "$(cat "$S/INDEX.txt" 2>/dev/null)" "and no measurement is claimed"
+notwant 'zl1-thermal.sh' "$(cat "$ACT")" "nothing was pushed: an unread premise stops the measurement too"
+want 'an unreadable premise is not a baseline' "$(cat "$S/06b-heat-ab.txt" 2>/dev/null)" "the archive says why"
+
+echo
+echo "   -- --ab-anyway: the operator may overrule the premise, and the reading is then labelled"
+scen prem-anyway
+dev_fixed
+run "$S" --yes --ab-anyway
+[ "$RC" = 0 ] && ok "--ab-anyway runs" || bad "it exited $RC"
+want 'sh /tmp/zl1-thermal.sh --ab' "$(sshs)" "the measurement WAS taken against the gate"
+want 'ALIGNED in time, but window A was NOT the unfixed phone' "$OUT" \
+  "and the reading says what window A actually was instead of asserting it"
+want 'not as the cost of either fix' "$OUT" "and that it is therefore not a price"
+
+echo
+echo "   -- --status answers the premise too, read-only, on both device states"
+scen prem-status-fixed
+dev_fixed
+run "$S" --status
+[ "$RC" = 0 ] && ok "--status exits 0 on an already-fixed device" || bad "it exited $RC"
+want 'read as the measurement.s premise: already-fixed' "$OUT" "and it names the state a run would start from"
+want 'a run would install nothing new' "$OUT" "and says what that means for a run"
+[ -z "$(callees)" ] && ok "still no installer ran" || bad "--status invoked an installer"
+scen prem-status-baseline
+dev_baseline
+run "$S" --status
+want 'read as the measurement.s premise: baseline' "$OUT" "the other state is named too"
+want 'the A/B can price both' "$OUT" "with the consequence a reader needs"
 
 # ==================================================================================================
 echo
@@ -1070,6 +1248,7 @@ fi
 if mutate abnocontent '/^  elif ! grep -q .\^== B minus A per thermal zone/{N
 s#.*#  : #}'; then
   scen mut-abnocontent
+  dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
   cp "$AB_FIX" "$W/ab.keep"; : > "$AB_FIX"
   mutant_run "$CHAIN_DIR/abnocontent.sh" "$S"
   cp "$W/ab.keep" "$AB_FIX"
@@ -1082,6 +1261,7 @@ fi
 # (9) the alignment check removed: a contaminated window published as a result
 if mutate abnoalign 's#^    if \[ "\$margin" -ge 0 \]; then#    if true; then #'; then
   scen mut-abnoalign
+  dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
   FP_REAL_SLEEP=1; FP_SLEEP_RETIRE=2
   : > "$ACT"
   OUT=$(PATH="$STUB:$PATH" FP_STATE=present FP_SSH=yes FP_RC_PROOF=0 ZL1_MISC_OUT="$MISC_OUT" \
@@ -1097,6 +1277,7 @@ fi
 if mutate abnoverdict '/^    say "   Read it as a READING/{N
 s#.*#    : #}'; then
   scen mut-abnoverdict
+  dev_baseline   # window A must BE the unfixed phone for the A/B to price anything (docs 178)
   mutant_run "$CHAIN_DIR/abnoverdict.sh" "$S"
   [ -n "$(callees)" ] && ok "and the mutant reached the steps" || bad "the mutant never ran (rc=$RC)"
   notwant 'Read it as a READING' "$OUT" \
@@ -1170,6 +1351,24 @@ if mutate hostaddr 's#\*10\.15\.19\.82/24\*#*10.15.19.100/24*#'; then
   want 'netwatch: file=' "$OUT" "mutation 'the host address': the read-back was taken (so the check below is not vacuous)"
   want 'addrs: 192.168.2.15/24=present 10.15.19.82/24=ABSENT' "$OUT" \
     "mutation 'the host address': the DEVICE's own address reads ABSENT on a device that has it -- the reading that could never be 1"
+fi
+# (16) the PREMISE gate removed (docs 178): the A/B runs on a boot that already has both fixes.
+# This is the defect the whole section 5c exists for, and it is the quietest one in the file: nothing
+# crashes, no assertion inside the chain reddens, the instrument behaves perfectly, and the archive gets a
+# complete-looking A/B with real numbers in it. What those numbers are is the phone's own drift between
+# two windows that are both the fixed phone -- and they are printed in the shape a reader takes for a
+# price, because that shape is the ONLY thing the two cases differ in. So the mutant must be caught by
+# exactly that: the deltas ARE there, and the sentence saying the premise failed is NOT.
+if mutate abpremise 's#^  already-fixed|unknown)#  __no-such-state__)#'; then
+  scen mut-abpremise
+  dev_fixed
+  mutant_run "$CHAIN_DIR/abpremise.sh" "$S"
+  [ -n "$(callees)" ] && ok "and the mutant reached the steps" || bad "the mutant never ran (rc=$RC)"
+  want '^06b-heat-ab *0' "$(cat "$S/INDEX.txt" 2>/dev/null)" \
+    "mutation 'no premise gate': a boot that ALREADY has both fixes is measured anyway, and recorded as a measurement"
+  want 'tsens_tz_sensor8.*-5.5 C' "$OUT" \
+    "mutation 'no premise gate': and the phone's own drift is printed in the shape of a price (the check is live)"
+  notwant 'NO A/B WAS TAKEN' "$OUT" "with nothing anywhere saying the premise failed"
 fi
 
 # ==================================================================================================
